@@ -17,11 +17,12 @@ import { TextInput } from "./components/TextInput.js";
 import { WorktreesPane } from "./components/WorktreesPane.js";
 import { anchorFor, clampSubTab, type DetailContext } from "./detail.js";
 import type { KeyInput, KeymapAction, ListPaneId, PaneId } from "./keymap.js";
-import { handleKey, moveFocus } from "./keymap.js";
+import { handleKey, moveFocus, parseMouseWheel } from "./keymap.js";
 import { readRunFiles } from "./run-files.js";
 import {
 	buildProjectTabs,
 	buildWorktreeRows,
+	computePaneLayout,
 	queueRowsForProject,
 } from "./selectors.js";
 import { useDaemon } from "./use-daemon.js";
@@ -111,8 +112,7 @@ export function App({
 	// Modals float absolutely over the body, so the body height is fixed and does
 	// not reflow when a modal opens.
 	const bodyHeight = Math.max(1, rows - 2);
-	const listCap = Math.max(1, Math.floor(bodyHeight / 4) - 3);
-	const queueCap = Math.max(1, bodyHeight - 2 * (listCap + 3) - 3);
+	const { queueCap, listCap } = computePaneLayout(bodyHeight);
 	const detailWidth = Math.max(20, Math.floor(columns * 0.62));
 	const detailHeight = Math.max(1, bodyHeight - 4);
 	// Modal width is independent of content height (see modalGeometry); the inner
@@ -422,6 +422,20 @@ export function App({
 		}
 		if (mode.kind !== "list") return; // text inputs handled by TextInput
 
+		// Mouse wheel scrolls the focused pane: detail scrolls its content, the
+		// list panes move their selection (which scrolls the row window) — the
+		// same mapping as ↑/↓ / j/k.
+		const wheel = parseMouseWheel(char);
+		if (wheel) {
+			const delta = wheel === "down" ? 1 : -1;
+			dispatch(
+				ui.focus === "detail"
+					? { type: "scroll", delta }
+					: { type: "move-selection", delta },
+			);
+			return;
+		}
+
 		setStatusLine(null);
 		if (prefixTimer.current) {
 			clearTimeout(prefixTimer.current);
@@ -467,7 +481,7 @@ export function App({
 				maxConcurrent={snapshot?.maxConcurrent ?? null}
 			/>
 			<Box flexGrow={1}>
-				<Box width="34%" flexDirection="column">
+				<Box width="34%" flexShrink={0} flexDirection="column">
 					<QueuePane
 						rows={queueRows}
 						selectedIndex={queueSel}

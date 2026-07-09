@@ -6,6 +6,7 @@ import {
 	elapsed,
 	promptSummary,
 	statusGlyph,
+	stripRepoPrefix,
 } from "../format.js";
 
 let seq = 0;
@@ -82,7 +83,32 @@ describe("promptSummary", () => {
 	});
 });
 
+describe("stripRepoPrefix", () => {
+	it("removes a leading <repo>. prefix", () => {
+		expect(stripRepoPrefix("platform.dedup-dependabot-run", "platform")).toBe(
+			"dedup-dependabot-run",
+		);
+	});
+
+	it("keeps the bare repo name and unprefixed names unchanged", () => {
+		expect(stripRepoPrefix("platform", "platform")).toBe("platform");
+		expect(stripRepoPrefix("wt-a", "platform")).toBe("wt-a");
+	});
+});
+
 describe("buildQueueRows", () => {
+	it("strips the redundant <repo>. prefix from the worktree in the lane", () => {
+		const running = task("running", {
+			target: {
+				repo: "platform",
+				ref: "temp",
+				worktree: "platform.dedup-dependabot-run",
+			},
+		});
+		const rows = buildQueueRows(snap([running]), NOW, 40);
+		expect(rows[0]?.lane).toBe("platform:dedup-dependabot-run");
+	});
+
 	it("renders running with elapsed, queued with lane position, failed with error", () => {
 		const running = task("running");
 		const q1 = task("queued");

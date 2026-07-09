@@ -44,8 +44,22 @@ export interface QueueRow {
 	kind: "live" | "archived";
 }
 
+/**
+ * Strip a redundant `<repo>.` prefix from a display name. Worktree directories
+ * are named `<repo>.<branch>` by the `wt` tool, but the project/repo name is
+ * already shown at the top of the TUI, so repeating it per row is noise. The
+ * bare repo (name exactly `<repo>`) and names without the prefix are returned
+ * unchanged. Only display strings are stripped — never identifiers used for
+ * actions.
+ */
+export function stripRepoPrefix(name: string, repo: string): string {
+	const prefix = `${repo}.`;
+	return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+}
+
 function laneLabel(task: TaskInstance): string {
-	return `${task.target.repo}:${task.target.worktree ?? task.target.ref}`;
+	const lane = task.target.worktree ?? task.target.ref;
+	return `${task.target.repo}:${stripRepoPrefix(lane, task.target.repo)}`;
 }
 
 function sessionMarker(task: TaskInstance): string {

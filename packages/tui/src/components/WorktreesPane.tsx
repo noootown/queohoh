@@ -1,5 +1,9 @@
 import { Text } from "ink";
-import { type WorktreeRow, windowRows } from "../selectors.js";
+import {
+	type WorktreeRow,
+	windowRows,
+	worktreeDotColor,
+} from "../selectors.js";
 import { Pane } from "./Pane.js";
 
 export function WorktreesPane({
@@ -15,22 +19,19 @@ export function WorktreesPane({
 }) {
 	const { rows: windowed, offset } = windowRows(rows, selectedIndex, capacity);
 	return (
-		<Pane title="WORKTREES" focused={focused} flexGrow={1}>
+		<Pane title="WORKTREES" focused={focused} flexGrow={1} flexBasis={0}>
 			{rows.length === 0 ? (
 				<Text dimColor>no worktrees</Text>
 			) : (
 				windowed.map((row, i) => (
 					<Text
 						key={`${row.kind}:${row.path}`}
-						inverse={offset + i === selectedIndex}
+						inverse={focused && offset + i === selectedIndex}
+						wrap="truncate"
 					>
-						{row.name}{" "}
-						{row.hasMainSession ? <Text color="cyan">◆ </Text> : null}
-						{row.state === "you" ? (
-							<Text color="yellow">YOU</Text>
-						) : (
-							<Text dimColor>{row.state}</Text>
-						)}
+						<Text color={worktreeDotColor(row.state)}>●</Text> {row.name}
+						{row.hasMainSession ? <Text color="cyan"> ◆</Text> : null}
+						{row.queued > 0 ? <Text dimColor> [{row.queued}]</Text> : null}
 					</Text>
 				))
 			)}

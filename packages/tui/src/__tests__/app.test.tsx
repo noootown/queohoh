@@ -20,6 +20,8 @@ const DOWN = "\u001b[B";
 const LEFT = "\u001b[D";
 const RIGHT = "\u001b[C";
 const ESC = "\u001b";
+const WHEEL_UP = "\u001b[<64;5;5M";
+const WHEEL_DOWN = "\u001b[<65;5;5M";
 
 type FakeStream = EventEmitter & { columns: number; rows: number };
 function fakeStream(columns: number, rows: number): FakeStream {
@@ -485,6 +487,137 @@ describe("App full-screen", () => {
 		app.stdin.write(ESC); // esc also closes
 		await wait(60);
 		expect(app.lastFrame()).not.toContain("Run task definition");
+	});
+
+	it("keeps the left column width stable when focus/detail content changes", async () => {
+		const { store, server, engine, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		const task = store.create({
+			prompt: "fix the thing",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		await engine.tick();
+		server.broadcast();
+		// A very wide, unbreakable detail line: with the old flex-shrink bug this
+		// pushed the detail pane wider and shrank the left column.
+		const runsDir = join(base, "runs");
+		mkdirSync(join(runsDir, task.id), { recursive: true });
+		writeFileSync(
+			join(runsDir, task.id, "transcript.md"),
+			`${"x".repeat(300)}\n`,
+		);
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={runsDir}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		// queue selected → detail shows the wide transcript line
+		const detailXWithWideContent = app.lastFrame()?.indexOf("DETAIL") ?? -1;
+		expect(detailXWithWideContent).toBeGreaterThan(0);
+		// move focus to worktrees → detail shows the narrow worktree info
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write(DOWN); // queue -> tasks
+		await wait(30);
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write(DOWN); // tasks -> worktrees
+		await wait(60);
+		const detailXWithNarrowContent = app.lastFrame()?.indexOf("DETAIL") ?? -1;
+		expect(detailXWithNarrowContent).toBe(detailXWithWideContent);
+	});
+
+	it("mouse wheel scrolls the focused detail pane like j/k", async () => {
+		const { store, server, sock, base } = await startServer();
+		const task = store.create({
+			prompt: "long running task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const runsDir = join(base, "runs");
+		mkdirSync(join(runsDir, task.id), { recursive: true });
+		const lines = Array.from({ length: 40 }, (_, i) => `line-${i}`).join("\n");
+		writeFileSync(join(runsDir, task.id, "transcript.md"), `${lines}\n`);
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={runsDir}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		// focus the detail pane; transcript defaults to the bottom-anchored tail
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write(RIGHT);
+		await wait(60);
+		expect(app.lastFrame()).toContain("line-39");
+		expect(app.lastFrame()).not.toContain("line-5");
+		// wheel up scrolls into history (older lines appear, the tail scrolls off)
+		app.stdin.write(WHEEL_UP);
+		app.stdin.write(WHEEL_UP);
+		await wait(60);
+		expect(app.lastFrame()).toContain("line-5");
+		expect(app.lastFrame()).not.toContain("line-39");
+		// wheel down returns toward the live tail
+		app.stdin.write(WHEEL_DOWN);
+		app.stdin.write(WHEEL_DOWN);
+		await wait(60);
+		expect(app.lastFrame()).toContain("line-39");
+	});
+
+	it("detail: long lines are truncated so content never overflows the pane or bleeds into the sub-tab header", async () => {
+		const { store, server, sock, base } = await startServer();
+		const task = store.create({
+			prompt: "wide task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const runsDir = join(base, "runs");
+		mkdirSync(join(runsDir, task.id), { recursive: true });
+		// Lines far wider than the pane: if they wrapped, each would consume
+		// several rows and overflow the fixed-height pane up into the tab bar.
+		const wide = Array.from({ length: 60 }, () => "y".repeat(300)).join("\n");
+		writeFileSync(join(runsDir, task.id, "transcript.md"), `${wide}\n`);
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={runsDir}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write(RIGHT); // focus detail
+		await wait(60);
+		const frame = app.lastFrame() ?? "";
+		const frameRows = frame.split("\n");
+		// The rendered frame never grows taller than the terminal (no overflow).
+		expect(frameRows.length).toBeLessThanOrEqual(40);
+		// The sub-tab bar sits on its own row right under the title, intact and
+		// free of any scrolled content.
+		const titleIdx = frameRows.findIndex((r) => r.includes("DETAIL"));
+		const tabRow = frameRows[titleIdx + 1] ?? "";
+		expect(tabRow).toContain("1:transcript");
+		expect(tabRow).toContain("3:prompt");
+		expect(tabRow).not.toContain("y");
 	});
 
 	it("q exits — input stops being handled", async () => {

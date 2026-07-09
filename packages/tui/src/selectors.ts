@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { laneKey, type TaskInstance } from "@queohoh/core";
 import type { StateSnapshot } from "@queohoh/daemon";
-import { buildQueueRows, type QueueRow } from "./format.js";
+import { buildQueueRows, type QueueRow, stripRepoPrefix } from "./format.js";
 
 export interface ProjectTab {
 	name: string;
@@ -63,6 +63,25 @@ export interface WorktreeRow {
 	state: WorktreeState | "you";
 	/** lane (`${project}:${name}`) has a stored main session to resume */
 	hasMainSession: boolean;
+	/** queued (not-yet-running) tasks on this worktree's lane; 0 for sessions */
+	queued: number;
+}
+
+/**
+ * Ink color for a worktree row's status dot: green = idle, yellow = active (a
+ * task is running, or it's the user's own session), red = the last task failed.
+ * Replaces the old trailing state word with a compact colored-dot prefix.
+ */
+export function worktreeDotColor(state: WorktreeState | "you"): string {
+	switch (state) {
+		case "free":
+			return "green";
+		case "busy":
+		case "you":
+			return "yellow";
+		case "failed":
+			return "red";
+	}
 }
 
 function worktreeState(
@@ -82,6 +101,17 @@ function worktreeState(
 	return "free";
 }
 
+function queuedOnLane(
+	snapshot: StateSnapshot,
+	project: string,
+	name: string,
+): number {
+	const lane = `${project}:${name}`;
+	return snapshot.tasks.filter(
+		(t) => laneKey(t) === lane && t.status === "queued",
+	).length;
+}
+
 function cwdInWorktree(cwd: string, path: string): boolean {
 	return cwd === path || cwd.startsWith(`${path}/`);
 }
@@ -98,7 +128,9 @@ export function buildWorktreeRows(
 	const worktrees = snapshot.worktrees[project] ?? [];
 	const rows: WorktreeRow[] = worktrees.map((wt) => ({
 		kind: "worktree",
-		name: wt.name,
+		// `wt.name` is the underlying identifier (used for state/action lookup);
+		// only the displayed name drops the redundant `<repo>.` prefix.
+		name: stripRepoPrefix(wt.name, project),
 		path: wt.path,
 		branch: wt.branch,
 		state: worktreeState(snapshot, project, wt.name),
@@ -106,6 +138,7 @@ export function buildWorktreeRows(
 			snapshot.mainSessions,
 			`${project}:${wt.name}`,
 		),
+		queued: queuedOnLane(snapshot, project, wt.name),
 	}));
 
 	for (const session of snapshot.sessions) {
@@ -115,14 +148,41 @@ export function buildWorktreeRows(
 		if (!worktrees.some((wt) => cwdInWorktree(cwd, wt.path))) continue;
 		rows.push({
 			kind: "session",
-			name: basename(cwd),
+			name: stripRepoPrefix(basename(cwd), project),
 			path: cwd,
 			branch: null,
 			state: "you",
 			hasMainSession: false,
+			queued: 0,
 		});
 	}
 	return rows;
+}
+
+export interface PaneLayout {
+	queuePaneH: number;
+	listPaneH: number;
+	queueCap: number;
+	listCap: number;
+}
+
+/**
+ * Fixed heights for the three left-column panes (queue : tasks : worktrees ≈
+ * 2:1:1) that sum to `bodyHeight`, plus the row capacity each pane can show
+ * (height minus border+title chrome, which is 3 lines). Heights are explicit —
+ * not flex-grown — so a pane never balloons past its capped content: with
+ * flexGrow the free space left by short panes was redistributed to every pane,
+ * stretching the worktrees box well below its last row.
+ */
+export function computePaneLayout(bodyHeight: number): PaneLayout {
+	const listPaneH = Math.max(4, Math.floor(bodyHeight / 4));
+	const queuePaneH = Math.max(4, bodyHeight - 2 * listPaneH);
+	return {
+		queuePaneH,
+		listPaneH,
+		queueCap: Math.max(1, queuePaneH - 3),
+		listCap: Math.max(1, listPaneH - 3),
+	};
 }
 
 /**

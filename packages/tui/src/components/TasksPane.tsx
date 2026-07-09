@@ -16,14 +16,15 @@ export function TasksPane({
 }) {
 	const { rows, offset } = windowRows(defs, selectedIndex, capacity);
 	return (
-		<Pane title="TASKS" focused={focused} flexGrow={1}>
+		<Pane title="TASKS" focused={focused} flexGrow={1} flexBasis={0}>
 			{defs.length === 0 ? (
 				<Text dimColor>no task definitions</Text>
 			) : (
 				rows.map((def, i) => (
 					<Text
 						key={`${def.repo}/${def.name}`}
-						inverse={offset + i === selectedIndex}
+						inverse={focused && offset + i === selectedIndex}
+						wrap="truncate"
 					>
 						{def.name}
 						{def.args.length > 0 ? ` (${def.args.join(", ")})` : ""}

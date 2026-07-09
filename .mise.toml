@@ -3,6 +3,14 @@ node = "22"
 
 # --- dev loop ---
 
+[tasks.sync]
+description = "Install all workspace dependencies (builds once so pnpm can link workspace bin shims)"
+run = [
+	"pnpm install",
+	"pnpm -r build",
+	"pnpm install",
+]
+
 [tasks.build]
 description = "Compile all packages (core, daemon, tui) to dist/"
 run = "pnpm -r build"
@@ -52,6 +60,11 @@ run = "node packages/daemon/dist/cli.js status"
 description = "Launch the Ink TUI cockpit (rebuilds first, self-heals the daemon)"
 depends = ["build", "daemon:ensure"]
 run = "node packages/tui/dist/cli.js"
+
+[tasks."dev:tui"]
+description = "Launch the TUI with hot reload (tsc --watch + node --watch; daemon is NOT reloaded)"
+depends = ["build", "daemon:ensure"]
+run = "scripts/dev-tui.sh"
 
 # --- integrations ---
 

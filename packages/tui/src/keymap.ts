@@ -112,6 +112,24 @@ function act(action: KeymapAction): KeymapResult {
 	return { prefixArmed: false, action };
 }
 
+/**
+ * Detect an SGR mouse wheel report and return its direction, or `null` for any
+ * non-wheel input. Terminals emit `ESC [ < btn ; col ; row (M|m)` in SGR mode
+ * (enabled by `\x1b[?1006h`); ink delivers this as one keypress with the
+ * leading ESC stripped, so we accept an optional `ESC[` / `[` prefix. Wheel
+ * buttons set bit 6 (64): 64 = up, 65 = down; higher bits carry modifier keys
+ * we ignore. Column/row coordinates are ignored — scrolling targets the
+ * focused pane, not the pane under the cursor.
+ */
+export function parseMouseWheel(input: string): "up" | "down" | null {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC (\x1b) is the literal first byte of an SGR mouse report; matching it is the point
+	const match = /^(?:\x1b)?\[<(\d+);\d+;\d+[Mm]/.exec(input);
+	if (!match) return null;
+	const button = Number(match[1]);
+	if ((button & 0b100_0000) === 0) return null; // not a wheel event
+	return button & 1 ? "down" : "up";
+}
+
 const COLUMN_ORDER: ListPaneId[] = ["queue", "tasks", "worktrees"];
 
 export function moveFocus(

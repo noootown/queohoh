@@ -18,20 +18,25 @@ function fakeOut(): {
 }
 
 describe("alt screen", () => {
-	it("enter writes 1049h, leave writes 1049l once", () => {
+	it("enter enables alt screen + mouse, leave disables both once", () => {
 		const { writes, stream } = fakeOut();
 		const alt = createAltScreen(stream as unknown as NodeJS.WriteStream);
 		alt.enter();
 		alt.leave();
 		alt.leave(); // idempotent
-		expect(writes).toEqual(["\x1b[?1049h", "\x1b[?1049l"]);
+		expect(writes).toEqual([
+			"\x1b[?1049h",
+			"\x1b[?1000h\x1b[?1006h",
+			"\x1b[?1000l\x1b[?1006l",
+			"\x1b[?1049l",
+		]);
 	});
 
-	it("enter is idempotent — only writes 1049h once", () => {
+	it("enter is idempotent — only enables once", () => {
 		const { writes, stream } = fakeOut();
 		const alt = createAltScreen(stream as unknown as NodeJS.WriteStream);
 		alt.enter();
 		alt.enter();
-		expect(writes).toEqual(["\x1b[?1049h"]);
+		expect(writes).toEqual(["\x1b[?1049h", "\x1b[?1000h\x1b[?1006h"]);
 	});
 });

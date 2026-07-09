@@ -7,6 +7,7 @@ import {
 	windowLines,
 } from "../detail.js";
 import { promptSummary, statusGlyph } from "../format.js";
+import { styleLine } from "../markup.js";
 
 interface ContentView {
 	lines: string[];
@@ -136,13 +137,21 @@ export function DetailPane({
 			borderColor={focused ? "cyan" : "gray"}
 			flexDirection="column"
 			flexGrow={1}
+			flexBasis={0}
+			minWidth={0}
 			paddingX={1}
 		>
 			<Text bold>DETAIL</Text>
 			{tabs.length > 0 ? (
 				<Box>
 					{tabs.map((label, i) => (
-						<Text key={label} inverse={i === subTab} bold={i === subTab}>
+						<Text
+							key={label}
+							backgroundColor={i === subTab ? "blue" : undefined}
+							color={i === subTab ? "white" : undefined}
+							dimColor={i !== subTab}
+							bold={i === subTab}
+						>
 							{` ${i + 1}:${label} `}
 						</Text>
 					))}
@@ -151,12 +160,36 @@ export function DetailPane({
 			{view.lines.length === 0 ? (
 				<Text dimColor>{view.placeholder}</Text>
 			) : (
-				visible.map((line, i) => (
-					// biome-ignore lint/suspicious/noArrayIndexKey: windowed lines have no stable identity; the window fully re-renders each refresh
-					<Text key={`${i}-${line.slice(0, 8)}`}>
-						{line === "" ? " " : line}
-					</Text>
-				))
+				// Content is a clipped, flex-filling region so the DETAIL title and
+				// sub-tab row above stay fixed chrome. `wrap="truncate"` keeps each
+				// line to a single row (a wrapped line would consume extra rows and
+				// push scrolled content up over the sub-tab header); `overflow`
+				// hidden guards any residual overflow.
+				<Box
+					flexDirection="column"
+					flexGrow={1}
+					minHeight={0}
+					overflow="hidden"
+				>
+					{visible.map((line, i) => (
+						// biome-ignore lint/suspicious/noArrayIndexKey: windowed lines have no stable identity; the window fully re-renders each refresh
+						<Text key={`${i}-${line.slice(0, 8)}`} wrap="truncate">
+							{line === ""
+								? " "
+								: styleLine(line).map((seg, j) => (
+										<Text
+											// biome-ignore lint/suspicious/noArrayIndexKey: segments are positional within a fully re-rendered line
+											key={`${j}-${seg.text.slice(0, 6)}`}
+											bold={seg.bold}
+											dimColor={seg.dim}
+											color={seg.color}
+										>
+											{seg.text}
+										</Text>
+									))}
+						</Text>
+					))}
+				</Box>
 			)}
 		</Box>
 	);

@@ -5,6 +5,7 @@ import {
 	type ListPaneId,
 	moveFocus,
 	type PaneId,
+	parseMouseWheel,
 } from "../keymap.js";
 
 function key(overrides: Partial<KeyInput> = {}): KeyInput {
@@ -357,5 +358,38 @@ describe("moveFocus — geometry", () => {
 		expect(moveFocus("detail", "up", "tasks")).toBe("detail");
 		expect(moveFocus("detail", "down", "tasks")).toBe("detail");
 		expect(moveFocus("detail", "right", "tasks")).toBe("detail");
+	});
+});
+
+describe("parseMouseWheel", () => {
+	// ink strips the leading ESC before it reaches useInput, so the common case
+	// is the bare `[<btn;col;row M` form.
+	it("maps SGR wheel-up (button 64) to up", () => {
+		expect(parseMouseWheel("[<64;10;5M")).toBe("up");
+	});
+
+	it("maps SGR wheel-down (button 65) to down", () => {
+		expect(parseMouseWheel("[<65;10;5M")).toBe("down");
+	});
+
+	it("accepts an optional leading ESC and the release (m) final byte", () => {
+		expect(parseMouseWheel("\x1b[<64;1;1M")).toBe("up");
+		expect(parseMouseWheel("[<65;200;48m")).toBe("down");
+	});
+
+	it("ignores modifier bits above the wheel bit (68 = wheel-up + ctrl)", () => {
+		expect(parseMouseWheel("[<68;10;5M")).toBe("up");
+		expect(parseMouseWheel("[<69;10;5M")).toBe("down");
+	});
+
+	it("returns null for non-wheel mouse buttons (0 = left click)", () => {
+		expect(parseMouseWheel("[<0;10;5M")).toBeNull();
+		expect(parseMouseWheel("[<2;10;5M")).toBeNull();
+	});
+
+	it("returns null for ordinary key input", () => {
+		expect(parseMouseWheel("q")).toBeNull();
+		expect(parseMouseWheel("")).toBeNull();
+		expect(parseMouseWheel("j")).toBeNull();
 	});
 });

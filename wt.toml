@@ -1,0 +1,3 @@
+[post-create]
+trust = "mise trust"
+sync = "mise run sync"

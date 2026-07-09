@@ -222,6 +222,7 @@ describe("WorktreesPane", () => {
 			branch: "a",
 			state: "busy",
 			hasMainSession: false,
+			queued: 2,
 		},
 		{
 			kind: "session",
@@ -230,10 +231,11 @@ describe("WorktreesPane", () => {
 			branch: null,
 			state: "you",
 			hasMainSession: false,
+			queued: 0,
 		},
 	];
 
-	it("renders worktree state and a YOU session row", () => {
+	it("renders a colored-dot prefix, the name, and a queued-count badge (no state word)", () => {
 		const { lastFrame } = render(
 			<WorktreesPane
 				rows={wtRows}
@@ -242,9 +244,75 @@ describe("WorktreesPane", () => {
 				capacity={10}
 			/>,
 		);
-		expect(lastFrame()).toContain("wt-a");
-		expect(lastFrame()).toContain("busy");
-		expect(lastFrame()).toContain("YOU");
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("wt-a");
+		expect(frame).toContain("platform");
+		// compact dot prefix replaces the old "busy"/"free"/"YOU" words
+		expect(frame).toContain("●");
+		expect(frame).not.toContain("busy");
+		expect(frame).not.toContain("YOU");
+		// queued badge shown only when > 0
+		expect(frame).toContain("[2]");
+	});
+
+	// A wrapped row consumes extra terminal lines beyond the row capacity,
+	// overflowing the fixed-height pane and pushing the title out of view.
+	// Every list row must truncate to exactly one line.
+	it("truncates long names to a single line instead of wrapping", () => {
+		const long: WorktreeRow = {
+			kind: "worktree",
+			name: "w".repeat(300),
+			path: "/wt/long",
+			branch: "long",
+			state: "free",
+			hasMainSession: false,
+			queued: 0,
+		};
+		const { lastFrame } = render(
+			<WorktreesPane
+				rows={[long]}
+				selectedIndex={0}
+				focused={false}
+				capacity={10}
+			/>,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("WORKTREES");
+		const nameLines = frame.split("\n").filter((l) => l.includes("www"));
+		expect(nameLines).toHaveLength(1);
+	});
+});
+
+describe("list rows never wrap (title stays visible)", () => {
+	it("QueuePane truncates long summaries to a single line", () => {
+		const { lastFrame } = render(
+			<QueuePane
+				rows={[queueRow("L1", "s".repeat(300))]}
+				selectedIndex={0}
+				focused={false}
+				capacity={10}
+			/>,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("QUEUE");
+		expect(frame.split("\n").filter((l) => l.includes("sss"))).toHaveLength(1);
+	});
+
+	it("TasksPane truncates long task names to a single line", () => {
+		const defs: DefinitionSummary[] = [
+			{
+				repo: "platform",
+				name: "t".repeat(300),
+				args: [],
+				hasDiscovery: false,
+			},
+		];
+		const { lastFrame } = render(
+			<TasksPane defs={defs} selectedIndex={0} focused={false} capacity={10} />,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("TASKS");
+		expect(frame.split("\n").filter((l) => l.includes("ttt"))).toHaveLength(1);
 	});
 
 	it("renders a chain marker before state when hasMainSession", () => {
@@ -256,6 +324,7 @@ describe("WorktreesPane", () => {
 				branch: "x",
 				state: "free",
 				hasMainSession: true,
+				queued: 0,
 			},
 		];
 		const { lastFrame } = render(
@@ -605,6 +674,7 @@ describe("DetailPane", () => {
 			branch: "feature-a",
 			state: "busy",
 			hasMainSession: false,
+			queued: 0,
 		};
 		const { lastFrame } = render(
 			<DetailPane
@@ -638,6 +708,7 @@ describe("DetailPane", () => {
 			branch: null,
 			state: "free",
 			hasMainSession: false,
+			queued: 0,
 		};
 		const { lastFrame } = render(
 			<DetailPane

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
 	buildProjectTabs,
 	buildWorktreeRows,
+	computePaneLayout,
 	queueRowsForProject,
 	windowRows,
+	worktreeDotColor,
 } from "../selectors.js";
 import { makeSession, makeSnapshot, makeTask } from "./helpers.js";
 
@@ -181,6 +183,7 @@ describe("buildWorktreeRows", () => {
 				branch: "feat/a",
 				state: "free",
 				hasMainSession: false,
+				queued: 0,
 			},
 			{
 				kind: "worktree",
@@ -189,6 +192,7 @@ describe("buildWorktreeRows", () => {
 				branch: "feat/b",
 				state: "free",
 				hasMainSession: false,
+				queued: 0,
 			},
 			{
 				kind: "worktree",
@@ -197,6 +201,7 @@ describe("buildWorktreeRows", () => {
 				branch: "feat/c",
 				state: "free",
 				hasMainSession: false,
+				queued: 0,
 			},
 		]);
 	});
@@ -230,6 +235,7 @@ describe("buildWorktreeRows", () => {
 				branch: null,
 				state: "you",
 				hasMainSession: false,
+				queued: 0,
 			},
 		]);
 	});
@@ -250,6 +256,7 @@ describe("buildWorktreeRows", () => {
 				branch: null,
 				state: "you",
 				hasMainSession: false,
+				queued: 0,
 			},
 		]);
 	});
@@ -268,6 +275,121 @@ describe("buildWorktreeRows", () => {
 	it("returns no rows for a project with no worktrees", () => {
 		const snapshot = makeSnapshot({ worktrees });
 		expect(buildWorktreeRows(snapshot, "web")).toEqual([]);
+	});
+
+	it("strips the redundant <repo>. prefix from displayed worktree names", () => {
+		const snapshot = makeSnapshot({
+			worktrees: {
+				platform: [
+					{ name: "platform", path: "/wt/platform", branch: "main" },
+					{
+						name: "platform.dedup-dependabot-run",
+						path: "/wt/platform.dedup-dependabot-run",
+						branch: "dedup-dependabot-run",
+					},
+				],
+			},
+		});
+		const rows = buildWorktreeRows(snapshot, "platform");
+		// bare repo (name === repo) is kept; prefixed worktree is stripped
+		expect(rows.map((r) => r.name)).toEqual([
+			"platform",
+			"dedup-dependabot-run",
+		]);
+		// underlying path (the identifier) is untouched
+		expect(rows[1]?.path).toBe("/wt/platform.dedup-dependabot-run");
+	});
+
+	it("strips the <repo>. prefix from a session row's displayed name", () => {
+		const snapshot = makeSnapshot({
+			worktrees: {
+				platform: [
+					{
+						name: "platform.feat-x",
+						path: "/wt/platform.feat-x",
+						branch: "feat-x",
+					},
+				],
+			},
+			sessions: [makeSession({ cwd: "/wt/platform.feat-x" })],
+		});
+		const sessionRows = buildWorktreeRows(snapshot, "platform").filter(
+			(r) => r.kind === "session",
+		);
+		expect(sessionRows).toEqual([
+			{
+				kind: "session",
+				name: "feat-x",
+				path: "/wt/platform.feat-x",
+				branch: null,
+				state: "you",
+				hasMainSession: false,
+				queued: 0,
+			},
+		]);
+	});
+
+	it("counts queued tasks per worktree lane", () => {
+		const snapshot = makeSnapshot({
+			worktrees,
+			tasks: [
+				makeTask("queued", {
+					id: "01TASKQ00000000000000000001",
+					target: { repo: "platform", ref: "temp", worktree: "wt-a" },
+				}),
+				makeTask("queued", {
+					id: "01TASKQ00000000000000000002",
+					target: { repo: "platform", ref: "temp", worktree: "wt-a" },
+				}),
+				makeTask("running", {
+					id: "01TASKQ00000000000000000003",
+					target: { repo: "platform", ref: "temp", worktree: "wt-b" },
+				}),
+			],
+		});
+		const rows = buildWorktreeRows(snapshot, "platform");
+		// wt-a has two queued; running/idle worktrees have none
+		expect(rows.find((r) => r.name === "wt-a")?.queued).toBe(2);
+		expect(rows.find((r) => r.name === "wt-b")?.queued).toBe(0);
+		expect(rows.find((r) => r.name === "wt-c")?.queued).toBe(0);
+	});
+});
+
+describe("worktreeDotColor", () => {
+	it("maps idle to green, active to yellow, failed to red", () => {
+		expect(worktreeDotColor("free")).toBe("green");
+		expect(worktreeDotColor("busy")).toBe("yellow");
+		expect(worktreeDotColor("you")).toBe("yellow");
+		expect(worktreeDotColor("failed")).toBe("red");
+	});
+});
+
+describe("computePaneLayout", () => {
+	it("splits bodyHeight into three panes that exactly sum to it", () => {
+		for (const bodyHeight of [13, 20, 38, 50, 77]) {
+			const { queuePaneH, listPaneH } = computePaneLayout(bodyHeight);
+			expect(queuePaneH + 2 * listPaneH).toBe(bodyHeight);
+		}
+	});
+
+	it("gives the queue pane roughly half and the list panes a quarter each", () => {
+		const { queuePaneH, listPaneH } = computePaneLayout(38);
+		expect(listPaneH).toBe(9);
+		expect(queuePaneH).toBe(20);
+	});
+
+	it("sets each capacity to its pane height minus border+title chrome", () => {
+		const { queuePaneH, listPaneH, queueCap, listCap } = computePaneLayout(38);
+		expect(queueCap).toBe(queuePaneH - 3);
+		expect(listCap).toBe(listPaneH - 3);
+	});
+
+	it("keeps heights and capacities positive for a tiny body", () => {
+		const layout = computePaneLayout(1);
+		expect(layout.listPaneH).toBeGreaterThanOrEqual(4);
+		expect(layout.queuePaneH).toBeGreaterThanOrEqual(4);
+		expect(layout.queueCap).toBeGreaterThanOrEqual(1);
+		expect(layout.listCap).toBeGreaterThanOrEqual(1);
 	});
 });
 
