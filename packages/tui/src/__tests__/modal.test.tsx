@@ -388,8 +388,8 @@ describe("action menu", () => {
 		await wait(60);
 		expect(app.lastFrame()).toContain("enter run · esc close");
 		expect(app.lastFrame()).toContain("Remove worktree…");
-		// Remove worktree… is the 5th row (index 4): j×4.
-		for (let i = 0; i < 4; i += 1) {
+		// Remove worktree… is the 6th row (index 5, after squash-merge): j×5.
+		for (let i = 0; i < 5; i += 1) {
 			app.stdin.write("j");
 			await wait(20);
 		}

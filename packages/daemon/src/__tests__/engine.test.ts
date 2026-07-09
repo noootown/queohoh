@@ -105,6 +105,20 @@ describe("Engine.tick", () => {
 		expect(mainSessions.get("platform:JUS-1")).toBe("sess-abc");
 	});
 
+	it("runs a `repo` ref in the primary checkout via the @repo sentinel", async () => {
+		const { engine, store } = setup();
+		store.create({ prompt: "p", repo: "platform", ref: "repo", source: "tui" });
+		await engine.tick(); // resolve → @repo (no spawn)
+		expect(store.list()[0]?.target.worktree).toBe("@repo");
+		expect(store.list()[0]?.ephemeralWorktree).toBe(false);
+		await engine.tick(); // start
+		await engine.drain();
+		// No worktree is named "@repo", so reaching "done" proves the engine's
+		// name→path lookup special-cased the sentinel to the project's path
+		// (otherwise the worker would fail with "worktree path not found").
+		expect(store.list()[0]?.status).toBe("done");
+	});
+
 	it("routes unknown repo to needs-input", async () => {
 		const { engine, store } = setup();
 		store.create({ prompt: "p", repo: "ghost", ref: "temp", source: "tui" });
@@ -124,6 +138,21 @@ describe("Engine.tick", () => {
 		});
 		await engine.tick();
 		expect(store.list()[0]?.status).toBe("needs-input");
+	});
+
+	it("names ephemeral temp worktrees from the prompt with a qoo- prefix", async () => {
+		const { engine, store } = setup();
+		store.create({
+			prompt: "fix the login redirect",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		await engine.tick(); // resolve pass
+		expect(store.list()[0]?.target.worktree).toMatch(
+			/^qoo-fix-the-login-redirect-[0-9a-z]{4}$/,
+		);
+		expect(store.list()[0]?.ephemeralWorktree).toBe(true);
 	});
 
 	it("maps thrown spawn errors to failed", async () => {
@@ -234,6 +263,45 @@ describe("Engine.tick", () => {
 		await engine.tick();
 		expect(store.list()).toEqual([]);
 		expect(store.listArchived().map((a) => a.id)).toEqual([t.id]);
+	});
+});
+
+describe("Engine.createWorktree", () => {
+	it("delegates to spawnWorktree with the resolved repo path", async () => {
+		const spawned: { repoPath: string; name: string }[] = [];
+		const { engine, base } = setup({
+			resolverIO: {
+				listWorktrees: async () => [],
+				spawnWorktree: async (repoPath, name) => {
+					spawned.push({ repoPath, name });
+					return { name, path: join(base, `wt-${name}`), branch: name };
+				},
+			},
+		});
+		await engine.createWorktree("platform", "feature-x");
+		expect(spawned).toEqual([
+			{ repoPath: join(base, "repo"), name: "feature-x" },
+		]);
+	});
+
+	it("rejects an unknown repo", async () => {
+		const { engine } = setup();
+		await expect(engine.createWorktree("ghost", "feature-x")).rejects.toThrow(
+			/unknown repo/,
+		);
+	});
+
+	it("rejects when a worktree with that branch already exists", async () => {
+		const { engine } = setup({
+			resolverIO: {
+				listWorktrees: async () => [
+					{ name: "platform.feature-x", path: "/wt/x", branch: "feature-x" },
+				],
+			},
+		});
+		await expect(
+			engine.createWorktree("platform", "feature-x"),
+		).rejects.toThrow(/already exists/);
 	});
 });
 

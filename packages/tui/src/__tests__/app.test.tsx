@@ -41,9 +41,13 @@ interface FakeCalls {
 	retry: string[];
 	skip: string[];
 	setWorktree: [string, string][];
+	createWorktree: [string, string][];
 }
 
-function fakeActions(defs: DefinitionSummary[] = []): {
+function fakeActions(
+	defs: DefinitionSummary[] = [],
+	createWorktreeResult: string | null = null,
+): {
 	actions: Actions;
 	calls: FakeCalls;
 } {
@@ -53,6 +57,7 @@ function fakeActions(defs: DefinitionSummary[] = []): {
 		retry: [],
 		skip: [],
 		setWorktree: [],
+		createWorktree: [],
 	};
 	const actions: Actions = {
 		enqueue: async (prompt, repo, opts) => {
@@ -72,6 +77,10 @@ function fakeActions(defs: DefinitionSummary[] = []): {
 			return null;
 		},
 		removeWorktree: async () => null,
+		createWorktree: async (repo, name) => {
+			calls.createWorktree.push([repo, name]);
+			return createWorktreeResult;
+		},
 		runDefinition: async (repo, name, args, worktree) => {
 			calls.runDefinition.push([repo, name, args, worktree]);
 			return null;
@@ -282,8 +291,20 @@ describe("App full-screen", () => {
 	it("tasks pane: menu Run on a def with args opens args input; on a def without args runs it", async () => {
 		const { sock, base } = await startServer();
 		const defs: DefinitionSummary[] = [
-			{ repo: "platform", name: "withargs", args: ["id"], hasDiscovery: false },
-			{ repo: "platform", name: "noargs", args: [], hasDiscovery: false },
+			{
+				repo: "platform",
+				name: "withargs",
+				scope: "project",
+				args: [{ name: "id" }],
+				hasDiscovery: false,
+			},
+			{
+				repo: "platform",
+				name: "noargs",
+				scope: "project",
+				args: [],
+				hasDiscovery: false,
+			},
 		];
 		const { actions, calls } = fakeActions(defs);
 		const app = render(
@@ -325,7 +346,13 @@ describe("App full-screen", () => {
 		await engine.tick();
 		server.broadcast();
 		const defs: DefinitionSummary[] = [
-			{ repo: "platform", name: "autotest", args: [], hasDiscovery: false },
+			{
+				repo: "platform",
+				name: "autotest",
+				scope: "project",
+				args: [],
+				hasDiscovery: false,
+			},
 		];
 		const { actions, calls } = fakeActions(defs);
 		const app = render(
@@ -476,6 +503,188 @@ describe("App full-screen", () => {
 		expect(calls.enqueue).toEqual([]);
 	});
 
+	it("worktrees pane: c opens the create-worktree modal and submits a valid branch", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("c"); // open create-worktree modal
+		await wait(60);
+		expect(app.lastFrame()).toContain("Create worktree — platform");
+		for (const ch of "feature-x") app.stdin.write(ch);
+		app.stdin.write("\r");
+		await wait(80);
+		expect(calls.createWorktree).toEqual([["platform", "feature-x"]]);
+		expect(app.lastFrame()).not.toContain("Create worktree —");
+	});
+
+	it("create-worktree modal: a mouse click report does not leak into the input value", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("c"); // open create-worktree modal
+		await wait(60);
+		for (const ch of "feat") app.stdin.write(ch);
+		await wait(30);
+		// Mouse tracking is on while the modal floats; a click arrives as an SGR
+		// report with ESC stripped by ink. It must not append its coordinates.
+		app.stdin.write("[<0;34;12M");
+		app.stdin.write("[<0;34;12m");
+		await wait(40);
+		expect(app.lastFrame()).toContain("branch> feat");
+		expect(app.lastFrame()).not.toContain("34;12"); // distinctive coordinate leak
+		expect(app.lastFrame()).not.toContain("feat[<");
+		// submitting still carries only the typed value
+		app.stdin.write("\r");
+		await wait(60);
+		expect(calls.createWorktree).toEqual([["platform", "feat"]]);
+	});
+
+	it("create-worktree modal: an invalid branch shows an inline error and keeps the input", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("c"); // open create-worktree modal
+		await wait(60);
+		for (const ch of "bad name") app.stdin.write(ch);
+		app.stdin.write("\r");
+		await wait(80);
+		expect(app.lastFrame()).toContain("no whitespace allowed");
+		expect(app.lastFrame()).toContain("branch> bad name");
+		expect(calls.createWorktree).toEqual([]);
+	});
+
+	it("create-worktree modal: submit closes immediately and a backend error lands on the status line", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions([], "wt exited with code 1");
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("c"); // open create-worktree modal
+		await wait(60);
+		for (const ch of "feature-x") app.stdin.write(ch);
+		app.stdin.write("\r");
+		await wait(80);
+		// Modal must not block on the (potentially minutes-long) creation.
+		expect(app.lastFrame()).not.toContain("Create worktree —");
+		expect(calls.createWorktree).toEqual([["platform", "feature-x"]]);
+		expect(app.lastFrame()).toContain(
+			"create worktree feature-x: wt exited with code 1",
+		);
+	});
+
+	it("worktrees pane: menu Create worktree… opens the same modal", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		for (let i = 0; i < 6; i += 1) {
+			app.stdin.write("j"); // step down to Create worktree… (index 6)
+			await wait(20);
+		}
+		app.stdin.write("\r");
+		await wait(60);
+		expect(app.lastFrame()).toContain("Create worktree — platform");
+	});
+
+	it("queue pane: c opens the adhoc add-task modal and enqueues with no worktree", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		app.stdin.write("c"); // queue is focused by default -> adhoc add-task
+		await wait(60);
+		expect(app.lastFrame()).toContain(
+			"New task — fresh session — platform (adhoc)",
+		);
+		for (const ch of "run this now") app.stdin.write(ch);
+		app.stdin.write("\r");
+		await wait(80);
+		expect(calls.enqueue).toEqual([
+			["run this now", "platform", { worktree: "", session: "fresh" }],
+		]);
+	});
+
 	it("def-pick modal closes on q and on esc", async () => {
 		const { engine, server, sock, base } = await startServer({
 			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
@@ -483,7 +692,13 @@ describe("App full-screen", () => {
 		await engine.tick();
 		server.broadcast();
 		const defs: DefinitionSummary[] = [
-			{ repo: "platform", name: "autotest", args: [], hasDiscovery: false },
+			{
+				repo: "platform",
+				name: "autotest",
+				scope: "project",
+				args: [],
+				hasDiscovery: false,
+			},
 		];
 		const { actions } = fakeActions(defs);
 		const app = render(
@@ -519,6 +734,172 @@ describe("App full-screen", () => {
 		app.stdin.write(ESC); // esc also closes
 		await wait(60);
 		expect(app.lastFrame()).not.toContain("Run task definition");
+	});
+
+	it("def-pick renders arg defaults and a (g) marker for global defs", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const defs: DefinitionSummary[] = [
+			{
+				repo: "platform",
+				name: "pr-ready",
+				scope: "project",
+				args: [{ name: "pr" }, { name: "mode", default: "ready" }],
+				hasDiscovery: false,
+			},
+			{
+				repo: "platform",
+				name: "squash-merge",
+				scope: "global",
+				args: [{ name: "source" }, { name: "target", default: "main" }],
+				hasDiscovery: false,
+			},
+		];
+		const { actions } = fakeActions(defs);
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		app.stdin.write("j"); // -> New task (main session)…
+		await wait(20);
+		app.stdin.write("j"); // -> Run task definition…
+		await wait(20);
+		app.stdin.write("\r"); // open def picker
+		await wait(60);
+		const frame = app.lastFrame() ?? "";
+		expect(frame).toContain("pr-ready (pr, mode=ready)");
+		expect(frame).toContain("squash-merge (source, target=main)");
+		expect(frame).toContain("(g)"); // global marker on the squash-merge row
+	});
+
+	it("worktree menu: Squash merge into… opens def-args prefilled with the branch and runs without a worktree override", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const defs: DefinitionSummary[] = [
+			{
+				repo: "platform",
+				name: "squash-merge",
+				scope: "global",
+				args: [{ name: "source" }, { name: "target", default: "main" }],
+				hasDiscovery: false,
+			},
+		];
+		const { actions, calls } = fakeActions(defs);
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		// Squash merge into… is the 5th row (index 4, above Remove worktree…): j×4.
+		for (let i = 0; i < 4; i += 1) {
+			app.stdin.write("j");
+			await wait(20);
+		}
+		app.stdin.write("\r"); // select -> fetch defs -> open def-args
+		await wait(80);
+		expect(app.lastFrame()).toContain("squash-merge args"); // modal title
+		expect(app.lastFrame()).toContain("source> wt-a"); // fixed, shown read-only
+		// `source` is fixed (not asked): focus starts on `target`, so typing edits
+		// the target field, never the source.
+		for (let i = 0; i < 4; i += 1) app.stdin.write("\u007f"); // DEL -> backspace: clear "main"
+		for (const ch of "dev") app.stdin.write(ch);
+		await wait(40);
+		expect(app.lastFrame()).toContain("source> wt-a");
+		expect(app.lastFrame()).toContain("target> dev");
+		app.stdin.write("\r"); // submit (source=wt-a fixed, target=dev typed)
+		await wait(80);
+		// worktree override is undefined — the def's `worktree: repo` governs.
+		expect(calls.runDefinition).toEqual([
+			["platform", "squash-merge", ["wt-a", "dev"], undefined],
+		]);
+	});
+
+	it("worktree menu: Squash merge into… is disabled with a reason while a task runs in the worktree", async () => {
+		const { store, engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		const task = store.create({
+			prompt: "busy work",
+			repo: "platform",
+			ref: "worktree:wt-a",
+			source: "tui",
+		});
+		store.update(task.id, {
+			status: "running",
+			target: { repo: "platform", ref: "worktree:wt-a", worktree: "wt-a" },
+		});
+		server.broadcast();
+		const { actions } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		expect(app.lastFrame()).toContain(
+			"Squash merge into… — a task is running here",
+		);
+	});
+
+	it("worktree menu: Squash merge into… surfaces a status line when the global def is absent", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions([]); // no squash-merge definition
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		for (let i = 0; i < 4; i += 1) {
+			app.stdin.write("j");
+			await wait(20);
+		}
+		app.stdin.write("\r"); // select -> definitions() empty -> status line
+		await wait(80);
+		expect(app.lastFrame()).toContain("squash-merge definition not found");
+		expect(calls.runDefinition).toEqual([]);
 	});
 
 	it("keeps the left column width stable when focus/detail content changes", async () => {

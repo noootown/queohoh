@@ -50,6 +50,9 @@ export function normalizeSnapshot(raw: unknown): StateSnapshot {
 		projects: arr("projects"),
 		worktrees,
 		mainSessions,
+		// Preserve buildId as-is; a pre-feature daemon omits it, and the self-heal
+		// logic treats that `undefined` as stale on purpose. Do NOT default it.
+		buildId: typeof r.buildId === "string" ? r.buildId : undefined,
 	};
 }
 

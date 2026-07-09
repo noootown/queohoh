@@ -1,5 +1,6 @@
 import type { TaskDefinition } from "@queohoh/core";
 import { Box, Text } from "ink";
+import { argSummary } from "../actions.js";
 import {
 	anchorFor,
 	type DetailContext,
@@ -18,7 +19,7 @@ interface ContentView {
 
 function configLines(def: TaskDefinition): string[] {
 	return [
-		`args: ${def.args.length > 0 ? def.args.join(", ") : "—"}`,
+		`args: ${def.args.length > 0 ? argSummary(def.args) : "—"}`,
 		`worktree: ${def.worktree}`,
 		`dedup: ${def.dedup}`,
 		`model: ${def.model}`,

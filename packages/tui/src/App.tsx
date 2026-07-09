@@ -1,8 +1,11 @@
 import { laneKey, type SessionMode, type TaskDefinition } from "@queohoh/core";
+import { currentBuildId } from "@queohoh/daemon";
 import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type ActionId, type ActionItem, buildActions } from "./action-menu.js";
-import type { Actions, DefinitionSummary } from "./actions.js";
+import { type Actions, argSummary, type DefinitionSummary } from "./actions.js";
+import { validateBranchName } from "./branch.js";
+import { ArgsForm } from "./components/ArgsForm.js";
 import { DetailPane } from "./components/DetailPane.js";
 import { Footer } from "./components/Footer.js";
 import {
@@ -17,8 +20,14 @@ import { TasksPane } from "./components/TasksPane.js";
 import { TextInput } from "./components/TextInput.js";
 import { WorktreesPane } from "./components/WorktreesPane.js";
 import { anchorFor, clampSubTab, type DetailContext } from "./detail.js";
+import { decideHeal, isStale, performHeal } from "./heal.js";
 import type { KeyInput, KeymapAction, ListPaneId, PaneId } from "./keymap.js";
-import { handleKey, moveFocus, parseMouseWheel } from "./keymap.js";
+import {
+	handleKey,
+	isMouseEvent,
+	moveFocus,
+	parseMouseWheel,
+} from "./keymap.js";
 import { readRunFiles } from "./run-files.js";
 import {
 	buildProjectTabs,
@@ -47,7 +56,13 @@ type Mode =
 			index: number;
 			worktree?: string;
 	  }
-	| { kind: "def-args"; def: DefinitionSummary; worktree?: string }
+	| {
+			kind: "def-args";
+			def: DefinitionSummary;
+			worktree?: string;
+			initial?: Record<string, string>;
+			fixed?: Record<string, string>;
+	  }
 	| {
 			kind: "action-menu";
 			items: ActionItem[];
@@ -56,6 +71,7 @@ type Mode =
 			title: string;
 	  }
 	| { kind: "confirm-remove"; worktree: string; branch: string | null }
+	| { kind: "create-worktree"; error?: string }
 	| { kind: "search"; pane: ListPaneId };
 
 interface TabUiState {
@@ -119,6 +135,65 @@ export function App({
 		const timer = setInterval(() => setNow(Date.now()), 1000);
 		return () => clearInterval(timer);
 	}, []);
+
+	// --- daemon self-heal ---------------------------------------------------
+	// The daemon runs detached; after a rebuild the old process keeps serving
+	// stale code (→ "unknown method" on new RPCs). Every snapshot carries the
+	// daemon's buildId; compare it to what's on disk and, when idle, restart the
+	// daemon so it ends up on the latest build without manual intervention.
+	const lastHealedBuildId = useRef<string | null>(null);
+	const healing = useRef(false);
+	// True while the current status line was written by this effect — the
+	// healthy branch may only clear its own messages, never unrelated ones.
+	const healStatusShown = useRef(false);
+	useEffect(() => {
+		if (!connected || !snapshot) return;
+		const setHealStatus = (line: string) => {
+			healStatusShown.current = true;
+			setStatusLine(line);
+		};
+		const disk = currentBuildId();
+		const action = decideHeal({
+			snapshotBuildId: snapshot.buildId,
+			diskBuildId: disk,
+			runningCount: snapshot.running.length,
+			lastHealedBuildId: lastHealedBuildId.current,
+		});
+		if (action === "none") {
+			if (isStale(snapshot.buildId, disk)) {
+				// Stale but decideHeal declined: we already tried this build and it
+				// didn't take — stop retrying and say so. Suppressed while a restart
+				// is mid-flight (a lingering old-daemon push must not raise a false
+				// alarm before the fresh daemon connects).
+				if (!healing.current) {
+					setHealStatus("daemon still outdated — restart it manually");
+				}
+			} else {
+				// Healthy: reset the guard so a future rebuild heals again, and
+				// clear our own status (e.g. "restarting…" after a successful heal).
+				lastHealedBuildId.current = null;
+				if (healStatusShown.current) {
+					healStatusShown.current = false;
+					setStatusLine(null);
+				}
+			}
+			return;
+		}
+		if (action === "defer") {
+			setHealStatus("daemon outdated — will restart when idle");
+			return;
+		}
+		// restart-now: record the attempt (loop guard) before firing.
+		lastHealedBuildId.current = disk;
+		healing.current = true;
+		setHealStatus("daemon outdated — restarting…");
+		void performHeal({ sockPath }).then((ok) => {
+			healing.current = false;
+			if (!ok) setHealStatus("daemon busy — restart deferred");
+			// On success the reconnect loop picks up the fresh daemon; its healthy
+			// snapshot clears this status via the branch above.
+		});
+	}, [snapshot, connected, sockPath]);
 
 	// --- derived view model -------------------------------------------------
 	const tabs = useMemo(
@@ -322,6 +397,7 @@ export function App({
 					kind: "worktree",
 					busy: row.state === "busy",
 					insideTmux: insideTmux(),
+					hasBranch: row.branch !== null,
 				}),
 				index: 0,
 				target: {
@@ -385,6 +461,30 @@ export function App({
 					act(openTmuxWindow(target.path));
 				}
 				return;
+			case "squash-merge": {
+				if (target.kind !== "worktree" || !target.branch || !activeName) return;
+				const repo = activeName;
+				const source = target.branch;
+				// Fetch fresh so a workspace that just gained the global def is picked
+				// up; the global squash-merge is keyed on the active project's repo.
+				void actions.definitions().then((all) => {
+					const def = all.find(
+						(d) => d.repo === repo && d.name === "squash-merge",
+					);
+					if (!def) {
+						setStatusLine(
+							"squash-merge definition not found — copy library/tasks/squash-merge to <workspace>/global/tasks/",
+						);
+						return;
+					}
+					setInput("");
+					// No worktree override: the def's `worktree: repo` governs, so the
+					// task runs in the primary checkout, not the selected worktree.
+					// `source` is decided by the selected worktree — fixed, not asked.
+					setMode({ kind: "def-args", def, fixed: { source } });
+				});
+				return;
+			}
 			case "remove-worktree":
 				if (target.kind === "worktree") {
 					setMode({
@@ -393,6 +493,10 @@ export function App({
 						branch: target.branch,
 					});
 				}
+				return;
+			case "create-worktree":
+				setInput("");
+				setMode({ kind: "create-worktree" });
 				return;
 			default: {
 				const _exhaustive: never = id;
@@ -410,6 +514,15 @@ export function App({
 				const opened = openActionMenu();
 				if (opened === null) setStatusLine("nothing selected");
 				else setMode(opened);
+				return;
+			}
+			case "create": {
+				setInput("");
+				if (ui.lastListPane === "worktrees") {
+					setMode({ kind: "create-worktree" });
+				} else if (ui.lastListPane === "queue") {
+					setMode({ kind: "add-task", worktree: "", session: "fresh" });
+				}
 				return;
 			}
 			case "open-search": {
@@ -574,6 +687,7 @@ export function App({
 			return;
 		}
 		if (mode.kind === "search") {
+			if (isMouseEvent(char)) return; // clicks must not become search text
 			const pane = mode.pane;
 			const setQuery = (fn: (cur: string) => string) =>
 				patchTab((s) => ({
@@ -608,6 +722,10 @@ export function App({
 			);
 			return;
 		}
+		// Any remaining mouse report (click/release/motion) is not a keystroke:
+		// swallow it so it never reaches handleKey and get mis-read as, e.g., the
+		// digits in the coordinates triggering a tab switch.
+		if (isMouseEvent(char)) return;
 
 		setStatusLine(null);
 		if (prefixTimer.current) {
@@ -700,7 +818,11 @@ export function App({
 			/>
 			{mode.kind === "add-task" ? (
 				<Modal
-					title={`New task — ${mode.session} session — ${activeName}:${mode.worktree}`}
+					title={`New task — ${mode.session} session — ${
+						mode.worktree
+							? `${activeName}:${mode.worktree}`
+							: `${activeName} (adhoc)`
+					}`}
 					columns={columns}
 					rows={rows}
 					hint="enter submit · esc cancel"
@@ -748,27 +870,26 @@ export function App({
 			) : null}
 			{mode.kind === "def-args" ? (
 				<Modal
-					title={`${mode.def.name} args (${mode.def.args.join(" ")})`}
+					title={`${mode.def.name} args`}
 					columns={columns}
 					rows={rows}
-					hint="enter run · esc cancel"
+					hint="tab/↓ next · ←/→ cycle · enter run · esc cancel"
 				>
-					<TextInput
-						label="args"
-						value={input}
+					<ArgsForm
+						args={mode.def.args}
+						initial={mode.initial}
+						fixed={mode.fixed}
 						width={modalInner}
-						onChange={setInput}
-						onSubmit={(v) => {
+						onSubmit={(values) => {
 							act(
 								actions.runDefinition(
 									mode.def.repo,
 									mode.def.name,
-									v.trim().length > 0 ? v.trim().split(/\s+/) : [],
+									values,
 									mode.worktree,
 								),
 							);
 							invalidateDefs();
-							setInput("");
 							setMode({ kind: "list" });
 						}}
 						onCancel={() => setMode({ kind: "list" })}
@@ -784,16 +905,23 @@ export function App({
 					rows={rows}
 					hint="↑/↓ move · enter run · q/esc close"
 				>
-					{mode.defs.map((def, i) => (
-						<Text key={`${def.repo}/${def.name}`} inverse={i === mode.index}>
-							{padLine(
-								` ${def.name}${
-									def.args.length > 0 ? ` (${def.args.join(", ")})` : ""
-								}${def.hasDiscovery ? " ⏰" : ""}`,
-								modalInner,
-							)}
-						</Text>
-					))}
+					{mode.defs.map((def, i) => {
+						const sel = i === mode.index;
+						// Global defs carry a dimmed (g) marker; the 4-col slot keeps every
+						// row's total width == modalInner so the modal stays opaque.
+						const marker = def.scope === "global" ? " (g)" : "    ";
+						const main = ` ${def.name}${
+							def.args.length > 0 ? ` (${argSummary(def.args)})` : ""
+						}${def.hasDiscovery ? " ⏰" : ""}`;
+						return (
+							<Box key={`${def.repo}/${def.name}`}>
+								<Text inverse={sel}>{padLine(main, modalInner - 4)}</Text>
+								<Text inverse={sel} dimColor>
+									{marker}
+								</Text>
+							</Box>
+						);
+					})}
 				</Modal>
 			) : null}
 			{mode.kind === "action-menu" ? (
@@ -831,6 +959,47 @@ export function App({
 						)}
 					</Text>
 					<Text>{padLine(` and deletes the local branch`, modalInner)}</Text>
+				</Modal>
+			) : null}
+			{mode.kind === "create-worktree" ? (
+				<Modal
+					title={`Create worktree — ${activeName}`}
+					columns={columns}
+					rows={rows}
+					hint="enter submit · esc cancel"
+				>
+					<TextInput
+						label="branch"
+						value={input}
+						width={modalInner}
+						onChange={setInput}
+						onSubmit={(v) => {
+							const invalid = validateBranchName(v);
+							if (invalid !== null) {
+								setMode({ kind: "create-worktree", error: invalid });
+								return;
+							}
+							if (!activeName) return;
+							// Close immediately — creation runs the repo's post-create
+							// hooks and can take minutes; progress and the eventual
+							// result live on the status line, not a blocked modal.
+							setInput("");
+							setMode({ kind: "list" });
+							setStatusLine(`creating worktree ${v}…`);
+							void actions.createWorktree(activeName, v).then((err) => {
+								setStatusLine(
+									err !== null ? `create worktree ${v}: ${err}` : null,
+								);
+							});
+						}}
+						onCancel={() => {
+							setInput("");
+							setMode({ kind: "list" });
+						}}
+					/>
+					{mode.error ? (
+						<Text color="red">{padLine(` ${mode.error}`, modalInner)}</Text>
+					) : null}
 				</Modal>
 			) : null}
 		</Box>

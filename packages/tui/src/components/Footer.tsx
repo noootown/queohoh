@@ -5,9 +5,9 @@ const LIST_HINT =
 	"[C-s] prefix · [a] actions · [enter] detail · [↑↓] move · [/] filter · [q]uit";
 
 const HINTS: Record<PaneId, string> = {
-	queue: LIST_HINT,
+	queue: `[c] new run · ${LIST_HINT}`,
 	tasks: LIST_HINT,
-	worktrees: LIST_HINT,
+	worktrees: `[c] new worktree · ${LIST_HINT}`,
 	detail:
 		"[C-s] prefix · [↑↓/jk] scroll · [g/G] top/bottom · [1-9] sub-tab · [a] actions · [q]uit",
 };

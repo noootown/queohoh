@@ -1,0 +1,9 @@
+args:
+  - name: source
+    description: branch to squash
+  - name: target
+    default: main
+dedup: none
+worktree: repo
+model: opus
+timeout: 15m

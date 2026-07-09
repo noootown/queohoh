@@ -56,7 +56,14 @@ export class ApiClient {
 		}
 	}
 
-	call(method: string, params?: Record<string, unknown>): Promise<unknown> {
+	call(
+		method: string,
+		params?: Record<string, unknown>,
+		// Most calls are quick queue/store mutations; long-running operations
+		// (e.g. createWorktree, whose post-create hooks may install and build)
+		// pass their own budget.
+		timeoutMs = 5000,
+	): Promise<unknown> {
 		const socket = this.socket;
 		if (!socket) return Promise.reject(new Error("not connected"));
 		const id = this.nextId++;
@@ -64,7 +71,7 @@ export class ApiClient {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
 				reject(new Error(`call timed out: ${method}`));
-			}, 5000);
+			}, timeoutMs);
 			this.pending.set(id, {
 				resolve: (v) => {
 					clearTimeout(timer);

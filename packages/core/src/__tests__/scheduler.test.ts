@@ -105,4 +105,12 @@ describe("schedule", () => {
 		const { start } = schedule([first, second], idle, { maxConcurrent: 5 });
 		expect(start).toEqual([first]);
 	});
+
+	it("treats the @repo sentinel as an ordinary lane (serializes primary-checkout tasks)", () => {
+		const first = task({ worktree: "@repo" });
+		const second = task({ worktree: "@repo" });
+		const { start } = schedule([first, second], idle, { maxConcurrent: 5 });
+		// Both share the `platform:@repo` lane, so only one starts this decision.
+		expect(start).toEqual([first]);
+	});
 });

@@ -1,6 +1,14 @@
-import { ulid } from "ulid";
 import type { TargetRef } from "./ref.js";
 import { extractTicketId, parseRef } from "./ref.js";
+import { qooTempName } from "./slug.js";
+
+/**
+ * Sentinel worktree name for a `repo` ref (the project's primary checkout). The
+ * engine's name→path lookup special-cases this → `config.projects[].path`; no
+ * worktree by this name is ever spawned. The leading `@` keeps it distinct from
+ * any real worktree name.
+ */
+export const REPO_SENTINEL = "@repo";
 
 export interface WorktreeInfo {
 	name: string;
@@ -24,7 +32,7 @@ export type Resolution =
 	| { outcome: "needs-input"; reason: string };
 
 function defaultTempName(): string {
-	return `tmp-${ulid().slice(-6).toLowerCase()}`;
+	return qooTempName("");
 }
 
 export async function resolveTarget(
@@ -95,6 +103,11 @@ export async function resolveTarget(
 			const name = (ctx.tempName ?? defaultTempName)();
 			const spawned = await io.spawnWorktree(ctx.repoPath, name);
 			return { outcome: "resolved", worktree: spawned.name, ephemeral: true };
+		}
+		case "repo": {
+			// Primary checkout: never spawns, never ephemeral. The engine's
+			// name→path lookup special-cases this sentinel → the project's path.
+			return { outcome: "resolved", worktree: REPO_SENTINEL, ephemeral: false };
 		}
 	}
 }

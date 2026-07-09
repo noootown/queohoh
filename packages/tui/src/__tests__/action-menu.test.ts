@@ -69,30 +69,68 @@ describe("buildActions — task context", () => {
 });
 
 describe("buildActions — worktree context", () => {
-	it("lists the five worktree actions in order", () => {
+	it("lists the seven worktree actions in order (squash above remove)", () => {
 		const items = buildActions({
 			kind: "worktree",
 			busy: false,
 			insideTmux: true,
+			hasBranch: true,
 		});
 		expect(ids(items)).toEqual([
 			"task-fresh",
 			"task-main",
 			"run-def",
 			"tmux-open",
+			"squash-merge",
 			"remove-worktree",
+			"create-worktree",
 		]);
 		expect(enabled(items)).toEqual(ids(items));
 	});
 
-	it("busy worktree disables remove", () => {
+	it("keeps Create worktree… enabled even on a busy worktree", () => {
 		const items = buildActions({
 			kind: "worktree",
 			busy: true,
 			insideTmux: true,
+			hasBranch: true,
+		});
+		const create = items.find((i) => i.id === "create-worktree");
+		expect(create).toEqual({
+			id: "create-worktree",
+			label: "Create worktree…",
+		});
+	});
+
+	it("busy worktree disables remove and squash-merge", () => {
+		const items = buildActions({
+			kind: "worktree",
+			busy: true,
+			insideTmux: true,
+			hasBranch: true,
 		});
 		const remove = items.find((i) => i.id === "remove-worktree");
 		expect(remove?.disabled).toBe("a task is running here");
+		const squash = items.find((i) => i.id === "squash-merge");
+		expect(squash?.disabled).toBe("a task is running here");
+	});
+
+	it("branchless worktree disables squash-merge with a branch reason", () => {
+		const items = buildActions({
+			kind: "worktree",
+			busy: false,
+			insideTmux: true,
+			hasBranch: false,
+		});
+		const squash = items.find((i) => i.id === "squash-merge");
+		expect(squash).toEqual({
+			id: "squash-merge",
+			label: "Squash merge into…",
+			disabled: "worktree has no branch",
+		});
+		// remove stays enabled — it only cares about busy, not branch.
+		const remove = items.find((i) => i.id === "remove-worktree");
+		expect(remove?.disabled).toBeUndefined();
 	});
 
 	it("outside tmux disables tmux-open", () => {
@@ -100,6 +138,7 @@ describe("buildActions — worktree context", () => {
 			kind: "worktree",
 			busy: false,
 			insideTmux: false,
+			hasBranch: true,
 		});
 		const open = items.find((i) => i.id === "tmux-open");
 		expect(open?.disabled).toBe("not inside tmux");

@@ -122,10 +122,18 @@ describe("agent247 pr-review port shape", () => {
 		const defs = (await client.call("definitions")) as {
 			repo: string;
 			name: string;
+			scope: string;
+			args: unknown[];
 			hasDiscovery: boolean;
 		}[];
 		expect(defs).toEqual([
-			{ repo: "platform", name: "pr-review", args: [], hasDiscovery: true },
+			{
+				repo: "platform",
+				name: "pr-review",
+				scope: "project",
+				args: [],
+				hasDiscovery: true,
+			},
 		]);
 	});
 

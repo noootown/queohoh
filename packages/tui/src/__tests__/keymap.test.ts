@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	handleKey,
+	isMouseEvent,
 	type KeyInput,
 	type ListPaneId,
 	moveFocus,
@@ -219,6 +220,24 @@ describe("handleKey — action menu", () => {
 	});
 });
 
+describe("handleKey — create", () => {
+	it("c → create from every pane (dispatch routes it by pane)", () => {
+		for (const focus of ALL_PANES) {
+			expect(handleKey(false, focus, key({ input: "c" }))).toEqual({
+				prefixArmed: false,
+				action: { type: "create" },
+			});
+		}
+	});
+
+	it("c is not a create action while the prefix is armed", () => {
+		expect(handleKey(true, "worktrees", key({ input: "c" }))).toEqual({
+			prefixArmed: false,
+			action: null,
+		});
+	});
+});
+
 describe("handleKey — worktrees focus", () => {
 	it("selection keys move selection", () => {
 		expect(handleKey(false, "worktrees", key({ input: "j" }))).toEqual({
@@ -396,5 +415,28 @@ describe("parseMouseWheel", () => {
 		expect(parseMouseWheel("q")).toBeNull();
 		expect(parseMouseWheel("")).toBeNull();
 		expect(parseMouseWheel("j")).toBeNull();
+	});
+});
+
+describe("isMouseEvent", () => {
+	it("matches wheel reports (press M and release m, with/without ESC prefix)", () => {
+		expect(isMouseEvent("[<64;10;5M")).toBe(true);
+		expect(isMouseEvent("[<65;10;5m")).toBe(true);
+		expect(isMouseEvent("\x1b[<64;1;1M")).toBe(true);
+	});
+
+	it("matches non-wheel mouse reports: click press (0/M), release (0/m), motion", () => {
+		expect(isMouseEvent("[<0;34;12M")).toBe(true); // left-button press
+		expect(isMouseEvent("[<0;34;12m")).toBe(true); // left-button release
+		expect(isMouseEvent("\x1b[<0;34;12m")).toBe(true); // release, ESC-prefixed
+		expect(isMouseEvent("[<35;80;24M")).toBe(true); // drag/motion
+	});
+
+	it("is false for ordinary key input and empty strings", () => {
+		expect(isMouseEvent("q")).toBe(false);
+		expect(isMouseEvent("")).toBe(false);
+		expect(isMouseEvent("j")).toBe(false);
+		expect(isMouseEvent("\r")).toBe(false);
+		expect(isMouseEvent("[A")).toBe(false); // arrow key CSI, not a mouse report
 	});
 });

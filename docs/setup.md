@@ -29,6 +29,30 @@ optional `<workspace>/<project>/vars.yaml` supplies per-project template vars.
 For the config above, `platform`'s definitions live in
 `~/workspace/queohoh/platform/tasks/<name>/`.
 
+### Builtin vars
+
+Prompts and `pre_run`/`post_run` hooks can reference these `{{var}}`
+placeholders without declaring them as args. Any explicitly configured var
+(global `vars`, project `vars.yaml`, or an arg of the same name) overrides the
+builtin.
+
+Resolved at **instantiate time** (definition → task):
+
+- `{{project}}` — the registered project name (e.g. `platform`).
+- `{{repo_path}}` — the project's primary-checkout path from `config.yaml`.
+
+Resolved at **execution time** (in the task's actual worktree), via a second
+render pass — so they work even for late-resolving refs (`pr:`, `ticket:`,
+`temp`):
+
+- `{{worktree}}` — the resolved worktree/lane name.
+- `{{worktree_path}}` — its absolute path.
+- `{{branch}}` — `git rev-parse --abbrev-ref HEAD` in that worktree (empty if
+  it can't be read).
+- `{{ticket}}` — the ticket id derived from the branch name (convention: the
+  branch is named after its ticket, so `jus-1008-fix-thing` → `JUS-1008`;
+  empty when the branch has no ticket-shaped token).
+
 ## 3. Run the daemon
 
 ```bash

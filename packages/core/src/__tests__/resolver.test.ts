@@ -25,7 +25,7 @@ const wt = (name: string, branch = name): WorktreeInfo => ({
 	branch,
 });
 
-const ctx = { repoPath: "/repo", tempName: () => "tmp-fix-abc123" };
+const ctx = { repoPath: "/repo", tempName: () => "qoo-fix-abc123" };
 
 describe("resolveTarget", () => {
 	it("worktree ref: uses existing", async () => {
@@ -101,9 +101,26 @@ describe("resolveTarget", () => {
 		const io = stubIO();
 		expect(await resolveTarget("temp", ctx, io)).toEqual({
 			outcome: "resolved",
-			worktree: "tmp-fix-abc123",
+			worktree: "qoo-fix-abc123",
 			ephemeral: true,
 		});
+	});
+
+	it("temp ref: defaults to a qoo-prefixed name when no tempName is given", async () => {
+		const io = stubIO();
+		const result = await resolveTarget("temp", { repoPath: "/repo" }, io);
+		expect(result).toMatchObject({ outcome: "resolved", ephemeral: true });
+		expect(io.spawned[0]?.name).toMatch(/^qoo-[0-9a-z]{6}$/);
+	});
+
+	it("repo ref: resolves to the @repo sentinel, never spawns", async () => {
+		const io = stubIO();
+		expect(await resolveTarget("repo", ctx, io)).toEqual({
+			outcome: "resolved",
+			worktree: "@repo",
+			ephemeral: false,
+		});
+		expect(io.spawned).toEqual([]);
 	});
 
 	it("garbage ref: needs-input, never throws", async () => {

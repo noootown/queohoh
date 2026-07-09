@@ -14,9 +14,11 @@ import type {
 import {
 	buildLiveState,
 	laneKey,
-	loadDefinition,
 	loadProjectVars,
 	projectWorkspaceDir,
+	qooTempName,
+	REPO_SENTINEL,
+	resolveDefinition,
 	resolveTarget,
 	runTask,
 	schedule,
@@ -89,6 +91,23 @@ export class Engine {
 			.some((t) => t.status === "running" && lanes.has(laneKey(t) ?? ""));
 		if (busy) throw new Error(`worktree busy: a task is running on ${wt.name}`);
 		await this.deps.resolverIO.removeWorktree(repoPath, wt);
+		this.worktreeCache.delete(repo);
+	}
+
+	/**
+	 * Create a worktree for `name` (the new branch) in `repo`. Rejects an unknown
+	 * repo or a branch that already has a worktree; otherwise delegates to the
+	 * resolver IO (`wt switch -c`) and invalidates the cache so the next snapshot
+	 * lists it. No busy-guard — creation can't collide with a running task.
+	 */
+	async createWorktree(repo: string, name: string): Promise<void> {
+		const repoPath = this.repoPath(repo);
+		if (repoPath === null) throw new Error(`unknown repo: ${repo}`);
+		const list = await this.deps.resolverIO.listWorktrees(repoPath);
+		if (list.some((w) => w.branch === name || w.name === `${repo}.${name}`)) {
+			throw new Error(`worktree already exists: ${name}`);
+		}
+		await this.deps.resolverIO.spawnWorktree(repoPath, name);
 		this.worktreeCache.delete(repo);
 	}
 
@@ -174,7 +193,7 @@ export class Engine {
 		try {
 			const resolution = await resolveTarget(
 				task.target.ref,
-				{ repoPath },
+				{ repoPath, tempName: () => qooTempName(task.prompt) },
 				deps.resolverIO,
 			);
 			if (resolution.outcome === "resolved") {
@@ -219,6 +238,7 @@ export class Engine {
 
 		const lane = laneKey(task) ?? task.id;
 		deps.registry.registerWorker(task.id, lane, process.pid);
+		const repoPath = this.repoPath(task.target.repo);
 		const promise = runTask(task.id, {
 			store: deps.store,
 			runStore: deps.runStore,
@@ -226,26 +246,31 @@ export class Engine {
 			executeClaude: deps.executeClaude,
 			redact: deps.redact,
 			mainSessions: deps.mainSessions,
-			globalVars: deps.config.vars,
+			// Builtin vars sit below explicit config vars (which spread last and can
+			// override them); hooks rendered by the worker see them too.
+			globalVars: {
+				project: task.target.repo,
+				repo_path: repoPath ?? "",
+				...deps.config.vars,
+			},
 			repoVars,
 			loadDef: (definition) => {
 				const [repo, ...nameParts] = definition.split("/");
 				const name = nameParts.join("/");
 				if (!repo || !this.repoPath(repo)) return null;
 				try {
-					return loadDefinition(
-						projectWorkspaceDir(this.deps.config, repo),
-						repo,
-						name,
-					);
+					// Project-local defs first, then the global tasks dir.
+					return resolveDefinition(this.deps.config, repo, name);
 				} catch {
 					return null;
 				}
 			},
 			worktreePath: async (repo, worktree) => {
-				const repoPath = this.repoPath(repo);
-				if (!repoPath) return null;
-				const list = await deps.resolverIO.listWorktrees(repoPath);
+				const path = this.repoPath(repo);
+				if (!path) return null;
+				// The `@repo` sentinel resolves to the project's primary checkout.
+				if (worktree === REPO_SENTINEL) return path;
+				const list = await deps.resolverIO.listWorktrees(path);
 				return list.find((w) => w.name === worktree)?.path ?? null;
 			},
 			defaults: { model: "sonnet", timeoutMs: 1_800_000 },

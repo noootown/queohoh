@@ -1,5 +1,5 @@
 import { Text } from "ink";
-import type { DefinitionSummary } from "../actions.js";
+import { argSummary, type DefinitionSummary } from "../actions.js";
 import { paneTitle, windowRows } from "../selectors.js";
 import { Pane } from "./Pane.js";
 
@@ -36,7 +36,7 @@ export function TasksPane({
 						wrap="truncate"
 					>
 						{def.name}
-						{def.args.length > 0 ? ` (${def.args.join(", ")})` : ""}
+						{def.args.length > 0 ? ` (${argSummary(def.args)})` : ""}
 						{def.hasDiscovery ? " ⏰" : ""}
 					</Text>
 				))

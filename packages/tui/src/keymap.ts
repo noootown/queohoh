@@ -22,6 +22,7 @@ export type KeymapAction =
 	| { type: "cycle-tab"; delta: 1 | -1 }
 	| { type: "switch-subtab"; index: number } // 0-based
 	| { type: "open-action-menu" }
+	| { type: "create" }
 	| { type: "scroll"; delta: 1 | -1 }
 	| { type: "scroll-edge"; edge: "top" | "bottom" }
 	| { type: "open-search" }
@@ -73,6 +74,7 @@ export function handleKey(
 	if (key.input === "q")
 		return { prefixArmed: false, action: { type: "quit" } };
 	if (key.input === "a") return act({ type: "open-action-menu" });
+	if (key.input === "c") return act({ type: "create" });
 	if (/^[1-9]$/.test(key.input)) {
 		return {
 			prefixArmed: false,
@@ -99,18 +101,35 @@ function act(action: KeymapAction): KeymapResult {
 	return { prefixArmed: false, action };
 }
 
+// Single source of truth for the SGR mouse-report shape so `isMouseEvent` and
+// `parseMouseWheel` can never drift. Terminals emit `ESC [ < btn ; col ; row
+// (M|m)` in SGR mode (enabled by `\x1b[?1006h`); ink delivers this as one
+// keypress with the leading ESC stripped, so we accept an optional `ESC[` / `[`
+// prefix. The capture group is the button code.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC (\x1b) is the literal first byte of an SGR mouse report; matching it is the point
+const SGR_MOUSE_RE = /^(?:\x1b)?\[<(\d+);\d+;\d+[Mm]/;
+
+/**
+ * True when `input` is ANY SGR mouse report — wheel, click press/release, or
+ * motion. Mouse tracking (enabled in alt-screen.ts) makes the terminal emit
+ * these on every click/drag; they must be swallowed so they never leak into
+ * `handleKey`, the search box, or a text field. A fresh RegExp per call avoids
+ * shared-`lastIndex` state (SGR_MOUSE_RE has no `g` flag, but this keeps it
+ * obviously reentrant).
+ */
+export function isMouseEvent(input: string): boolean {
+	return SGR_MOUSE_RE.test(input);
+}
+
 /**
  * Detect an SGR mouse wheel report and return its direction, or `null` for any
- * non-wheel input. Terminals emit `ESC [ < btn ; col ; row (M|m)` in SGR mode
- * (enabled by `\x1b[?1006h`); ink delivers this as one keypress with the
- * leading ESC stripped, so we accept an optional `ESC[` / `[` prefix. Wheel
- * buttons set bit 6 (64): 64 = up, 65 = down; higher bits carry modifier keys
- * we ignore. Column/row coordinates are ignored — scrolling targets the
- * focused pane, not the pane under the cursor.
+ * non-wheel input (including non-wheel mouse reports like clicks). Wheel buttons
+ * set bit 6 (64): 64 = up, 65 = down; higher bits carry modifier keys we ignore.
+ * Column/row coordinates are ignored — scrolling targets the focused pane, not
+ * the pane under the cursor.
  */
 export function parseMouseWheel(input: string): "up" | "down" | null {
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC (\x1b) is the literal first byte of an SGR mouse report; matching it is the point
-	const match = /^(?:\x1b)?\[<(\d+);\d+;\d+[Mm]/.exec(input);
+	const match = SGR_MOUSE_RE.exec(input);
 	if (!match) return null;
 	const button = Number(match[1]);
 	if ((button & 0b100_0000) === 0) return null; // not a wheel event

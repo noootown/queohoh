@@ -9,6 +9,7 @@ import type { QueueStore } from "./store.js";
 import type { TaskInstance } from "./task.js";
 import { laneKey } from "./task.js";
 import { render } from "./template.js";
+import { extractTicket } from "./worktree-context.js";
 
 export type ClaudeExecutor = typeof executeClaude;
 
@@ -46,8 +47,6 @@ export async function runTask(
 	// Item vars ARE available at run time; precedence global < repo < item.
 	const globalVars = deps.globalVars ?? {};
 	const repoVars = deps.repoVars ?? {};
-	const renderHook = (cmd: string) =>
-		render(cmd, globalVars, repoVars, task.item ?? {});
 
 	const fail = (reason: string, result: RunResult = EMPTY_RESULT) => {
 		deps.runStore.finishRun(
@@ -66,6 +65,37 @@ export async function runTask(
 	if (cwd === null) {
 		return fail(`worktree path not found: ${laneKey(task)}`);
 	}
+
+	// Execution-time worktree context. Every task runs in a resolved worktree,
+	// so definitions can reference these without declaring args. The branch read
+	// goes through the same exec seam as the dirty-tree guard below; a non-zero
+	// exit or a throw leaves `branch` (and thus `ticket`) empty — never crashes.
+	let branch = "";
+	try {
+		const head = await deps.exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+			cwd,
+		});
+		if (head.exitCode === 0) branch = head.stdout.trim();
+	} catch {
+		branch = "";
+	}
+	const worktreeContext: Record<string, string> = {
+		worktree,
+		worktree_path: cwd,
+		branch,
+		ticket: extractTicket(branch),
+	};
+
+	// Hooks see the worktree context at LOWEST precedence: it spreads before the
+	// explicit global vars so an explicitly configured `branch`/`ticket`/etc.
+	// wins over the worktree-derived value.
+	const renderHook = (cmd: string) =>
+		render(
+			cmd,
+			{ ...worktreeContext, ...globalVars },
+			repoVars,
+			task.item ?? {},
+		);
 
 	let def: TaskDefinition | null = null;
 	if (task.definition !== null) {
@@ -115,7 +145,10 @@ export async function runTask(
 	// claude
 	if (preRunOk) {
 		result = await deps.executeClaude({
-			prompt: task.prompt,
+			// Second render pass at execution time: fills late worktree-context
+			// refs the instantiate-time pass left literal. Only these vars are the
+			// item layer; any other unknown `{{key}}` stays verbatim.
+			prompt: render(task.prompt, {}, {}, worktreeContext),
 			model,
 			cwd,
 			timeoutMs,

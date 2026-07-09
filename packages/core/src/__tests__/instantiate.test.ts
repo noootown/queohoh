@@ -12,7 +12,7 @@ function def(overrides: Partial<TaskDefinition> = {}): TaskDefinition {
 		name: "pr-review",
 		repo: "platform",
 		discovery: { command: "gh pr list", itemKey: "{{number}}" },
-		args: ["number"],
+		args: [{ name: "number" }],
 		dedup: "skip_seen",
 		worktree: "pr:{{number}}",
 		preRun: null,
@@ -156,7 +156,7 @@ describe("instantiateDefinition — args", () => {
 		expect(created[0]?.target.ref).toBe("worktree:wt-plan-a");
 	});
 
-	it("throws on arg count mismatch", async () => {
+	it("throws when a required arg has no value and no default", async () => {
 		const store = freshStore();
 		await expect(
 			instantiateDefinition(
@@ -164,7 +164,74 @@ describe("instantiateDefinition — args", () => {
 				{ mode: "args", values: [] },
 				deps(store, "[]"),
 			),
-		).rejects.toThrow("expected 1 args (number), got 0");
+		).rejects.toThrow("missing required arg: number");
+	});
+
+	it("throws when more values than declared args are given", async () => {
+		const store = freshStore();
+		await expect(
+			instantiateDefinition(
+				def(),
+				{ mode: "args", values: ["257", "extra"] },
+				deps(store, "[]"),
+			),
+		).rejects.toThrow("too many args: expected at most 1 (number), got 2");
+	});
+
+	it("fills trailing args from their defaults when values are shorter", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [
+					{ name: "source" },
+					{ name: "target", default: "main" },
+					{ name: "mode", default: "ready", options: ["ready", "create"] },
+				],
+				dedup: "none",
+				worktree: "temp",
+				prompt: "{{source}} -> {{target}} ({{mode}})\n",
+			}),
+			{ mode: "args", values: ["feature-x"] },
+			deps(store, "[]"),
+		);
+		expect(created).toHaveLength(1);
+		expect(created[0]?.item).toEqual({
+			source: "feature-x",
+			target: "main",
+			mode: "ready",
+		});
+		expect(created[0]?.prompt).toBe("feature-x -> main (ready)\n");
+	});
+
+	it("rejects a value outside a declared options set", async () => {
+		const store = freshStore();
+		await expect(
+			instantiateDefinition(
+				def({
+					args: [{ name: "mode", options: ["ready", "create"] }],
+					prompt: "{{mode}}\n",
+				}),
+				{ mode: "args", values: ["nope"] },
+				deps(store, "[]"),
+			),
+		).rejects.toThrow('arg mode: "nope" not in options (ready, create)');
+	});
+
+	it("accepts an explicit value that overrides a default", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [{ name: "target", default: "main" }],
+				dedup: "none",
+				worktree: "temp",
+				prompt: "{{target}}\n",
+			}),
+			{ mode: "args", values: ["develop"] },
+			deps(store, "[]"),
+		);
+		expect(created[0]?.item).toEqual({ target: "develop" });
 	});
 
 	it("args mode still dedups", async () => {

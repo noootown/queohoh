@@ -26,10 +26,12 @@ function makeDeps(overrides: Partial<WorkerDeps> = {}) {
 	const store = new QueueStore(join(base, "state"));
 	const runStore = new RunStore(join(base, "runs"));
 	const hookCalls: string[] = [];
-	const gitClean: Exec = async (_c, args) => {
-		const joined = args.join(" ");
-		if (joined.includes("status")) return { stdout: "", exitCode: 0 };
-		hookCalls.push(joined.replace("-lc ", ""));
+	const gitClean: Exec = async (cmd, args) => {
+		// git calls (status guard, branch read) never count as hooks; hooks shell
+		// out via /bin/bash. Branch read returns empty here — tests that assert on
+		// the derived branch/ticket supply their own exec.
+		if (cmd === "git") return { stdout: "", exitCode: 0 };
+		hookCalls.push(args.join(" ").replace("-lc ", ""));
 		return { stdout: "", exitCode: 0 };
 	};
 	const deps: WorkerDeps = {
@@ -113,7 +115,7 @@ describe("runTask", () => {
 			name: "pr-review",
 			repo: "platform",
 			discovery: null,
-			args: ["number"],
+			args: [{ name: "number" }],
 			dedup: "none",
 			worktree: "temp",
 			preRun: "mise run setup",
@@ -145,7 +147,7 @@ describe("runTask", () => {
 			name: "pr-review",
 			repo: "platform",
 			discovery: null,
-			args: ["number"],
+			args: [{ name: "number" }],
 			dedup: "none",
 			worktree: "temp",
 			preRun: "setup.sh {{number}} {{repo_slug}}",
@@ -230,6 +232,106 @@ describe("runTask", () => {
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("failed");
 		expect(result.error).toContain("definition not found");
+	});
+
+	it("renders execution-time {{branch}}/{{ticket}}/{{worktree}} into the prompt", async () => {
+		const exec: Exec = async (cmd, args) => {
+			if (cmd === "git") {
+				if (args.join(" ").includes("rev-parse"))
+					return { stdout: "jus-1008-fix-thing\n", exitCode: 0 };
+				return { stdout: "", exitCode: 0 };
+			}
+			return { stdout: "", exitCode: 0 };
+		};
+		let claudePrompt = "";
+		const { deps, store } = makeDeps({
+			exec,
+			executeClaude: async (opts) => {
+				claudePrompt = opts.prompt;
+				return okResult;
+			},
+		});
+		const t = store.create({
+			prompt: "work {{branch}} for {{ticket}} in {{worktree}}\n",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		// worktree name is "tmp-x" (from withWorktree); ticket derived JUS-1008.
+		expect(claudePrompt).toBe(
+			"work jus-1008-fix-thing for JUS-1008 in tmp-x\n",
+		);
+	});
+
+	it("unknown placeholders stay literal; failed branch read leaves them empty", async () => {
+		const exec: Exec = async (cmd, args) => {
+			if (cmd === "git") {
+				if (args.join(" ").includes("rev-parse"))
+					return { stdout: "", exitCode: 1 }; // branch read fails
+				return { stdout: "", exitCode: 0 };
+			}
+			return { stdout: "", exitCode: 0 };
+		};
+		let claudePrompt = "";
+		const { deps, store } = makeDeps({
+			exec,
+			executeClaude: async (opts) => {
+				claudePrompt = opts.prompt;
+				return okResult;
+			},
+		});
+		const t = store.create({
+			prompt: "b=[{{branch}}] t=[{{ticket}}] {{nope}}\n",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		expect(claudePrompt).toBe("b=[] t=[] {{nope}}\n");
+	});
+
+	it("hooks fill worktree context at lowest precedence; explicit vars win", async () => {
+		const def: TaskDefinition = {
+			name: "d",
+			repo: "platform",
+			discovery: null,
+			args: [],
+			dedup: "none",
+			worktree: "temp",
+			preRun: "run {{ticket}} {{branch}} {{worktree}}",
+			postRun: null,
+			model: "opus",
+			timeoutMs: 60_000,
+			priority: "normal",
+			prompt: "p",
+		};
+		const hookCalls: string[] = [];
+		const exec: Exec = async (cmd, args) => {
+			if (cmd === "git") {
+				if (args.join(" ").includes("rev-parse"))
+					return { stdout: "jus-99-x\n", exitCode: 0 };
+				return { stdout: "", exitCode: 0 };
+			}
+			hookCalls.push(args.join(" ").replace("-lc ", ""));
+			return { stdout: "", exitCode: 0 };
+		};
+		const { deps, store } = makeDeps({
+			exec,
+			loadDef: () => def,
+			// explicit global `branch` must beat the worktree-derived one
+			globalVars: { branch: "override-branch" },
+		});
+		const t = enqueue(store, "platform/d");
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		// ticket JUS-99 + worktree tmp-x come from context; branch overridden.
+		expect(hookCalls).toEqual(["run JUS-99 override-branch tmp-x"]);
 	});
 
 	it("post_run failure after done stays done but logs the failure", async () => {

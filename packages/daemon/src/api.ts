@@ -1,6 +1,7 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import type {
+	ArgSpec,
 	GlobalConfig,
 	MainSessionStore,
 	QueueStore,
@@ -12,13 +13,15 @@ import type {
 } from "@queohoh/core";
 import {
 	defaultExec,
+	globalWorkspaceDir,
 	instantiateDefinition,
 	listDefinitions,
-	loadDefinition,
 	loadProjectVars,
 	projectWorkspaceDir,
+	resolveDefinition,
 	SessionModeSchema,
 } from "@queohoh/core";
+import { currentBuildId } from "./build-id.js";
 import type { Engine } from "./engine.js";
 
 export interface StateSnapshot {
@@ -30,6 +33,13 @@ export interface StateSnapshot {
 	projects: { name: string }[];
 	worktrees: Record<string, WorktreeInfo[]>;
 	mainSessions: Record<string, string>;
+	/**
+	 * Fingerprint of the daemon's own build (see build-id.ts), computed once at
+	 * startup. The TUI compares it against the on-disk build and self-heals a
+	 * stale daemon. Optional because pre-feature daemons never sent it — the TUI
+	 * treats `undefined` as stale (it definitionally predates this field).
+	 */
+	buildId?: string;
 }
 
 interface ApiDeps {
@@ -40,12 +50,22 @@ interface ApiDeps {
 	config: GlobalConfig;
 	mainSessions: MainSessionStore;
 	onMutation: () => void;
+	/**
+	 * Tears the daemon down so a fresh build can take over. Invoked by the
+	 * `shutdown` RPC after its reply flushes. Optional so test harnesses that
+	 * never exercise shutdown don't have to wire a process-exiting stub.
+	 */
+	onShutdown?: () => void;
 }
 
 export class ApiServer {
 	private server: Server | null = null;
 	private subscribers = new Set<Socket>();
 	private connections = new Set<Socket>();
+	// Fingerprint of the running build, captured once at construction (daemon
+	// startup) — see build-id.ts. A rebuild that does not restart the daemon
+	// leaves this at the old value, which is how the TUI detects staleness.
+	private readonly buildId = currentBuildId();
 
 	constructor(private readonly deps: ApiDeps) {}
 
@@ -59,6 +79,7 @@ export class ApiServer {
 			projects: this.deps.config.projects.map((p) => ({ name: p.name })),
 			worktrees: this.deps.engine.worktreesByRepo(),
 			mainSessions: this.deps.mainSessions.all(),
+			buildId: this.buildId,
 		};
 	}
 
@@ -166,24 +187,46 @@ export class ApiServer {
 				return task;
 			}
 			case "definitions": {
-				const out: {
+				type Summary = {
 					repo: string;
 					name: string;
-					args: string[];
+					scope: "project" | "global";
+					args: ArgSpec[];
 					hasDiscovery: boolean;
-				}[] = [];
+				};
+				const out: Summary[] = [];
 				for (const project of deps.config.projects) {
 					try {
+						// Global defs first, then project-local defs shadow them by name.
+						const byName = new Map<string, Summary>();
+						for (const def of listDefinitions(
+							globalWorkspaceDir(deps.config),
+							project.name,
+						)) {
+							byName.set(def.name, {
+								repo: project.name,
+								name: def.name,
+								scope: "global",
+								args: def.args,
+								hasDiscovery: def.discovery !== null,
+							});
+						}
 						for (const def of listDefinitions(
 							projectWorkspaceDir(deps.config, project.name),
 							project.name,
 						)) {
-							out.push({
+							byName.set(def.name, {
 								repo: project.name,
 								name: def.name,
+								scope: "project",
 								args: def.args,
 								hasDiscovery: def.discovery !== null,
 							});
+						}
+						for (const summary of [...byName.values()].sort((a, b) =>
+							a.name.localeCompare(b.name),
+						)) {
+							out.push(summary);
 						}
 					} catch {}
 				}
@@ -195,7 +238,7 @@ export class ApiServer {
 				const project = deps.config.projects.find((p) => p.name === repo);
 				if (!project) throw new Error(`unknown repo: ${repo}`);
 				const projectDir = projectWorkspaceDir(deps.config, repo);
-				const def = loadDefinition(projectDir, repo, name);
+				const def = resolveDefinition(deps.config, repo, name);
 				const args = (params.args as string[] | undefined) ?? [];
 				const source = params.source === "mcp" ? "mcp" : "tui";
 				const worktree =
@@ -212,7 +255,13 @@ export class ApiServer {
 						exec: defaultExec,
 						cwd: projectDir,
 						source,
-						globalVars: deps.config.vars,
+						// Builtin vars sit below explicit config vars so an operator can
+						// override them; the target project supplies `repo_path`.
+						globalVars: {
+							project: repo,
+							repo_path: project.path,
+							...deps.config.vars,
+						},
 						repoVars: loadProjectVars(projectDir),
 						refOverride: worktree ? `worktree:${worktree}` : undefined,
 					},
@@ -226,11 +275,7 @@ export class ApiServer {
 				if (!deps.config.projects.some((p) => p.name === repo)) {
 					throw new Error(`unknown repo: ${repo}`);
 				}
-				return loadDefinition(
-					projectWorkspaceDir(deps.config, repo),
-					repo,
-					name,
-				);
+				return resolveDefinition(deps.config, repo, name);
 			}
 			case "retry": {
 				const task = this.mustGet(String(params.id));
@@ -276,6 +321,14 @@ export class ApiServer {
 				deps.onMutation();
 				return true;
 			}
+			case "createWorktree": {
+				await deps.engine.createWorktree(
+					String(params.repo ?? ""),
+					String(params.name ?? ""),
+				);
+				deps.onMutation();
+				return true;
+			}
 			case "heartbeatInteractive": {
 				deps.registry.upsertInteractive(
 					String(params.cwd),
@@ -285,6 +338,17 @@ export class ApiServer {
 			}
 			case "runMeta":
 				return deps.runStore.readRunMeta(String(params.id));
+			case "shutdown": {
+				// Refuse while work is in flight — the caller (TUI self-heal) only asks
+				// when idle, but a task can race in between its check and this call.
+				if (deps.engine.runningTaskIds().length > 0) {
+					throw new Error("busy: task running");
+				}
+				// Reply true first; tear down after the response frame has flushed so
+				// the client sees success before the socket dies.
+				setTimeout(() => deps.onShutdown?.(), 50);
+				return true;
+			}
 			default:
 				throw new Error(`unknown method: ${method}`);
 		}

@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { listDefinitions, loadDefinition } from "../definition.js";
+import {
+	definitionExists,
+	listDefinitions,
+	loadDefinition,
+} from "../definition.js";
 
 function makeRepo(defs: Record<string, { config: string; prompt: string }>) {
 	const projectDir = mkdtempSync(join(tmpdir(), "queohoh-repo-"));
@@ -43,7 +47,7 @@ describe("loadDefinition", () => {
 				command: "gh pr list --json number,title",
 				itemKey: "{{number}}",
 			},
-			args: ["number"],
+			args: [{ name: "number" }],
 			dedup: "skip_seen",
 			worktree: "pr:{{number}}",
 			preRun: "mise run setup",
@@ -81,6 +85,78 @@ describe("loadDefinition", () => {
 			typo: { config: "timout: 5m", prompt: "x" },
 		});
 		expect(() => loadDefinition(projectDir, "platform", "typo")).toThrow();
+	});
+});
+
+describe("loadDefinition — rich args", () => {
+	it("normalizes shorthand strings and object entries to ArgSpec[]", () => {
+		const projectDir = makeRepo({
+			rich: {
+				config: `
+args:
+  - pr
+  - name: mode
+    default: ready
+    options: [ready, create]
+    description: hand off or keep WIP
+`,
+				prompt: "x",
+			},
+		});
+		const def = loadDefinition(projectDir, "platform", "rich");
+		expect(def.args).toEqual([
+			{ name: "pr" },
+			{
+				name: "mode",
+				default: "ready",
+				options: ["ready", "create"],
+				description: "hand off or keep WIP",
+			},
+		]);
+	});
+
+	it("rejects duplicate arg names", () => {
+		const projectDir = makeRepo({
+			dup: { config: "args: [pr, pr]", prompt: "x" },
+		});
+		expect(() => loadDefinition(projectDir, "platform", "dup")).toThrow(
+			/duplicate arg name: pr/,
+		);
+	});
+
+	it("rejects a default that is not a member of options", () => {
+		const projectDir = makeRepo({
+			bad: {
+				config: `
+args:
+  - name: mode
+    default: nope
+    options: [ready, create]
+`,
+				prompt: "x",
+			},
+		});
+		expect(() => loadDefinition(projectDir, "platform", "bad")).toThrow(
+			/default "nope" not in options/,
+		);
+	});
+
+	it("rejects an unknown key inside an arg object", () => {
+		const projectDir = makeRepo({
+			badkey: {
+				config: "args:\n  - name: mode\n    typo: 1\n",
+				prompt: "x",
+			},
+		});
+		expect(() => loadDefinition(projectDir, "platform", "badkey")).toThrow();
+	});
+});
+
+describe("definitionExists", () => {
+	it("is true for a present definition and false otherwise", () => {
+		const projectDir = makeRepo({ a: { config: "{}", prompt: "a" } });
+		expect(definitionExists(projectDir, "a")).toBe(true);
+		expect(definitionExists(projectDir, "missing")).toBe(false);
 	});
 });
 

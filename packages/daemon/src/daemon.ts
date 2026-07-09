@@ -86,6 +86,12 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		onMutation: () => {
 			void engine.tick().then(() => server.broadcast());
 		},
+		// Self-heal: the TUI calls `shutdown` when the on-disk build is newer than
+		// this process. Exit cleanly so a fresh daemon (spawned by the TUI) takes
+		// over; launchd/daemon-ensure will also happily re-launch us.
+		onShutdown: () => {
+			void stop().then(() => process.exit(0));
+		},
 	});
 
 	broadcastRef = () => server.broadcast();

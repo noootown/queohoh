@@ -1,8 +1,9 @@
-import type { TaskDefinition } from "@queohoh/core";
+import type { ArgSpec, TaskDefinition } from "@queohoh/core";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 import type { DefinitionSummary } from "../actions.js";
+import { ArgsForm } from "../components/ArgsForm.js";
 import { DetailPane } from "../components/DetailPane.js";
 import { Footer } from "../components/Footer.js";
 import { Pane } from "../components/Pane.js";
@@ -223,11 +224,18 @@ describe("QueuePane", () => {
 
 describe("TasksPane", () => {
 	const defs: DefinitionSummary[] = [
-		{ repo: "platform", name: "review", args: [], hasDiscovery: true },
+		{
+			repo: "platform",
+			name: "review",
+			scope: "project",
+			args: [],
+			hasDiscovery: true,
+		},
 		{
 			repo: "platform",
 			name: "ticket",
-			args: ["id", "flag"],
+			scope: "project",
+			args: [{ name: "id" }, { name: "flag" }],
 			hasDiscovery: false,
 		},
 	];
@@ -345,6 +353,7 @@ describe("list rows never wrap (title stays visible)", () => {
 			{
 				repo: "platform",
 				name: "t".repeat(300),
+				scope: "project",
 				args: [],
 				hasDiscovery: false,
 			},
@@ -548,7 +557,7 @@ function makeDefinition(
 		name: "review",
 		repo: "platform",
 		discovery: { command: "gh pr list", itemKey: "number" },
-		args: ["id", "flag"],
+		args: [{ name: "id" }, { name: "flag" }],
 		dedup: "skip_seen",
 		worktree: "temp",
 		preRun: null,
@@ -822,5 +831,177 @@ describe("DetailPane", () => {
 			/>,
 		);
 		expect(lastFrame()).toContain("(none)");
+	});
+});
+
+describe("ArgsForm", () => {
+	const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+	const TAB = "\t";
+	const SHIFT_TAB = "[Z";
+	const LEFT = "[D";
+	const RIGHT = "[C";
+	const ESC = "";
+
+	const renderForm = (
+		args: ArgSpec[],
+		opts: {
+			initial?: Record<string, string>;
+			fixed?: Record<string, string>;
+			onSubmit?: (v: string[]) => void;
+			onCancel?: () => void;
+		} = {},
+	) =>
+		render(
+			<ArgsForm
+				args={args}
+				initial={opts.initial}
+				fixed={opts.fixed}
+				width={60}
+				onSubmit={opts.onSubmit ?? (() => {})}
+				onCancel={opts.onCancel ?? (() => {})}
+			/>,
+		);
+
+	it("prefills text args with their default and shows enum brackets", async () => {
+		const { lastFrame } = renderForm([
+			{ name: "pr", description: "PR number" },
+			{ name: "mode", default: "ready", options: ["ready", "create"] },
+			{ name: "review", default: "auto" },
+		]);
+		await wait(20);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("pr>");
+		expect(frame).toContain("mode>");
+		expect(frame).toContain("‹ready›"); // enum shows default in brackets
+		expect(frame).toContain("auto"); // text arg prefilled with its default
+		expect(frame).toContain("PR number"); // description dimmed to the right
+	});
+
+	it("cycles enum options with →/← and ignores typing on enum rows", async () => {
+		let submitted: string[] | null = null;
+		const { lastFrame, stdin } = renderForm(
+			[{ name: "mode", default: "ready", options: ["ready", "create"] }],
+			{ onSubmit: (v) => (submitted = v) },
+		);
+		await wait(20);
+		stdin.write("x"); // typing ignored on an enum row
+		await wait(20);
+		expect(lastFrame() ?? "").toContain("‹ready›");
+		stdin.write(RIGHT); // ready -> create
+		await wait(20);
+		expect(lastFrame() ?? "").toContain("‹create›");
+		stdin.write(RIGHT); // create -> wraps to ready
+		await wait(20);
+		expect(lastFrame() ?? "").toContain("‹ready›");
+		stdin.write(LEFT); // ready -> wraps back to create
+		await wait(20);
+		expect(lastFrame() ?? "").toContain("‹create›");
+		stdin.write("\r");
+		await wait(20);
+		expect(submitted).toEqual(["create"]);
+	});
+
+	it("tab/shift-tab move focus, wrapping, and submit is positional in arg order", async () => {
+		let submitted: string[] | null = null;
+		const { stdin } = renderForm(
+			[{ name: "a" }, { name: "b" }, { name: "c" }],
+			{ onSubmit: (v) => (submitted = v) },
+		);
+		await wait(20);
+		stdin.write("1"); // -> a
+		stdin.write(TAB);
+		stdin.write("2"); // -> b
+		stdin.write(TAB);
+		stdin.write("3"); // -> c
+		stdin.write(TAB); // wraps back to a
+		stdin.write("4"); // a becomes "14"
+		await wait(30);
+		stdin.write(SHIFT_TAB); // wraps a -> c
+		stdin.write("9"); // c becomes "39"
+		await wait(30);
+		stdin.write("\r");
+		await wait(20);
+		expect(submitted).toEqual(["14", "2", "39"]);
+	});
+
+	it("blocks submit on a required-empty field with an inline error", async () => {
+		let submitted: string[] | null = null;
+		const { lastFrame, stdin } = renderForm([{ name: "pr" }], {
+			onSubmit: (v) => (submitted = v),
+		});
+		await wait(20);
+		stdin.write("\r"); // required + empty -> blocked
+		await wait(20);
+		expect(submitted).toBeNull();
+		expect(lastFrame() ?? "").toContain("required");
+		stdin.write("5"); // typing clears the error and fills the field
+		await wait(20);
+		stdin.write("\r");
+		await wait(20);
+		expect(submitted).toEqual(["5"]);
+	});
+
+	it("applies initial overrides and submits defaults for untouched args", async () => {
+		let submitted: string[] | null = null;
+		const { lastFrame, stdin } = renderForm(
+			[{ name: "source" }, { name: "target", default: "main" }],
+			{ initial: { source: "feat-x" }, onSubmit: (v) => (submitted = v) },
+		);
+		await wait(20);
+		expect(lastFrame() ?? "").toContain("feat-x");
+		stdin.write("\r"); // source filled by initial, target by default
+		await wait(20);
+		expect(submitted).toEqual(["feat-x", "main"]);
+	});
+
+	it("ignores stray mouse reports (never lands in a field)", async () => {
+		let submitted: string[] | null = null;
+		const { lastFrame, stdin } = renderForm([{ name: "pr" }], {
+			onSubmit: (v) => (submitted = v),
+		});
+		await wait(20);
+		stdin.write("9");
+		stdin.write("[<0;34;12M"); // SGR mouse report — must be dropped
+		await wait(20);
+		expect(lastFrame() ?? "").not.toContain("34");
+		stdin.write("\r");
+		await wait(20);
+		expect(submitted).toEqual(["9"]);
+	});
+
+	it("esc cancels", async () => {
+		let cancelled = false;
+		const { stdin } = renderForm([{ name: "pr" }], {
+			onCancel: () => {
+				cancelled = true;
+			},
+		});
+		await wait(20);
+		stdin.write(ESC);
+		await wait(20);
+		expect(cancelled).toBe(true);
+	});
+
+	it("fixed args are read-only: focus skips them, typing edits the next row, value still submits", async () => {
+		let submitted: string[] | null = null;
+		const { lastFrame, stdin } = renderForm(
+			[{ name: "source" }, { name: "target", default: "main" }],
+			{ fixed: { source: "wt-a" }, onSubmit: (v) => (submitted = v) },
+		);
+		await wait(20);
+		expect(lastFrame() ?? "").toContain("source> wt-a");
+		// Focus starts on target (source is fixed); typing must land there.
+		stdin.write("x");
+		await wait(20);
+		expect(lastFrame() ?? "").toContain("target> mainx");
+		expect(lastFrame() ?? "").toContain("source> wt-a");
+		// Tab wraps but skips the fixed row — still on target.
+		stdin.write(TAB);
+		stdin.write("y");
+		await wait(20);
+		expect(lastFrame() ?? "").toContain("target> mainxy");
+		stdin.write("\r");
+		await wait(20);
+		expect(submitted).toEqual(["wt-a", "mainxy"]);
 	});
 });

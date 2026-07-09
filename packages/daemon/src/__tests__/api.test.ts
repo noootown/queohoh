@@ -24,6 +24,8 @@ async function setup(opts?: {
 	worktrees?: { name: string; path: string; branch: string }[];
 	execCalls?: { command: string; args: string[] }[];
 	execExitCode?: number;
+	executeClaude?: () => Promise<RunResult>;
+	vars?: Record<string, string>;
 }) {
 	const base = mkdtempSync(join(tmpdir(), "qo-api-"));
 	const repoPath = join(base, "repo");
@@ -42,7 +44,7 @@ async function setup(opts?: {
 		projects: [{ name: "platform", path: repoPath }],
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
-		vars: {},
+		vars: opts?.vars ?? {},
 	};
 	const okResult: RunResult = {
 		exitCode: 0,
@@ -76,7 +78,7 @@ async function setup(opts?: {
 		config,
 		resolverIO,
 		exec,
-		executeClaude: async () => okResult,
+		executeClaude: opts?.executeClaude ?? (async () => okResult),
 		redact: makeRedactor(new Map()),
 		mainSessions,
 	});
@@ -104,6 +106,8 @@ async function setup(opts?: {
 		store,
 		engine,
 		mainSessions,
+		workspace,
+		repoPath,
 		mutations: () => mutations,
 	};
 }
@@ -151,6 +155,52 @@ describe("ApiServer", () => {
 		expect(filled.mainSessions).toEqual({ "platform:JUS-1": "sess-1" });
 	});
 
+	it("state snapshot carries a string buildId", async () => {
+		const { client } = await setup();
+		const state = (await client.call("state")) as { buildId: unknown };
+		// Under vitest the daemon resolves to TS source (no dist/*.js), so buildId
+		// is "0" — but it must always be a string so the TUI can compare it.
+		expect(typeof state.buildId).toBe("string");
+	});
+
+	it("shutdown refuses while a task is running, then succeeds when idle", async () => {
+		let release: () => void = () => {};
+		const parked = new Promise<void>((r) => {
+			release = r;
+		});
+		const okResult: RunResult = {
+			exitCode: 0,
+			timedOut: false,
+			sessionId: null,
+			resultText: "ok",
+			stderr: "",
+			usage: { costUsd: 0, turns: 1, durationMs: 1 },
+		};
+		const { client, store, engine } = await setup({
+			worktrees: [{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" }],
+			executeClaude: async () => {
+				await parked;
+				return okResult;
+			},
+		});
+		// Start a worker that parks in executeClaude (resolve tick, then start tick).
+		store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		await engine.tick(); // resolve
+		await engine.tick(); // start → executeClaude parks on `parked`
+		expect(engine.runningTaskIds()).toHaveLength(1);
+		await expect(client.call("shutdown")).rejects.toThrow(/busy/);
+		// Let the worker finish; now idle → shutdown is accepted.
+		release();
+		await engine.drain();
+		expect(engine.runningTaskIds()).toEqual([]);
+		expect(await client.call("shutdown")).toBe(true);
+	});
+
 	it("enqueue with worktree sets the target ref", async () => {
 		const { client } = await setup();
 		const task = (await client.call("enqueue", {
@@ -180,16 +230,89 @@ describe("ApiServer", () => {
 		expect(task.session).toBe("fresh");
 	});
 
-	it("definitions lists per-repo task definitions", async () => {
+	it("definitions lists per-repo task definitions with scope + ArgSpec args", async () => {
 		const { client } = await setup();
 		const defs = (await client.call("definitions")) as {
 			repo: string;
 			name: string;
-			args: string[];
+			scope: string;
+			args: { name: string }[];
+			hasDiscovery: boolean;
 		}[];
 		expect(defs).toEqual([
-			{ repo: "platform", name: "greet", args: ["name"], hasDiscovery: false },
+			{
+				repo: "platform",
+				name: "greet",
+				scope: "project",
+				args: [{ name: "name" }],
+				hasDiscovery: false,
+			},
 		]);
+	});
+
+	it("definitions merges global defs and lets a project-local name shadow them", async () => {
+		const { client, workspace } = await setup();
+		// A global def unique to the workspace, plus one that shares the local name.
+		const globalOnly = join(workspace, "global", "tasks", "squash-merge");
+		mkdirSync(globalOnly, { recursive: true });
+		writeFileSync(join(globalOnly, "config.yaml"), "worktree: repo\n");
+		writeFileSync(join(globalOnly, "prompt.md"), "squash\n");
+		const globalGreet = join(workspace, "global", "tasks", "greet");
+		mkdirSync(globalGreet, { recursive: true });
+		writeFileSync(join(globalGreet, "config.yaml"), "args: [shadowed]\n");
+		writeFileSync(join(globalGreet, "prompt.md"), "global greet\n");
+
+		const defs = (await client.call("definitions")) as {
+			name: string;
+			scope: string;
+			args: { name: string }[];
+		}[];
+		const byName = Object.fromEntries(defs.map((d) => [d.name, d]));
+		// project-local greet shadows the global one (scope stays "project").
+		expect(byName.greet).toMatchObject({
+			scope: "project",
+			args: [{ name: "name" }],
+		});
+		// squash-merge exists only globally.
+		expect(byName["squash-merge"]).toMatchObject({ scope: "global" });
+	});
+
+	it("runDefinition resolves a global definition (project has none by that name)", async () => {
+		const { client, workspace } = await setup();
+		const dir = join(workspace, "global", "tasks", "wave");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "config.yaml"), "args: [who]\ndedup: none\n");
+		writeFileSync(join(dir, "prompt.md"), "wave at {{who}}\n");
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "wave",
+			args: ["mars"],
+		})) as { prompt: string; definition: string }[];
+		expect(created[0]?.prompt).toBe("wave at mars\n");
+		expect(created[0]?.definition).toBe("platform/wave");
+	});
+
+	it("runDefinition injects builtin project/repo_path vars that explicit config vars override", async () => {
+		const { client, workspace, repoPath } = await setup({
+			vars: { project: "OVERRIDDEN" },
+		});
+		const dir = join(workspace, "platform", "tasks", "builtins");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "config.yaml"), "args: [x]\ndedup: none\n");
+		writeFileSync(
+			join(dir, "prompt.md"),
+			"project={{project}} path={{repo_path}} x={{x}}\n",
+		);
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "builtins",
+			args: ["y"],
+		})) as { prompt: string }[];
+		// {{project}} resolves to the explicit config var (override wins);
+		// {{repo_path}} falls through to the builtin (the project's code path).
+		expect(created[0]?.prompt).toBe(
+			`project=OVERRIDDEN path=${repoPath} x=y\n`,
+		);
 	});
 
 	it("runDefinition with args instantiates", async () => {
@@ -244,12 +367,12 @@ describe("ApiServer", () => {
 			name: "greet",
 		})) as {
 			prompt: string;
-			args: string[];
+			args: { name: string }[];
 			worktree: string;
 			model: string;
 		};
 		expect(def.prompt).toBe("Say hi to {{name}}.\n");
-		expect(def.args).toEqual(["name"]);
+		expect(def.args).toEqual([{ name: "name" }]);
 		expect(def.worktree).toBe("temp");
 		expect(def.model).toBe("sonnet");
 	});
@@ -418,6 +541,34 @@ describe("ApiServer", () => {
 			await expect(
 				client.call("removeWorktree", { repo: "platform", name: "fix-x" }),
 			).rejects.toThrow(/failed to remove worktree/);
+		});
+	});
+
+	describe("createWorktree", () => {
+		it("delegates to the engine and reports mutation", async () => {
+			const { client, mutations } = await setup();
+			const before = mutations();
+			expect(
+				await client.call("createWorktree", {
+					repo: "platform",
+					name: "feature-x",
+				}),
+			).toBe(true);
+			expect(mutations()).toBe(before + 1);
+		});
+
+		it("rejects an existing branch and an unknown repo", async () => {
+			const { client } = await setup({
+				worktrees: [
+					{ name: "platform.feature-x", path: "/wt/x", branch: "feature-x" },
+				],
+			});
+			await expect(
+				client.call("createWorktree", { repo: "platform", name: "feature-x" }),
+			).rejects.toThrow(/already exists/);
+			await expect(
+				client.call("createWorktree", { repo: "ghost", name: "feature-x" }),
+			).rejects.toThrow(/unknown repo/);
 		});
 	});
 });

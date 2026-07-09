@@ -2,13 +2,15 @@ export type TargetRef =
 	| { kind: "pr"; number: number }
 	| { kind: "ticket"; id: string }
 	| { kind: "worktree"; name: string }
-	| { kind: "temp" };
+	| { kind: "temp" }
+	| { kind: "repo" };
 
 const TICKET_RE = /([A-Z][A-Z0-9]*-\d+)/;
 const TICKET_FULL_RE = /^[A-Z][A-Z0-9]*-\d+$/;
 
 export function parseRef(raw: string): TargetRef {
 	if (raw === "temp") return { kind: "temp" };
+	if (raw === "repo") return { kind: "repo" };
 	const [kind, ...rest] = raw.split(":");
 	const value = rest.join(":");
 	if (kind === "pr" && /^\d+$/.test(value)) {
@@ -33,6 +35,8 @@ export function formatRef(ref: TargetRef): string {
 			return `worktree:${ref.name}`;
 		case "temp":
 			return "temp";
+		case "repo":
+			return "repo";
 	}
 }
 

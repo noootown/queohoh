@@ -3,6 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import {
+	definitionExists,
+	loadDefinition,
+	type TaskDefinition,
+} from "./definition.js";
 
 const GlobalConfigSchema = z
 	.object({
@@ -61,6 +66,38 @@ export function projectWorkspaceDir(
 	projectName: string,
 ): string {
 	return join(config.workspace, projectName);
+}
+
+/**
+ * Conventional directory for cross-project (global) task definitions:
+ * `<workspace>/global`. Its `tasks/<name>/` folders share the project format and
+ * appear under every project (a project-local name of the same name shadows it).
+ */
+export function globalWorkspaceDir(config: GlobalConfig): string {
+	return join(config.workspace, "global");
+}
+
+/**
+ * Load a definition for `repo` by name, checking the project's own tasks dir
+ * first and falling back to the global tasks dir. `repo` stays the target
+ * project on the returned definition (so worktree/vars resolve against it),
+ * regardless of which directory supplied the config. When the name is absent
+ * from both, the project-dir load is attempted so its ENOENT error surfaces.
+ */
+export function resolveDefinition(
+	config: GlobalConfig,
+	repo: string,
+	name: string,
+): TaskDefinition {
+	const projectDir = projectWorkspaceDir(config, repo);
+	if (definitionExists(projectDir, name)) {
+		return loadDefinition(projectDir, repo, name);
+	}
+	const globalDir = globalWorkspaceDir(config);
+	if (definitionExists(globalDir, name)) {
+		return loadDefinition(globalDir, repo, name);
+	}
+	return loadDefinition(projectDir, repo, name);
 }
 
 export function loadProjectVars(projectDir: string): Record<string, string> {

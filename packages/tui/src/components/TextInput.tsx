@@ -1,5 +1,6 @@
 import { Text, useInput } from "ink";
 import { useRef } from "react";
+import { isMouseEvent } from "../keymap.js";
 import { padLine } from "./Modal.js";
 
 export function TextInput({
@@ -29,6 +30,10 @@ export function TextInput({
 	const valueRef = useRef(value);
 	valueRef.current = value;
 	useInput((input, key) => {
+		// Mouse tracking is on while a modal is open, so a stray click arrives here
+		// as an SGR report (e.g. `[<0;34;12M`). Drop it before the append branch so
+		// the garbage never lands in the field value.
+		if (isMouseEvent(input)) return;
 		if (key.return) {
 			onSubmit(valueRef.current);
 		} else if (key.escape) {

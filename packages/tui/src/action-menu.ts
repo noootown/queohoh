@@ -9,7 +9,9 @@ export type ActionId =
 	| "task-main"
 	| "run-def"
 	| "tmux-open"
-	| "remove-worktree";
+	| "squash-merge"
+	| "remove-worktree"
+	| "create-worktree";
 
 export interface ActionItem {
 	id: ActionId;
@@ -22,7 +24,12 @@ export interface ActionItem {
 export type ActionContext =
 	| { kind: "queue"; status: TaskStatus; archived: boolean }
 	| { kind: "task" }
-	| { kind: "worktree"; busy: boolean; insideTmux: boolean }
+	| {
+			kind: "worktree";
+			busy: boolean;
+			insideTmux: boolean;
+			hasBranch: boolean;
+	  }
 	| { kind: "session"; insideTmux: boolean };
 
 function item(
@@ -90,11 +97,18 @@ export function buildActions(context: ActionContext): ActionItem[] {
 					"not inside tmux",
 				),
 				item(
+					"squash-merge",
+					"Squash merge into…",
+					!context.busy && context.hasBranch,
+					context.busy ? "a task is running here" : "worktree has no branch",
+				),
+				item(
 					"remove-worktree",
 					"Remove worktree…",
 					!context.busy,
 					"a task is running here",
 				),
+				{ id: "create-worktree", label: "Create worktree…" },
 			];
 		case "session":
 			return [

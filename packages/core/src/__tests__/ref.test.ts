@@ -13,6 +13,7 @@ describe("parseRef", () => {
 			name: "main",
 		});
 		expect(parseRef("temp")).toEqual({ kind: "temp" });
+		expect(parseRef("repo")).toEqual({ kind: "repo" });
 	});
 
 	it("rejects garbage", () => {
@@ -33,7 +34,13 @@ describe("parseRef", () => {
 
 describe("formatRef", () => {
 	it("round-trips", () => {
-		for (const raw of ["pr:1423", "ticket:JUS-1423", "worktree:main", "temp"]) {
+		for (const raw of [
+			"pr:1423",
+			"ticket:JUS-1423",
+			"worktree:main",
+			"temp",
+			"repo",
+		]) {
 			expect(formatRef(parseRef(raw))).toBe(raw);
 		}
 	});

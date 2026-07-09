@@ -38,14 +38,32 @@ export async function instantiateDefinition(
 			{ cwd: deps.cwd },
 		);
 	} else {
-		if (trigger.values.length !== def.args.length) {
+		const { values } = trigger;
+		if (values.length > def.args.length) {
+			const names = def.args.map((a) => a.name).join(", ");
 			throw new Error(
-				`expected ${def.args.length} args (${def.args.join(", ")}), got ${trigger.values.length}`,
+				`too many args: expected at most ${def.args.length} (${names}), got ${values.length}`,
 			);
 		}
 		const item: Record<string, string> = {};
-		def.args.forEach((name, i) => {
-			item[name] = String(trigger.values[i]);
+		// Values are positional and may be shorter than args: the trailing args
+		// fill from their defaults. A missing value with no default is an error,
+		// and any value outside a declared `options` set is rejected.
+		def.args.forEach((spec, i) => {
+			let value: string;
+			if (i < values.length) {
+				value = String(values[i]);
+			} else if (spec.default !== undefined) {
+				value = spec.default;
+			} else {
+				throw new Error(`missing required arg: ${spec.name}`);
+			}
+			if (spec.options && !spec.options.includes(value)) {
+				throw new Error(
+					`arg ${spec.name}: "${value}" not in options (${spec.options.join(", ")})`,
+				);
+			}
+			item[spec.name] = value;
 		});
 		items = [item];
 	}
@@ -77,5 +95,5 @@ export async function instantiateDefinition(
 /** Key template when a definition has no discovery block: join declared args. */
 function defaultKeyTemplate(def: TaskDefinition): string {
 	if (def.args.length === 0) return "adhoc";
-	return def.args.map((a) => `{{${a}}}`).join(":");
+	return def.args.map((a) => `{{${a.name}}}`).join(":");
 }
