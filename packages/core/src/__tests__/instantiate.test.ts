@@ -1,0 +1,184 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import type { TaskDefinition } from "../definition.js";
+import { instantiateDefinition } from "../instantiate.js";
+import type { Exec } from "../resolver-io.js";
+import { QueueStore } from "../store.js";
+
+function def(overrides: Partial<TaskDefinition> = {}): TaskDefinition {
+	return {
+		name: "pr-review",
+		repo: "platform",
+		discovery: { command: "gh pr list", itemKey: "{{number}}" },
+		args: ["number"],
+		dedup: "skip_seen",
+		worktree: "pr:{{number}}",
+		preRun: null,
+		postRun: null,
+		model: "opus",
+		timeoutMs: 1_800_000,
+		priority: "high",
+		prompt: "Review PR {{number}} for {{github_user}}.\n",
+		...overrides,
+	};
+}
+
+function deps(store: QueueStore, stdout: string) {
+	const exec: Exec = async () => ({ stdout, exitCode: 0 });
+	return {
+		store,
+		exec,
+		cwd: "/repo",
+		source: "cron" as const,
+		globalVars: { github_user: "noootown" },
+	};
+}
+
+const freshStore = () =>
+	new QueueStore(mkdtempSync(join(tmpdir(), "qo-inst-")));
+
+describe("instantiateDefinition — discover", () => {
+	it("creates one instance per discovered item with rendered fields", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def(),
+			{ mode: "discover" },
+			deps(store, '[{"number": 257}, {"number": 258}]'),
+		);
+		expect(created).toHaveLength(2);
+		const first = created[0];
+		expect(first?.definition).toBe("platform/pr-review");
+		expect(first?.item).toEqual({ number: "257" });
+		expect(first?.itemKey).toBe("257");
+		expect(first?.target).toEqual({
+			repo: "platform",
+			ref: "pr:257",
+			worktree: null,
+		});
+		expect(first?.priority).toBe("high");
+		expect(first?.prompt).toBe("Review PR 257 for noootown.\n");
+		expect(store.list()).toHaveLength(2);
+	});
+
+	it("dedups against existing instances", async () => {
+		const store = freshStore();
+		await instantiateDefinition(
+			def(),
+			{ mode: "discover" },
+			deps(store, '[{"number": 257}]'),
+		);
+		const second = await instantiateDefinition(
+			def(),
+			{ mode: "discover" },
+			deps(store, '[{"number": 257}, {"number": 300}]'),
+		);
+		expect(second.map((t) => t.itemKey)).toEqual(["300"]);
+	});
+
+	it("dedups against archived instances too", async () => {
+		const store = freshStore();
+		const [made] = await instantiateDefinition(
+			def(),
+			{ mode: "discover" },
+			deps(store, '[{"number": 257}]'),
+		);
+		store.archive((made as { id: string }).id);
+		const again = await instantiateDefinition(
+			def(),
+			{ mode: "discover" },
+			deps(store, '[{"number": 257}]'),
+		);
+		expect(again).toEqual([]);
+	});
+
+	it("renders the discovery command with global + repo vars before exec", async () => {
+		const store = freshStore();
+		let capturedArgs: string[] = [];
+		const exec: Exec = async (_cmd, args) => {
+			capturedArgs = args;
+			return { stdout: "[]", exitCode: 0 };
+		};
+		await instantiateDefinition(
+			def({
+				discovery: {
+					command: "bash discover.sh {{github_user}} {{repo_slug}}",
+					itemKey: "{{number}}",
+				},
+			}),
+			{ mode: "discover" },
+			{
+				store,
+				exec,
+				cwd: "/repo",
+				source: "cron",
+				globalVars: { github_user: "noootown" },
+				repoVars: { repo_slug: "org/repo" },
+			},
+		);
+		expect(capturedArgs).toEqual(["-lc", "bash discover.sh noootown org/repo"]);
+	});
+
+	it("throws when definition has no discovery", async () => {
+		const store = freshStore();
+		await expect(
+			instantiateDefinition(
+				def({ discovery: null }),
+				{ mode: "discover" },
+				deps(store, "[]"),
+			),
+		).rejects.toThrow("definition pr-review has no discovery");
+	});
+});
+
+describe("instantiateDefinition — args", () => {
+	it("zips values onto declared arg names, skipping discovery", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def(),
+			{ mode: "args", values: ["257"] },
+			deps(store, "SHOULD NOT RUN"),
+		);
+		expect(created).toHaveLength(1);
+		expect(created[0]?.item).toEqual({ number: "257" });
+		expect(created[0]?.target.ref).toBe("pr:257");
+	});
+
+	it("uses refOverride verbatim instead of the rendered worktree template", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({ worktree: "temp" }),
+			{ mode: "args", values: ["257"] },
+			{ ...deps(store, "[]"), refOverride: "worktree:wt-plan-a" },
+		);
+		expect(created).toHaveLength(1);
+		expect(created[0]?.target.ref).toBe("worktree:wt-plan-a");
+	});
+
+	it("throws on arg count mismatch", async () => {
+		const store = freshStore();
+		await expect(
+			instantiateDefinition(
+				def(),
+				{ mode: "args", values: [] },
+				deps(store, "[]"),
+			),
+		).rejects.toThrow("expected 1 args (number), got 0");
+	});
+
+	it("args mode still dedups", async () => {
+		const store = freshStore();
+		await instantiateDefinition(
+			def(),
+			{ mode: "args", values: ["257"] },
+			deps(store, "[]"),
+		);
+		const again = await instantiateDefinition(
+			def(),
+			{ mode: "args", values: ["257"] },
+			deps(store, "[]"),
+		);
+		expect(again).toEqual([]);
+	});
+});

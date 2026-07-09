@@ -1,0 +1,34 @@
+{
+	"name": "@queohoh/daemon",
+	"version": "0.1.0",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./src/index.ts",
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"bin": {
+		"queohoh": "./dist/cli.js"
+	},
+	"scripts": {
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit",
+		"build": "tsc"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
+		"@queohoh/core": "workspace:*",
+		"commander": "^14.0.3",
+		"js-yaml": "^4.1.1",
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"@types/js-yaml": "^4.0.9",
+		"@types/node": "^25.5.0",
+		"typescript": "^6.0.2",
+		"vitest": "^4.1.0"
+	}
+}

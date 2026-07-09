@@ -1,0 +1,102 @@
+import { z } from "zod";
+import { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
+
+export const TaskStatusSchema = z.enum([
+	"queued",
+	"needs-input",
+	"running",
+	"done",
+	"failed",
+]);
+export type TaskStatus = z.infer<typeof TaskStatusSchema>;
+
+export const PrioritySchema = z.enum(["low", "normal", "high"]);
+export type Priority = z.infer<typeof PrioritySchema>;
+
+export const TaskSourceSchema = z.enum(["mcp", "tui", "cron"]);
+export type TaskSource = z.infer<typeof TaskSourceSchema>;
+
+export const SessionModeSchema = z.enum(["fresh", "main"]);
+export type SessionMode = z.infer<typeof SessionModeSchema>;
+
+const TaskMetaSchema = z
+	.object({
+		id: z.string().min(1),
+		status: TaskStatusSchema,
+		definition: z.string().nullable().default(null),
+		item: z.record(z.string(), z.string()).nullable().default(null),
+		item_key: z.string().nullable().default(null),
+		target: z
+			.object({
+				repo: z.string().min(1),
+				ref: z.string().min(1),
+				worktree: z.string().nullable().default(null),
+			})
+			.strict(),
+		priority: PrioritySchema.default("normal"),
+		created: z.string().min(1),
+		source: TaskSourceSchema,
+		ephemeral_worktree: z.boolean().default(false),
+		error: z.string().nullable().default(null),
+		session: SessionModeSchema.default("fresh"),
+	})
+	.strict();
+
+export interface TaskInstance {
+	id: string;
+	status: TaskStatus;
+	definition: string | null;
+	item: Record<string, string> | null;
+	itemKey: string | null;
+	target: { repo: string; ref: string; worktree: string | null };
+	priority: Priority;
+	created: string;
+	source: TaskSource;
+	ephemeralWorktree: boolean;
+	error: string | null;
+	session: SessionMode;
+	prompt: string;
+}
+
+export function parseTaskFile(content: string): TaskInstance {
+	const { meta, body } = parseFrontmatter(content);
+	const m = TaskMetaSchema.parse(meta);
+	return {
+		id: m.id,
+		status: m.status,
+		definition: m.definition,
+		item: m.item,
+		itemKey: m.item_key,
+		target: m.target,
+		priority: m.priority,
+		created: m.created,
+		source: m.source,
+		ephemeralWorktree: m.ephemeral_worktree,
+		error: m.error,
+		session: m.session,
+		prompt: body,
+	};
+}
+
+export function serializeTaskFile(task: TaskInstance): string {
+	const meta = {
+		id: task.id,
+		status: task.status,
+		definition: task.definition,
+		item: task.item,
+		item_key: task.itemKey,
+		target: task.target,
+		priority: task.priority,
+		created: task.created,
+		source: task.source,
+		ephemeral_worktree: task.ephemeralWorktree,
+		error: task.error,
+		session: task.session,
+	};
+	return stringifyFrontmatter(meta, task.prompt);
+}
+
+export function laneKey(task: TaskInstance): string | null {
+	if (task.target.worktree === null) return null;
+	return `${task.target.repo}:${task.target.worktree}`;
+}

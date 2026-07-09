@@ -1,0 +1,75 @@
+[tools]
+node = "22"
+
+# --- dev loop ---
+
+[tasks.build]
+description = "Compile all packages (core, daemon, tui) to dist/"
+run = "pnpm -r build"
+
+[tasks.test]
+description = "Run all vitest suites"
+run = "pnpm -r test"
+
+[tasks.typecheck]
+description = "tsc --noEmit across packages"
+run = "pnpm -r typecheck"
+
+[tasks.lint]
+description = "biome check --write (must run under node 22)"
+run = "pnpm lint"
+
+[tasks."lint:ci"]
+description = "biome check, read-only"
+run = "pnpm lint:ci"
+
+[tasks.check]
+description = "Full gate: test + typecheck + lint:ci"
+depends = ["test", "typecheck", "lint:ci"]
+
+# --- run ---
+
+[tasks.daemon]
+description = "Run the queohoh daemon in the foreground (rebuilds first)"
+depends = ["build"]
+run = "node packages/daemon/dist/cli.js daemon"
+
+[tasks."daemon:ensure"]
+description = "Ensure a daemon is running; start one detached if not (rebuilds first)"
+depends = ["build"]
+run = "scripts/daemon-ensure.sh"
+
+[tasks."daemon:restart"]
+description = "Restart the daemon so it serves the freshly-built snapshot (rebuilds first)"
+depends = ["build"]
+run = "scripts/daemon-ensure.sh --restart"
+
+[tasks.status]
+description = "Print daemon state JSON via the unix socket"
+run = "node packages/daemon/dist/cli.js status"
+
+[tasks.tui]
+description = "Launch the Ink TUI cockpit (rebuilds first, self-heals the daemon)"
+depends = ["build", "daemon:ensure"]
+run = "node packages/tui/dist/cli.js"
+
+# --- integrations ---
+
+[tasks."mcp:register"]
+description = "Register the queohoh MCP server with Claude Code (user scope)"
+run = 'claude mcp add --scope user queohoh -- "$(command -v node)" {{config_root}}/packages/daemon/dist/cli.js mcp'
+
+[tasks."launchd:up"]
+description = "Install the launchd plist and bootstrap the daemon (rebuilds first)"
+depends = ["build"]
+run = [
+	"node packages/daemon/dist/cli.js launchd:install",
+	"launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.queohoh.daemon.plist",
+]
+
+[tasks."launchd:down"]
+description = "Stop the launchd daemon and remove the plist"
+run = [
+	"launchctl bootout gui/$(id -u)/com.queohoh.daemon || true",
+	"node packages/daemon/dist/cli.js launchd:uninstall",
+]

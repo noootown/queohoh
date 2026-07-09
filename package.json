@@ -1,0 +1,17 @@
+{
+	"name": "queohoh",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=22"
+	},
+	"scripts": {
+		"test": "pnpm -r test",
+		"typecheck": "pnpm -r typecheck",
+		"lint": "biome check --write .",
+		"lint:ci": "biome check ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.3"
+	}
+}
