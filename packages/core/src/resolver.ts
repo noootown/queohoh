@@ -16,6 +16,7 @@ export interface ResolverIO {
 		name: string,
 		branch?: string,
 	): Promise<WorktreeInfo>;
+	removeWorktree(repoPath: string, worktree: WorktreeInfo): Promise<void>;
 }
 
 export type Resolution =

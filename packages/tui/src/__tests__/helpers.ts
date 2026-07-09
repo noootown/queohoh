@@ -12,6 +12,7 @@ import type {
 	WorktreeInfo,
 } from "@queohoh/core";
 import {
+	createResolverIO,
 	MainSessionStore,
 	makeRedactor,
 	QueueStore,
@@ -81,7 +82,10 @@ export function makeSnapshot(
 	};
 }
 
-export async function startServer(opts?: { worktrees?: WorktreeInfo[] }) {
+export async function startServer(opts?: {
+	worktrees?: WorktreeInfo[];
+	execCalls?: { command: string; args: string[] }[];
+}) {
 	const base = mkdtempSync(join(tmpdir(), "qo-tui-"));
 	const repoPath = join(base, "repo");
 	mkdirSync(repoPath, { recursive: true });
@@ -103,7 +107,10 @@ export async function startServer(opts?: { worktrees?: WorktreeInfo[] }) {
 		stderr: "",
 		usage: { costUsd: 0, turns: 1, durationMs: 1 },
 	};
-	const exec: Exec = async () => ({ stdout: "", exitCode: 0 });
+	const exec: Exec = async (command, args) => {
+		opts?.execCalls?.push({ command, args });
+		return { stdout: "", exitCode: 0 };
+	};
 	const resolverIO: ResolverIO = {
 		listWorktrees: async () => opts?.worktrees ?? [],
 		prBranch: async () => null,
@@ -112,6 +119,9 @@ export async function startServer(opts?: { worktrees?: WorktreeInfo[] }) {
 			path: `/wt/${name}`,
 			branch: name,
 		}),
+		// Real removal implementation so the recording exec sees the actual
+		// force-clean → `wt remove` → `git branch -D` command sequence.
+		removeWorktree: createResolverIO(exec).removeWorktree,
 	};
 	const mainSessions = new MainSessionStore(join(base, "main-sessions.json"));
 	const engine = new Engine({

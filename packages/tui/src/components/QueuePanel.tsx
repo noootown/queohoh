@@ -1,6 +1,6 @@
 import { Text } from "ink";
 import type { QueueRow } from "../format.js";
-import { windowRows } from "../selectors.js";
+import { paneTitle, windowRows } from "../selectors.js";
 import { Pane } from "./Pane.js";
 
 export function QueuePane({
@@ -8,17 +8,26 @@ export function QueuePane({
 	selectedIndex,
 	focused,
 	capacity,
+	filter,
+	filterActive,
 }: {
 	rows: QueueRow[];
 	selectedIndex: number;
 	focused: boolean;
 	capacity: number;
+	filter: string;
+	filterActive: boolean;
 }) {
 	const { rows: windowed, offset } = windowRows(rows, selectedIndex, capacity);
 	return (
-		<Pane title="QUEUE" focused={focused} flexGrow={2} flexBasis={0}>
+		<Pane
+			title={paneTitle("QUEUE", filter, filterActive)}
+			focused={focused}
+			flexGrow={2}
+			flexBasis={0}
+		>
 			{rows.length === 0 ? (
-				<Text dimColor>queue empty — [f]/[m] on a worktree to add</Text>
+				<Text dimColor>queue empty — [a] on a worktree to add a task</Text>
 			) : (
 				windowed.map((row, i) => (
 					<Text

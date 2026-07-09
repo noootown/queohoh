@@ -100,4 +100,64 @@ describe("createResolverIO", () => {
 			/failed to spawn worktree/,
 		);
 	});
+
+	it("removeWorktree force-cleans then removes then deletes the branch", async () => {
+		const records: { key: string; cwd: string }[] = [];
+		const exec: Exec = async (command, args, opts) => {
+			records.push({ key: [command, ...args].join(" "), cwd: opts.cwd });
+			return { stdout: "", exitCode: 0 };
+		};
+		const io = createResolverIO(exec);
+		await io.removeWorktree("/repo", {
+			name: "JUS-77",
+			path: "/wt/JUS-77",
+			branch: "JUS-77-fix",
+		});
+		expect(records).toEqual([
+			{ key: "git reset --hard HEAD", cwd: "/wt/JUS-77" },
+			{ key: "git clean -fd", cwd: "/wt/JUS-77" },
+			{ key: "wt remove JUS-77-fix --yes", cwd: "/repo" },
+			{ key: "git branch -D JUS-77-fix", cwd: "/repo" },
+		]);
+	});
+
+	it("removeWorktree throws and skips branch -D when wt remove fails", async () => {
+		const keys: string[] = [];
+		const exec: Exec = async (command, args) => {
+			const key = [command, ...args].join(" ");
+			keys.push(key);
+			// Only the `wt remove` step fails.
+			return { stdout: "", exitCode: command === "wt" ? 1 : 0 };
+		};
+		const io = createResolverIO(exec);
+		await expect(
+			io.removeWorktree("/repo", {
+				name: "JUS-77",
+				path: "/wt/JUS-77",
+				branch: "JUS-77-fix",
+			}),
+		).rejects.toThrow(/failed to remove worktree: JUS-77/);
+		expect(keys).not.toContain("git branch -D JUS-77-fix");
+	});
+
+	it("removeWorktree tolerates reset/clean failures and still runs wt remove", async () => {
+		const keys: string[] = [];
+		const exec: Exec = async (command, args) => {
+			const key = [command, ...args].join(" ");
+			keys.push(key);
+			// reset + clean fail; wt remove + branch -D succeed.
+			return {
+				stdout: "",
+				exitCode: command === "git" && args[0] !== "branch" ? 1 : 0,
+			};
+		};
+		const io = createResolverIO(exec);
+		await io.removeWorktree("/repo", {
+			name: "JUS-77",
+			path: "/wt/JUS-77",
+			branch: "JUS-77-fix",
+		});
+		expect(keys).toContain("wt remove JUS-77-fix --yes");
+		expect(keys).toContain("git branch -D JUS-77-fix");
+	});
 });

@@ -14,6 +14,7 @@ function stubIO(overrides: Partial<ResolverIO> = {}): ResolverIO & {
 			spawned.push({ name, branch });
 			return { name, path: `/wt/${name}`, branch: branch ?? name };
 		},
+		removeWorktree: async () => {},
 		...overrides,
 	};
 }

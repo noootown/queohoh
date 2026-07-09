@@ -201,3 +201,23 @@ export function windowRows<T>(
 	offset = Math.max(0, Math.min(offset, rows.length - capacity));
 	return { rows: rows.slice(offset, offset + capacity), offset };
 }
+
+/** Case-insensitive substring match; the empty query matches everything. */
+export function matchesFilter(name: string, query: string): boolean {
+	if (query === "") return true;
+	return name.toLowerCase().includes(query.toLowerCase());
+}
+
+/**
+ * Pane title with the active search filter appended (`QUEUE /foo`); `active`
+ * appends a block cursor while the search input has focus. Bare `base` when
+ * there is no filter to show.
+ */
+export function paneTitle(
+	base: string,
+	filter: string,
+	active: boolean,
+): string {
+	if (!active && filter === "") return base;
+	return `${base} /${filter}${active ? "█" : ""}`;
+}

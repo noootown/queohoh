@@ -3,6 +3,8 @@ import {
 	buildProjectTabs,
 	buildWorktreeRows,
 	computePaneLayout,
+	matchesFilter,
+	paneTitle,
 	queueRowsForProject,
 	windowRows,
 	worktreeDotColor,
@@ -414,5 +416,29 @@ describe("windowRows", () => {
 
 	it("returns an empty window for non-positive capacity", () => {
 		expect(windowRows(rows, 3, 0)).toEqual({ rows: [], offset: 0 });
+	});
+});
+
+describe("matchesFilter", () => {
+	it("empty query matches everything", () => {
+		expect(matchesFilter("anything", "")).toBe(true);
+	});
+	it("case-insensitive substring", () => {
+		expect(matchesFilter("Fix-TUI-Bug", "tui")).toBe(true);
+		expect(matchesFilter("fix-tui-bug", "TUI")).toBe(true);
+		expect(matchesFilter("fix-tui-bug", "xyz")).toBe(false);
+	});
+});
+
+describe("paneTitle", () => {
+	it("bare title when no filter and not active", () => {
+		expect(paneTitle("QUEUE", "", false)).toBe("QUEUE");
+	});
+	it("shows committed filter", () => {
+		expect(paneTitle("QUEUE", "foo", false)).toBe("QUEUE /foo");
+	});
+	it("shows cursor while typing, even with empty query", () => {
+		expect(paneTitle("QUEUE", "fo", true)).toBe("QUEUE /fo█");
+		expect(paneTitle("QUEUE", "", true)).toBe("QUEUE /█");
 	});
 });

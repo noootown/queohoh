@@ -84,5 +84,24 @@ export function createResolverIO(exec: Exec): ResolverIO {
 			}
 			throw new Error(`failed to spawn worktree: ${name}`);
 		},
+
+		async removeWorktree(repoPath, worktree) {
+			// Force the worktree clean so `wt remove` can proceed (mirrors
+			// agent247's cleanup-worktree.sh — this deliberately discards
+			// uncommitted changes). `exec` never rejects, so reset/clean are
+			// inherently best-effort; only `wt remove`'s exit code is load-bearing.
+			await exec("git", ["reset", "--hard", "HEAD"], { cwd: worktree.path });
+			await exec("git", ["clean", "-fd"], { cwd: worktree.path });
+			const { exitCode } = await exec(
+				"wt",
+				["remove", worktree.branch, "--yes"],
+				{ cwd: repoPath },
+			);
+			if (exitCode !== 0) {
+				throw new Error(`failed to remove worktree: ${worktree.name}`);
+			}
+			// Best-effort: wt may have already deleted the branch.
+			await exec("git", ["branch", "-D", worktree.branch], { cwd: repoPath });
+		},
 	};
 }

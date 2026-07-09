@@ -129,7 +129,14 @@ describe("Pane", () => {
 describe("QueuePane", () => {
 	it("renders rows with glyphs and details", () => {
 		const { lastFrame } = render(
-			<QueuePane rows={rows} selectedIndex={0} focused={true} capacity={10} />,
+			<QueuePane
+				rows={rows}
+				selectedIndex={0}
+				focused={true}
+				capacity={10}
+				filter=""
+				filterActive={false}
+			/>,
 		);
 		expect(lastFrame()).toContain("QUEUE");
 		expect(lastFrame()).toContain("▶");
@@ -139,9 +146,18 @@ describe("QueuePane", () => {
 
 	it("renders the empty state", () => {
 		const { lastFrame } = render(
-			<QueuePane rows={[]} selectedIndex={0} focused={true} capacity={10} />,
+			<QueuePane
+				rows={[]}
+				selectedIndex={0}
+				focused={true}
+				capacity={10}
+				filter=""
+				filterActive={false}
+			/>,
 		);
-		expect(lastFrame()).toContain("queue empty — [f]/[m] on a worktree to add");
+		expect(lastFrame()).toContain(
+			"queue empty — [a] on a worktree to add a task",
+		);
 	});
 
 	// Archived rows carry dimColor (stripped by the test harness), so the visible
@@ -153,6 +169,8 @@ describe("QueuePane", () => {
 				selectedIndex={-1}
 				focused={false}
 				capacity={10}
+				filter=""
+				filterActive={false}
 			/>,
 		).lastFrame();
 		const archived = render(
@@ -161,6 +179,8 @@ describe("QueuePane", () => {
 				selectedIndex={-1}
 				focused={false}
 				capacity={10}
+				filter=""
+				filterActive={false}
 			/>,
 		).lastFrame();
 		expect(live).toContain("live row text");
@@ -174,6 +194,8 @@ describe("QueuePane", () => {
 				selectedIndex={-1}
 				focused={false}
 				capacity={10}
+				filter=""
+				filterActive={false}
 			/>,
 		);
 		expect(lastFrame()).toContain("⛓");
@@ -185,7 +207,14 @@ describe("QueuePane", () => {
 			queueRow(`R${i}`, `row-${i}`),
 		);
 		const { lastFrame } = render(
-			<QueuePane rows={many} selectedIndex={4} focused={true} capacity={2} />,
+			<QueuePane
+				rows={many}
+				selectedIndex={4}
+				focused={true}
+				capacity={2}
+				filter=""
+				filterActive={false}
+			/>,
 		);
 		expect(lastFrame()).toContain("row-4");
 		expect(lastFrame()).not.toContain("row-0");
@@ -205,7 +234,14 @@ describe("TasksPane", () => {
 
 	it("renders name, args and discovery badge", () => {
 		const { lastFrame } = render(
-			<TasksPane defs={defs} selectedIndex={0} focused={true} capacity={10} />,
+			<TasksPane
+				defs={defs}
+				selectedIndex={0}
+				focused={true}
+				capacity={10}
+				filter=""
+				filterActive={false}
+			/>,
 		);
 		expect(lastFrame()).toContain("review");
 		expect(lastFrame()).toContain("⏰");
@@ -242,6 +278,8 @@ describe("WorktreesPane", () => {
 				selectedIndex={0}
 				focused={true}
 				capacity={10}
+				filter=""
+				filterActive={false}
 			/>,
 		);
 		const frame = lastFrame() ?? "";
@@ -274,6 +312,8 @@ describe("WorktreesPane", () => {
 				selectedIndex={0}
 				focused={false}
 				capacity={10}
+				filter=""
+				filterActive={false}
 			/>,
 		);
 		const frame = lastFrame() ?? "";
@@ -291,6 +331,8 @@ describe("list rows never wrap (title stays visible)", () => {
 				selectedIndex={0}
 				focused={false}
 				capacity={10}
+				filter=""
+				filterActive={false}
 			/>,
 		);
 		const frame = lastFrame() ?? "";
@@ -308,7 +350,14 @@ describe("list rows never wrap (title stays visible)", () => {
 			},
 		];
 		const { lastFrame } = render(
-			<TasksPane defs={defs} selectedIndex={0} focused={false} capacity={10} />,
+			<TasksPane
+				defs={defs}
+				selectedIndex={0}
+				focused={false}
+				capacity={10}
+				filter=""
+				filterActive={false}
+			/>,
 		);
 		const frame = lastFrame() ?? "";
 		expect(frame).toContain("TASKS");
@@ -333,6 +382,8 @@ describe("list rows never wrap (title stays visible)", () => {
 				selectedIndex={-1}
 				focused={false}
 				capacity={10}
+				filter=""
+				filterActive={false}
 			/>,
 		);
 		expect(lastFrame()).toContain("◆");
@@ -342,7 +393,12 @@ describe("list rows never wrap (title stays visible)", () => {
 describe("Footer", () => {
 	it("prefers the status line (red) over hints", () => {
 		const { lastFrame } = render(
-			<Footer focus="queue" prefixArmed={false} statusLine="boom" />,
+			<Footer
+				focus="queue"
+				prefixArmed={false}
+				statusLine="boom"
+				searching={false}
+			/>,
 		);
 		expect(lastFrame()).toContain("boom");
 		expect(lastFrame()).not.toContain("[a]dd");
@@ -350,7 +406,12 @@ describe("Footer", () => {
 
 	it("shows the prefix indicator when armed", () => {
 		const { lastFrame } = render(
-			<Footer focus="queue" prefixArmed={true} statusLine={null} />,
+			<Footer
+				focus="queue"
+				prefixArmed={true}
+				statusLine={null}
+				searching={false}
+			/>,
 		);
 		expect(lastFrame()).toContain("PREFIX");
 		expect(lastFrame()).toContain("n/p cycle");
@@ -358,36 +419,74 @@ describe("Footer", () => {
 
 	it("shows queue hints without [a]dd", () => {
 		const { lastFrame } = render(
-			<Footer focus="queue" prefixArmed={false} statusLine={null} />,
+			<Footer
+				focus="queue"
+				prefixArmed={false}
+				statusLine={null}
+				searching={false}
+			/>,
 		);
 		expect(lastFrame()).not.toContain("[a]dd");
 		expect(lastFrame()).toContain("[enter] detail");
 		expect(lastFrame()).toContain("[q]uit");
 	});
 
-	it("shows tasks hints", () => {
+	it("shows tasks hints (actions moved into the [a] menu)", () => {
 		const { lastFrame } = render(
-			<Footer focus="tasks" prefixArmed={false} statusLine={null} />,
+			<Footer
+				focus="tasks"
+				prefixArmed={false}
+				statusLine={null}
+				searching={false}
+			/>,
 		);
-		expect(lastFrame()).toContain("[enter] run");
-		expect(lastFrame()).not.toContain("[a]dd");
+		expect(lastFrame()).toContain("[a] actions");
+		expect(lastFrame()).toContain("[enter] detail");
+		expect(lastFrame()).not.toContain("[enter] run");
 	});
 
-	it("shows worktrees hints with fresh/main task keys", () => {
+	it("shows worktrees hints (fresh/main/run-def moved into the [a] menu)", () => {
 		const { lastFrame } = render(
-			<Footer focus="worktrees" prefixArmed={false} statusLine={null} />,
+			<Footer
+				focus="worktrees"
+				prefixArmed={false}
+				statusLine={null}
+				searching={false}
+			/>,
 		);
-		expect(lastFrame()).toContain("[f]resh task");
-		expect(lastFrame()).toContain("[m]ain task");
-		expect(lastFrame()).toContain("[enter] run def");
+		expect(lastFrame()).toContain("[a] actions");
+		expect(lastFrame()).toContain("[enter] detail");
+		expect(lastFrame()).not.toContain("[f]resh task");
+		expect(lastFrame()).not.toContain("[m]ain task");
 	});
 
 	it("shows detail hints", () => {
 		const { lastFrame } = render(
-			<Footer focus="detail" prefixArmed={false} statusLine={null} />,
+			<Footer
+				focus="detail"
+				prefixArmed={false}
+				statusLine={null}
+				searching={false}
+			/>,
 		);
 		expect(lastFrame()).toContain("sub-tab");
 		expect(lastFrame()).toContain("[g/G] top/bottom");
+	});
+
+	it("shows the search hint while searching, overriding other hints", () => {
+		const { lastFrame } = render(
+			<Footer
+				focus="queue"
+				prefixArmed={true}
+				statusLine="boom"
+				searching={true}
+			/>,
+		);
+		expect(lastFrame()).toContain("type to filter");
+		expect(lastFrame()).toContain("[enter] apply");
+		expect(lastFrame()).toContain("[esc] clear");
+		expect(lastFrame()).not.toContain("boom");
+		expect(lastFrame()).not.toContain("PREFIX");
 	});
 });
 

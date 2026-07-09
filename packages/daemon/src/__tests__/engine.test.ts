@@ -52,6 +52,7 @@ function setup(
 			path: join(base, `wt-${name}`),
 			branch: name,
 		}),
+		removeWorktree: async () => {},
 		...overrides.resolverIO,
 	};
 	const exec: Exec = async () => ({ stdout: "", exitCode: 0 });
@@ -170,6 +171,7 @@ describe("Engine.tick", () => {
 				path: join(base, `wt-${name}`),
 				branch: name,
 			}),
+			removeWorktree: async () => {},
 		};
 		const engine = new Engine({
 			store,

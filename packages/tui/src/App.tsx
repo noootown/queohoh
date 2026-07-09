@@ -1,6 +1,7 @@
 import { laneKey, type SessionMode, type TaskDefinition } from "@queohoh/core";
 import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { type ActionId, type ActionItem, buildActions } from "./action-menu.js";
 import type { Actions, DefinitionSummary } from "./actions.js";
 import { DetailPane } from "./components/DetailPane.js";
 import { Footer } from "./components/Footer.js";
@@ -23,10 +24,18 @@ import {
 	buildProjectTabs,
 	buildWorktreeRows,
 	computePaneLayout,
+	matchesFilter,
 	queueRowsForProject,
 } from "./selectors.js";
+import { insideTmux, openTmuxWindow } from "./tmux.js";
 import { useDaemon } from "./use-daemon.js";
 import { useTerminalSize } from "./use-terminal-size.js";
+
+type MenuTarget =
+	| { kind: "queue"; taskId: string }
+	| { kind: "task"; def: DefinitionSummary }
+	| { kind: "worktree"; name: string; path: string; branch: string | null }
+	| { kind: "session"; path: string };
 
 type Mode =
 	| { kind: "list" }
@@ -38,12 +47,22 @@ type Mode =
 			index: number;
 			worktree?: string;
 	  }
-	| { kind: "def-args"; def: DefinitionSummary; worktree?: string };
+	| { kind: "def-args"; def: DefinitionSummary; worktree?: string }
+	| {
+			kind: "action-menu";
+			items: ActionItem[];
+			index: number;
+			target: MenuTarget;
+			title: string;
+	  }
+	| { kind: "confirm-remove"; worktree: string; branch: string | null }
+	| { kind: "search"; pane: ListPaneId };
 
 interface TabUiState {
 	focus: PaneId;
 	lastListPane: ListPaneId;
 	selections: { queue: number; tasks: number; worktrees: number };
+	search: Record<ListPaneId, string>;
 	subTab: Record<DetailContext["kind"], number>;
 	scrollOffset: number;
 }
@@ -52,6 +71,7 @@ const DEFAULT_UI: TabUiState = {
 	focus: "queue",
 	lastListPane: "queue",
 	selections: { queue: 0, tasks: 0, worktrees: 0 },
+	search: { queue: "", tasks: "", worktrees: "" },
 	subTab: { run: 0, definition: 0, worktree: 0, empty: 0 },
 	scrollOffset: 0,
 };
@@ -133,14 +153,27 @@ export function App({
 		[snapshot, activeName],
 	);
 
-	const queueSel = clampIdx(ui.selections.queue, queueRows.length);
-	const tasksSel = clampIdx(ui.selections.tasks, defs.length);
-	const wtSel = clampIdx(ui.selections.worktrees, wtRows.length);
+	const visibleQueueRows = useMemo(
+		() => queueRows.filter((r) => matchesFilter(r.summary, ui.search.queue)),
+		[queueRows, ui.search.queue],
+	);
+	const visibleDefs = useMemo(
+		() => defs.filter((d) => matchesFilter(d.name, ui.search.tasks)),
+		[defs, ui.search.tasks],
+	);
+	const visibleWtRows = useMemo(
+		() => wtRows.filter((r) => matchesFilter(r.name, ui.search.worktrees)),
+		[wtRows, ui.search.worktrees],
+	);
+
+	const queueSel = clampIdx(ui.selections.queue, visibleQueueRows.length);
+	const tasksSel = clampIdx(ui.selections.tasks, visibleDefs.length);
+	const wtSel = clampIdx(ui.selections.worktrees, visibleWtRows.length);
 
 	const context: DetailContext = (() => {
 		if (!snapshot || !activeName) return { kind: "empty" };
 		if (ui.lastListPane === "queue") {
-			const row = queueRows[queueSel];
+			const row = visibleQueueRows[queueSel];
 			if (!row) return { kind: "empty" };
 			const task = [...snapshot.tasks, ...snapshot.archivedRecent].find(
 				(t) => t.id === row.id,
@@ -148,12 +181,12 @@ export function App({
 			return task ? { kind: "run", task } : { kind: "empty" };
 		}
 		if (ui.lastListPane === "tasks") {
-			const def = defs[tasksSel];
+			const def = visibleDefs[tasksSel];
 			return def
 				? { kind: "definition", repo: def.repo, name: def.name }
 				: { kind: "empty" };
 		}
-		const row = wtRows[wtSel];
+		const row = visibleWtRows[wtSel];
 		if (!row) return { kind: "empty" };
 		const lane = `${activeName}:${row.name}`;
 		const laneTasks = [...snapshot.tasks, ...snapshot.archivedRecent].filter(
@@ -241,19 +274,167 @@ export function App({
 		});
 	};
 
+	// The action menu targets the same item the detail pane shows: the last
+	// focused list pane's selection (context is already derived exactly that way).
+	const openActionMenu = (): Mode | null => {
+		if (context.kind === "run") {
+			const row = visibleQueueRows[queueSel];
+			if (!row) return null;
+			return {
+				kind: "action-menu",
+				items: buildActions({
+					kind: "queue",
+					status: context.task.status,
+					archived: row.kind === "archived",
+				}),
+				index: 0,
+				target: { kind: "queue", taskId: context.task.id },
+				title: row.summary,
+			};
+		}
+		if (context.kind === "definition") {
+			const def = visibleDefs.find(
+				(d) => d.repo === context.repo && d.name === context.name,
+			);
+			if (!def) return null;
+			return {
+				kind: "action-menu",
+				items: buildActions({ kind: "task" }),
+				index: 0,
+				target: { kind: "task", def },
+				title: def.name,
+			};
+		}
+		if (context.kind === "worktree") {
+			const row = context.row;
+			if (row.kind === "session") {
+				return {
+					kind: "action-menu",
+					items: buildActions({ kind: "session", insideTmux: insideTmux() }),
+					index: 0,
+					target: { kind: "session", path: row.path },
+					title: row.name,
+				};
+			}
+			return {
+				kind: "action-menu",
+				items: buildActions({
+					kind: "worktree",
+					busy: row.state === "busy",
+					insideTmux: insideTmux(),
+				}),
+				index: 0,
+				target: {
+					kind: "worktree",
+					name: row.name,
+					path: row.path,
+					branch: row.branch,
+				},
+				title: row.name,
+			};
+		}
+		return null;
+	};
+
+	const runMenuAction = (id: ActionId, target: MenuTarget) => {
+		setMode({ kind: "list" });
+		switch (id) {
+			case "rerun":
+				if (target.kind === "queue") act(actions.retry(target.taskId));
+				return;
+			case "skip":
+				if (target.kind === "queue") act(actions.skip(target.taskId));
+				return;
+			case "assign-worktree":
+				if (target.kind === "queue") {
+					setInput("");
+					setMode({ kind: "worktree-input", taskId: target.taskId });
+				}
+				return;
+			case "run":
+				if (target.kind !== "task") return;
+				if (target.def.args.length > 0) {
+					setInput("");
+					setMode({ kind: "def-args", def: target.def });
+				} else {
+					act(actions.runDefinition(target.def.repo, target.def.name, []));
+					invalidateDefs();
+				}
+				return;
+			case "task-fresh":
+			case "task-main":
+				if (target.kind === "worktree") {
+					setInput("");
+					setMode({
+						kind: "add-task",
+						worktree: target.name,
+						session: id === "task-fresh" ? "fresh" : "main",
+					});
+				}
+				return;
+			case "run-def":
+				if (target.kind !== "worktree") return;
+				if (defs.length === 0) {
+					setStatusLine("no task definitions found");
+					return;
+				}
+				setMode({ kind: "def-pick", defs, index: 0, worktree: target.name });
+				return;
+			case "tmux-open":
+				if (target.kind === "worktree" || target.kind === "session") {
+					act(openTmuxWindow(target.path));
+				}
+				return;
+			case "remove-worktree":
+				if (target.kind === "worktree") {
+					setMode({
+						kind: "confirm-remove",
+						worktree: target.name,
+						branch: target.branch,
+					});
+				}
+				return;
+			default: {
+				const _exhaustive: never = id;
+				return _exhaustive;
+			}
+		}
+	};
+
 	const dispatch = (action: KeymapAction) => {
 		switch (action.type) {
 			case "quit":
 				exit();
 				return;
+			case "open-action-menu": {
+				const opened = openActionMenu();
+				if (opened === null) setStatusLine("nothing selected");
+				else setMode(opened);
+				return;
+			}
+			case "open-search": {
+				if (ui.focus === "detail") return;
+				setMode({ kind: "search", pane: ui.focus });
+				return;
+			}
+			case "clear-search": {
+				if (ui.focus === "detail") return;
+				const pane = ui.focus;
+				patchTab((s) => ({
+					...s,
+					search: { ...s.search, [pane]: "" },
+					selections: { ...s.selections, [pane]: 0 },
+				}));
+				return;
+			}
 			case "move-selection": {
 				const pane = ui.focus as ListPaneId;
 				const count =
 					pane === "queue"
-						? queueRows.length
+						? visibleQueueRows.length
 						: pane === "tasks"
-							? defs.length
-							: wtRows.length;
+							? visibleDefs.length
+							: visibleWtRows.length;
 				const cur =
 					pane === "queue" ? queueSel : pane === "tasks" ? tasksSel : wtSel;
 				const next = clampIdx(cur + action.delta, count);
@@ -305,62 +486,6 @@ export function App({
 					subTab: { ...s.subTab, [kind]: idx },
 					scrollOffset: 0,
 				}));
-				return;
-			}
-			case "worktree-add": {
-				const row = wtRows[wtSel];
-				if (row?.kind !== "worktree") return;
-				setInput("");
-				setMode({
-					kind: "add-task",
-					worktree: row.name,
-					session: action.session,
-				});
-				return;
-			}
-			case "queue-retry": {
-				const row = queueRows[queueSel];
-				if (row && row.kind !== "archived") act(actions.retry(row.id));
-				return;
-			}
-			case "queue-skip": {
-				const row = queueRows[queueSel];
-				if (row && row.kind !== "archived") act(actions.skip(row.id));
-				return;
-			}
-			case "queue-worktree": {
-				const row = queueRows[queueSel];
-				if (row && row.kind !== "archived") {
-					setInput("");
-					setMode({ kind: "worktree-input", taskId: row.id });
-				}
-				return;
-			}
-			case "activate": {
-				if (ui.focus === "tasks") {
-					const def = defs[tasksSel];
-					if (!def) return;
-					if (def.args.length > 0) {
-						setInput("");
-						setMode({ kind: "def-args", def });
-					} else {
-						act(actions.runDefinition(def.repo, def.name, []));
-						invalidateDefs();
-					}
-				} else if (ui.focus === "worktrees") {
-					const row = wtRows[wtSel];
-					if (row?.kind !== "worktree") return;
-					if (defs.length === 0) {
-						setStatusLine("no task definitions found");
-						return;
-					}
-					setMode({
-						kind: "def-pick",
-						defs,
-						index: 0,
-						worktree: row.name,
-					});
-				}
 				return;
 			}
 			case "scroll": {
@@ -420,6 +545,54 @@ export function App({
 			}
 			return;
 		}
+		if (mode.kind === "action-menu") {
+			if (key.escape || char === "q") {
+				setMode({ kind: "list" });
+			} else if (key.upArrow || char === "k") {
+				setMode({ ...mode, index: Math.max(0, mode.index - 1) });
+			} else if (key.downArrow || char === "j") {
+				setMode({
+					...mode,
+					index: Math.min(mode.items.length - 1, mode.index + 1),
+				});
+			} else if (key.return) {
+				const item = mode.items[mode.index];
+				// disabled rows are selectable but inert — the menu shape stays stable
+				if (item && item.disabled === undefined) {
+					runMenuAction(item.id, mode.target);
+				}
+			}
+			return;
+		}
+		if (mode.kind === "confirm-remove") {
+			if (char === "y") {
+				if (activeName) act(actions.removeWorktree(activeName, mode.worktree));
+				setMode({ kind: "list" });
+			} else if (char === "n" || char === "q" || key.escape) {
+				setMode({ kind: "list" });
+			}
+			return;
+		}
+		if (mode.kind === "search") {
+			const pane = mode.pane;
+			const setQuery = (fn: (cur: string) => string) =>
+				patchTab((s) => ({
+					...s,
+					search: { ...s.search, [pane]: fn(s.search[pane]) },
+					selections: { ...s.selections, [pane]: 0 },
+				}));
+			if (key.return) {
+				setMode({ kind: "list" });
+			} else if (key.escape) {
+				setQuery(() => "");
+				setMode({ kind: "list" });
+			} else if (key.backspace || key.delete) {
+				setQuery((cur) => cur.slice(0, -1));
+			} else if (char && !key.ctrl && !key.meta) {
+				setQuery((cur) => cur + char);
+			}
+			return;
+		}
 		if (mode.kind !== "list") return; // text inputs handled by TextInput
 
 		// Mouse wheel scrolls the focused pane: detail scrolls its content, the
@@ -449,6 +622,7 @@ export function App({
 			leftArrow: key.leftArrow,
 			rightArrow: key.rightArrow,
 			return: key.return,
+			escape: key.escape,
 		};
 		const result = handleKey(prefixArmed, ui.focus, keyInput);
 		setPrefixArmed(result.prefixArmed);
@@ -483,22 +657,28 @@ export function App({
 			<Box flexGrow={1}>
 				<Box width="34%" flexShrink={0} flexDirection="column">
 					<QueuePane
-						rows={queueRows}
+						rows={visibleQueueRows}
 						selectedIndex={queueSel}
 						focused={ui.focus === "queue"}
 						capacity={queueCap}
+						filter={ui.search.queue}
+						filterActive={mode.kind === "search" && mode.pane === "queue"}
 					/>
 					<TasksPane
-						defs={defs}
+						defs={visibleDefs}
 						selectedIndex={tasksSel}
 						focused={ui.focus === "tasks"}
 						capacity={listCap}
+						filter={ui.search.tasks}
+						filterActive={mode.kind === "search" && mode.pane === "tasks"}
 					/>
 					<WorktreesPane
-						rows={wtRows}
+						rows={visibleWtRows}
 						selectedIndex={wtSel}
 						focused={ui.focus === "worktrees"}
 						capacity={listCap}
+						filter={ui.search.worktrees}
+						filterActive={mode.kind === "search" && mode.pane === "worktrees"}
 					/>
 				</Box>
 				<DetailPane
@@ -516,6 +696,7 @@ export function App({
 				focus={ui.focus}
 				prefixArmed={prefixArmed}
 				statusLine={statusLine}
+				searching={mode.kind === "search"}
 			/>
 			{mode.kind === "add-task" ? (
 				<Modal
@@ -613,6 +794,43 @@ export function App({
 							)}
 						</Text>
 					))}
+				</Modal>
+			) : null}
+			{mode.kind === "action-menu" ? (
+				<Modal
+					title={mode.title}
+					columns={columns}
+					rows={rows}
+					hint="↑/↓ move · enter run · esc close"
+				>
+					{mode.items.map((item, i) => (
+						<Text
+							key={item.id}
+							inverse={i === mode.index}
+							dimColor={item.disabled !== undefined}
+						>
+							{padLine(
+								` ${item.label}${item.disabled ? ` — ${item.disabled}` : ""}`,
+								modalInner,
+							)}
+						</Text>
+					))}
+				</Modal>
+			) : null}
+			{mode.kind === "confirm-remove" ? (
+				<Modal
+					title={`Remove worktree — ${mode.worktree}`}
+					columns={columns}
+					rows={rows}
+					hint="y confirm · n/esc cancel"
+				>
+					<Text>
+						{padLine(
+							` wt remove ${mode.branch ?? mode.worktree} — discards uncommitted changes`,
+							modalInner,
+						)}
+					</Text>
+					<Text>{padLine(` and deletes the local branch`, modalInner)}</Text>
 				</Modal>
 			) : null}
 		</Box>

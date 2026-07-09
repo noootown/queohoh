@@ -85,6 +85,7 @@ async function setup() {
 			path: `/wt/${name}`,
 			branch: name,
 		}),
+		removeWorktree: async () => {},
 	};
 	const engine = new Engine({
 		store,

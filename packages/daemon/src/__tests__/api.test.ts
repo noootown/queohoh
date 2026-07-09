@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
 import {
+	createResolverIO,
 	MainSessionStore,
 	makeRedactor,
 	QueueStore,
@@ -19,7 +20,11 @@ afterEach(async () => {
 	while (cleanups.length) await cleanups.pop()?.();
 });
 
-async function setup() {
+async function setup(opts?: {
+	worktrees?: { name: string; path: string; branch: string }[];
+	execCalls?: { command: string; args: string[] }[];
+	execExitCode?: number;
+}) {
 	const base = mkdtempSync(join(tmpdir(), "qo-api-"));
 	const repoPath = join(base, "repo");
 	const workspace = join(base, "ws");
@@ -47,15 +52,21 @@ async function setup() {
 		stderr: "",
 		usage: { costUsd: 0, turns: 1, durationMs: 1 },
 	};
-	const exec: Exec = async () => ({ stdout: "", exitCode: 0 });
+	const exec: Exec = async (command, args) => {
+		opts?.execCalls?.push({ command, args });
+		return { stdout: "", exitCode: opts?.execExitCode ?? 0 };
+	};
 	const resolverIO: ResolverIO = {
-		listWorktrees: async () => [],
+		listWorktrees: async () => opts?.worktrees ?? [],
 		prBranch: async () => null,
 		spawnWorktree: async (_r, name) => ({
 			name,
 			path: `/wt/${name}`,
 			branch: name,
 		}),
+		// Real removal implementation so the recording exec sees the actual
+		// force-clean → `wt remove` → `git branch -D` command sequence.
+		removeWorktree: createResolverIO(exec).removeWorktree,
 	};
 	const mainSessions = new MainSessionStore(join(base, "main-sessions.json"));
 	const engine = new Engine({
@@ -339,5 +350,74 @@ describe("ApiServer", () => {
 		await server.close();
 		await closed;
 		expect(true).toBe(true);
+	});
+
+	describe("removeWorktree", () => {
+		const WT = [
+			{ name: "platform.fix-x", path: "/wt/platform.fix-x", branch: "fix-x" },
+		];
+
+		it("force-cleans and removes an idle worktree via wt remove and reports mutation", async () => {
+			const execCalls: { command: string; args: string[] }[] = [];
+			const { client, mutations } = await setup({ worktrees: WT, execCalls });
+			const before = mutations();
+			expect(
+				await client.call("removeWorktree", {
+					repo: "platform",
+					name: "fix-x",
+				}),
+			).toBe(true);
+			expect(execCalls).toContainEqual({
+				command: "wt",
+				args: ["remove", "fix-x", "--yes"],
+			});
+			expect(mutations()).toBe(before + 1);
+		});
+
+		it("matches the full worktree name too", async () => {
+			const execCalls: { command: string; args: string[] }[] = [];
+			const { client } = await setup({ worktrees: WT, execCalls });
+			await client.call("removeWorktree", {
+				repo: "platform",
+				name: "platform.fix-x",
+			});
+			expect(execCalls.some((c) => c.command === "wt")).toBe(true);
+		});
+
+		it("rejects when a task is running on the worktree's lane", async () => {
+			const { client, store } = await setup({ worktrees: WT });
+			const task = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "worktree:platform.fix-x",
+				source: "mcp",
+				priority: "normal",
+				session: "fresh",
+			});
+			store.update(task.id, {
+				status: "running",
+				target: { ...task.target, worktree: "platform.fix-x" },
+			});
+			await expect(
+				client.call("removeWorktree", { repo: "platform", name: "fix-x" }),
+			).rejects.toThrow(/busy/);
+		});
+
+		it("rejects unknown worktree and unknown repo", async () => {
+			const { client } = await setup({ worktrees: WT });
+			await expect(
+				client.call("removeWorktree", { repo: "platform", name: "nope" }),
+			).rejects.toThrow(/not found/);
+			await expect(
+				client.call("removeWorktree", { repo: "ghost", name: "fix-x" }),
+			).rejects.toThrow(/unknown repo/);
+		});
+
+		it("surfaces wt remove failure as an error", async () => {
+			const { client } = await setup({ worktrees: WT, execExitCode: 128 });
+			await expect(
+				client.call("removeWorktree", { repo: "platform", name: "fix-x" }),
+			).rejects.toThrow(/failed to remove worktree/);
+		});
 	});
 });

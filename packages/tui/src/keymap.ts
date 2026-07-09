@@ -1,5 +1,3 @@
-import type { SessionMode } from "@queohoh/core";
-
 export type PaneId = "queue" | "tasks" | "worktrees" | "detail";
 export type ListPaneId = Exclude<PaneId, "detail">;
 export type Direction = "up" | "down" | "left" | "right";
@@ -12,23 +10,22 @@ export interface KeyInput {
 	leftArrow: boolean;
 	rightArrow: boolean;
 	return: boolean;
+	escape: boolean;
 }
 
 export type KeymapAction =
 	| { type: "quit" }
 	| { type: "move-selection"; delta: 1 | -1 }
-	| { type: "activate" } // enter on tasks/worktrees; enter on queue = focus detail
 	| { type: "focus"; pane: PaneId }
 	| { type: "move-focus"; dir: Direction }
 	| { type: "switch-tab"; index: number } // 0-based
 	| { type: "cycle-tab"; delta: 1 | -1 }
 	| { type: "switch-subtab"; index: number } // 0-based
-	| { type: "worktree-add"; session: SessionMode }
-	| { type: "queue-retry" }
-	| { type: "queue-skip" }
-	| { type: "queue-worktree" }
+	| { type: "open-action-menu" }
 	| { type: "scroll"; delta: 1 | -1 }
-	| { type: "scroll-edge"; edge: "top" | "bottom" };
+	| { type: "scroll-edge"; edge: "top" | "bottom" }
+	| { type: "open-search" }
+	| { type: "clear-search" };
 
 export interface KeymapResult {
 	prefixArmed: boolean; // new armed state
@@ -75,6 +72,7 @@ export function handleKey(
 	}
 	if (key.input === "q")
 		return { prefixArmed: false, action: { type: "quit" } };
+	if (key.input === "a") return act({ type: "open-action-menu" });
 	if (/^[1-9]$/.test(key.input)) {
 		return {
 			prefixArmed: false,
@@ -89,22 +87,11 @@ export function handleKey(
 		if (key.input === "G") return act({ type: "scroll-edge", edge: "bottom" });
 		return { prefixArmed: false, action: null };
 	}
+	if (key.input === "/") return act({ type: "open-search" });
+	if (key.escape) return act({ type: "clear-search" });
 	if (dir === "down") return act({ type: "move-selection", delta: 1 });
 	if (dir === "up") return act({ type: "move-selection", delta: -1 });
-	if (focus === "queue") {
-		if (key.return) return act({ type: "focus", pane: "detail" });
-		if (key.input === "r") return act({ type: "queue-retry" });
-		if (key.input === "s") return act({ type: "queue-skip" });
-		if (key.input === "w") return act({ type: "queue-worktree" });
-	}
-	if (focus === "tasks" && key.return) return act({ type: "activate" });
-	if (focus === "worktrees") {
-		if (key.input === "f")
-			return act({ type: "worktree-add", session: "fresh" });
-		if (key.input === "m")
-			return act({ type: "worktree-add", session: "main" });
-		if (key.return || key.input === "t") return act({ type: "activate" });
-	}
+	if (key.return) return act({ type: "focus", pane: "detail" });
 	return { prefixArmed: false, action: null };
 }
 

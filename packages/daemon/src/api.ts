@@ -268,6 +268,14 @@ export class ApiServer {
 				deps.onMutation();
 				return updated;
 			}
+			case "removeWorktree": {
+				await deps.engine.removeWorktree(
+					String(params.repo ?? ""),
+					String(params.name ?? ""),
+				);
+				deps.onMutation();
+				return true;
+			}
 			case "heartbeatInteractive": {
 				deps.registry.upsertInteractive(
 					String(params.cwd),

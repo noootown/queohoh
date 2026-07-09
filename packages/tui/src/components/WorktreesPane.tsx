@@ -1,5 +1,6 @@
 import { Text } from "ink";
 import {
+	paneTitle,
 	type WorktreeRow,
 	windowRows,
 	worktreeDotColor,
@@ -11,15 +12,24 @@ export function WorktreesPane({
 	selectedIndex,
 	focused,
 	capacity,
+	filter,
+	filterActive,
 }: {
 	rows: WorktreeRow[];
 	selectedIndex: number;
 	focused: boolean;
 	capacity: number;
+	filter: string;
+	filterActive: boolean;
 }) {
 	const { rows: windowed, offset } = windowRows(rows, selectedIndex, capacity);
 	return (
-		<Pane title="WORKTREES" focused={focused} flexGrow={1} flexBasis={0}>
+		<Pane
+			title={paneTitle("WORKTREES", filter, filterActive)}
+			focused={focused}
+			flexGrow={1}
+			flexBasis={0}
+		>
 			{rows.length === 0 ? (
 				<Text dimColor>no worktrees</Text>
 			) : (

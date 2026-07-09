@@ -66,6 +66,32 @@ export class Engine {
 		return null;
 	}
 
+	/**
+	 * Remove a worktree by name. `name` may be the full directory name
+	 * (`<repo>.<branch>`) or the TUI's display name with the `<repo>.` prefix
+	 * stripped — both are accepted because rows only carry the stripped form.
+	 * Refuses while a task is running on the worktree's lane. The removal itself
+	 * force-cleans the worktree, removes it via `wt`, then deletes the local
+	 * branch (mirrors agent247's cleanup-worktree.sh) — this discards any
+	 * uncommitted changes.
+	 */
+	async removeWorktree(repo: string, name: string): Promise<void> {
+		const repoPath = this.repoPath(repo);
+		if (repoPath === null) throw new Error(`unknown repo: ${repo}`);
+		const list = await this.deps.resolverIO.listWorktrees(repoPath);
+		const wt = list.find(
+			(w) => w.name === name || w.name === `${repo}.${name}`,
+		);
+		if (!wt) throw new Error(`worktree not found: ${repo}:${name}`);
+		const lanes = new Set([`${repo}:${wt.name}`, `${repo}:${name}`]);
+		const busy = this.deps.store
+			.list()
+			.some((t) => t.status === "running" && lanes.has(laneKey(t) ?? ""));
+		if (busy) throw new Error(`worktree busy: a task is running on ${wt.name}`);
+		await this.deps.resolverIO.removeWorktree(repoPath, wt);
+		this.worktreeCache.delete(repo);
+	}
+
 	private repoPath(repo: string): string | null {
 		return this.deps.config.projects.find((p) => p.name === repo)?.path ?? null;
 	}

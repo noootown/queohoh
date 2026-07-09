@@ -17,6 +17,7 @@ function key(overrides: Partial<KeyInput> = {}): KeyInput {
 		leftArrow: false,
 		rightArrow: false,
 		return: false,
+		escape: false,
 		...overrides,
 	};
 }
@@ -161,26 +162,13 @@ describe("handleKey — queue focus", () => {
 		});
 	});
 
-	it("r/s/w → queue-retry/skip/worktree", () => {
-		expect(handleKey(false, "queue", key({ input: "r" }))).toEqual({
-			prefixArmed: false,
-			action: { type: "queue-retry" },
-		});
-		expect(handleKey(false, "queue", key({ input: "s" }))).toEqual({
-			prefixArmed: false,
-			action: { type: "queue-skip" },
-		});
-		expect(handleKey(false, "queue", key({ input: "w" }))).toEqual({
-			prefixArmed: false,
-			action: { type: "queue-worktree" },
-		});
-	});
-
-	it("a → no action (queue-add mapping removed)", () => {
-		expect(handleKey(false, "queue", key({ input: "a" }))).toEqual({
-			prefixArmed: false,
-			action: null,
-		});
+	it("r/s/w are unbound (moved to the action menu)", () => {
+		for (const input of ["r", "s", "w"]) {
+			expect(handleKey(false, "queue", key({ input }))).toEqual({
+				prefixArmed: false,
+				action: null,
+			});
+		}
 	});
 
 	it("return → focus detail", () => {
@@ -203,18 +191,31 @@ describe("handleKey — tasks focus", () => {
 		});
 	});
 
-	it("return → activate", () => {
+	it("return → focus detail", () => {
 		expect(handleKey(false, "tasks", key({ return: true }))).toEqual({
 			prefixArmed: false,
-			action: { type: "activate" },
+			action: { type: "focus", pane: "detail" },
 		});
 	});
 
-	it("does not treat queue-only keys as actions", () => {
-		expect(handleKey(false, "tasks", key({ input: "a" }))).toEqual({
-			prefixArmed: false,
-			action: null,
-		});
+	it("does not treat queue-only keys (r/s/w) as actions", () => {
+		for (const input of ["r", "s", "w"]) {
+			expect(handleKey(false, "tasks", key({ input }))).toEqual({
+				prefixArmed: false,
+				action: null,
+			});
+		}
+	});
+});
+
+describe("handleKey — action menu", () => {
+	it("a → open-action-menu from every pane", () => {
+		for (const focus of ALL_PANES) {
+			expect(handleKey(false, focus, key({ input: "a" }))).toEqual({
+				prefixArmed: false,
+				action: { type: "open-action-menu" },
+			});
+		}
 	});
 });
 
@@ -230,48 +231,21 @@ describe("handleKey — worktrees focus", () => {
 		});
 	});
 
-	it("return → activate", () => {
+	it("return → focus detail", () => {
 		expect(handleKey(false, "worktrees", key({ return: true }))).toEqual({
 			prefixArmed: false,
-			action: { type: "activate" },
+			action: { type: "focus", pane: "detail" },
 		});
 	});
 
-	it("t → activate", () => {
-		expect(handleKey(false, "worktrees", key({ input: "t" }))).toEqual({
-			prefixArmed: false,
-			action: { type: "activate" },
-		});
-	});
-
-	it("f → worktree-add fresh", () => {
-		expect(handleKey(false, "worktrees", key({ input: "f" }))).toEqual({
-			prefixArmed: false,
-			action: { type: "worktree-add", session: "fresh" },
-		});
-	});
-
-	it("m → worktree-add main", () => {
-		expect(handleKey(false, "worktrees", key({ input: "m" }))).toEqual({
-			prefixArmed: false,
-			action: { type: "worktree-add", session: "main" },
-		});
-	});
-});
-
-describe("handleKey — f/m only fire on worktrees pane", () => {
-	for (const focus of ["queue", "tasks", "detail"] as const) {
-		it(`f/m emit no action on ${focus}`, () => {
-			expect(handleKey(false, focus, key({ input: "f" }))).toEqual({
+	it("f/m/t are unbound (moved to the action menu)", () => {
+		for (const input of ["f", "m", "t"]) {
+			expect(handleKey(false, "worktrees", key({ input }))).toEqual({
 				prefixArmed: false,
 				action: null,
 			});
-			expect(handleKey(false, focus, key({ input: "m" }))).toEqual({
-				prefixArmed: false,
-				action: null,
-			});
-		});
-	}
+		}
+	});
 });
 
 describe("handleKey — detail focus", () => {
@@ -317,6 +291,37 @@ describe("handleKey — detail focus", () => {
 			action: null,
 		});
 		expect(handleKey(false, "detail", key({ return: true }))).toEqual({
+			prefixArmed: false,
+			action: null,
+		});
+	});
+});
+
+describe("handleKey — search", () => {
+	it("/ → open-search on list panes", () => {
+		for (const focus of LIST_PANES) {
+			expect(handleKey(false, focus, key({ input: "/" }))).toEqual({
+				prefixArmed: false,
+				action: { type: "open-search" },
+			});
+		}
+	});
+
+	it("/ is a no-op on detail", () => {
+		expect(handleKey(false, "detail", key({ input: "/" }))).toEqual({
+			prefixArmed: false,
+			action: null,
+		});
+	});
+
+	it("esc → clear-search on list panes, no-op on detail", () => {
+		for (const focus of LIST_PANES) {
+			expect(handleKey(false, focus, key({ escape: true }))).toEqual({
+				prefixArmed: false,
+				action: { type: "clear-search" },
+			});
+		}
+		expect(handleKey(false, "detail", key({ escape: true }))).toEqual({
 			prefixArmed: false,
 			action: null,
 		});

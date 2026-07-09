@@ -1,7 +1,10 @@
+import { EventEmitter } from "node:events";
 import { Box, Text } from "ink";
 import { render } from "ink-testing-library";
 import type { ReactNode } from "react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { App } from "../App.js";
+import { createActions } from "../actions.js";
 import {
 	Modal,
 	modalGeometry,
@@ -9,6 +12,7 @@ import {
 	padLine,
 } from "../components/Modal.js";
 import { TextInput } from "../components/TextInput.js";
+import { cleanups, startServer } from "./helpers.js";
 
 // Modal is absolute-positioned, so it only renders inside a sized
 // `position="relative"` root (the real App usage). This mirrors that.
@@ -207,5 +211,229 @@ describe("TextInput composed inside Modal", () => {
 		const rightBorder = line.indexOf("│", idx);
 		const between = line.slice(idx, rightBorder);
 		expect(between).not.toContain("X");
+	});
+});
+
+// --- App-driven action menu -------------------------------------------------
+// These exercise the real App wiring (daemon snapshot + createActions), driving
+// keys through app.stdin exactly like app.test.tsx, then asserting on frames and
+// on daemon/store side effects.
+
+afterEach(async () => {
+	while (cleanups.length) await cleanups.pop()?.();
+});
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const CTRL_S = "\u0013";
+const DOWN = "\u001b[B";
+const ESC = "\u001b";
+
+type FakeStream = EventEmitter & { columns: number; rows: number };
+function fakeStream(columns: number, rows: number): FakeStream {
+	const emitter = new EventEmitter() as FakeStream;
+	emitter.columns = columns;
+	emitter.rows = rows;
+	return emitter;
+}
+const big = () => fakeStream(120, 40) as unknown as NodeJS.WriteStream;
+
+// Move focus from the default queue pane down to the worktrees pane.
+const focusWorktrees = async (app: ReturnType<typeof render>) => {
+	app.stdin.write(CTRL_S);
+	await wait(20);
+	app.stdin.write(DOWN); // queue -> tasks
+	await wait(30);
+	app.stdin.write(CTRL_S);
+	await wait(20);
+	app.stdin.write(DOWN); // tasks -> worktrees
+	await wait(40);
+};
+
+describe("action menu", () => {
+	it("a on a failed queue row opens the menu with Rerun enabled", async () => {
+		const { store, server, sock, base } = await startServer();
+		// The summary tail (TITLETAIL) is chosen to be visible ONLY in the modal
+		// title: the queue pane column is narrow enough to truncate it away, while
+		// promptSummary keeps the full 50-char line and the modal title (~70 inner
+		// cols) renders it whole. So the tail assertion locks in that the menu
+		// title is the targeted item's name, not the background pane row.
+		const task = store.create({
+			prompt: "boom task xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx TITLETAIL",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(task.id, { status: "failed", error: "boom" });
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		// self-validation: before the menu opens, the tail is nowhere on screen
+		// (the queue pane truncates it), so seeing it later proves it came from
+		// the modal title.
+		expect(app.lastFrame() ?? "").not.toContain("TITLETAIL");
+		app.stdin.write("a");
+		await wait(60);
+		const frame = app.lastFrame() ?? "";
+		// menu-open sentinel: the action-menu hint (unique to this modal); the
+		// modal title is the targeted item's name (the queue row summary).
+		expect(frame).toContain("enter run · esc close");
+		expect(frame).toContain("TITLETAIL");
+		expect(frame).toContain("Rerun");
+		expect(frame).toContain("Skip");
+		expect(frame).toContain("Assign worktree…");
+		// Assign worktree… is disabled for a failed task and shows its reason.
+		expect(frame).toContain("only for needs-input tasks");
+		// Rerun is enabled for a failed task: its row carries no disabled reason
+		// (disabled rows render with an em-dash separator).
+		const rerunLine = frame.split("\n").find((l) => l.includes("Rerun")) ?? "";
+		expect(rerunLine).not.toContain("—");
+	});
+
+	it("enter on an enabled row executes and closes the menu (retry)", async () => {
+		const { store, server, sock, base } = await startServer();
+		const task = store.create({
+			prompt: "boom task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(task.id, { status: "failed", error: "boom" });
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write("a");
+		await wait(60);
+		expect(app.lastFrame()).toContain("enter run · esc close");
+		app.stdin.write("\r"); // enter on Rerun (index 0, enabled)
+		await wait(150);
+		// menu closed …
+		expect(app.lastFrame()).not.toContain("enter run · esc close");
+		// … and retry flipped the task back to queued in the shared store.
+		expect(store.get(task.id)?.status).toBe("queued");
+	});
+
+	it("enter on a disabled row does nothing", async () => {
+		const { store, server, sock, base } = await startServer();
+		const task = store.create({
+			prompt: "busy task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(task.id, { status: "running" });
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write("a");
+		await wait(60);
+		expect(app.lastFrame()).toContain("enter run · esc close");
+		// Rerun is disabled for a running task and shows its reason.
+		const rerunLine =
+			(app.lastFrame() ?? "").split("\n").find((l) => l.includes("Rerun")) ??
+			"";
+		expect(rerunLine).toContain("cannot rerun a running task");
+		app.stdin.write("\r"); // enter on the disabled Rerun row
+		await wait(150);
+		// menu stays open, status unchanged (no retry fired).
+		expect(app.lastFrame()).toContain("enter run · esc close");
+		expect(store.get(task.id)?.status).toBe("running");
+	});
+
+	it("worktree menu: Remove worktree… opens y/n confirm; y calls removeWorktree", async () => {
+		const execCalls: { command: string; args: string[] }[] = [];
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+			execCalls,
+		});
+		await engine.tick();
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		expect(app.lastFrame()).toContain("wt-a");
+		await focusWorktrees(app);
+		app.stdin.write("a");
+		await wait(60);
+		expect(app.lastFrame()).toContain("enter run · esc close");
+		expect(app.lastFrame()).toContain("Remove worktree…");
+		// Remove worktree… is the 5th row (index 4): j×4.
+		for (let i = 0; i < 4; i += 1) {
+			app.stdin.write("j");
+			await wait(20);
+		}
+		app.stdin.write("\r"); // enter → confirm-remove modal
+		await wait(60);
+		expect(app.lastFrame()).toContain("Remove worktree — wt-a");
+		expect(app.lastFrame()).toContain("discards uncommitted changes");
+		expect(app.lastFrame()).toContain("deletes the local branch");
+		expect(app.lastFrame()).toContain("y confirm");
+		app.stdin.write("y"); // confirm
+		await wait(150);
+		// daemon ran `wt remove <branch> --yes` (exec recorded by the fixture).
+		expect(execCalls).toContainEqual({
+			command: "wt",
+			args: ["remove", "wt-a", "--yes"],
+		});
+	});
+
+	it("esc closes the menu without acting", async () => {
+		const { store, server, sock, base } = await startServer();
+		const task = store.create({
+			prompt: "boom task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(task.id, { status: "failed", error: "boom" });
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write("a");
+		await wait(60);
+		expect(app.lastFrame()).toContain("enter run · esc close");
+		app.stdin.write(ESC);
+		await wait(60);
+		expect(app.lastFrame()).not.toContain("enter run · esc close");
+		expect(store.get(task.id)?.status).toBe("failed");
 	});
 });

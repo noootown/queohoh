@@ -22,6 +22,7 @@ export interface Actions {
 	retry(id: string): Promise<string | null>;
 	skip(id: string): Promise<string | null>;
 	setWorktree(id: string, worktree: string): Promise<string | null>;
+	removeWorktree(repo: string, name: string): Promise<string | null>;
 	runDefinition(
 		repo: string,
 		name: string,
@@ -73,6 +74,7 @@ export function createActions(sockPath: string): Actions {
 		retry: (id) => mutate("retry", { id }),
 		skip: (id) => mutate("skip", { id }),
 		setWorktree: (id, worktree) => mutate("setWorktree", { id, worktree }),
+		removeWorktree: (repo, name) => mutate("removeWorktree", { repo, name }),
 		runDefinition: async (repo, name, args, worktree) => {
 			const result = await mutate("runDefinition", {
 				repo,

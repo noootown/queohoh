@@ -71,6 +71,7 @@ function fakeActions(defs: DefinitionSummary[] = []): {
 			calls.setWorktree.push([id, wt]);
 			return null;
 		},
+		removeWorktree: async () => null,
 		runDefinition: async (repo, name, args, worktree) => {
 			calls.runDefinition.push([repo, name, args, worktree]);
 			return null;
@@ -251,10 +252,11 @@ describe("App full-screen", () => {
 		expect(app.lastFrame()).not.toContain("LN059");
 	});
 
-	// The queue `a` → add-prompt binding was removed; adding now originates from
-	// the worktrees pane (f/m → worktree-add). On the queue, `a` is inert: it must
-	// not open the prompt modal or enqueue anything.
-	it("a on the queue is a no-op (add moved to worktrees f/m)", async () => {
+	// The queue `a` → add-prompt binding was removed; `a` now opens the action
+	// menu, and adding a task originates from a worktree's menu. On an empty queue
+	// nothing is selected, so `a` is inert: it must not open the prompt modal or
+	// enqueue anything.
+	it("a on an empty queue is inert (nothing selected)", async () => {
 		const { sock, base } = await startServer();
 		const { actions, calls } = fakeActions();
 		const app = render(
@@ -270,13 +272,14 @@ describe("App full-screen", () => {
 		app.stdin.write("a");
 		await wait(40);
 		expect(app.lastFrame()).not.toContain("prompt>");
+		expect(app.lastFrame()).not.toContain("enter run · esc close");
 		for (const ch of "do a thing") app.stdin.write(ch);
 		app.stdin.write("\r");
 		await wait(80);
 		expect(calls.enqueue).toEqual([]);
 	});
 
-	it("tasks pane: enter on a def with args opens args input; on a def without args runs it", async () => {
+	it("tasks pane: menu Run on a def with args opens args input; on a def without args runs it", async () => {
 		const { sock, base } = await startServer();
 		const defs: DefinitionSummary[] = [
 			{ repo: "platform", name: "withargs", args: ["id"], hasDiscovery: false },
@@ -297,21 +300,25 @@ describe("App full-screen", () => {
 		await wait(20);
 		app.stdin.write(DOWN); // focus tasks
 		await wait(60);
-		app.stdin.write("\r"); // enter on withargs
+		app.stdin.write("a"); // open action menu (withargs selected)
+		await wait(60);
+		app.stdin.write("\r"); // Run (index 0)
 		await wait(60);
 		expect(app.lastFrame()).toContain("withargs args");
-		app.stdin.write(ESC); // esc
+		app.stdin.write(ESC); // esc closes the args input
 		await wait(40);
 		app.stdin.write(DOWN); // select noargs
 		await wait(40);
-		app.stdin.write("\r"); // enter on noargs
+		app.stdin.write("a"); // open action menu (noargs selected)
+		await wait(60);
+		app.stdin.write("\r"); // Run (index 0)
 		await wait(80);
 		expect(calls.runDefinition).toEqual([
 			["platform", "noargs", [], undefined],
 		]);
 	});
 
-	it("worktrees pane: enter opens the def picker; picking a def runs it against the worktree", async () => {
+	it("worktrees pane: menu Run task definition… opens the def picker; picking a def runs it against the worktree", async () => {
 		const { engine, server, sock, base } = await startServer({
 			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
 		});
@@ -340,6 +347,13 @@ describe("App full-screen", () => {
 		await wait(20);
 		app.stdin.write(DOWN); // tasks -> worktrees
 		await wait(40);
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		// Run task definition… is the 3rd row (index 2): j×2.
+		app.stdin.write("j"); // -> New task (main session)…
+		await wait(20);
+		app.stdin.write("j"); // -> Run task definition…
+		await wait(20);
 		app.stdin.write("\r"); // open def picker
 		await wait(60);
 		expect(app.lastFrame()).toContain("Run task definition");
@@ -361,7 +375,7 @@ describe("App full-screen", () => {
 		await wait(40);
 	};
 
-	it("worktrees pane: f opens the fresh-session add-task modal and enqueues with the worktree", async () => {
+	it("worktrees pane: menu New task (fresh session)… opens the add-task modal and enqueues with the worktree", async () => {
 		const { engine, server, sock, base } = await startServer({
 			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
 		});
@@ -379,7 +393,9 @@ describe("App full-screen", () => {
 		cleanups.push(() => app.unmount());
 		await wait(300);
 		await focusWorktrees(app);
-		app.stdin.write("f");
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		app.stdin.write("\r"); // New task (fresh session)… (index 0)
 		await wait(60);
 		// Titled modal, centered over the still-visible body panes (spike outcome).
 		expect(app.lastFrame()).toContain(
@@ -394,7 +410,7 @@ describe("App full-screen", () => {
 		]);
 	});
 
-	it("worktrees pane: m opens the main-session add-task modal and enqueues session main", async () => {
+	it("worktrees pane: menu New task (main session)… opens the add-task modal and enqueues session main", async () => {
 		const { engine, server, sock, base } = await startServer({
 			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
 		});
@@ -412,7 +428,11 @@ describe("App full-screen", () => {
 		cleanups.push(() => app.unmount());
 		await wait(300);
 		await focusWorktrees(app);
-		app.stdin.write("m");
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		app.stdin.write("j"); // -> New task (main session)… (index 1)
+		await wait(40);
+		app.stdin.write("\r");
 		await wait(60);
 		expect(app.lastFrame()).toContain(
 			"New task — main session — platform:wt-a",
@@ -443,7 +463,9 @@ describe("App full-screen", () => {
 		cleanups.push(() => app.unmount());
 		await wait(300);
 		await focusWorktrees(app);
-		app.stdin.write("f");
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		app.stdin.write("\r"); // New task (fresh session)… (index 0)
 		await wait(60);
 		app.stdin.write("q"); // must insert into the text input, not close it
 		await wait(60);
@@ -473,16 +495,26 @@ describe("App full-screen", () => {
 			/>,
 		);
 		cleanups.push(() => app.unmount());
+		// Open the def picker via the worktree action menu (Run task definition…).
+		const openDefPicker = async () => {
+			app.stdin.write("a"); // open action menu
+			await wait(60);
+			// Run task definition… is the 3rd row (index 2): j×2.
+			app.stdin.write("j"); // -> New task (main session)…
+			await wait(20);
+			app.stdin.write("j"); // -> Run task definition…
+			await wait(20);
+			app.stdin.write("\r"); // open def picker
+			await wait(60);
+		};
 		await wait(300);
 		await focusWorktrees(app);
-		app.stdin.write("\r"); // open def picker
-		await wait(60);
+		await openDefPicker();
 		expect(app.lastFrame()).toContain("Run task definition");
 		app.stdin.write("q"); // q closes the picker
 		await wait(60);
 		expect(app.lastFrame()).not.toContain("Run task definition");
-		app.stdin.write("\r"); // reopen
-		await wait(60);
+		await openDefPicker(); // reopen
 		expect(app.lastFrame()).toContain("Run task definition");
 		app.stdin.write(ESC); // esc also closes
 		await wait(60);
@@ -666,5 +698,201 @@ describe("App full-screen", () => {
 		cleanups.push(() => app.unmount());
 		await wait(200);
 		expect(app.lastFrame()).toContain("daemon unreachable");
+	});
+});
+
+describe("search filter", () => {
+	it("typing after / narrows the queue and shows the query in the pane title", async () => {
+		const { store, server, sock, base } = await startServer();
+		store.create({
+			prompt: "alpha work",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "beta work",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		// both rows visible before filtering
+		expect(app.lastFrame()).toContain("alpha work");
+		expect(app.lastFrame()).toContain("beta work");
+		app.stdin.write("/");
+		await wait(40);
+		for (const ch of "alp") app.stdin.write(ch);
+		await wait(80);
+		const frame = app.lastFrame() ?? "";
+		// query echoed in the pane title with the active block cursor
+		expect(frame).toContain("QUEUE /alp█");
+		// queue narrowed to the matching row only
+		expect(frame).toContain("alpha work");
+		expect(frame).not.toContain("beta work");
+	});
+
+	it("enter commits the filter (title keeps /query, input leaves search mode)", async () => {
+		const { store, server, sock, base } = await startServer();
+		store.create({
+			prompt: "alpha one",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "alpha two",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write("/");
+		await wait(40);
+		for (const ch of "alp") app.stdin.write(ch);
+		await wait(80);
+		expect(app.lastFrame()).toContain("QUEUE /alp█");
+		// enter commits: search mode exits, filter (and its title) persists
+		app.stdin.write("\r");
+		await wait(60);
+		const committed = app.lastFrame() ?? "";
+		expect(committed).toContain("QUEUE /alp");
+		expect(committed).not.toContain("QUEUE /alp█");
+		// back in list mode: j navigates (does not append to the query)
+		app.stdin.write("j");
+		await wait(60);
+		const afterJ = app.lastFrame() ?? "";
+		expect(afterJ).toContain("QUEUE /alp");
+		expect(afterJ).not.toContain("QUEUE /alpj");
+		expect(afterJ).not.toContain("█");
+		// both matching rows remain filtered-in
+		expect(afterJ).toContain("alpha one");
+		expect(afterJ).toContain("alpha two");
+	});
+
+	it("esc clears the filter — while typing and after commit", async () => {
+		const { store, server, sock, base } = await startServer();
+		store.create({
+			prompt: "alpha work",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "beta work",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		// esc while still typing in search mode
+		app.stdin.write("/");
+		await wait(40);
+		for (const ch of "alp") app.stdin.write(ch);
+		await wait(60);
+		expect(app.lastFrame()).not.toContain("beta work");
+		app.stdin.write(ESC);
+		await wait(60);
+		const cleared = app.lastFrame() ?? "";
+		expect(cleared).toContain("alpha work");
+		expect(cleared).toContain("beta work");
+		expect(cleared).not.toContain("QUEUE /");
+		// esc after committing the filter clears it just the same
+		app.stdin.write("/");
+		await wait(40);
+		for (const ch of "alp") app.stdin.write(ch);
+		await wait(60);
+		app.stdin.write("\r");
+		await wait(60);
+		expect(app.lastFrame()).not.toContain("beta work");
+		app.stdin.write(ESC);
+		await wait(60);
+		const clearedAgain = app.lastFrame() ?? "";
+		expect(clearedAgain).toContain("alpha work");
+		expect(clearedAgain).toContain("beta work");
+		expect(clearedAgain).not.toContain("QUEUE /");
+	});
+
+	it("esc-clearing a committed filter resets selection to the first row", async () => {
+		const { store, server, sock, base } = await startServer();
+		// Distinct second prompt lines (MARKER-*) that never appear in the queue
+		// summaries, so the prompt sub-tab uniquely identifies the selected row.
+		store.create({
+			prompt: "alpha one\nMARKER-ONE",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "alpha two\nMARKER-TWO",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		// commit a filter matching both rows, then move selection to the 2nd row
+		app.stdin.write("/");
+		await wait(40);
+		for (const ch of "alp") app.stdin.write(ch);
+		await wait(40);
+		app.stdin.write("\r"); // commit the filter
+		await wait(40);
+		app.stdin.write("j"); // select the second filtered row (alpha two)
+		await wait(40);
+		// esc clears the committed filter and must also reset selection to row 0
+		app.stdin.write(ESC);
+		await wait(60);
+		expect(app.lastFrame()).not.toContain("QUEUE /");
+		// the detail prompt sub-tab reflects the selected queue row: a reset
+		// selection shows the FIRST row's prompt, not the second's.
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write(RIGHT); // focus detail
+		await wait(40);
+		app.stdin.write("3"); // prompt sub-tab
+		await wait(60);
+		const frame = app.lastFrame() ?? "";
+		expect(frame).toContain("MARKER-ONE");
+		expect(frame).not.toContain("MARKER-TWO");
 	});
 });

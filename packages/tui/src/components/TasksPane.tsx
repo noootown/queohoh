@@ -1,6 +1,6 @@
 import { Text } from "ink";
 import type { DefinitionSummary } from "../actions.js";
-import { windowRows } from "../selectors.js";
+import { paneTitle, windowRows } from "../selectors.js";
 import { Pane } from "./Pane.js";
 
 export function TasksPane({
@@ -8,15 +8,24 @@ export function TasksPane({
 	selectedIndex,
 	focused,
 	capacity,
+	filter,
+	filterActive,
 }: {
 	defs: DefinitionSummary[];
 	selectedIndex: number;
 	focused: boolean;
 	capacity: number;
+	filter: string;
+	filterActive: boolean;
 }) {
 	const { rows, offset } = windowRows(defs, selectedIndex, capacity);
 	return (
-		<Pane title="TASKS" focused={focused} flexGrow={1} flexBasis={0}>
+		<Pane
+			title={paneTitle("TASKS", filter, filterActive)}
+			focused={focused}
+			flexGrow={1}
+			flexBasis={0}
+		>
 			{defs.length === 0 ? (
 				<Text dimColor>no task definitions</Text>
 			) : (
