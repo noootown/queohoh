@@ -1,7 +1,9 @@
 import { Box, Text } from "ink";
+import { memo } from "react";
 import type { ProjectTab } from "../selectors.js";
 
-export function TabBar({
+// Memoized: props are primitives or the memoized `tabs` array from App.
+export const TabBar = memo(function TabBar({
 	tabs,
 	activeIndex,
 	connected,
@@ -39,4 +41,4 @@ export function TabBar({
 			<Text>{` ${runLabel}`}</Text>
 		</Box>
 	);
-}
+});

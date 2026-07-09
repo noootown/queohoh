@@ -1,9 +1,12 @@
 import { Text } from "ink";
+import { memo } from "react";
 import type { QueueRow } from "../format.js";
 import { paneTitle, windowRows } from "../selectors.js";
 import { Pane } from "./Pane.js";
 
-export function QueuePane({
+// Memoized: all props are primitives or the memoized `rows` array from App, so a
+// render triggered by unrelated state (now-tick, modal toggle) skips this pane.
+export const QueuePane = memo(function QueuePane({
 	rows,
 	selectedIndex,
 	focused,
@@ -43,4 +46,4 @@ export function QueuePane({
 			)}
 		</Pane>
 	);
-}
+});

@@ -1,4 +1,5 @@
 import { Text } from "ink";
+import { memo } from "react";
 import {
 	paneTitle,
 	type WorktreeRow,
@@ -7,7 +8,8 @@ import {
 } from "../selectors.js";
 import { Pane } from "./Pane.js";
 
-export function WorktreesPane({
+// Memoized: props are primitives or the memoized `rows` array from App.
+export const WorktreesPane = memo(function WorktreesPane({
 	rows,
 	selectedIndex,
 	focused,
@@ -47,4 +49,4 @@ export function WorktreesPane({
 			)}
 		</Pane>
 	);
-}
+});

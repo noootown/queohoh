@@ -1,5 +1,6 @@
 import type { TaskDefinition } from "@queohoh/core";
 import { Box, Text } from "ink";
+import { memo } from "react";
 import { argSummary } from "../actions.js";
 import {
 	anchorFor,
@@ -106,7 +107,10 @@ function contentFor(
 	}
 }
 
-export function DetailPane({
+// Memoized: `context`, `runFiles`, and `definition` are stable references from
+// App (context via useMemo, runFiles/definition straight from state), the rest
+// are primitives — so the now-tick and idle snapshots skip this pane.
+export const DetailPane = memo(function DetailPane({
 	context,
 	subTab,
 	focused,
@@ -194,4 +198,4 @@ export function DetailPane({
 			)}
 		</Box>
 	);
-}
+});

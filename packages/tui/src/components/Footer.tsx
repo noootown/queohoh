@@ -1,4 +1,5 @@
 import { Text } from "ink";
+import { memo } from "react";
 import type { PaneId } from "../keymap.js";
 
 const LIST_HINT =
@@ -14,7 +15,8 @@ const HINTS: Record<PaneId, string> = {
 
 const PREFIX_HINT = " PREFIX — arrows/hjkl move · 1-9 tab · n/p cycle ";
 
-export function Footer({
+// Memoized: all props are primitives.
+export const Footer = memo(function Footer({
 	focus,
 	prefixArmed,
 	statusLine,
@@ -30,4 +32,4 @@ export function Footer({
 	if (statusLine !== null) return <Text color="red">{statusLine}</Text>;
 	if (prefixArmed) return <Text inverse>{PREFIX_HINT}</Text>;
 	return <Text dimColor>{HINTS[focus]}</Text>;
-}
+});

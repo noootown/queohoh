@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Text } from "ink";
 import { render as tlRender } from "ink-testing-library";
+import { Profiler } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { createActions } from "../actions.js";
 import { normalizeSnapshot, useDaemon } from "../use-daemon.js";
@@ -84,6 +85,51 @@ describe("useDaemon", () => {
 		server.broadcast();
 		await wait(200);
 		expect(app.lastFrame()).toContain("connected:1");
+	});
+
+	it("does not re-render on a content-identical re-broadcast", async () => {
+		const { server, store, sock } = await startServer();
+		let renders = 0;
+		const app = tlRender(
+			<Profiler
+				id="daemon"
+				onRender={() => {
+					renders += 1;
+				}}
+			>
+				<Probe sock={sock} />
+			</Profiler>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(200); // connect + initial state
+		// A real content change commits (and renders).
+		store.create({
+			prompt: "hi",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		await wait(150);
+		expect(app.lastFrame()).toContain("connected:1");
+		const afterChange = renders;
+		// Two byte-identical re-broadcasts (the daemon's idle cadence) must be
+		// deduped: no state update, no render.
+		server.broadcast();
+		server.broadcast();
+		await wait(150);
+		expect(renders).toBe(afterChange);
+		// A subsequent real change still commits, proving dedup didn't wedge us.
+		store.create({
+			prompt: "yo",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		await wait(150);
+		expect(app.lastFrame()).toContain("connected:2");
+		expect(renders).toBeGreaterThan(afterChange);
 	});
 
 	it("reports disconnected when no daemon and keeps retrying without crashing", async () => {

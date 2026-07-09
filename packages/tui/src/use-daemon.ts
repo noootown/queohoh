@@ -66,11 +66,36 @@ export function useDaemon(
 		connected: false,
 	});
 	const alive = useRef(true);
+	// Serialized form of the last snapshot we committed, plus a mirror of the
+	// connected flag. The daemon re-broadcasts a full, content-identical snapshot
+	// on a fixed cadence; without a dedup every push would setState and re-render
+	// the whole App for no change. These are refs (not `state`) so the skip
+	// decision is made SYNCHRONOUSLY at push time — deciding inside the deferred
+	// setState updater would race the ref against itself across batched pushes.
+	const lastPushedJson = useRef<string | null>(null);
+	const connectedRef = useRef(false);
 
 	useEffect(() => {
 		alive.current = true;
 		let client: ApiClient | null = null;
 		let retryTimer: NodeJS.Timeout | null = null;
+
+		// Single ingress for the initial `state` reply and every pushed update.
+		const applySnapshot = (pushed: unknown) => {
+			if (!alive.current) return;
+			const json = JSON.stringify(pushed);
+			// Skip only when byte-identical AND already connected — a (re)connect
+			// (connectedRef false) always commits so the fresh daemon's state lands
+			// even if it matches the last snapshot seen before the disconnect.
+			if (connectedRef.current && lastPushedJson.current === json) return;
+			lastPushedJson.current = json;
+			connectedRef.current = true;
+			setState({ snapshot: normalizeSnapshot(pushed), connected: true });
+		};
+		const markDisconnected = () => {
+			connectedRef.current = false;
+			setState((prev) => ({ ...prev, connected: false }));
+		};
 
 		const attempt = async () => {
 			if (!alive.current) return;
@@ -79,20 +104,15 @@ export function useDaemon(
 				await client.connect(sockPath);
 				client.onClose(() => {
 					if (!alive.current) return;
-					setState((prev) => ({ ...prev, connected: false }));
+					markDisconnected();
 					scheduleRetry();
 				});
-				await client.subscribe((pushed) => {
-					if (alive.current) {
-						setState({ snapshot: normalizeSnapshot(pushed), connected: true });
-					}
-				});
-				const initial = normalizeSnapshot(await client.call("state"));
-				if (alive.current) setState({ snapshot: initial, connected: true });
+				await client.subscribe((pushed) => applySnapshot(pushed));
+				applySnapshot(await client.call("state"));
 			} catch {
 				client.close();
 				if (alive.current) {
-					setState((prev) => ({ ...prev, connected: false }));
+					markDisconnected();
 					scheduleRetry();
 				}
 			}

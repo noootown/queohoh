@@ -40,6 +40,31 @@ import { insideTmux, openTmuxWindow } from "./tmux.js";
 import { useDaemon } from "./use-daemon.js";
 import { useTerminalSize } from "./use-terminal-size.js";
 
+/** Files backing a single run, tagged with the task they belong to so a stale
+ * read for a just-abandoned selection can be told apart from the live one. */
+type RunFiles = {
+	taskId: string;
+	report: string | null;
+	transcriptTail: string[];
+};
+
+/**
+ * Cheap content-equality for run files: same task, same report text, same
+ * transcript tail. Lets the debounced read and the 1s poll skip `setRunFiles`
+ * (and the render it triggers) when the files on disk have not changed since the
+ * last read — a slowly-streaming task re-reads identical bytes every second.
+ */
+function sameRunFiles(a: RunFiles | null, b: RunFiles | null): boolean {
+	if (a === b) return true;
+	if (a === null || b === null) return false;
+	return (
+		a.taskId === b.taskId &&
+		a.report === b.report &&
+		a.transcriptTail.length === b.transcriptTail.length &&
+		a.transcriptTail.join("\n") === b.transcriptTail.join("\n")
+	);
+}
+
 type MenuTarget =
 	| { kind: "queue"; taskId: string }
 	| { kind: "task"; def: DefinitionSummary }
@@ -126,13 +151,33 @@ export function App({
 	const [fullDefs, setFullDefs] = useState<
 		Record<string, TaskDefinition | null>
 	>({});
-	const [runFiles, setRunFiles] = useState<{
-		report: string | null;
-		transcriptTail: string[];
-	} | null>(null);
+	const [runFiles, setRunFiles] = useState<RunFiles | null>(null);
+	// Mirror of the committed `runFiles`, kept fresh below. The 1s poll reads it to
+	// decide equality SYNCHRONOUSLY and skip `setRunFiles` outright when the files
+	// are unchanged — a same-value setState would still re-run App once.
+	const runFilesRef = useRef<RunFiles | null>(runFiles);
+	runFilesRef.current = runFiles;
 
+	// `now` feeds ONLY the elapsed-time detail on RUNNING queue rows of the active
+	// project (queueRowsForProject → format.elapsed). This ref, refreshed each
+	// render below, lets the stable 1s interval bail out of updating `now` when
+	// nothing is running — without re-subscribing the interval on every snapshot.
+	const activeHasRunningRef = useRef(false);
 	useEffect(() => {
-		const timer = setInterval(() => setNow(Date.now()), 1000);
+		const timer = setInterval(() => {
+			// Nothing running → every elapsed label is static, so don't touch state.
+			// Reading the flag here (not inside setNow) means an idle tick does no
+			// setState at all: 0 renders/sec at true idle. A same-value setNow would
+			// still re-run App once (React re-renders a state owner before bailing).
+			if (!activeHasRunningRef.current) return;
+			// Running rows show per-second elapsed, so bucket to whole seconds; at a
+			// 1s cadence this always advances, but it is the honest display grain.
+			setNow((prev) =>
+				Math.floor(prev / 1000) === Math.floor(Date.now() / 1000)
+					? prev
+					: Date.now(),
+			);
+		}, 1000);
 		return () => clearInterval(timer);
 	}, []);
 
@@ -204,6 +249,15 @@ export function App({
 	const activeName = tabs[activeIndex]?.name ?? null;
 	const ui = (activeName ? uiByTab[activeName] : undefined) ?? DEFAULT_UI;
 
+	// Refresh the flag the now-tick reads (see the interval above). Cheap `.some`
+	// over the task list; only the active project's running rows animate elapsed.
+	activeHasRunningRef.current =
+		!!snapshot &&
+		activeName !== null &&
+		snapshot.tasks.some(
+			(t) => t.target.repo === activeName && t.status === "running",
+		);
+
 	// Modals float absolutely over the body, so the body height is fixed and does
 	// not reflow when a modal opens.
 	const bodyHeight = Math.max(1, rows - 2);
@@ -245,7 +299,10 @@ export function App({
 	const tasksSel = clampIdx(ui.selections.tasks, visibleDefs.length);
 	const wtSel = clampIdx(ui.selections.worktrees, visibleWtRows.length);
 
-	const context: DetailContext = (() => {
+	// Memoized so its stable reference lets React.memo(DetailPane) skip renders
+	// where the selection is unchanged (e.g. the now-tick, or an unrelated modal
+	// toggle). A fresh object every render would defeat that memo.
+	const context: DetailContext = useMemo(() => {
 		if (!snapshot || !activeName) return { kind: "empty" };
 		if (ui.lastListPane === "queue") {
 			const row = visibleQueueRows[queueSel];
@@ -268,7 +325,17 @@ export function App({
 			(t) => laneKey(t) === lane,
 		);
 		return { kind: "worktree", row, laneTasks };
-	})();
+	}, [
+		snapshot,
+		activeName,
+		ui.lastListPane,
+		visibleQueueRows,
+		queueSel,
+		visibleDefs,
+		tasksSel,
+		visibleWtRows,
+		wtSel,
+	]);
 
 	const subTab = clampSubTab(ui.subTab[context.kind], context.kind);
 	const selDefRepo = context.kind === "definition" ? context.repo : null;
@@ -277,6 +344,13 @@ export function App({
 		selDefRepo && selDefName ? `${selDefRepo}/${selDefName}` : null;
 	const detailDefinition = selDefKey ? (fullDefs[selDefKey] ?? null) : null;
 	const runTaskId = context.kind === "run" ? context.task.id : null;
+
+	// Only surface files that belong to the *current* selection. While a new
+	// selection's debounced read is still in flight, `runFiles` may hold the
+	// previous task's files — gate on taskId so the detail pane shows its loading
+	// placeholder rather than another task's stale transcript for a beat.
+	const currentRunFiles =
+		runFiles && runFiles.taskId === runTaskId ? runFiles : null;
 
 	// --- lazy fetches -------------------------------------------------------
 	useEffect(() => {
@@ -311,23 +385,47 @@ export function App({
 
 	useEffect(() => {
 		if (runTaskId === null) {
-			setRunFiles(null);
+			// Guard the setState so leaving a run for a non-run selection doesn't add
+			// a redundant App re-run (same-value setState still re-renders the owner).
+			if (runFilesRef.current !== null) {
+				runFilesRef.current = null;
+				setRunFiles(null);
+			}
 			return;
 		}
 		// Read more than the visible window so the detail pane has scrollback to
 		// page through (offset-from-end into the tail buffer). Clamp >= 1 — a
 		// tailLines of 0 hits a slice(-0) bug that returns the whole file.
 		const tailLines = Math.max(1, detailHeight * 4);
-		const read = () => {
+		const taskId = runTaskId;
+		const readOnce = () => {
+			let next: RunFiles;
 			try {
-				setRunFiles(readRunFiles(runsDir, runTaskId, { tailLines }));
+				next = { taskId, ...readRunFiles(runsDir, taskId, { tailLines }) };
 			} catch {
-				setRunFiles(null);
+				next = { taskId, report: null, transcriptTail: [] };
 			}
+			// Content-identical read → do nothing (the 1s poll re-reads the same
+			// bytes every second for a slowly-streaming task). Skipping the setState
+			// entirely — not just returning prev from an updater — keeps a quiet poll
+			// at 0 renders.
+			if (sameRunFiles(runFilesRef.current, next)) return;
+			runFilesRef.current = next;
+			setRunFiles(next);
 		};
-		read();
-		const timer = setInterval(read, 1000);
-		return () => clearInterval(timer);
+		// Debounce the initial read: holding an arrow key through N tasks re-runs
+		// this effect per keypress, and each run clears the still-pending timer, so
+		// no file is read until the selection settles (~120ms of quiet). The 1s
+		// poll starts only after that settle read, then keeps the tail fresh.
+		let poll: NodeJS.Timeout | null = null;
+		const debounce = setTimeout(() => {
+			readOnce();
+			poll = setInterval(readOnce, 1000);
+		}, 120);
+		return () => {
+			clearTimeout(debounce);
+			if (poll) clearInterval(poll);
+		};
 	}, [runTaskId, runsDir, detailHeight]);
 
 	// --- helpers ------------------------------------------------------------
@@ -806,7 +904,7 @@ export function App({
 					width={detailWidth}
 					height={detailHeight}
 					scrollOffset={ui.scrollOffset}
-					runFiles={runFiles}
+					runFiles={currentRunFiles}
 					definition={detailDefinition}
 				/>
 			</Box>

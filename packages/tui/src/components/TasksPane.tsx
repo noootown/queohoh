@@ -1,9 +1,11 @@
 import { Text } from "ink";
+import { memo } from "react";
 import { argSummary, type DefinitionSummary } from "../actions.js";
 import { paneTitle, windowRows } from "../selectors.js";
 import { Pane } from "./Pane.js";
 
-export function TasksPane({
+// Memoized: props are primitives or the memoized `defs` array from App.
+export const TasksPane = memo(function TasksPane({
 	defs,
 	selectedIndex,
 	focused,
@@ -43,4 +45,4 @@ export function TasksPane({
 			)}
 		</Pane>
 	);
-}
+});
