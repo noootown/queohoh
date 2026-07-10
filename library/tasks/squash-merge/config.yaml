@@ -6,4 +6,4 @@ args:
 dedup: none
 worktree: repo
 model: opus
-timeout: 15m
+timeout: 30m

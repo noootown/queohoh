@@ -13,7 +13,11 @@ Abort immediately with a clear one-line reason if any of these fail:
 
 1. Show the commits that will be squashed: `git log --oneline {{target}}..{{source}}`.
 2. Check out the target: `git checkout {{target}}`. If this fails because `{{target}}` is checked out in another worktree, abort with that error verbatim.
-3. Squash: `git merge --squash {{source}}`. On conflicts, abort the merge (`git merge --abort` if needed, `git checkout -- .` to restore) and report which files conflicted — do not attempt resolution.
+3. Squash: `git merge --squash {{source}}`. On conflicts, resolve them yourself:
+   - For each conflicted file, understand what each side was doing (`git log --oneline {{target}}...{{source}} -- <file>` and the surrounding code) and write a resolution that preserves the intent of BOTH branches — never pick one side wholesale unless it is a strict superset of the other.
+   - Stage each resolved file with `git add`, and make sure no conflict markers survive (`git diff --check`).
+   - Verify the resolved tree before committing: run the project's build/tests if any are configured (mise tasks, package scripts, cargo, …). A resolution that doesn't build or pass is not a resolution — keep fixing it.
+   - Only if a conflict is genuinely unresolvable — the two branches made incompatible semantic choices that need a human decision — restore a clean tree (`git merge --abort` if mid-merge, otherwise `git reset --hard`) and report which files conflicted and what decision is needed.
 4. Write a conventional commit message from the staged diff: a `type(scope): subject` title that describes the net change (not the branch name), plus a short body when the diff spans multiple concerns. Commit with it.
 
 ## Cleanup
