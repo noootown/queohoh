@@ -1,7 +1,9 @@
 import { Text } from "ink";
 import { memo } from "react";
 import {
+	type PaneSelection,
 	paneTitle,
+	selectionRange,
 	type WorktreeRow,
 	windowRows,
 	worktreeDotColor,
@@ -11,23 +13,29 @@ import { Pane } from "./Pane.js";
 // Memoized: props are primitives or the memoized `rows` array from App.
 export const WorktreesPane = memo(function WorktreesPane({
 	rows,
-	selectedIndex,
+	selection,
 	focused,
 	capacity,
 	filter,
 	filterActive,
 }: {
 	rows: WorktreeRow[];
-	selectedIndex: number;
+	selection: PaneSelection;
 	focused: boolean;
 	capacity: number;
 	filter: string;
 	filterActive: boolean;
 }) {
-	const { rows: windowed, offset } = windowRows(rows, selectedIndex, capacity);
+	const { start, end } = selectionRange(selection);
+	const selectedCount = rows.length === 0 ? 0 : end - start + 1;
+	const { rows: windowed, offset } = windowRows(
+		rows,
+		selection.cursor,
+		capacity,
+	);
 	return (
 		<Pane
-			title={paneTitle("WORKTREES", filter, filterActive)}
+			title={paneTitle("WORKTREES", filter, filterActive, selectedCount)}
 			focused={focused}
 			flexGrow={1}
 			flexBasis={0}
@@ -38,7 +46,7 @@ export const WorktreesPane = memo(function WorktreesPane({
 				windowed.map((row, i) => (
 					<Text
 						key={`${row.kind}:${row.path}`}
-						inverse={focused && offset + i === selectedIndex}
+						inverse={focused && offset + i >= start && offset + i <= end}
 						wrap="truncate"
 					>
 						<Text color={worktreeDotColor(row.state)}>●</Text> {row.name}

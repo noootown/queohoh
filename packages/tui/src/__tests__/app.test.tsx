@@ -14,14 +14,24 @@ afterEach(async () => {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Strip SGR color escapes so a raw-frame index reflects the visible column
+// (color is forced on in the test env, so frames carry ANSI codes). Built via
+// `new RegExp` from a non-literal ESC so the pattern carries no literal control
+// character (a regex literal would, tripping noControlCharactersInRegex).
+const SGR_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+const stripAnsi = (frame: string): string => frame.replace(SGR_ESCAPE, "");
+
 const CTRL_S = "\u0013";
 const UP = "\u001b[A";
 const DOWN = "\u001b[B";
 const LEFT = "\u001b[D";
 const RIGHT = "\u001b[C";
 const ESC = "\u001b";
+const SHIFT_DOWN = "\u001b[1;2B";
 const WHEEL_UP = "\u001b[<64;5;5M";
 const WHEEL_DOWN = "\u001b[<65;5;5M";
+
+const SHIFT_UP = "\u001b[1;2A";
 
 type FakeStream = EventEmitter & { columns: number; rows: number };
 function fakeStream(columns: number, rows: number): FakeStream {
@@ -42,6 +52,7 @@ interface FakeCalls {
 	skip: string[];
 	setWorktree: [string, string][];
 	createWorktree: [string, string][];
+	removeWorktree: [string, string][];
 }
 
 function fakeActions(
@@ -58,6 +69,7 @@ function fakeActions(
 		skip: [],
 		setWorktree: [],
 		createWorktree: [],
+		removeWorktree: [],
 	};
 	const actions: Actions = {
 		enqueue: async (prompt, repo, opts) => {
@@ -76,7 +88,10 @@ function fakeActions(
 			calls.setWorktree.push([id, wt]);
 			return null;
 		},
-		removeWorktree: async () => null,
+		removeWorktree: async (repo, name) => {
+			calls.removeWorktree.push([repo, name]);
+			return null;
+		},
 		createWorktree: async (repo, name) => {
 			calls.createWorktree.push([repo, name]);
 			return createWorktreeResult;
@@ -933,7 +948,9 @@ describe("App full-screen", () => {
 		cleanups.push(() => app.unmount());
 		await wait(300);
 		// queue selected → detail shows the wide transcript line
-		const detailXWithWideContent = app.lastFrame()?.indexOf("DETAIL") ?? -1;
+		const detailXWithWideContent = stripAnsi(app.lastFrame() ?? "").indexOf(
+			"DETAIL",
+		);
 		expect(detailXWithWideContent).toBeGreaterThan(0);
 		// move focus to worktrees → detail shows the narrow worktree info
 		app.stdin.write(CTRL_S);
@@ -944,7 +961,9 @@ describe("App full-screen", () => {
 		await wait(20);
 		app.stdin.write(DOWN); // tasks -> worktrees
 		await wait(60);
-		const detailXWithNarrowContent = app.lastFrame()?.indexOf("DETAIL") ?? -1;
+		const detailXWithNarrowContent = stripAnsi(app.lastFrame() ?? "").indexOf(
+			"DETAIL",
+		);
 		expect(detailXWithNarrowContent).toBe(detailXWithWideContent);
 	});
 
@@ -1079,6 +1098,360 @@ describe("App full-screen", () => {
 		cleanups.push(() => app.unmount());
 		await wait(200);
 		expect(app.lastFrame()).toContain("daemon unreachable");
+	});
+
+	it("shift+down extends the queue selection and esc collapses it", async () => {
+		const { store, server, sock, base } = await startServer();
+		store.create({
+			prompt: "first task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "second task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		expect(app.lastFrame()).toContain("· 2 selected");
+		expect(app.lastFrame()).toContain("bulk actions");
+		app.stdin.write(ESC);
+		await wait(50);
+		expect(app.lastFrame()).not.toContain("selected");
+	});
+
+	it("plain arrow collapses the range; editing the filter clears it", async () => {
+		const { store, server, sock, base } = await startServer();
+		store.create({
+			prompt: "first task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "second task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "third task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		// A fourth row gives the cursor headroom: after shift+down then a plain
+		// down the cursor sits on row 2 of 4, so the second shift+down can still
+		// extend into row 3 and reach a 2-row range (with only three rows the
+		// cursor would already be pinned to the last row — a boundary no-op).
+		store.create({
+			prompt: "fourth task",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		expect(app.lastFrame()).toContain("· 2 selected");
+		app.stdin.write(DOWN); // plain movement collapses to single selection
+		await wait(50);
+		expect(app.lastFrame()).not.toContain("selected");
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		expect(app.lastFrame()).toContain("· 2 selected");
+		app.stdin.write("/"); // open search
+		await wait(50); // let search mode settle before the query keystroke
+		app.stdin.write("t"); // editing the query clears the range
+		await wait(50);
+		expect(app.lastFrame()).not.toContain("selected");
+	});
+
+	it("a over a multi-row worktree selection opens the bulk menu with skip counts", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [
+				{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" },
+				{ name: "wt-b", path: "/wt/wt-b", branch: "wt-b" },
+			],
+		});
+		await engine.tick();
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		// focus the worktrees pane: C-s j (queue→tasks), C-s j (tasks→worktrees)
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write("j");
+		await wait(30);
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write("j");
+		await wait(50);
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		app.stdin.write("a");
+		await wait(50);
+		expect(app.lastFrame()).toContain("2 selected");
+		expect(app.lastFrame()).toContain("Remove worktrees… (2 of 2)");
+	});
+
+	it("bulk remove confirms with the name list and removes each worktree", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [
+				{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" },
+				{ name: "wt-b", path: "/wt/wt-b", branch: "wt-b" },
+				{ name: "wt-c", path: "/wt/wt-c", branch: "wt-c" },
+			],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write("j");
+		await wait(30);
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write("j");
+		await wait(50);
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		app.stdin.write("a");
+		await wait(50);
+		app.stdin.write("\r"); // Remove worktrees… is the only (enabled) row
+		await wait(50);
+		expect(app.lastFrame()).toContain("Remove 3 worktrees");
+		expect(app.lastFrame()).toContain("wt-a");
+		expect(app.lastFrame()).toContain("wt-c");
+		app.stdin.write("y");
+		await wait(100);
+		expect(calls.removeWorktree).toEqual([
+			["platform", "wt-a"],
+			["platform", "wt-b"],
+			["platform", "wt-c"],
+		]);
+		// range cleared after the bulk action
+		expect(app.lastFrame()).not.toContain("3 selected");
+	});
+
+	it("n cancels bulk remove without removing anything", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [
+				{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" },
+				{ name: "wt-b", path: "/wt/wt-b", branch: "wt-b" },
+			],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write("j");
+		await wait(30);
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write("j");
+		await wait(50);
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		app.stdin.write("a");
+		await wait(50);
+		app.stdin.write("\r");
+		await wait(50);
+		app.stdin.write("n");
+		await wait(50);
+		expect(calls.removeWorktree).toEqual([]);
+	});
+
+	it("bulk rerun retries only eligible queue tasks", async () => {
+		const { store, server, sock, base } = await startServer();
+		store.create({
+			prompt: "will fail",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "still queued",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		const [first] = store.list();
+		if (first) store.update(first.id, { status: "failed" });
+		server.broadcast();
+		const { actions, calls } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		app.stdin.write("a");
+		await wait(50);
+		expect(app.lastFrame()).toContain("Rerun (1 of 2)");
+		app.stdin.write("\r");
+		await wait(100);
+		expect(calls.retry).toEqual([first?.id]);
+		expect(app.lastFrame()).toContain("reran 1");
+	});
+
+	it("bulk run starts only eligible task definitions", async () => {
+		const { server, sock, base } = await startServer();
+		server.broadcast();
+		const defs: DefinitionSummary[] = [
+			{
+				repo: "platform",
+				name: "lint",
+				scope: "project",
+				args: [],
+				hasDiscovery: false,
+			},
+			{
+				repo: "platform",
+				name: "deploy",
+				scope: "project",
+				args: [{ name: "env" }],
+				hasDiscovery: false,
+			},
+		];
+		const { actions, calls } = fakeActions(defs);
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250); // defs load lazily
+		// focus the tasks pane: C-s j (queue→tasks)
+		app.stdin.write(CTRL_S);
+		await wait(50);
+		app.stdin.write("j");
+		await wait(50);
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		app.stdin.write("a");
+		await wait(50);
+		// deploy has args → ineligible; only lint is runnable in the batch
+		expect(app.lastFrame()).toContain("Run (1 of 2)");
+		app.stdin.write("\r");
+		await wait(100);
+		expect(calls.runDefinition).toEqual([["platform", "lint", [], undefined]]);
+		expect(app.lastFrame()).toContain("started 1");
+	});
+
+	it("shift+arrow shrinking onto the anchor lets the next Esc clear the filter", async () => {
+		const { store, server, sock, base } = await startServer();
+		store.create({
+			prompt: "task one",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.create({
+			prompt: "task two",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		server.broadcast();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={createActions(sock)}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(250);
+		// commit a filter that keeps both rows (title persists as QUEUE /t)
+		app.stdin.write("/");
+		await wait(40);
+		app.stdin.write("t");
+		await wait(40);
+		app.stdin.write("\r");
+		await wait(60);
+		expect(app.lastFrame()).toContain("QUEUE /t");
+		// extend into a 2-row range, then shrink it back onto the anchor
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		expect(app.lastFrame()).toContain("· 2 selected");
+		app.stdin.write(SHIFT_UP);
+		await wait(50);
+		expect(app.lastFrame()).not.toContain("selected");
+		// anchor collapsed → a single Esc falls through to clear the filter
+		// (before the fix the invisible anchor would swallow this Esc)
+		app.stdin.write(ESC);
+		await wait(60);
+		expect(app.lastFrame()).not.toContain("QUEUE /t");
+		// and a fresh shift+down still starts a new 2-row range
+		app.stdin.write(SHIFT_DOWN);
+		await wait(50);
+		expect(app.lastFrame()).toContain("· 2 selected");
 	});
 });
 

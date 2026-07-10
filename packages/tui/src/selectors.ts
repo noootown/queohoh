@@ -202,6 +202,40 @@ export function windowRows<T>(
 	return { rows: rows.slice(offset, offset + capacity), offset };
 }
 
+export interface PaneSelection {
+	cursor: number;
+	anchor: number | null;
+}
+
+/**
+ * Clamp a selection to `count` visible rows. An emptied pane resets to the
+ * origin with no range; a clamped anchor sticks to the last row rather than
+ * disappearing, so a filtered-down list keeps a sensible range.
+ */
+export function clampSelection(
+	sel: PaneSelection,
+	count: number,
+): PaneSelection {
+	if (count <= 0) return { cursor: 0, anchor: null };
+	const clamp = (n: number) => Math.max(0, Math.min(n, count - 1));
+	return {
+		cursor: clamp(sel.cursor),
+		anchor: sel.anchor === null ? null : clamp(sel.anchor),
+	};
+}
+
+/** Inclusive [start, end] visible-row span covered by a selection. */
+export function selectionRange(sel: PaneSelection): {
+	start: number;
+	end: number;
+} {
+	const anchor = sel.anchor ?? sel.cursor;
+	return {
+		start: Math.min(anchor, sel.cursor),
+		end: Math.max(anchor, sel.cursor),
+	};
+}
+
 /** Case-insensitive substring match; the empty query matches everything. */
 export function matchesFilter(name: string, query: string): boolean {
 	if (query === "") return true;
@@ -210,14 +244,18 @@ export function matchesFilter(name: string, query: string): boolean {
 
 /**
  * Pane title with the active search filter appended (`QUEUE /foo`); `active`
- * appends a block cursor while the search input has focus. Bare `base` when
- * there is no filter to show.
+ * appends a block cursor while the search input has focus. A range selection of
+ * more than one row appends `· N selected` before the filter. Bare `base` when
+ * there is nothing to show.
  */
 export function paneTitle(
 	base: string,
 	filter: string,
 	active: boolean,
+	selectedCount = 0,
 ): string {
-	if (!active && filter === "") return base;
-	return `${base} /${filter}${active ? "█" : ""}`;
+	const title =
+		selectedCount > 1 ? `${base} · ${selectedCount} selected` : base;
+	if (!active && filter === "") return title;
+	return `${title} /${filter}${active ? "█" : ""}`;
 }

@@ -2,7 +2,12 @@ import { laneKey, type SessionMode, type TaskDefinition } from "@queohoh/core";
 import { currentBuildId } from "@queohoh/daemon";
 import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { type ActionId, type ActionItem, buildActions } from "./action-menu.js";
+import {
+	type ActionId,
+	type ActionItem,
+	buildActions,
+	buildBulkActions,
+} from "./action-menu.js";
 import { type Actions, argSummary, type DefinitionSummary } from "./actions.js";
 import { validateBranchName } from "./branch.js";
 import { ArgsForm } from "./components/ArgsForm.js";
@@ -32,9 +37,12 @@ import { readRunFiles } from "./run-files.js";
 import {
 	buildProjectTabs,
 	buildWorktreeRows,
+	clampSelection,
 	computePaneLayout,
 	matchesFilter,
+	type PaneSelection,
 	queueRowsForProject,
+	selectionRange,
 } from "./selectors.js";
 import { insideTmux, openTmuxWindow } from "./tmux.js";
 import { useDaemon } from "./use-daemon.js";
@@ -69,7 +77,10 @@ type MenuTarget =
 	| { kind: "queue"; taskId: string }
 	| { kind: "task"; def: DefinitionSummary }
 	| { kind: "worktree"; name: string; path: string; branch: string | null }
-	| { kind: "session"; path: string };
+	| { kind: "session"; path: string }
+	| { kind: "bulk-queue"; rerunIds: string[]; skipIds: string[] }
+	| { kind: "bulk-tasks"; defs: DefinitionSummary[] }
+	| { kind: "bulk-worktrees"; names: string[] };
 
 type Mode =
 	| { kind: "list" }
@@ -97,12 +108,13 @@ type Mode =
 	  }
 	| { kind: "confirm-remove"; worktree: string; branch: string | null }
 	| { kind: "create-worktree"; error?: string }
+	| { kind: "confirm-bulk-remove"; names: string[] }
 	| { kind: "search"; pane: ListPaneId };
 
 interface TabUiState {
 	focus: PaneId;
 	lastListPane: ListPaneId;
-	selections: { queue: number; tasks: number; worktrees: number };
+	selections: Record<ListPaneId, PaneSelection>;
 	search: Record<ListPaneId, string>;
 	subTab: Record<DetailContext["kind"], number>;
 	scrollOffset: number;
@@ -111,7 +123,11 @@ interface TabUiState {
 const DEFAULT_UI: TabUiState = {
 	focus: "queue",
 	lastListPane: "queue",
-	selections: { queue: 0, tasks: 0, worktrees: 0 },
+	selections: {
+		queue: { cursor: 0, anchor: null },
+		tasks: { cursor: 0, anchor: null },
+		worktrees: { cursor: 0, anchor: null },
+	},
 	search: { queue: "", tasks: "", worktrees: "" },
 	subTab: { run: 0, definition: 0, worktree: 0, empty: 0 },
 	scrollOffset: 0,
@@ -295,9 +311,18 @@ export function App({
 		[wtRows, ui.search.worktrees],
 	);
 
-	const queueSel = clampIdx(ui.selections.queue, visibleQueueRows.length);
-	const tasksSel = clampIdx(ui.selections.tasks, visibleDefs.length);
-	const wtSel = clampIdx(ui.selections.worktrees, visibleWtRows.length);
+	const queueSel = clampSelection(ui.selections.queue, visibleQueueRows.length);
+	const tasksSel = clampSelection(ui.selections.tasks, visibleDefs.length);
+	const wtSel = clampSelection(ui.selections.worktrees, visibleWtRows.length);
+
+	const visibleCount = (pane: ListPaneId): number =>
+		pane === "queue"
+			? visibleQueueRows.length
+			: pane === "tasks"
+				? visibleDefs.length
+				: visibleWtRows.length;
+	const paneSel = (pane: ListPaneId): PaneSelection =>
+		pane === "queue" ? queueSel : pane === "tasks" ? tasksSel : wtSel;
 
 	// Memoized so its stable reference lets React.memo(DetailPane) skip renders
 	// where the selection is unchanged (e.g. the now-tick, or an unrelated modal
@@ -305,7 +330,7 @@ export function App({
 	const context: DetailContext = useMemo(() => {
 		if (!snapshot || !activeName) return { kind: "empty" };
 		if (ui.lastListPane === "queue") {
-			const row = visibleQueueRows[queueSel];
+			const row = visibleQueueRows[queueSel.cursor];
 			if (!row) return { kind: "empty" };
 			const task = [...snapshot.tasks, ...snapshot.archivedRecent].find(
 				(t) => t.id === row.id,
@@ -313,12 +338,12 @@ export function App({
 			return task ? { kind: "run", task } : { kind: "empty" };
 		}
 		if (ui.lastListPane === "tasks") {
-			const def = visibleDefs[tasksSel];
+			const def = visibleDefs[tasksSel.cursor];
 			return def
 				? { kind: "definition", repo: def.repo, name: def.name }
 				: { kind: "empty" };
 		}
-		const row = visibleWtRows[wtSel];
+		const row = visibleWtRows[wtSel.cursor];
 		if (!row) return { kind: "empty" };
 		const lane = `${activeName}:${row.name}`;
 		const laneTasks = [...snapshot.tasks, ...snapshot.archivedRecent].filter(
@@ -447,11 +472,119 @@ export function App({
 		});
 	};
 
+	// Sequential on purpose: one daemon socket, deterministic order, and each
+	// item's error is independently reported into the summary line.
+	const runBulk = async <T,>(
+		items: T[],
+		verb: string,
+		fn: (item: T) => Promise<string | null>,
+	): Promise<void> => {
+		let failed = 0;
+		let firstError: string | null = null;
+		for (const item of items) {
+			const err = await fn(item);
+			if (err !== null) {
+				failed += 1;
+				firstError = firstError ?? err;
+			}
+		}
+		const ok = items.length - failed;
+		setStatusLine(
+			failed === 0
+				? `${verb} ${ok}`
+				: `${verb} ${ok}, ${failed} failed: ${firstError}`,
+		);
+	};
+
+	const clearRange = (pane: ListPaneId) =>
+		patchTab((s) => ({
+			...s,
+			selections: {
+				...s.selections,
+				[pane]: { cursor: s.selections[pane].cursor, anchor: null },
+			},
+		}));
+
+	// Bulk targets are frozen at menu-open time: the id/name lists captured here
+	// are what executes, so daemon pushes that reshuffle rows mid-menu cannot
+	// retarget the batch.
+	const openBulkMenu = (
+		pane: ListPaneId,
+		start: number,
+		end: number,
+	): Mode | null => {
+		const total = end - start + 1;
+		if (pane === "queue") {
+			const rows = visibleQueueRows.slice(start, end + 1);
+			const statusById = new Map(
+				(snapshot?.tasks ?? []).map((t) => [t.id, t.status]),
+			);
+			const live = rows.filter((r) => r.kind === "live");
+			const rerunIds = live
+				.filter((r) => {
+					const s = statusById.get(r.id);
+					return s === "failed" || s === "needs-input";
+				})
+				.map((r) => r.id);
+			const skipIds = live
+				.filter((r) => {
+					const s = statusById.get(r.id);
+					return s === "failed" || s === "needs-input" || s === "done";
+				})
+				.map((r) => r.id);
+			return {
+				kind: "action-menu",
+				items: buildBulkActions({
+					kind: "bulk-queue",
+					rerun: rerunIds.length,
+					skip: skipIds.length,
+					total,
+				}),
+				index: 0,
+				target: { kind: "bulk-queue", rerunIds, skipIds },
+				title: `${total} selected`,
+			};
+		}
+		if (pane === "tasks") {
+			const rows = visibleDefs.slice(start, end + 1);
+			const runnable = rows.filter((d) => d.args.length === 0);
+			return {
+				kind: "action-menu",
+				items: buildBulkActions({
+					kind: "bulk-tasks",
+					run: runnable.length,
+					total,
+				}),
+				index: 0,
+				target: { kind: "bulk-tasks", defs: runnable },
+				title: `${total} selected`,
+			};
+		}
+		const rows = visibleWtRows.slice(start, end + 1);
+		const removable = rows.filter(
+			(r) => r.kind === "worktree" && r.state !== "busy",
+		);
+		return {
+			kind: "action-menu",
+			items: buildBulkActions({
+				kind: "bulk-worktrees",
+				remove: removable.length,
+				total,
+			}),
+			index: 0,
+			target: { kind: "bulk-worktrees", names: removable.map((r) => r.name) },
+			title: `${total} selected`,
+		};
+	};
+
 	// The action menu targets the same item the detail pane shows: the last
 	// focused list pane's selection (context is already derived exactly that way).
 	const openActionMenu = (): Mode | null => {
+		const pane = ui.lastListPane;
+		const { start, end } = selectionRange(paneSel(pane));
+		if (end > start) return openBulkMenu(pane, start, end);
 		if (context.kind === "run") {
-			const row = visibleQueueRows[queueSel];
+			const row = visibleQueueRows[queueSel.cursor];
 			if (!row) return null;
 			return {
 				kind: "action-menu",
@@ -512,12 +645,25 @@ export function App({
 
 	const runMenuAction = (id: ActionId, target: MenuTarget) => {
 		setMode({ kind: "list" });
+		const pane = ui.lastListPane;
 		switch (id) {
 			case "rerun":
 				if (target.kind === "queue") act(actions.retry(target.taskId));
+				if (target.kind === "bulk-queue") {
+					clearRange(pane);
+					void runBulk(target.rerunIds, "reran", (taskId) =>
+						actions.retry(taskId),
+					);
+				}
 				return;
 			case "skip":
 				if (target.kind === "queue") act(actions.skip(target.taskId));
+				if (target.kind === "bulk-queue") {
+					clearRange(pane);
+					void runBulk(target.skipIds, "skipped", (taskId) =>
+						actions.skip(taskId),
+					);
+				}
 				return;
 			case "assign-worktree":
 				if (target.kind === "queue") {
@@ -526,6 +672,13 @@ export function App({
 				}
 				return;
 			case "run":
+				if (target.kind === "bulk-tasks") {
+					clearRange(pane);
+					void runBulk(target.defs, "started", (d) =>
+						actions.runDefinition(d.repo, d.name, []),
+					).then(() => invalidateDefs());
+					return;
+				}
 				if (target.kind !== "task") return;
 				if (target.def.args.length > 0) {
 					setInput("");
@@ -591,6 +744,9 @@ export function App({
 						branch: target.branch,
 					});
 				}
+				if (target.kind === "bulk-worktrees") {
+					setMode({ kind: "confirm-bulk-remove", names: target.names });
+				}
 				return;
 			case "create-worktree":
 				setInput("");
@@ -631,27 +787,57 @@ export function App({
 			case "clear-search": {
 				if (ui.focus === "detail") return;
 				const pane = ui.focus;
+				if (paneSel(pane).anchor !== null) {
+					// first Esc clears the range; a second Esc clears the filter
+					const cursor = paneSel(pane).cursor;
+					patchTab((s) => ({
+						...s,
+						selections: { ...s.selections, [pane]: { cursor, anchor: null } },
+					}));
+					return;
+				}
 				patchTab((s) => ({
 					...s,
 					search: { ...s.search, [pane]: "" },
-					selections: { ...s.selections, [pane]: 0 },
+					selections: {
+						...s.selections,
+						[pane]: { cursor: 0, anchor: null },
+					},
 				}));
 				return;
 			}
 			case "move-selection": {
 				const pane = ui.focus as ListPaneId;
-				const count =
-					pane === "queue"
-						? visibleQueueRows.length
-						: pane === "tasks"
-							? visibleDefs.length
-							: visibleWtRows.length;
-				const cur =
-					pane === "queue" ? queueSel : pane === "tasks" ? tasksSel : wtSel;
-				const next = clampIdx(cur + action.delta, count);
+				const next = clampIdx(
+					paneSel(pane).cursor + action.delta,
+					visibleCount(pane),
+				);
 				patchTab((s) => ({
 					...s,
-					selections: { ...s.selections, [pane]: next },
+					selections: {
+						...s.selections,
+						[pane]: { cursor: next, anchor: null },
+					},
+					scrollOffset: 0,
+				}));
+				return;
+			}
+			case "extend-selection": {
+				if (ui.focus === "detail") return;
+				const pane = ui.focus as ListPaneId;
+				const cur = paneSel(pane);
+				const next = clampIdx(cur.cursor + action.delta, visibleCount(pane));
+				// Collapse the anchor when the range shrinks back onto a single row,
+				// so a subsequent Esc falls through to the filter-clear branch
+				// instead of being silently consumed clearing an invisible range.
+				const base = cur.anchor ?? cur.cursor;
+				const anchor = next === base ? null : base;
+				patchTab((s) => ({
+					...s,
+					selections: {
+						...s.selections,
+						[pane]: { cursor: next, anchor },
+					},
 					scrollOffset: 0,
 				}));
 				return;
@@ -784,6 +970,22 @@ export function App({
 			}
 			return;
 		}
+		if (mode.kind === "confirm-bulk-remove") {
+			if (char === "y") {
+				const repo = activeName;
+				const names = mode.names;
+				if (repo !== null) {
+					clearRange("worktrees");
+					void runBulk(names, "removed", (name) =>
+						actions.removeWorktree(repo, name),
+					);
+				}
+				setMode({ kind: "list" });
+			} else if (char === "n" || char === "q" || key.escape) {
+				setMode({ kind: "list" });
+			}
+			return;
+		}
 		if (mode.kind === "search") {
 			if (isMouseEvent(char)) return; // clicks must not become search text
 			const pane = mode.pane;
@@ -791,7 +993,10 @@ export function App({
 				patchTab((s) => ({
 					...s,
 					search: { ...s.search, [pane]: fn(s.search[pane]) },
-					selections: { ...s.selections, [pane]: 0 },
+					selections: {
+						...s.selections,
+						[pane]: { cursor: 0, anchor: null },
+					},
 				}));
 			if (key.return) {
 				setMode({ kind: "list" });
@@ -833,6 +1038,7 @@ export function App({
 		const keyInput: KeyInput = {
 			input: char,
 			ctrl: key.ctrl,
+			shift: key.shift,
 			upArrow: key.upArrow,
 			downArrow: key.downArrow,
 			leftArrow: key.leftArrow,
@@ -847,6 +1053,13 @@ export function App({
 		}
 		if (result.action) dispatch(result.action);
 	});
+
+	const focusedRange =
+		ui.focus === "detail" ? null : selectionRange(paneSel(ui.focus));
+	const focusedSelectionCount =
+		focusedRange === null || visibleCount(ui.focus as ListPaneId) === 0
+			? 0
+			: focusedRange.end - focusedRange.start + 1;
 
 	if (columns < 60 || rows < 15) {
 		return (
@@ -874,7 +1087,7 @@ export function App({
 				<Box width="34%" flexShrink={0} flexDirection="column">
 					<QueuePane
 						rows={visibleQueueRows}
-						selectedIndex={queueSel}
+						selection={queueSel}
 						focused={ui.focus === "queue"}
 						capacity={queueCap}
 						filter={ui.search.queue}
@@ -882,7 +1095,7 @@ export function App({
 					/>
 					<TasksPane
 						defs={visibleDefs}
-						selectedIndex={tasksSel}
+						selection={tasksSel}
 						focused={ui.focus === "tasks"}
 						capacity={listCap}
 						filter={ui.search.tasks}
@@ -890,7 +1103,7 @@ export function App({
 					/>
 					<WorktreesPane
 						rows={visibleWtRows}
-						selectedIndex={wtSel}
+						selection={wtSel}
 						focused={ui.focus === "worktrees"}
 						capacity={listCap}
 						filter={ui.search.worktrees}
@@ -913,6 +1126,7 @@ export function App({
 				prefixArmed={prefixArmed}
 				statusLine={statusLine}
 				searching={mode.kind === "search"}
+				selectionCount={focusedSelectionCount}
 			/>
 			{mode.kind === "add-task" ? (
 				<Modal
@@ -1097,6 +1311,29 @@ export function App({
 					/>
 					{mode.error ? (
 						<Text color="red">{padLine(` ${mode.error}`, modalInner)}</Text>
+					) : null}
+				</Modal>
+			) : null}
+			{mode.kind === "confirm-bulk-remove" ? (
+				<Modal
+					title={`Remove ${mode.names.length} worktrees`}
+					columns={columns}
+					rows={rows}
+					hint="y confirm · n/esc cancel"
+				>
+					<Text>
+						{padLine(
+							" discards uncommitted changes and deletes each local branch",
+							modalInner,
+						)}
+					</Text>
+					{mode.names.slice(0, 8).map((name) => (
+						<Text key={name}>{padLine(`  ${name}`, modalInner)}</Text>
+					))}
+					{mode.names.length > 8 ? (
+						<Text dimColor>
+							{padLine(`  …and ${mode.names.length - 8} more`, modalInner)}
+						</Text>
 					) : null}
 				</Modal>
 			) : null}

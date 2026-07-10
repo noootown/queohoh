@@ -121,3 +121,46 @@ export function buildActions(context: ActionContext): ActionItem[] {
 			];
 	}
 }
+
+export type BulkContext =
+	| { kind: "bulk-queue"; rerun: number; skip: number; total: number }
+	| { kind: "bulk-tasks"; run: number; total: number }
+	| { kind: "bulk-worktrees"; remove: number; total: number };
+
+function bulkItem(
+	id: ActionId,
+	verb: string,
+	eligible: number,
+	total: number,
+): ActionItem {
+	const label = `${verb} (${eligible} of ${total})`;
+	return eligible > 0
+		? { id, label }
+		: { id, label, disabled: "no eligible rows" };
+}
+
+/**
+ * Menu rows for a multi-row selection. Only actions that make sense over a
+ * batch appear; per-row eligibility is resolved by the caller at menu-open
+ * time (labels show `eligible of total`, zero-eligible rows render disabled).
+ */
+export function buildBulkActions(context: BulkContext): ActionItem[] {
+	switch (context.kind) {
+		case "bulk-queue":
+			return [
+				bulkItem("rerun", "Rerun", context.rerun, context.total),
+				bulkItem("skip", "Skip", context.skip, context.total),
+			];
+		case "bulk-tasks":
+			return [bulkItem("run", "Run", context.run, context.total)];
+		case "bulk-worktrees":
+			return [
+				bulkItem(
+					"remove-worktree",
+					"Remove worktrees…",
+					context.remove,
+					context.total,
+				),
+			];
+	}
+}

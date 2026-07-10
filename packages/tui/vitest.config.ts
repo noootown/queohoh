@@ -13,5 +13,11 @@ export default defineConfig({
 			),
 		},
 	},
-	test: { include: ["src/**/*.test.ts", "src/**/*.test.tsx"] },
+	test: {
+		include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+		// Force chalk/ink to emit ANSI escapes deterministically in non-TTY runs
+		// (CI, piped output) so render tests can assert on inverse-highlight (`[7m`)
+		// output; without this the range-selection tests only see plain text.
+		env: { FORCE_COLOR: "3" },
+	},
 });

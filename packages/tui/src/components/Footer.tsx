@@ -21,15 +21,24 @@ export const Footer = memo(function Footer({
 	prefixArmed,
 	statusLine,
 	searching,
+	selectionCount,
 }: {
 	focus: PaneId;
 	prefixArmed: boolean;
 	statusLine: string | null;
 	searching: boolean;
+	selectionCount: number;
 }) {
 	if (searching)
 		return <Text dimColor>type to filter · [enter] apply · [esc] clear</Text>;
 	if (statusLine !== null) return <Text color="red">{statusLine}</Text>;
 	if (prefixArmed) return <Text inverse>{PREFIX_HINT}</Text>;
+	if (selectionCount > 1)
+		return (
+			<Text dimColor>
+				{selectionCount} selected · [a] bulk actions · [shift+↑↓] extend · [esc]
+				clear
+			</Text>
+		);
 	return <Text dimColor>{HINTS[focus]}</Text>;
 });

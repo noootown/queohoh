@@ -5,6 +5,7 @@ export type Direction = "up" | "down" | "left" | "right";
 export interface KeyInput {
 	input: string; // the char from ink useInput
 	ctrl: boolean;
+	shift: boolean;
 	upArrow: boolean;
 	downArrow: boolean;
 	leftArrow: boolean;
@@ -16,6 +17,7 @@ export interface KeyInput {
 export type KeymapAction =
 	| { type: "quit" }
 	| { type: "move-selection"; delta: 1 | -1 }
+	| { type: "extend-selection"; delta: 1 | -1 }
 	| { type: "focus"; pane: PaneId }
 	| { type: "move-focus"; dir: Direction }
 	| { type: "switch-tab"; index: number } // 0-based
@@ -91,6 +93,12 @@ export function handleKey(
 	}
 	if (key.input === "/") return act({ type: "open-search" });
 	if (key.escape) return act({ type: "clear-search" });
+	if (key.shift && dir === "down")
+		return act({ type: "extend-selection", delta: 1 });
+	if (key.shift && dir === "up")
+		return act({ type: "extend-selection", delta: -1 });
+	if (key.input === "J") return act({ type: "extend-selection", delta: 1 });
+	if (key.input === "K") return act({ type: "extend-selection", delta: -1 });
 	if (dir === "down") return act({ type: "move-selection", delta: 1 });
 	if (dir === "up") return act({ type: "move-selection", delta: -1 });
 	if (key.return) return act({ type: "focus", pane: "detail" });

@@ -13,6 +13,7 @@ function key(overrides: Partial<KeyInput> = {}): KeyInput {
 	return {
 		input: "",
 		ctrl: false,
+		shift: false,
 		upArrow: false,
 		downArrow: false,
 		leftArrow: false,
@@ -312,6 +313,65 @@ describe("handleKey — detail focus", () => {
 		expect(handleKey(false, "detail", key({ return: true }))).toEqual({
 			prefixArmed: false,
 			action: null,
+		});
+	});
+});
+
+describe("handleKey — extend-selection (shift+arrows, J/K)", () => {
+	it("shift+down / shift+up in a list pane → extend-selection", () => {
+		for (const focus of LIST_PANES) {
+			expect(
+				handleKey(false, focus, key({ downArrow: true, shift: true })),
+			).toEqual({
+				prefixArmed: false,
+				action: { type: "extend-selection", delta: 1 },
+			});
+			expect(
+				handleKey(false, focus, key({ upArrow: true, shift: true })),
+			).toEqual({
+				prefixArmed: false,
+				action: { type: "extend-selection", delta: -1 },
+			});
+		}
+	});
+
+	it("J/K (shift+j/k) in a list pane → extend-selection", () => {
+		expect(handleKey(false, "queue", key({ input: "J", shift: true }))).toEqual(
+			{
+				prefixArmed: false,
+				action: { type: "extend-selection", delta: 1 },
+			},
+		);
+		expect(handleKey(false, "queue", key({ input: "K", shift: true }))).toEqual(
+			{
+				prefixArmed: false,
+				action: { type: "extend-selection", delta: -1 },
+			},
+		);
+	});
+
+	it("plain arrows still emit move-selection", () => {
+		expect(handleKey(false, "queue", key({ downArrow: true }))).toEqual({
+			prefixArmed: false,
+			action: { type: "move-selection", delta: 1 },
+		});
+	});
+
+	it("shift+arrow in the detail pane keeps scrolling (no extend)", () => {
+		expect(
+			handleKey(false, "detail", key({ downArrow: true, shift: true })),
+		).toEqual({
+			prefixArmed: false,
+			action: { type: "scroll", delta: 1 },
+		});
+	});
+
+	it("armed shift+arrow still moves focus (prefix wins)", () => {
+		expect(
+			handleKey(true, "queue", key({ downArrow: true, shift: true })),
+		).toEqual({
+			prefixArmed: false,
+			action: { type: "move-focus", dir: "down" },
 		});
 	});
 });

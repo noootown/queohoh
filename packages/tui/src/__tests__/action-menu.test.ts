@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildActions } from "../action-menu.js";
+import { buildActions, buildBulkActions } from "../action-menu.js";
 
 const ids = (items: { id: string }[]) => items.map((i) => i.id);
 const enabled = (items: { id: string; disabled?: string }[]) =>
@@ -150,5 +150,37 @@ describe("buildActions — session context", () => {
 		expect(buildActions({ kind: "session", insideTmux: true })).toEqual([
 			{ id: "tmux-open", label: "Open in tmux window" },
 		]);
+	});
+});
+
+describe("buildBulkActions", () => {
+	it("bulk-queue: rerun and skip with eligible-of-total labels", () => {
+		expect(
+			buildBulkActions({ kind: "bulk-queue", rerun: 2, skip: 3, total: 5 }),
+		).toEqual([
+			{ id: "rerun", label: "Rerun (2 of 5)" },
+			{ id: "skip", label: "Skip (3 of 5)" },
+		]);
+	});
+
+	it("disables an action with zero eligible rows", () => {
+		expect(
+			buildBulkActions({ kind: "bulk-queue", rerun: 0, skip: 1, total: 4 }),
+		).toEqual([
+			{ id: "rerun", label: "Rerun (0 of 4)", disabled: "no eligible rows" },
+			{ id: "skip", label: "Skip (1 of 4)" },
+		]);
+	});
+
+	it("bulk-tasks: run only", () => {
+		expect(buildBulkActions({ kind: "bulk-tasks", run: 1, total: 3 })).toEqual([
+			{ id: "run", label: "Run (1 of 3)" },
+		]);
+	});
+
+	it("bulk-worktrees: remove only", () => {
+		expect(
+			buildBulkActions({ kind: "bulk-worktrees", remove: 2, total: 4 }),
+		).toEqual([{ id: "remove-worktree", label: "Remove worktrees… (2 of 4)" }]);
 	});
 });

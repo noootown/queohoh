@@ -132,7 +132,7 @@ describe("QueuePane", () => {
 		const { lastFrame } = render(
 			<QueuePane
 				rows={rows}
-				selectedIndex={0}
+				selection={{ cursor: 0, anchor: null }}
 				focused={true}
 				capacity={10}
 				filter=""
@@ -149,7 +149,7 @@ describe("QueuePane", () => {
 		const { lastFrame } = render(
 			<QueuePane
 				rows={[]}
-				selectedIndex={0}
+				selection={{ cursor: 0, anchor: null }}
 				focused={true}
 				capacity={10}
 				filter=""
@@ -167,7 +167,7 @@ describe("QueuePane", () => {
 		const live = render(
 			<QueuePane
 				rows={[queueRow("L", "live row text")]}
-				selectedIndex={-1}
+				selection={{ cursor: -1, anchor: null }}
 				focused={false}
 				capacity={10}
 				filter=""
@@ -177,7 +177,7 @@ describe("QueuePane", () => {
 		const archived = render(
 			<QueuePane
 				rows={[{ ...queueRow("A", "archived row text"), kind: "archived" }]}
-				selectedIndex={-1}
+				selection={{ cursor: -1, anchor: null }}
 				focused={false}
 				capacity={10}
 				filter=""
@@ -192,7 +192,7 @@ describe("QueuePane", () => {
 		const { lastFrame } = render(
 			<QueuePane
 				rows={[{ ...queueRow("M", "main row"), sessionMarker: "⛓ " }]}
-				selectedIndex={-1}
+				selection={{ cursor: -1, anchor: null }}
 				focused={false}
 				capacity={10}
 				filter=""
@@ -210,7 +210,7 @@ describe("QueuePane", () => {
 		const { lastFrame } = render(
 			<QueuePane
 				rows={many}
-				selectedIndex={4}
+				selection={{ cursor: 4, anchor: null }}
 				focused={true}
 				capacity={2}
 				filter=""
@@ -244,7 +244,7 @@ describe("TasksPane", () => {
 		const { lastFrame } = render(
 			<TasksPane
 				defs={defs}
-				selectedIndex={0}
+				selection={{ cursor: 0, anchor: null }}
 				focused={true}
 				capacity={10}
 				filter=""
@@ -283,7 +283,7 @@ describe("WorktreesPane", () => {
 		const { lastFrame } = render(
 			<WorktreesPane
 				rows={wtRows}
-				selectedIndex={0}
+				selection={{ cursor: 0, anchor: null }}
 				focused={true}
 				capacity={10}
 				filter=""
@@ -317,7 +317,7 @@ describe("WorktreesPane", () => {
 		const { lastFrame } = render(
 			<WorktreesPane
 				rows={[long]}
-				selectedIndex={0}
+				selection={{ cursor: 0, anchor: null }}
 				focused={false}
 				capacity={10}
 				filter=""
@@ -331,12 +331,80 @@ describe("WorktreesPane", () => {
 	});
 });
 
+describe("WorktreesPane — range selection", () => {
+	const rows = [
+		{
+			kind: "worktree" as const,
+			name: "wt-a",
+			path: "/wt/wt-a",
+			branch: "wt-a",
+			state: "free" as const,
+			hasMainSession: false,
+			queued: 0,
+		},
+		{
+			kind: "worktree" as const,
+			name: "wt-b",
+			path: "/wt/wt-b",
+			branch: "wt-b",
+			state: "free" as const,
+			hasMainSession: false,
+			queued: 0,
+		},
+		{
+			kind: "worktree" as const,
+			name: "wt-c",
+			path: "/wt/wt-c",
+			branch: "wt-c",
+			state: "free" as const,
+			hasMainSession: false,
+			queued: 0,
+		},
+	];
+
+	it("renders every row in the range inverse and counts them in the title", () => {
+		const { lastFrame } = render(
+			<WorktreesPane
+				rows={rows}
+				selection={{ cursor: 1, anchor: 0 }}
+				focused={true}
+				capacity={5}
+				filter=""
+				filterActive={false}
+			/>,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("· 2 selected");
+		// both range rows carry the inverse escape, the third does not
+		expect(frame).toMatch(/\[7m[^\n]*wt-a/);
+		expect(frame).toMatch(/\[7m[^\n]*wt-b/);
+		expect(frame).not.toMatch(/\[7m[^\n]*wt-c/);
+	});
+
+	it("single selection renders exactly one inverse row and no count", () => {
+		const { lastFrame } = render(
+			<WorktreesPane
+				rows={rows}
+				selection={{ cursor: 1, anchor: null }}
+				focused={true}
+				capacity={5}
+				filter=""
+				filterActive={false}
+			/>,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain("selected");
+		expect(frame).not.toMatch(/\[7m[^\n]*wt-a/);
+		expect(frame).toMatch(/\[7m[^\n]*wt-b/);
+	});
+});
+
 describe("list rows never wrap (title stays visible)", () => {
 	it("QueuePane truncates long summaries to a single line", () => {
 		const { lastFrame } = render(
 			<QueuePane
 				rows={[queueRow("L1", "s".repeat(300))]}
-				selectedIndex={0}
+				selection={{ cursor: 0, anchor: null }}
 				focused={false}
 				capacity={10}
 				filter=""
@@ -361,7 +429,7 @@ describe("list rows never wrap (title stays visible)", () => {
 		const { lastFrame } = render(
 			<TasksPane
 				defs={defs}
-				selectedIndex={0}
+				selection={{ cursor: 0, anchor: null }}
 				focused={false}
 				capacity={10}
 				filter=""
@@ -388,7 +456,7 @@ describe("list rows never wrap (title stays visible)", () => {
 		const { lastFrame } = render(
 			<WorktreesPane
 				rows={withMain}
-				selectedIndex={-1}
+				selection={{ cursor: -1, anchor: null }}
 				focused={false}
 				capacity={10}
 				filter=""
@@ -407,6 +475,7 @@ describe("Footer", () => {
 				prefixArmed={false}
 				statusLine="boom"
 				searching={false}
+				selectionCount={0}
 			/>,
 		);
 		expect(lastFrame()).toContain("boom");
@@ -420,6 +489,7 @@ describe("Footer", () => {
 				prefixArmed={true}
 				statusLine={null}
 				searching={false}
+				selectionCount={0}
 			/>,
 		);
 		expect(lastFrame()).toContain("PREFIX");
@@ -433,6 +503,7 @@ describe("Footer", () => {
 				prefixArmed={false}
 				statusLine={null}
 				searching={false}
+				selectionCount={0}
 			/>,
 		);
 		expect(lastFrame()).not.toContain("[a]dd");
@@ -447,6 +518,7 @@ describe("Footer", () => {
 				prefixArmed={false}
 				statusLine={null}
 				searching={false}
+				selectionCount={0}
 			/>,
 		);
 		expect(lastFrame()).toContain("[a] actions");
@@ -461,6 +533,7 @@ describe("Footer", () => {
 				prefixArmed={false}
 				statusLine={null}
 				searching={false}
+				selectionCount={0}
 			/>,
 		);
 		expect(lastFrame()).toContain("[a] actions");
@@ -476,6 +549,7 @@ describe("Footer", () => {
 				prefixArmed={false}
 				statusLine={null}
 				searching={false}
+				selectionCount={0}
 			/>,
 		);
 		expect(lastFrame()).toContain("sub-tab");
@@ -489,6 +563,7 @@ describe("Footer", () => {
 				prefixArmed={true}
 				statusLine="boom"
 				searching={true}
+				selectionCount={0}
 			/>,
 		);
 		expect(lastFrame()).toContain("type to filter");

@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
 	buildProjectTabs,
 	buildWorktreeRows,
+	clampSelection,
 	computePaneLayout,
 	matchesFilter,
 	paneTitle,
 	queueRowsForProject,
+	selectionRange,
 	windowRows,
 	worktreeDotColor,
 } from "../selectors.js";
@@ -440,5 +442,65 @@ describe("paneTitle", () => {
 	it("shows cursor while typing, even with empty query", () => {
 		expect(paneTitle("QUEUE", "fo", true)).toBe("QUEUE /fo█");
 		expect(paneTitle("QUEUE", "", true)).toBe("QUEUE /█");
+	});
+});
+
+describe("paneTitle — selection count", () => {
+	it("appends the count when more than one row is selected", () => {
+		expect(paneTitle("WORKTREES", "", false, 3)).toBe("WORKTREES · 3 selected");
+	});
+
+	it("composes count with an active filter", () => {
+		expect(paneTitle("WORKTREES", "tmp", false, 2)).toBe(
+			"WORKTREES · 2 selected /tmp",
+		);
+	});
+
+	it("omits the count for single selection", () => {
+		expect(paneTitle("QUEUE", "", false, 1)).toBe("QUEUE");
+		expect(paneTitle("QUEUE", "", false, 0)).toBe("QUEUE");
+	});
+});
+
+describe("clampSelection", () => {
+	it("clamps cursor and anchor to the row count", () => {
+		expect(clampSelection({ cursor: 9, anchor: 4 }, 3)).toEqual({
+			cursor: 2,
+			anchor: 2,
+		});
+	});
+
+	it("resets to origin when the list is empty", () => {
+		expect(clampSelection({ cursor: 2, anchor: 0 }, 0)).toEqual({
+			cursor: 0,
+			anchor: null,
+		});
+	});
+
+	it("keeps a null anchor null", () => {
+		expect(clampSelection({ cursor: 1, anchor: null }, 5)).toEqual({
+			cursor: 1,
+			anchor: null,
+		});
+	});
+});
+
+describe("selectionRange", () => {
+	it("single selection: start === end === cursor", () => {
+		expect(selectionRange({ cursor: 2, anchor: null })).toEqual({
+			start: 2,
+			end: 2,
+		});
+	});
+
+	it("orders anchor/cursor regardless of direction", () => {
+		expect(selectionRange({ cursor: 1, anchor: 4 })).toEqual({
+			start: 1,
+			end: 4,
+		});
+		expect(selectionRange({ cursor: 4, anchor: 1 })).toEqual({
+			start: 1,
+			end: 4,
+		});
 	});
 });
