@@ -39,6 +39,8 @@ const TaskMetaSchema = z
 		ephemeral_worktree: z.boolean().default(false),
 		error: z.string().nullable().default(null),
 		session: SessionModeSchema.default("fresh"),
+		resume_session_id: z.string().nullable().default(null),
+		model: z.string().nullable().default(null),
 	})
 	.strict();
 
@@ -55,6 +57,8 @@ export interface TaskInstance {
 	ephemeralWorktree: boolean;
 	error: string | null;
 	session: SessionMode;
+	resumeSessionId: string | null;
+	model: string | null;
 	prompt: string;
 }
 
@@ -74,6 +78,8 @@ export function parseTaskFile(content: string): TaskInstance {
 		ephemeralWorktree: m.ephemeral_worktree,
 		error: m.error,
 		session: m.session,
+		resumeSessionId: m.resume_session_id,
+		model: m.model,
 		prompt: body,
 	};
 }
@@ -92,6 +98,8 @@ export function serializeTaskFile(task: TaskInstance): string {
 		ephemeral_worktree: task.ephemeralWorktree,
 		error: task.error,
 		session: task.session,
+		resume_session_id: task.resumeSessionId,
+		model: task.model,
 	};
 	return stringifyFrontmatter(meta, task.prompt);
 }

@@ -1,5 +1,6 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
+import { basename } from "node:path";
 import type {
 	ArgSpec,
 	GlobalConfig,
@@ -56,6 +57,17 @@ interface ApiDeps {
 	 * never exercise shutdown don't have to wire a process-exiting stub.
 	 */
 	onShutdown?: () => void;
+}
+
+function unregisteredCwdMessage(cwd: string, toplevel: string | null): string {
+	const repoPath = toplevel ?? cwd;
+	return [
+		`no registered project contains: ${cwd}`,
+		"Add the repo to ~/.config/queohoh/config.yaml under projects:, then retry:",
+		"projects:",
+		`  - name: ${basename(repoPath)}`,
+		`    path: ${repoPath}`,
+	].join("\n");
 }
 
 export class ApiServer {
@@ -175,13 +187,45 @@ export class ApiServer {
 				const session = SessionModeSchema.default("fresh").parse(
 					params.session,
 				);
+				const resumeSessionId =
+					typeof params.resume_session_id === "string" &&
+					params.resume_session_id.length > 0
+						? params.resume_session_id
+						: undefined;
+				const model =
+					typeof params.model === "string" && params.model.length > 0
+						? params.model
+						: undefined;
+				const cwd =
+					typeof params.cwd === "string" && params.cwd.length > 0
+						? params.cwd
+						: undefined;
+				let repo = typeof params.repo === "string" ? params.repo : "";
+				let ref = worktree
+					? `worktree:${worktree}`
+					: String(params.ref ?? "temp");
+				if (cwd !== undefined) {
+					const resolved = await deps.engine.resolveCwd(cwd);
+					if (resolved === null) {
+						throw new Error(
+							unregisteredCwdMessage(cwd, await deps.engine.gitToplevel(cwd)),
+						);
+					}
+					repo = resolved.repo;
+					ref = `worktree:${resolved.worktree}`;
+				}
+				if (repo.length === 0) {
+					throw new Error("enqueue requires repo or cwd");
+				}
 				const task = deps.store.create({
 					prompt: String(params.prompt ?? ""),
-					repo: String(params.repo ?? ""),
-					ref: worktree ? `worktree:${worktree}` : String(params.ref ?? "temp"),
+					repo,
+					ref,
 					source: "mcp",
 					priority: (params.priority as "low" | "normal" | "high") ?? "normal",
 					session,
+					resumeSessionId,
+					model,
 				});
 				deps.onMutation();
 				return task;
@@ -245,6 +289,29 @@ export class ApiServer {
 					typeof params.worktree === "string" && params.worktree.length > 0
 						? params.worktree
 						: undefined;
+				const resumeSessionId =
+					typeof params.resume_session_id === "string" &&
+					params.resume_session_id.length > 0
+						? params.resume_session_id
+						: undefined;
+				let refOverride = worktree ? `worktree:${worktree}` : undefined;
+				if (typeof params.cwd === "string" && params.cwd.length > 0) {
+					const resolved = await deps.engine.resolveCwd(params.cwd);
+					if (resolved === null) {
+						throw new Error(
+							unregisteredCwdMessage(
+								params.cwd,
+								await deps.engine.gitToplevel(params.cwd),
+							),
+						);
+					}
+					if (resolved.repo !== repo) {
+						throw new Error(
+							`cwd resolves to repo ${resolved.repo}, not ${repo}`,
+						);
+					}
+					refOverride = `worktree:${resolved.worktree}`;
+				}
 				const created = await instantiateDefinition(
 					def,
 					args.length > 0
@@ -263,7 +330,8 @@ export class ApiServer {
 							...deps.config.vars,
 						},
 						repoVars: loadProjectVars(projectDir),
-						refOverride: worktree ? `worktree:${worktree}` : undefined,
+						refOverride,
+						resumeSessionId,
 					},
 				);
 				deps.onMutation();

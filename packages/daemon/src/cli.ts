@@ -9,6 +9,7 @@ import { startDaemon } from "./daemon.js";
 import { launchdPlist } from "./launchd.js";
 import { runMcpStdio } from "./mcp.js";
 import { socketPath, statePath } from "./paths.js";
+import { defaultReloadSteps, runReload } from "./reload.js";
 
 const PLIST_PATH = join(
 	homedir(),
@@ -40,6 +41,25 @@ program
 		} finally {
 			client.close();
 		}
+	});
+
+program
+	.command("reload")
+	.description(
+		"rebuild this checkout and restart the daemon on the fresh build",
+	)
+	.option(
+		"--force",
+		"restart even if tasks are running (they will be marked failed)",
+		false,
+	)
+	.action(async (opts: { force: boolean }) => {
+		const cliPath = fileURLToPath(import.meta.url);
+		process.exitCode = await runReload(
+			{ force: opts.force },
+			defaultReloadSteps(cliPath),
+			{ info: console.log, error: console.error },
+		);
 	});
 
 program

@@ -15,6 +15,8 @@ const sample: TaskInstance = {
 	ephemeralWorktree: false,
 	error: null,
 	session: "fresh",
+	resumeSessionId: null,
+	model: null,
 	prompt: "Reply to review comments on PR #1423.\n",
 };
 
@@ -75,6 +77,32 @@ describe("task file", () => {
 			"status: queued\nprioirty: high",
 		);
 		expect(() => parseTaskFile(bad)).toThrow();
+	});
+});
+
+describe("resume_session_id and model fields", () => {
+	it("default to null when absent (legacy task files)", () => {
+		// serializeTaskFile(sample) is the file's minimal valid frontmatter
+		// fixture; a legacy file simply lacks the resume_session_id/model keys.
+		const legacy = serializeTaskFile(sample)
+			.replace(/^resume_session_id: .*\n/m, "")
+			.replace(/^model: .*\n/m, "");
+		const task = parseTaskFile(legacy);
+		expect(task.resumeSessionId).toBeNull();
+		expect(task.model).toBeNull();
+	});
+
+	it("round-trip when set", () => {
+		const withFields = {
+			...sample,
+			resumeSessionId: "c77252c9-11d1-4e68-ab81-f099af529091",
+			model: "claude-fable-5",
+		};
+		const reparsed = parseTaskFile(serializeTaskFile(withFields));
+		expect(reparsed.resumeSessionId).toBe(
+			"c77252c9-11d1-4e68-ab81-f099af529091",
+		);
+		expect(reparsed.model).toBe("claude-fable-5");
 	});
 });
 

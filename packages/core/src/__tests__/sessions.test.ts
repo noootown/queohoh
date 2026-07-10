@@ -22,6 +22,8 @@ function runningTask(worktree: string): TaskInstance {
 		ephemeralWorktree: false,
 		error: null,
 		session: "fresh",
+		resumeSessionId: null,
+		model: null,
 		prompt: "p",
 	};
 }

@@ -41,17 +41,23 @@ export function mcpEnqueueTask(
 	caller: McpCaller,
 	args: {
 		prompt: string;
-		repo: string;
+		repo?: string;
+		cwd?: string;
 		ref?: string;
 		priority?: "low" | "normal" | "high";
+		resume_session_id?: string;
+		model?: string;
 	},
 ): Promise<ToolResult> {
 	return withPort(caller, (port) =>
 		port.call("enqueue", {
 			prompt: args.prompt,
 			repo: args.repo,
+			cwd: args.cwd,
 			ref: args.ref,
 			priority: args.priority,
+			resume_session_id: args.resume_session_id,
+			model: args.model,
 		}),
 	);
 }
@@ -72,7 +78,13 @@ export function mcpListTaskDefinitions(caller: McpCaller): Promise<ToolResult> {
 
 export function mcpRunTaskDefinition(
 	caller: McpCaller,
-	args: { repo: string; name: string; args?: string[] },
+	args: {
+		repo: string;
+		name: string;
+		args?: string[];
+		cwd?: string;
+		resume_session_id?: string;
+	},
 ): Promise<ToolResult> {
 	return withPort(caller, (port) =>
 		port.call("runDefinition", {
@@ -80,6 +92,8 @@ export function mcpRunTaskDefinition(
 			name: args.name,
 			args: args.args ?? [],
 			source: "mcp",
+			cwd: args.cwd,
+			resume_session_id: args.resume_session_id,
 		}),
 	);
 }

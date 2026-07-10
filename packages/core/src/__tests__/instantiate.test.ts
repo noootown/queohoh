@@ -248,4 +248,25 @@ describe("instantiateDefinition — args", () => {
 		);
 		expect(again).toEqual([]);
 	});
+
+	it("stamps resumeSessionId on every created task when provided", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def(),
+			{ mode: "args", values: ["257"] },
+			{ ...deps(store, "[]"), resumeSessionId: "sess-pin" },
+		);
+		expect(created).toHaveLength(1);
+		expect(created[0]?.resumeSessionId).toBe("sess-pin");
+	});
+
+	it("leaves resumeSessionId null when not provided", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def(),
+			{ mode: "args", values: ["258"] },
+			deps(store, "[]"),
+		);
+		expect(created[0]?.resumeSessionId).toBeNull();
+	});
 });

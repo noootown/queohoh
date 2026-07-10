@@ -25,6 +25,8 @@ export interface NewTaskInput {
 	item?: Record<string, string>;
 	itemKey?: string;
 	session?: SessionMode;
+	resumeSessionId?: string;
+	model?: string;
 }
 
 export class QueueStore {
@@ -61,6 +63,8 @@ export class QueueStore {
 			ephemeralWorktree: false,
 			error: null,
 			session: input.session ?? "fresh",
+			resumeSessionId: input.resumeSessionId ?? null,
+			model: input.model ?? null,
 			prompt: input.prompt,
 		};
 		this.write(task);

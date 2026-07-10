@@ -19,6 +19,8 @@ const task: TaskInstance = {
 	ephemeralWorktree: false,
 	error: null,
 	session: "fresh",
+	resumeSessionId: null,
+	model: null,
 	prompt: "Review PR 257 with secret shh-token.\n",
 };
 

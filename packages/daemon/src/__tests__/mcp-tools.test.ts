@@ -42,8 +42,11 @@ describe("mcpEnqueueTask", () => {
 				params: {
 					prompt: "fix it",
 					repo: "platform",
+					cwd: undefined,
 					ref: undefined,
 					priority: undefined,
+					resume_session_id: undefined,
+					model: undefined,
 				},
 			},
 		]);
@@ -53,6 +56,25 @@ describe("mcpEnqueueTask", () => {
 			status: "queued",
 		});
 		expect(closedCount()).toBe(1);
+	});
+
+	it("passes cwd, resume_session_id and model through", async () => {
+		const { caller, calls } = fakeCaller(() => ({ id: "01Y" }));
+		await mcpEnqueueTask(caller, {
+			prompt: "continue",
+			cwd: "/wt/repo.fix-x",
+			resume_session_id: "sess-1",
+			model: "claude-fable-5",
+		});
+		expect(calls[0]?.params).toEqual({
+			prompt: "continue",
+			repo: undefined,
+			cwd: "/wt/repo.fix-x",
+			ref: undefined,
+			priority: undefined,
+			resume_session_id: "sess-1",
+			model: "claude-fable-5",
+		});
 	});
 
 	it("maps failures to isError result and still closes", async () => {
@@ -113,9 +135,29 @@ describe("mcpRunTaskDefinition", () => {
 					name: "pr-review",
 					args: ["257"],
 					source: "mcp",
+					cwd: undefined,
+					resume_session_id: undefined,
 				},
 			},
 		]);
 		expect(JSON.parse(result.content[0]?.text ?? "")).toEqual([{ id: "01B" }]);
+	});
+
+	it("passes cwd and resume_session_id through", async () => {
+		const { caller, calls } = fakeCaller(() => [{ id: "01C" }]);
+		await mcpRunTaskDefinition(caller, {
+			repo: "platform",
+			name: "pr-ready",
+			cwd: "/wt/repo.fix-x",
+			resume_session_id: "sess-2",
+		});
+		expect(calls[0]?.params).toEqual({
+			repo: "platform",
+			name: "pr-ready",
+			args: [],
+			source: "mcp",
+			cwd: "/wt/repo.fix-x",
+			resume_session_id: "sess-2",
+		});
 	});
 });

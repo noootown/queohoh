@@ -571,4 +571,92 @@ describe("ApiServer", () => {
 			).rejects.toThrow(/unknown repo/);
 		});
 	});
+
+	describe("enqueue with cwd / resume_session_id / model", () => {
+		const WT = [
+			{ name: "repo", path: "/wt/repo", branch: "main" },
+			{ name: "repo.fix-x", path: "/wt/repo.fix-x", branch: "fix-x" },
+		];
+
+		it("resolves cwd to repo + worktree and stamps resume/model", async () => {
+			const { client } = await setup({ worktrees: WT });
+			const task = (await client.call("enqueue", {
+				prompt: "continue",
+				cwd: "/wt/repo.fix-x/src/deep",
+				resume_session_id: "sess-1",
+				model: "claude-fable-5",
+			})) as {
+				target: { repo: string; ref: string };
+				resumeSessionId: string;
+				model: string;
+			};
+			expect(task.target.repo).toBe("platform");
+			expect(task.target.ref).toBe("worktree:repo.fix-x");
+			expect(task.resumeSessionId).toBe("sess-1");
+			expect(task.model).toBe("claude-fable-5");
+		});
+
+		it("prefers the longest matching worktree path", async () => {
+			// /wt/repo is a prefix of /wt/repo.fix-x only path-segment-wise;
+			// use a genuinely nested pair to prove longest-match.
+			const nested = [
+				{ name: "outer", path: "/wt/outer", branch: "main" },
+				{ name: "inner", path: "/wt/outer/inner", branch: "b" },
+			];
+			const { client } = await setup({ worktrees: nested });
+			const task = (await client.call("enqueue", {
+				prompt: "p",
+				cwd: "/wt/outer/inner/src",
+			})) as { target: { ref: string } };
+			expect(task.target.ref).toBe("worktree:inner");
+		});
+
+		it("unresolvable cwd fails with config.yaml guidance", async () => {
+			const { client } = await setup({ worktrees: WT });
+			await expect(
+				client.call("enqueue", { prompt: "p", cwd: "/elsewhere/repo" }),
+			).rejects.toThrow(/config\.yaml/);
+		});
+
+		it("enqueue without repo and without cwd is rejected", async () => {
+			const { client } = await setup();
+			await expect(client.call("enqueue", { prompt: "p" })).rejects.toThrow(
+				/repo or cwd/,
+			);
+		});
+	});
+
+	describe("runDefinition with cwd / resume_session_id", () => {
+		const WT = [
+			{ name: "repo.fix-x", path: "/wt/repo.fix-x", branch: "fix-x" },
+		];
+
+		it("targets the resolved worktree and stamps resumeSessionId", async () => {
+			const { client } = await setup({ worktrees: WT });
+			const created = (await client.call("runDefinition", {
+				repo: "platform",
+				name: "greet",
+				args: ["world"],
+				cwd: "/wt/repo.fix-x",
+				resume_session_id: "sess-2",
+			})) as { target: { ref: string }; resumeSessionId: string }[];
+			expect(created).toHaveLength(1);
+			expect(created[0]?.target.ref).toBe("worktree:repo.fix-x");
+			expect(created[0]?.resumeSessionId).toBe("sess-2");
+		});
+
+		it("cwd resolving to a different repo is rejected", async () => {
+			// setup registers only "platform"; resolveCwd maps any listed worktree
+			// to it, so simulate mismatch by passing an unknown repo name.
+			const { client } = await setup({ worktrees: WT });
+			await expect(
+				client.call("runDefinition", {
+					repo: "ghost",
+					name: "greet",
+					args: ["world"],
+					cwd: "/wt/repo.fix-x",
+				}),
+			).rejects.toThrow(/unknown repo/);
+		});
+	});
 });

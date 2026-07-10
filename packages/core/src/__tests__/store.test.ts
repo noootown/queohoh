@@ -118,6 +118,33 @@ describe("QueueStore", () => {
 		expect(store.listArchived().map((a) => a.id)).toEqual([t.id]);
 	});
 
+	it("create persists resumeSessionId and model", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			resumeSessionId: "sess-1",
+			model: "claude-fable-5",
+		});
+		const reloaded = store.get(t.id);
+		expect(reloaded?.resumeSessionId).toBe("sess-1");
+		expect(reloaded?.model).toBe("claude-fable-5");
+	});
+
+	it("create defaults resumeSessionId and model to null", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+		});
+		expect(t.resumeSessionId).toBeNull();
+		expect(t.model).toBeNull();
+	});
+
 	it("skips unparseable files and reports them", () => {
 		const store = freshStore();
 		store.create({ prompt: "good", repo: "r", ref: "temp", source: "tui" });

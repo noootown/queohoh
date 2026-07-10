@@ -36,17 +36,38 @@ export function createMcpServer(caller: McpCaller): McpServer {
 
 	server.tool(
 		"enqueue_task",
-		"Enqueue an ad-hoc task into the queohoh queue. The task runs end-to-end in a worktree and commits its work. IMPORTANT: workers never see this conversation — transcribe any images, error text, or rich context into the prompt verbatim before enqueueing. Returns the created task as JSON.",
+		"Enqueue an ad-hoc task into the queohoh queue. The task runs end-to-end in a worktree and commits its work. Pass cwd (absolute path inside the target worktree) to target the current worktree, and resume_session_id to make the run RESUME that Claude session instead of starting fresh — resumed runs keep the full conversation context. Without resume_session_id workers never see this conversation: transcribe any images, error text, or rich context into the prompt verbatim. Returns the created task as JSON.",
 		{
-			prompt: z.string().describe("Full self-contained task prompt"),
-			repo: z.string().describe("Registered project name (e.g. 'platform')"),
+			prompt: z.string().describe("Task prompt (directive if resuming)"),
+			repo: z
+				.string()
+				.optional()
+				.describe("Registered project name; omit when cwd is given"),
+			cwd: z
+				.string()
+				.optional()
+				.describe(
+					"Absolute path inside the target worktree; the daemon resolves repo + worktree from it",
+				),
 			ref: z
 				.string()
 				.optional()
 				.describe(
-					"Target ref: pr:<N> | ticket:<ID> | worktree:<name> | temp (default: temp)",
+					"Target ref: pr:<N> | ticket:<ID> | worktree:<name> | temp (default: temp; ignored when cwd is given)",
 				),
 			priority: z.enum(["low", "normal", "high"]).optional(),
+			resume_session_id: z
+				.string()
+				.optional()
+				.describe(
+					"Claude session id to resume; the run continues that session's context",
+				),
+			model: z
+				.string()
+				.optional()
+				.describe(
+					"Model for the run (e.g. claude-fable-5); defaults to the daemon default",
+				),
 		},
 		async (args) => toCallResult(mcpEnqueueTask(caller, args)),
 	);
@@ -75,6 +96,16 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.array(z.string())
 				.optional()
 				.describe("Positional args matching the definition's declared args"),
+			cwd: z
+				.string()
+				.optional()
+				.describe(
+					"Absolute path inside the target worktree; overrides the definition's worktree",
+				),
+			resume_session_id: z
+				.string()
+				.optional()
+				.describe("Claude session id to resume for the created task(s)"),
 		},
 		async (args) => toCallResult(mcpRunTaskDefinition(caller, args)),
 	);

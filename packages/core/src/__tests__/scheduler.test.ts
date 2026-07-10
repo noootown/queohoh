@@ -28,6 +28,8 @@ function task(overrides: {
 		ephemeralWorktree: false,
 		error: null,
 		session: "fresh",
+		resumeSessionId: null,
+		model: null,
 		prompt: "p",
 	};
 }

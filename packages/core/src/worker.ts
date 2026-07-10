@@ -102,7 +102,7 @@ export async function runTask(
 		def = deps.loadDef(task.definition);
 		if (def === null) return fail(`definition not found: ${task.definition}`);
 	}
-	const model = def?.model ?? deps.defaults.model;
+	const model = def?.model ?? task.model ?? deps.defaults.model;
 	const timeoutMs = def?.timeoutMs ?? deps.defaults.timeoutMs;
 
 	deps.runStore.writeSnapshot(
@@ -134,11 +134,21 @@ export async function runTask(
 		}
 	}
 
-	// Main-session pointer: resolved at SPAWN time. laneKey is null only when the
-	// worktree is unresolved (guarded above), in which case we treat as fresh.
+	// Resume resolution at SPAWN time. A pinned task (resume_session_id set)
+	// resumes its pin — unless a later run in this lane already advanced the
+	// pointer after the task was created (chain-advance): queueing several
+	// follow-ups from one session makes each resume the previous run's
+	// resulting session. laneKey is null only when the worktree is unresolved
+	// (guarded above).
 	const lane = laneKey(task);
 	let resumeSessionId: string | undefined;
-	if (task.session === "main" && deps.mainSessions && lane !== null) {
+	if (task.resumeSessionId !== null) {
+		const ptr = lane !== null ? (deps.mainSessions?.entry(lane) ?? null) : null;
+		resumeSessionId =
+			ptr !== null && ptr.updatedAt > task.created
+				? ptr.sessionId
+				: task.resumeSessionId;
+	} else if (task.session === "main" && deps.mainSessions && lane !== null) {
 		resumeSessionId = deps.mainSessions.get(lane) ?? undefined;
 	}
 
@@ -183,10 +193,11 @@ export async function runTask(
 		}
 	}
 
-	// Advance the pointer after any outcome (done OR failed) when a main run
-	// captured a sessionId; runs with a null sessionId leave it unchanged.
+	// Advance the pointer after any outcome (done OR failed) when a main or
+	// pinned run captured a sessionId; runs with a null sessionId leave it
+	// unchanged.
 	if (
-		task.session === "main" &&
+		(task.session === "main" || task.resumeSessionId !== null) &&
 		deps.mainSessions &&
 		lane !== null &&
 		result.sessionId !== null

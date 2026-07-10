@@ -16,6 +16,7 @@ export interface InstantiateDeps {
 	globalVars?: Record<string, string>;
 	repoVars?: Record<string, string>;
 	refOverride?: string;
+	resumeSessionId?: string;
 }
 
 export async function instantiateDefinition(
@@ -88,6 +89,7 @@ export async function instantiateDefinition(
 			definition,
 			item,
 			itemKey,
+			resumeSessionId: deps.resumeSessionId,
 		}),
 	);
 }

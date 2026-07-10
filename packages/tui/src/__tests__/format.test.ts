@@ -28,6 +28,8 @@ function task(
 		ephemeralWorktree: false,
 		error: null,
 		session: "fresh",
+		resumeSessionId: null,
+		model: null,
 		prompt: "fix the flaky test\nmore context\n",
 		...overrides,
 	};

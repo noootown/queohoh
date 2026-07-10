@@ -59,6 +59,8 @@ render pass — so they work even for late-resolving refs (`pr:`, `ticket:`,
 queohoh daemon              # foreground (first run writes a starter config)
 queohoh launchd:install     # keep-alive via launchd (prints the bootstrap command)
 queohoh status              # check it's up
+queohoh reload              # after changing daemon code: rebuild + restart
+                            # (refuses if tasks are running; --force overrides)
 ```
 
 ## 4. Claude Code integration
@@ -91,7 +93,10 @@ Heartbeats expire after 5 minutes; they're best-effort and never block.
 
 ## 5. Enqueue from anywhere
 
-- In any Claude Code session: `/qoo review PR 257 in platform`
+- In any Claude Code session: `/qoo <request>` — by default this queues a
+  headless continuation of that session in the current worktree (close the
+  tab; the daemon resumes it with full context). `/qoo status` shows the
+  queue.
 - Drop a well-formed task file into `~/.local/state/queohoh/tasks/` — that IS an enqueue.
 
 ## 6. TUI (the cockpit)

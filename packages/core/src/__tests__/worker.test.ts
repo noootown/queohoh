@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -469,5 +469,162 @@ describe("runTask main-session pointer", () => {
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
 		expect(mainSessions.get(LANE)).toBe("keep-me");
+	});
+});
+
+describe("runTask pinned resume (resume_session_id)", () => {
+	const LANE = "platform:tmp-x";
+
+	const mainStoreAt = (entries: Record<string, unknown>) => {
+		const path = join(
+			mkdtempSync(join(tmpdir(), "qo-main-")),
+			"main-sessions.json",
+		);
+		writeFileSync(path, JSON.stringify({ sessions: entries }));
+		return new MainSessionStore(path);
+	};
+
+	const enqueuePinned = (store: QueueStore, model?: string) =>
+		store.create({
+			prompt: "continue\n",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			resumeSessionId: "pin-sess",
+			model,
+		});
+
+	it("pin with no pointer → executor resumes the pin", async () => {
+		const mainSessions = mainStoreAt({});
+		let seenResume: string | undefined;
+		const { deps, store } = makeDeps({
+			mainSessions,
+			executeClaude: async (opts) => {
+				seenResume = opts.resumeSessionId;
+				return okResult;
+			},
+		});
+		const t = enqueuePinned(store);
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenResume).toBe("pin-sess");
+	});
+
+	it("pointer updated after task creation → pointer wins (chain-advance)", async () => {
+		const mainSessions = mainStoreAt({
+			[LANE]: {
+				sessionId: "descendant-sess",
+				updatedAt: "2999-01-01T00:00:00.000Z",
+			},
+		});
+		let seenResume: string | undefined;
+		const { deps, store } = makeDeps({
+			mainSessions,
+			executeClaude: async (opts) => {
+				seenResume = opts.resumeSessionId;
+				return okResult;
+			},
+		});
+		const t = enqueuePinned(store);
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenResume).toBe("descendant-sess");
+	});
+
+	it("stale pointer (before task creation, incl. legacy) → pin wins", async () => {
+		const mainSessions = mainStoreAt({ [LANE]: "legacy-old-sess" });
+		let seenResume: string | undefined;
+		const { deps, store } = makeDeps({
+			mainSessions,
+			executeClaude: async (opts) => {
+				seenResume = opts.resumeSessionId;
+				return okResult;
+			},
+		});
+		const t = enqueuePinned(store);
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenResume).toBe("pin-sess");
+	});
+
+	it("pinned run advances the lane pointer on done", async () => {
+		const mainSessions = mainStoreAt({});
+		const { deps, store } = makeDeps({
+			mainSessions,
+			executeClaude: async () => ({ ...okResult, sessionId: "new-sess" }),
+		});
+		const t = enqueuePinned(store);
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(mainSessions.get(LANE)).toBe("new-sess");
+	});
+
+	it("pinned run advances the pointer even on failure", async () => {
+		const mainSessions = mainStoreAt({});
+		const { deps, store } = makeDeps({
+			mainSessions,
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 3,
+				sessionId: "failed-sess",
+			}),
+		});
+		const t = enqueuePinned(store);
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("failed");
+		expect(mainSessions.get(LANE)).toBe("failed-sess");
+	});
+
+	it("task.model overrides defaults; definition model still wins", async () => {
+		let seenModel = "";
+		const { deps, store } = makeDeps({
+			executeClaude: async (opts) => {
+				seenModel = opts.model;
+				return okResult;
+			},
+		});
+		const t = enqueuePinned(store, "claude-fable-5");
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenModel).toBe("claude-fable-5");
+	});
+
+	it("def.model beats task.model", async () => {
+		const def: TaskDefinition = {
+			name: "d",
+			repo: "platform",
+			discovery: null,
+			args: [],
+			dedup: "none",
+			worktree: "temp",
+			preRun: null,
+			postRun: null,
+			model: "opus",
+			timeoutMs: 60_000,
+			priority: "normal",
+			prompt: "p",
+		};
+		let seenModel = "";
+		const { deps, store } = makeDeps({
+			loadDef: () => def,
+			executeClaude: async (opts) => {
+				seenModel = opts.model;
+				return okResult;
+			},
+		});
+		const t = store.create({
+			prompt: "p\n",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			definition: "platform/d",
+			item: {},
+			itemKey: "adhoc",
+			model: "claude-fable-5",
+		});
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenModel).toBe("opus");
 	});
 });

@@ -20,6 +20,7 @@ export { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
 export { execHook } from "./hooks.js";
 export type { InstantiateDeps, Trigger } from "./instantiate.js";
 export { instantiateDefinition } from "./instantiate.js";
+export type { MainSessionEntry } from "./main-sessions.js";
 export { MainSessionStore } from "./main-sessions.js";
 export type { Redactor } from "./redact.js";
 export { buildSecretMap, makeRedactor, redact } from "./redact.js";

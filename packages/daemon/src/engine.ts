@@ -68,6 +68,43 @@ export class Engine {
 		return null;
 	}
 
+	/** Map an absolute path to the registered project + worktree containing it. */
+	async resolveCwd(
+		cwd: string,
+	): Promise<{ repo: string; worktree: string } | null> {
+		let best: { repo: string; worktree: string; path: string } | null = null;
+		for (const project of this.deps.config.projects) {
+			let list: WorktreeInfo[];
+			try {
+				list = await this.deps.resolverIO.listWorktrees(project.path);
+			} catch {
+				continue;
+			}
+			for (const wt of list) {
+				if (cwd !== wt.path && !cwd.startsWith(`${wt.path}/`)) continue;
+				if (best === null || wt.path.length > best.path.length) {
+					best = { repo: project.name, worktree: wt.name, path: wt.path };
+				}
+			}
+		}
+		return best === null ? null : { repo: best.repo, worktree: best.worktree };
+	}
+
+	/** Best-effort git toplevel of a path, used for error guidance. */
+	async gitToplevel(cwd: string): Promise<string | null> {
+		try {
+			const { stdout, exitCode } = await this.deps.exec(
+				"git",
+				["-C", cwd, "rev-parse", "--show-toplevel"],
+				{ cwd },
+			);
+			const top = stdout.trim();
+			return exitCode === 0 && top.length > 0 ? top : null;
+		} catch {
+			return null;
+		}
+	}
+
 	/**
 	 * Remove a worktree by name. `name` may be the full directory name
 	 * (`<repo>.<branch>`) or the TUI's display name with the `<repo>.` prefix
