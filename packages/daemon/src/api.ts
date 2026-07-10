@@ -285,8 +285,16 @@ export class ApiServer {
 				const def = resolveDefinition(deps.config, repo, name);
 				const args = (params.args as string[] | undefined) ?? [];
 				const source = params.source === "mcp" ? "mcp" : "tui";
+				// A def declaring `worktree: repo` is location-critical: it must run in
+				// the project's primary checkout (squash-merge checks out the target
+				// branch there). The picker's worktree already served its purpose as
+				// arg context (`source` etc.); pinning the run to that worktree would
+				// land it in the wrong cwd, where it could never succeed — so ignore
+				// the worktree override for `repo`-pinned defs.
 				const worktree =
-					typeof params.worktree === "string" && params.worktree.length > 0
+					def.worktree !== "repo" &&
+					typeof params.worktree === "string" &&
+					params.worktree.length > 0
 						? params.worktree
 						: undefined;
 				const resumeSessionId =

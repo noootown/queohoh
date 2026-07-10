@@ -262,6 +262,7 @@ describe("WorktreesPane", () => {
 		{
 			kind: "worktree",
 			name: "wt-a",
+			rawName: "wt-a",
 			path: "/wt/a",
 			branch: "a",
 			state: "busy",
@@ -271,6 +272,7 @@ describe("WorktreesPane", () => {
 		{
 			kind: "session",
 			name: "platform",
+			rawName: "platform",
 			path: "/ws/platform",
 			branch: null,
 			state: "you",
@@ -308,6 +310,7 @@ describe("WorktreesPane", () => {
 		const long: WorktreeRow = {
 			kind: "worktree",
 			name: "w".repeat(300),
+			rawName: "w".repeat(300),
 			path: "/wt/long",
 			branch: "long",
 			state: "free",
@@ -336,6 +339,7 @@ describe("WorktreesPane — range selection", () => {
 		{
 			kind: "worktree" as const,
 			name: "wt-a",
+			rawName: "wt-a",
 			path: "/wt/wt-a",
 			branch: "wt-a",
 			state: "free" as const,
@@ -345,6 +349,7 @@ describe("WorktreesPane — range selection", () => {
 		{
 			kind: "worktree" as const,
 			name: "wt-b",
+			rawName: "wt-b",
 			path: "/wt/wt-b",
 			branch: "wt-b",
 			state: "free" as const,
@@ -354,6 +359,7 @@ describe("WorktreesPane — range selection", () => {
 		{
 			kind: "worktree" as const,
 			name: "wt-c",
+			rawName: "wt-c",
 			path: "/wt/wt-c",
 			branch: "wt-c",
 			state: "free" as const,
@@ -446,6 +452,7 @@ describe("list rows never wrap (title stays visible)", () => {
 			{
 				kind: "worktree",
 				name: "wt-x",
+				rawName: "wt-x",
 				path: "/wt/x",
 				branch: "x",
 				state: "free",
@@ -853,6 +860,7 @@ describe("DetailPane", () => {
 		const row: WorktreeRow = {
 			kind: "worktree",
 			name: "wt-a",
+			rawName: "wt-a",
 			path: "/wt/a",
 			branch: "feature-a",
 			state: "busy",
@@ -887,6 +895,7 @@ describe("DetailPane", () => {
 		const row: WorktreeRow = {
 			kind: "worktree",
 			name: "wt-a",
+			rawName: "wt-a",
 			path: "/wt/a",
 			branch: null,
 			state: "free",

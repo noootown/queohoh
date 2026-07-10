@@ -74,8 +74,40 @@ New `ArgsForm` component replaces the single whitespace-split text box:
 - Required-and-empty blocks submit with an inline error on that row.
 - `def-pick` rows render args with defaults visible: `pr-ready (pr, mode=ready,
   review=auto)`.
-- The `def-args` Mode gains `initial?: Record<string, string>` so callers (the
-  squash-merge menu entry) can prefill specific fields.
+- The `def-args` Mode gains `initial?` (editable prefill) and `fixed?`
+  (dimmed read-only rows, still submitted positionally) so callers can seed
+  fields from context.
+
+### Worktree-context auto-fill
+
+When a def is run with a worktree in scope, args named by convention auto-fill
+from that worktree's branch via `contextArgValues(branch)` (core): `source` and
+`branch` are the branch itself, `ticket` is the ticket token extracted from it
+(omitted when the branch carries none). ArgsForm ignores keys the def does not
+declare, so callers pass the whole map.
+
+Whether the fill is `fixed` or `initial` depends on how directed the run is:
+
+- **Explicit worktree target → `fixed`** (read-only): the worktree action-menu
+  entries (`Run task definition…`, `Squash merge into…`) — the user picked this
+  worktree, so its branch decides `source`/`branch`/`ticket` and is not asked.
+- **Ambient tasks-pane run → `initial`** (editable): the TASKS-pane `Run` action
+  borrows the current worktrees-pane selection as a convenience default the user
+  can edit or clear. Here `selectors.ambientRunArgs` also overlays `source`/
+  `branch` (when the def declares no `options` of its own) with a **dropdown of
+  the repo's worktree branches**, so the user picks the source rather than
+  retyping it; the selected row seeds the initial value. `main`/`master` and
+  session rows contribute no candidate and no prefill (a wrong prefill of the
+  primary checkout only invites a wasted run). The overlaid `options` are TUI-
+  side only — the def declares none, so the daemon never validates them and
+  submission stays positional.
+
+Identifier hygiene: worktree rows carry both a stripped display `name` and a raw
+`<repo>.<branch>` identifier (`rawName`). Everything dispatched to the daemon —
+the run-def worktree override, `task-fresh`/`task-main` enqueue, worktree removal,
+and lane keys — uses `rawName`; only titles and row text use the stripped `name`.
+The stripped form is a display convenience and does not resolve as a worktree ref
+(`resolveTarget` matches raw names).
 
 ## 2. Global task definitions
 
@@ -149,10 +181,19 @@ note the copy step. (No auto-sync in this iteration.)
   **disabled** with reason when a task is running in that worktree (it will
   remove the worktree) or when the worktree has no branch.
 - Selecting it opens the `def-args` form for the global `squash-merge`
-  definition with `initial: { source: <worktree branch> }` — target editable,
-  default `main`. Submit calls `runDefinition` **without** a worktree override
+  definition with `fixed: contextArgValues(<worktree branch>)` — `source` is the
+  worktree's branch, shown read-only (this worktree is the explicit target);
+  `target` stays editable, default `main`. Submit calls `runDefinition`
+  **without** a worktree override
   (the def's `worktree: repo` governs), so the task runs in the primary
-  checkout, not the selected worktree.
+  checkout, not the selected worktree. As a backstop, `runDefinition` in the
+  daemon **ignores** any `worktree` param when the resolved def declares
+  `worktree: repo`: such a def is location-critical (it checks out the target
+  branch in the primary checkout), and the picker's worktree only ever served as
+  arg context — pinning the run to it would land it in the wrong cwd, where it
+  could never succeed. So `Run task definition…` on a `repo`-pinned def from a
+  worktree menu still runs in the primary checkout, with `source` pre-seeded from
+  the worktree.
 - If the global definition is missing from the workspace, the menu action
   surfaces "squash-merge definition not found — copy library/tasks/squash-merge
   to <workspace>/global/tasks/" on the status line.

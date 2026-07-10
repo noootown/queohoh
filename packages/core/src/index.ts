@@ -67,4 +67,4 @@ export {
 export { render } from "./template.js";
 export type { ClaudeExecutor, WorkerDeps } from "./worker.js";
 export { runTask } from "./worker.js";
-export { extractTicket } from "./worktree-context.js";
+export { contextArgValues, extractTicket } from "./worktree-context.js";

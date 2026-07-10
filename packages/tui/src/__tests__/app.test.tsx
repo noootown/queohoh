@@ -917,6 +917,175 @@ describe("App full-screen", () => {
 		expect(calls.runDefinition).toEqual([]);
 	});
 
+	it("worktree menu: Run task definition… dispatches the raw worktree name while showing the stripped one, and fixes source to the branch", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [
+				{
+					name: "platform.wt-a",
+					path: "/wt/platform.wt-a",
+					branch: "jus-42-thing",
+				},
+			],
+		});
+		await engine.tick();
+		server.broadcast();
+		const defs: DefinitionSummary[] = [
+			{
+				repo: "platform",
+				name: "deploy",
+				scope: "project",
+				args: [{ name: "source" }, { name: "target", default: "main" }],
+				hasDiscovery: false,
+			},
+		];
+		const { actions, calls } = fakeActions(defs);
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		app.stdin.write("j"); // -> New task (main session)…
+		await wait(20);
+		app.stdin.write("j"); // -> Run task definition…
+		await wait(20);
+		app.stdin.write("\r"); // open def picker
+		await wait(60);
+		// The picker title shows the stripped display name, never the doubled
+		// `<repo>.<repo>.` that a failure to strip the raw identifier would produce.
+		expect(app.lastFrame()).toContain("platform:wt-a");
+		expect(app.lastFrame()).not.toContain("platform:platform.wt-a");
+		app.stdin.write("\r"); // pick deploy (has args) -> def-args
+		await wait(60);
+		expect(app.lastFrame()).toContain("deploy args");
+		expect(app.lastFrame()).toContain("source> jus-42-thing"); // fixed to the branch
+		// `source` is fixed, so focus starts on `target`: typing edits target only.
+		for (let i = 0; i < 4; i += 1) app.stdin.write("\u007f"); // DEL: clear "main"
+		for (const ch of "dev") app.stdin.write(ch);
+		await wait(40);
+		expect(app.lastFrame()).toContain("source> jus-42-thing"); // unchanged
+		expect(app.lastFrame()).toContain("target> dev");
+		app.stdin.write("\r"); // submit
+		await wait(80);
+		// The RAW worktree name is dispatched (the picker targets this worktree),
+		// not the stripped display name — resolveTarget matches on the raw name.
+		expect(calls.runDefinition).toEqual([
+			["platform", "deploy", ["jus-42-thing", "dev"], "platform.wt-a"],
+		]);
+	});
+
+	it("tasks pane: Run overlays source as a worktree-branch dropdown, initialised to the selected worktree and dispatched with no worktree override", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [
+				{
+					name: "platform.wt-a",
+					path: "/wt/platform.wt-a",
+					branch: "jus-42-thing",
+				},
+				{ name: "platform.wt-b", path: "/wt/platform.wt-b", branch: "feat-b" },
+			],
+		});
+		await engine.tick();
+		server.broadcast();
+		const defs: DefinitionSummary[] = [
+			{
+				repo: "platform",
+				name: "deploy",
+				scope: "project",
+				args: [{ name: "source" }, { name: "target", default: "main" }],
+				hasDiscovery: false,
+			},
+		];
+		const { actions, calls } = fakeActions(defs);
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		app.stdin.write(CTRL_S);
+		await wait(20);
+		app.stdin.write(DOWN); // queue -> tasks (wt-a is the default worktree selection)
+		await wait(60);
+		app.stdin.write("a"); // open action menu (deploy selected)
+		await wait(60);
+		app.stdin.write("\r"); // Run -> def-args with the source dropdown
+		await wait(60);
+		// `source` renders as an enum (‹value›), initialised to the selected row's
+		// branch — not a free-text field.
+		expect(app.lastFrame()).toContain("source> ‹jus-42-thing›");
+		// ←/→ cycles through the repo's other worktree branches.
+		app.stdin.write(RIGHT);
+		await wait(40);
+		expect(app.lastFrame()).toContain("source> ‹feat-b›");
+		app.stdin.write("\r"); // submit (target keeps its default "main")
+		await wait(80);
+		// No worktree override — the run is ambient, so the def's own worktree
+		// governs; the picked branch is submitted positionally as `source`.
+		expect(calls.runDefinition).toEqual([
+			["platform", "deploy", ["feat-b", "main"], undefined],
+		]);
+	});
+
+	it("worktree menu: New task enqueues the RAW worktree name while the modal shows the stripped one", async () => {
+		const { engine, server, sock, base } = await startServer({
+			worktrees: [
+				{
+					name: "platform.wt-a",
+					path: "/wt/platform.wt-a",
+					branch: "jus-42-thing",
+				},
+			],
+		});
+		await engine.tick();
+		server.broadcast();
+		const { actions, calls } = fakeActions();
+		const app = render(
+			<App
+				sockPath={sock}
+				runsDir={`${base}/runs`}
+				actions={actions}
+				stdoutStream={big()}
+			/>,
+		);
+		cleanups.push(() => app.unmount());
+		await wait(300);
+		await focusWorktrees(app);
+		app.stdin.write("a"); // open action menu
+		await wait(60);
+		app.stdin.write("\r"); // New task (fresh session)… (index 0)
+		await wait(60);
+		// Modal title shows the stripped display name, not the raw identifier.
+		expect(app.lastFrame()).toContain(
+			"New task — fresh session — platform:wt-a",
+		);
+		// The title stripped the raw identifier — no doubled `<repo>.<repo>.` form.
+		expect(app.lastFrame()).not.toContain("platform:platform.wt-a");
+		for (const ch of "do a thing") app.stdin.write(ch);
+		app.stdin.write("\r");
+		await wait(80);
+		// enqueue builds ref `worktree:<name>` in the daemon, so it must receive the
+		// RAW `<repo>.<branch>` name — the stripped form would not resolve.
+		expect(calls.enqueue).toEqual([
+			[
+				"do a thing",
+				"platform",
+				{ worktree: "platform.wt-a", session: "fresh" },
+			],
+		]);
+	});
+
 	it("keeps the left column width stable when focus/detail content changes", async () => {
 		const { store, server, engine, sock, base } = await startServer({
 			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],

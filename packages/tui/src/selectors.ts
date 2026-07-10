@@ -1,5 +1,10 @@
 import { basename } from "node:path";
-import { laneKey, type TaskInstance } from "@queohoh/core";
+import {
+	type ArgSpec,
+	contextArgValues,
+	laneKey,
+	type TaskInstance,
+} from "@queohoh/core";
 import type { StateSnapshot } from "@queohoh/daemon";
 import { buildQueueRows, type QueueRow, stripRepoPrefix } from "./format.js";
 
@@ -56,8 +61,15 @@ export type WorktreeState = "busy" | "failed" | "free";
 
 export interface WorktreeRow {
 	kind: "worktree" | "session";
-	/** worktree name, or session label (cwd basename) */
+	/** display name: worktree name with the redundant `<repo>.` prefix stripped,
+	 * or session label (cwd basename). For display/filter only — never an
+	 * identifier sent to the daemon (see `rawName`). */
 	name: string;
+	/** the untouched worktree identifier (`<repo>.<branch>`), used for every
+	 * action dispatched to the daemon — ref building (`worktree:<rawName>`),
+	 * lane keys, removal. Session rows have no real worktree, so this mirrors
+	 * `name` (never used as an identifier for a session). */
+	rawName: string;
 	path: string;
 	branch: string | null;
 	state: WorktreeState | "you";
@@ -131,6 +143,7 @@ export function buildWorktreeRows(
 		// `wt.name` is the underlying identifier (used for state/action lookup);
 		// only the displayed name drops the redundant `<repo>.` prefix.
 		name: stripRepoPrefix(wt.name, project),
+		rawName: wt.name,
 		path: wt.path,
 		branch: wt.branch,
 		state: worktreeState(snapshot, project, wt.name),
@@ -148,7 +161,10 @@ export function buildWorktreeRows(
 		if (!worktrees.some((wt) => cwdInWorktree(cwd, wt.path))) continue;
 		rows.push({
 			kind: "session",
+			// A session is not a real worktree, so there is no distinct identifier;
+			// rawName mirrors the display name (never dispatched as a worktree ref).
 			name: stripRepoPrefix(basename(cwd), project),
+			rawName: stripRepoPrefix(basename(cwd), project),
 			path: cwd,
 			branch: null,
 			state: "you",
@@ -157,6 +173,76 @@ export function buildWorktreeRows(
 		});
 	}
 	return rows;
+}
+
+/**
+ * Ambient arg prefill for running a task definition off the TASKS pane, derived
+ * from whichever worktree row is currently selected in the worktrees pane. The
+ * association is ambient (the run wasn't targeted at this worktree), so the
+ * caller uses these as an *editable* prefill, not fixed rows. Empty (no prefill)
+ * unless the selection is a real worktree row with a branch — a session row has
+ * no branch, and the primary checkout's `main`/`master` is never a sensible
+ * `source`, so a wrong prefill of it would only invite a wasted run.
+ */
+export function ambientContextArgValues(
+	row: WorktreeRow | undefined,
+): Record<string, string> {
+	if (row?.kind !== "worktree") return {};
+	if (row.branch === "main" || row.branch === "master") return {};
+	return contextArgValues(row.branch);
+}
+
+/**
+ * Branches offered as `source`/`branch` dropdown candidates for an ambient run:
+ * every real worktree's branch in row order, minus branchless/session rows and
+ * the primary checkout (`main`/`master` is never a sensible source). Mirrors the
+ * exclusion `ambientContextArgValues` applies to the selected row.
+ */
+function branchCandidates(rows: WorktreeRow[]): string[] {
+	const out: string[] = [];
+	for (const row of rows) {
+		if (row.kind !== "worktree") continue;
+		const branch = row.branch;
+		if (branch === null || branch === "main" || branch === "master") continue;
+		out.push(branch);
+	}
+	return out;
+}
+
+export interface AmbientRunArgs {
+	/** the def's args, with `source`/`branch` overlaid as worktree-branch enums */
+	args: ArgSpec[];
+	/** editable prefill for `source`/`branch`/`ticket` from the selected row */
+	initial: Record<string, string>;
+}
+
+/**
+ * Overlay worktree context onto a definition's args for a TASKS-pane (ambient)
+ * run. An arg named `source` or `branch` that does not already declare `options`
+ * becomes a dropdown of the repo's worktree branches, so the user picks the
+ * source instead of typing it; `initial` prefills from the currently-selected
+ * worktree row (ArgsForm falls back to the first option when the selection
+ * contributes none — main/master/session). With no candidate branches the arg
+ * is left as free text. The run is ambient, so nothing here is fixed — the def's
+ * own `worktree:` field still governs where it runs, and the daemon never sees
+ * these options (the def declares none; submission stays positional).
+ */
+export function ambientRunArgs(
+	defArgs: ArgSpec[],
+	rows: WorktreeRow[],
+	selected: WorktreeRow | undefined,
+): AmbientRunArgs {
+	const candidates = branchCandidates(rows);
+	const args = defArgs.map((arg) => {
+		const named = arg.name === "source" || arg.name === "branch";
+		const hasOptions = arg.options !== undefined && arg.options.length > 0;
+		if (!named || hasOptions || candidates.length === 0) return arg;
+		return { ...arg, options: candidates };
+	});
+	// `initial` comes straight from the selected row's context: when the branch
+	// qualifies it is guaranteed to be among `candidates` (so a valid enum value);
+	// when it doesn't, the key is absent and ArgsForm picks the first option.
+	return { args, initial: ambientContextArgValues(selected) };
 }
 
 export interface PaneLayout {

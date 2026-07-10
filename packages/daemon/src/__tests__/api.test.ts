@@ -360,6 +360,27 @@ describe("ApiServer", () => {
 		expect(created[0]?.target.ref).toBe("worktree:wt-x");
 	});
 
+	it("runDefinition ignores the worktree override for a `worktree: repo` def", async () => {
+		const { client, workspace } = await setup();
+		// A def pinned to the primary checkout: the picker passed its worktree only
+		// as arg context, so the run must stay `repo`, not be pinned to the worktree.
+		const dir = join(workspace, "platform", "tasks", "pinned");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "config.yaml"),
+			"args: [source]\ndedup: none\nworktree: repo\n",
+		);
+		writeFileSync(join(dir, "prompt.md"), "squash {{source}}\n");
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "pinned",
+			args: ["feat-x"],
+			worktree: "platform.feat-x",
+		})) as { target: { ref: string } }[];
+		expect(created).toHaveLength(1);
+		expect(created[0]?.target.ref).toBe("repo");
+	});
+
 	it("definition returns the full loaded definition", async () => {
 		const { client } = await setup();
 		const def = (await client.call("definition", {

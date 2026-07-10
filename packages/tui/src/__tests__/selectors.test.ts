@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	ambientContextArgValues,
+	ambientRunArgs,
 	buildProjectTabs,
 	buildWorktreeRows,
 	clampSelection,
@@ -8,12 +10,28 @@ import {
 	paneTitle,
 	queueRowsForProject,
 	selectionRange,
+	type WorktreeRow,
 	windowRows,
 	worktreeDotColor,
 } from "../selectors.js";
 import { makeSession, makeSnapshot, makeTask } from "./helpers.js";
 
 const NOW = Date.parse("2026-07-08T10:03:12.000Z");
+
+/** A minimal worktree row; ambientContextArgValues only reads kind + branch. */
+function wtRow(over: Partial<WorktreeRow>): WorktreeRow {
+	return {
+		kind: "worktree",
+		name: "wt-a",
+		rawName: "wt-a",
+		path: "/wt/wt-a",
+		branch: "feat/a",
+		state: "free",
+		hasMainSession: false,
+		queued: 0,
+		...over,
+	};
+}
 
 describe("buildProjectTabs", () => {
 	it("lists config projects in order, no synthetic when no orphan repos", () => {
@@ -183,6 +201,7 @@ describe("buildWorktreeRows", () => {
 			{
 				kind: "worktree",
 				name: "wt-a",
+				rawName: "wt-a",
 				path: "/wt/wt-a",
 				branch: "feat/a",
 				state: "free",
@@ -192,6 +211,7 @@ describe("buildWorktreeRows", () => {
 			{
 				kind: "worktree",
 				name: "wt-b",
+				rawName: "wt-b",
 				path: "/wt/wt-b",
 				branch: "feat/b",
 				state: "free",
@@ -201,6 +221,7 @@ describe("buildWorktreeRows", () => {
 			{
 				kind: "worktree",
 				name: "wt-c",
+				rawName: "wt-c",
 				path: "/wt/wt-c",
 				branch: "feat/c",
 				state: "free",
@@ -235,6 +256,7 @@ describe("buildWorktreeRows", () => {
 			{
 				kind: "session",
 				name: "tui",
+				rawName: "tui",
 				path: "/wt/wt-b/packages/tui",
 				branch: null,
 				state: "you",
@@ -256,6 +278,7 @@ describe("buildWorktreeRows", () => {
 			{
 				kind: "session",
 				name: "wt-a",
+				rawName: "wt-a",
 				path: "/wt/wt-a",
 				branch: null,
 				state: "you",
@@ -300,6 +323,11 @@ describe("buildWorktreeRows", () => {
 			"platform",
 			"dedup-dependabot-run",
 		]);
+		// rawName keeps the untouched identifier used for daemon dispatch
+		expect(rows.map((r) => r.rawName)).toEqual([
+			"platform",
+			"platform.dedup-dependabot-run",
+		]);
 		// underlying path (the identifier) is untouched
 		expect(rows[1]?.path).toBe("/wt/platform.dedup-dependabot-run");
 	});
@@ -324,6 +352,8 @@ describe("buildWorktreeRows", () => {
 			{
 				kind: "session",
 				name: "feat-x",
+				// session rawName mirrors the stripped display name (no real worktree)
+				rawName: "feat-x",
 				path: "/wt/platform.feat-x",
 				branch: null,
 				state: "you",
@@ -365,6 +395,97 @@ describe("worktreeDotColor", () => {
 		expect(worktreeDotColor("busy")).toBe("yellow");
 		expect(worktreeDotColor("you")).toBe("yellow");
 		expect(worktreeDotColor("failed")).toBe("red");
+	});
+});
+
+describe("ambientContextArgValues", () => {
+	it("maps source/branch/ticket from a ticket-named worktree branch", () => {
+		expect(ambientContextArgValues(wtRow({ branch: "jus-1008-fix" }))).toEqual({
+			source: "jus-1008-fix",
+			branch: "jus-1008-fix",
+			ticket: "JUS-1008",
+		});
+	});
+
+	it("returns an empty map for a session row (no branch to borrow)", () => {
+		expect(
+			ambientContextArgValues(wtRow({ kind: "session", branch: null })),
+		).toEqual({});
+	});
+
+	it("returns an empty map for a branchless worktree row", () => {
+		expect(ambientContextArgValues(wtRow({ branch: null }))).toEqual({});
+	});
+
+	it("skips main/master (never a sensible source)", () => {
+		expect(ambientContextArgValues(wtRow({ branch: "main" }))).toEqual({});
+		expect(ambientContextArgValues(wtRow({ branch: "master" }))).toEqual({});
+	});
+
+	it("returns an empty map when no row is selected", () => {
+		expect(ambientContextArgValues(undefined)).toEqual({});
+	});
+});
+
+describe("ambientRunArgs", () => {
+	const rows: WorktreeRow[] = [
+		wtRow({ name: "a", rawName: "platform.a", branch: "jus-1-a" }),
+		wtRow({ name: "main", rawName: "platform", branch: "main" }),
+		wtRow({ name: "b", rawName: "platform.b", branch: "feat-b" }),
+		wtRow({ kind: "session", name: "sess", rawName: "sess", branch: null }),
+	];
+
+	it("injects a source dropdown of worktree branches, excluding main/master and sessions", () => {
+		const { args } = ambientRunArgs(
+			[{ name: "source" }, { name: "target", default: "main" }],
+			rows,
+			rows[0],
+		);
+		// `source` gains options in row order; `target` is untouched.
+		expect(args[0]).toEqual({
+			name: "source",
+			options: ["jus-1-a", "feat-b"],
+		});
+		expect(args[1]).toEqual({ name: "target", default: "main" });
+	});
+
+	it("also injects options for an arg named branch", () => {
+		const { args } = ambientRunArgs([{ name: "branch" }], rows, rows[0]);
+		expect(args[0]?.options).toEqual(["jus-1-a", "feat-b"]);
+	});
+
+	it("prefills initial from the selected row's branch", () => {
+		const { initial } = ambientRunArgs([{ name: "source" }], rows, rows[0]);
+		// jus-1-a is in the options, so it is the initial (selected) value.
+		expect(initial).toEqual({
+			source: "jus-1-a",
+			branch: "jus-1-a",
+			ticket: "JUS-1",
+		});
+	});
+
+	it("leaves an arg that already declares options untouched", () => {
+		const declared = { name: "source", options: ["x", "y"] };
+		const { args } = ambientRunArgs([declared], rows, rows[0]);
+		expect(args[0]).toEqual(declared);
+	});
+
+	it("leaves the arg as free text when there are no candidate branches", () => {
+		const onlyMain: WorktreeRow[] = [
+			wtRow({ name: "main", rawName: "platform", branch: "main" }),
+		];
+		const { args, initial } = ambientRunArgs(
+			[{ name: "source" }],
+			onlyMain,
+			onlyMain[0],
+		);
+		expect(args[0]).toEqual({ name: "source" }); // no options injected
+		expect(initial).toEqual({}); // main contributes no prefill
+	});
+
+	it("does not touch args that are not source/branch", () => {
+		const { args } = ambientRunArgs([{ name: "pr" }], rows, rows[0]);
+		expect(args[0]).toEqual({ name: "pr" });
 	});
 });
 

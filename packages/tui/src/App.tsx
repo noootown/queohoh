@@ -1,4 +1,9 @@
-import { laneKey, type SessionMode, type TaskDefinition } from "@queohoh/core";
+import {
+	contextArgValues,
+	laneKey,
+	type SessionMode,
+	type TaskDefinition,
+} from "@queohoh/core";
 import { currentBuildId } from "@queohoh/daemon";
 import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -25,6 +30,7 @@ import { TasksPane } from "./components/TasksPane.js";
 import { TextInput } from "./components/TextInput.js";
 import { WorktreesPane } from "./components/WorktreesPane.js";
 import { anchorFor, clampSubTab, type DetailContext } from "./detail.js";
+import { stripRepoPrefix } from "./format.js";
 import { decideHeal, isStale, performHeal } from "./heal.js";
 import type { KeyInput, KeymapAction, ListPaneId, PaneId } from "./keymap.js";
 import {
@@ -35,6 +41,7 @@ import {
 } from "./keymap.js";
 import { readRunFiles } from "./run-files.js";
 import {
+	ambientRunArgs,
 	buildProjectTabs,
 	buildWorktreeRows,
 	clampSelection,
@@ -76,7 +83,15 @@ function sameRunFiles(a: RunFiles | null, b: RunFiles | null): boolean {
 type MenuTarget =
 	| { kind: "queue"; taskId: string }
 	| { kind: "task"; def: DefinitionSummary }
-	| { kind: "worktree"; name: string; path: string; branch: string | null }
+	| {
+			kind: "worktree";
+			/** stripped display name (modal titles) */
+			name: string;
+			/** raw `<repo>.<branch>` identifier for daemon dispatch (refs, removal) */
+			rawName: string;
+			path: string;
+			branch: string | null;
+	  }
 	| { kind: "session"; path: string }
 	| { kind: "bulk-queue"; rerunIds: string[]; skipIds: string[] }
 	| { kind: "bulk-tasks"; defs: DefinitionSummary[] }
@@ -91,6 +106,9 @@ type Mode =
 			defs: DefinitionSummary[];
 			index: number;
 			worktree?: string;
+			/** branch of the targeted worktree, carried through so the chosen def's
+			 * args form can auto-fill `source`/`branch`/`ticket` from it. */
+			branch?: string | null;
 	  }
 	| {
 			kind: "def-args";
@@ -345,7 +363,9 @@ export function App({
 		}
 		const row = visibleWtRows[wtSel.cursor];
 		if (!row) return { kind: "empty" };
-		const lane = `${activeName}:${row.name}`;
+		// `laneKey` keys on the raw `target.worktree` (the `<repo>.<branch>` name),
+		// so the lane must be built from `rawName`, not the stripped display name.
+		const lane = `${activeName}:${row.rawName}`;
 		const laneTasks = [...snapshot.tasks, ...snapshot.archivedRecent].filter(
 			(t) => laneKey(t) === lane,
 		);
@@ -634,6 +654,7 @@ export function App({
 				target: {
 					kind: "worktree",
 					name: row.name,
+					rawName: row.rawName,
 					path: row.path,
 					branch: row.branch,
 				},
@@ -671,7 +692,7 @@ export function App({
 					setMode({ kind: "worktree-input", taskId: target.taskId });
 				}
 				return;
-			case "run":
+			case "run": {
 				if (target.kind === "bulk-tasks") {
 					clearRange(pane);
 					void runBulk(target.defs, "started", (d) =>
@@ -682,19 +703,40 @@ export function App({
 				if (target.kind !== "task") return;
 				if (target.def.args.length > 0) {
 					setInput("");
-					setMode({ kind: "def-args", def: target.def });
+					// Ambient run: the run wasn't targeted at a worktree, so offer the
+					// repo's branches as a `source` dropdown and borrow the worktrees-pane
+					// selection as an *editable* prefill (explicit targeting would be
+					// `fixed`). No worktree override — the def's own `worktree:` field
+					// governs dispatch. The injected `options` are TUI-side only; the def
+					// declares none, so the daemon never validates them and submission
+					// stays positional.
+					const { args, initial } = ambientRunArgs(
+						target.def.args,
+						visibleWtRows,
+						visibleWtRows[wtSel.cursor],
+					);
+					setMode({
+						kind: "def-args",
+						// Shallow-copy the def with overlaid args so def-args' existing
+						// render/submit path is unchanged; repo/name identity is kept.
+						def: { ...target.def, args },
+						...(Object.keys(initial).length > 0 ? { initial } : {}),
+					});
 				} else {
 					act(actions.runDefinition(target.def.repo, target.def.name, []));
 					invalidateDefs();
 				}
 				return;
+			}
 			case "task-fresh":
 			case "task-main":
 				if (target.kind === "worktree") {
 					setInput("");
 					setMode({
 						kind: "add-task",
-						worktree: target.name,
+						// Raw identifier: enqueue builds ref `worktree:<name>` in the
+						// daemon, which matches against the real `<repo>.<branch>` name.
+						worktree: target.rawName,
 						session: id === "task-fresh" ? "fresh" : "main",
 					});
 				}
@@ -705,7 +747,18 @@ export function App({
 					setStatusLine("no task definitions found");
 					return;
 				}
-				setMode({ kind: "def-pick", defs, index: 0, worktree: target.name });
+				// Carry the worktree's branch so the picked def's args form auto-fills
+				// `source`/`branch`/`ticket` from it (fixed — this worktree is the
+				// explicit target).
+				setMode({
+					kind: "def-pick",
+					defs,
+					index: 0,
+					// Raw identifier: this flows to runDefinition's worktree override
+					// (ref `worktree:<name>`), which resolves against the real name.
+					worktree: target.rawName,
+					branch: target.branch,
+				});
 				return;
 			case "tmux-open":
 				if (target.kind === "worktree" || target.kind === "session") {
@@ -715,7 +768,7 @@ export function App({
 			case "squash-merge": {
 				if (target.kind !== "worktree" || !target.branch || !activeName) return;
 				const repo = activeName;
-				const source = target.branch;
+				const branch = target.branch;
 				// Fetch fresh so a workspace that just gained the global def is picked
 				// up; the global squash-merge is keyed on the active project's repo.
 				void actions.definitions().then((all) => {
@@ -731,8 +784,9 @@ export function App({
 					setInput("");
 					// No worktree override: the def's `worktree: repo` governs, so the
 					// task runs in the primary checkout, not the selected worktree.
-					// `source` is decided by the selected worktree — fixed, not asked.
-					setMode({ kind: "def-args", def, fixed: { source } });
+					// `source` is decided by the selected worktree — fixed, not asked
+					// (same convention every worktree-targeted run uses).
+					setMode({ kind: "def-args", def, fixed: contextArgValues(branch) });
 				});
 				return;
 			}
@@ -740,7 +794,9 @@ export function App({
 				if (target.kind === "worktree") {
 					setMode({
 						kind: "confirm-remove",
-						worktree: target.name,
+						// Raw identifier for removeWorktree; the engine tolerates the
+						// stripped form here too, but pass raw for one consistent contract.
+						worktree: target.rawName,
 						branch: target.branch,
 					});
 				}
@@ -933,7 +989,16 @@ export function App({
 				if (!def) return;
 				if (def.args.length > 0) {
 					setInput("");
-					setMode({ kind: "def-args", def, worktree: mode.worktree });
+					// This worktree is the explicit target, so its branch drives
+					// `source`/`branch`/`ticket` as fixed rows (ArgsForm ignores keys the
+					// def doesn't declare). Omit `fixed` when the branch implies nothing.
+					const fixed = contextArgValues(mode.branch);
+					setMode({
+						kind: "def-args",
+						def,
+						worktree: mode.worktree,
+						...(Object.keys(fixed).length > 0 ? { fixed } : {}),
+					});
 				} else {
 					act(actions.runDefinition(def.repo, def.name, [], mode.worktree));
 					invalidateDefs();
@@ -1132,7 +1197,7 @@ export function App({
 				<Modal
 					title={`New task — ${mode.session} session — ${
 						mode.worktree
-							? `${activeName}:${mode.worktree}`
+							? `${activeName}:${stripRepoPrefix(mode.worktree, activeName ?? "")}`
 							: `${activeName} (adhoc)`
 					}`}
 					columns={columns}
@@ -1211,7 +1276,9 @@ export function App({
 			{mode.kind === "def-pick" ? (
 				<Modal
 					title={`Run task definition — ${
-						mode.worktree ? `${activeName}:${mode.worktree}` : activeName
+						mode.worktree
+							? `${activeName}:${stripRepoPrefix(mode.worktree, activeName ?? "")}`
+							: activeName
 					}`}
 					columns={columns}
 					rows={rows}
@@ -1259,14 +1326,14 @@ export function App({
 			) : null}
 			{mode.kind === "confirm-remove" ? (
 				<Modal
-					title={`Remove worktree — ${mode.worktree}`}
+					title={`Remove worktree — ${stripRepoPrefix(mode.worktree, activeName ?? "")}`}
 					columns={columns}
 					rows={rows}
 					hint="y confirm · n/esc cancel"
 				>
 					<Text>
 						{padLine(
-							` wt remove ${mode.branch ?? mode.worktree} — discards uncommitted changes`,
+							` wt remove ${mode.branch ?? stripRepoPrefix(mode.worktree, activeName ?? "")} — discards uncommitted changes`,
 							modalInner,
 						)}
 					</Text>
