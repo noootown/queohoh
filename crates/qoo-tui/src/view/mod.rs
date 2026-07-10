@@ -8,7 +8,7 @@ pub mod panes;
 pub mod tabbar;
 pub mod theme;
 
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
@@ -139,15 +139,42 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
 
     tabbar::render(app, &c, frame, header, &mut hits);
 
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(34), Constraint::Min(1)])
-        .split(body);
+    // Default: Percentage(34) split (byte-identical to the pre-drag layout).
+    // Once the vertical divider has been dragged, an absolute Length override
+    // (clamped so neither side collapses) drives the split instead.
+    let cols = match app.left_cols {
+        Some(n) => {
+            let w = crate::selectors::clamp_left_cols(body.width, n);
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(w), Constraint::Min(1)])
+                .split(body)
+        }
+        None => Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(34), Constraint::Min(1)])
+            .split(body),
+    };
     let (left, right) = (cols[0], cols[1]);
 
     panes::render(app, &c, frame, left, &mut hits);
     detail::render(app, &c, frame, right, &mut hits);
     footer::render(app, &c, frame, foot);
+
+    // Draggable vertical divider: the two adjacent border columns between the
+    // left pane stack (its right border at left.right()−1) and DETAIL (its left
+    // border at left.right()). Registered after both regions so it wins the
+    // reverse hit scan on those columns; the left panes' scrollbar track sits one
+    // column further in (left.right()−2), so there is no overlap.
+    hits.push(
+        Rect {
+            x: left.right().saturating_sub(1),
+            y: body.y,
+            width: 2,
+            height: body.height,
+        },
+        crate::hit::HitTarget::PaneDividerV,
+    );
 
     // Overlays render last so their rects register topmost in the hit map.
     match &app.mode {
@@ -259,6 +286,76 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_wide_140x30() {
+        // A wide terminal with a widened left column (override) so the pane inner
+        // width clears the labeled-chip threshold: chips render as
+        // `➕ (c) create  ⚙️ (a) actions  🔽 (z) collapse`.
+        let mut app = fixture_app();
+        // Widened enough to clear the labeled-chip threshold AND leave the
+        // WORKTREES pane room for the author + commit-age columns (they drop
+        // first under the width ladder — before queued — so a too-narrow left
+        // column hides them behind the busy row's queued·next cell).
+        app.left_cols = Some(98);
+        // Seed the TASKS pane with defs that exercise the schedule column:
+        // discovery + humanized cron, humanized cron only, a bare ⏰ (discovery,
+        // no cron), and a plain def (blank schedule). Two carry a description so
+        // the desc FILL column renders (blank on the two that don't); seeded here
+        // locally, not in the shared fixture, mirroring the cron-column precedent.
+        app.defs_by_project.insert(
+            "acme".to_string(),
+            vec![
+                crate::ipc::types::DefinitionSummary {
+                    repo: "acme".into(),
+                    name: "pr-review".into(),
+                    scope: "project".into(),
+                    args: vec![crate::ipc::types::ArgSpec { name: "pr".into(), ..Default::default() }],
+                    has_discovery: true,
+                    cron: Some("30 13 * * *".into()),
+                    description: Some("Review an open PR end to end.".into()),
+                },
+                crate::ipc::types::DefinitionSummary {
+                    repo: "acme".into(),
+                    name: "nightly-tidy".into(),
+                    scope: "project".into(),
+                    cron: Some("0 2 * * *".into()),
+                    description: Some("Nightly repo tidy sweep.".into()),
+                    ..Default::default()
+                },
+                crate::ipc::types::DefinitionSummary {
+                    repo: "acme".into(),
+                    name: "deploy".into(),
+                    scope: "project".into(),
+                    has_discovery: true,
+                    ..Default::default()
+                },
+                crate::ipc::types::DefinitionSummary {
+                    repo: "acme".into(),
+                    name: "lint".into(),
+                    scope: "project".into(),
+                    ..Default::default()
+                },
+            ],
+        );
+        // Seed last-commit author + epoch on the acme worktrees so the WORKTREES
+        // AUTHOR column renders (`koshea  3d ago` = who · when). Local to this
+        // snapshot, not the shared fixture.
+        if let Some(snap) = app.snapshot.as_mut() {
+            if let Some(wts) = snap.worktrees.get_mut("acme") {
+                if let Some(w) = wts.get_mut(0) {
+                    w.last_commit_author = Some("koshea".into());
+                    w.last_commit_epoch = Some(app.now_epoch_s - 3 * 86_400);
+                }
+                if let Some(w) = wts.get_mut(1) {
+                    w.last_commit_author = Some("ada".into());
+                    w.last_commit_epoch = Some(app.now_epoch_s - 6 * 3600);
+                }
+            }
+        }
+        let (terminal, _hits) = render_at(&app, 140, 30);
+        insta::assert_snapshot!("view_wide_140x30", terminal.backend());
+    }
+
+    #[test]
     fn snapshot_too_small() {
         let (terminal, hits) = render_at(&fixture_app(), 40, 10);
         insta::assert_snapshot!("view_too_small", terminal.backend());
@@ -274,6 +371,30 @@ mod tests {
         assert!(
             hits.iter().any(|(_, t)| *t == HitTarget::Modal),
             "help overlay registers a topmost Modal hit target"
+        );
+    }
+
+    #[test]
+    fn snapshot_collapsed_queue_and_tasks() {
+        // Collapse the top two panes: each renders only its 2-row title bar and
+        // worktrees expands to fill the freed height.
+        let mut app = fixture_app();
+        app.collapsed = [true, true, false];
+        let (terminal, hits) = render_at(&app, 80, 24);
+        insta::assert_snapshot!("view_collapsed_queue_tasks", terminal.backend());
+        // Collapsed bars keep their expand chip clickable (no whole-row toggle —
+        // that target swallowed divider drags and was removed).
+        let chips = hits
+            .iter()
+            .filter(|(_, t)| {
+                matches!(t, HitTarget::PaneButton(_, crate::hit::PaneButton::Collapse))
+            })
+            .count();
+        assert!(chips >= 2, "collapsed panes keep expand chips (got {chips})");
+        // The collapsed queue pane registers no Row/PaneBody hits.
+        assert!(
+            !hits.iter().any(|(_, t)| matches!(t, HitTarget::Row(crate::app::ListPane::Queue, _))),
+            "collapsed queue has no row hit targets"
         );
     }
 

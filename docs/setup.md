@@ -101,13 +101,17 @@ Heartbeats expire after 5 minutes; they're best-effort and never block.
 
 ## 6. TUI (the cockpit)
 
-From a fresh checkout, build the workspace first (`pnpm -r build`) so the TUI's
-`@queohoh/core` / `@queohoh/daemon` dependencies resolve to compiled `dist/`.
+The cockpit is the Rust ratatui binary (`crates/qoo-tui`). It talks to the
+daemon over the unix socket, so build the workspace first (`pnpm -r build`) to
+compile the daemon's `dist/`, then launch the TUI:
 
 ```bash
-pnpm -r build                     # or at least: pnpm -F @queohoh/tui build
-node packages/tui/dist/cli.js     # or `queohoh-tui` after pnpm link --global
+pnpm -r build          # compile the daemon
+mise run tui           # builds the release binary, self-heals the daemon, launches
 ```
+
+`mise run tui` is the one-shot path; it also rebuilds `qoo-tui` and ensures the
+daemon is up. To iterate on the TUI unoptimized, use `mise run tui:rs:dev`.
 
 Run it in tmux tab 0 and leave it open — queue left, cron/worktrees right,
 `a` to add, `enter` for the live transcript, `q` to quit.

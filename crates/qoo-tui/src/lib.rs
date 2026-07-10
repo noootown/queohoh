@@ -6,6 +6,7 @@ pub mod action_menu;
 pub mod app;
 pub mod detail;
 pub mod keymap;
+pub mod layout;
 pub mod runfiles;
 pub mod selectors;
 pub mod markup;

@@ -8,6 +8,16 @@ pub enum ButtonKind {
     Cancel,
 }
 
+/// A clickable action chip on a list pane's top border. Clicking one behaves
+/// exactly like pressing its hotkey with that pane focused. `Create` ≡ `c`,
+/// `Actions` ≡ `a`, `Collapse` ≡ `z` (rendered `🔽`/`🔼` by expanded/collapsed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneButton {
+    Create,
+    Actions,
+    Collapse,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitTarget {
     Tab(usize),
@@ -20,6 +30,17 @@ pub enum HitTarget {
     Button(ButtonKind),
     ScrollbarThumb(PaneId),
     ScrollbarTrack(PaneId),
+    /// Draggable boundary between two stacked left panes: `0` = queue/tasks,
+    /// `1` = tasks/worktrees. Covers the two shared border rows, full pane width.
+    PaneDividerH(usize),
+    /// Draggable boundary column between the left pane stack and DETAIL.
+    PaneDividerV,
+    /// An action chip on a list pane's top border. Registered LAST so a chip
+    /// click wins its sub-rect over the divider band sharing the border row.
+    /// The rest of the title row deliberately has no click target — a whole-row
+    /// collapse toggle used to live there and swallowed divider drags (collapse
+    /// ≡ the 🔽 [z] chip or the `z` key).
+    PaneButton(PaneId, PaneButton),
     Modal,
 }
 

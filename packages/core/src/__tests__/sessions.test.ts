@@ -18,6 +18,7 @@ function runningTask(worktree: string): TaskInstance {
 		target: { repo: "platform", ref: "temp", worktree },
 		priority: "normal",
 		created: "2026-07-08T00:00:00.000Z",
+		finishedAt: null,
 		source: "tui",
 		ephemeralWorktree: false,
 		error: null,

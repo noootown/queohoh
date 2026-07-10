@@ -237,6 +237,8 @@ export class ApiServer {
 					scope: "project" | "global";
 					args: ArgSpec[];
 					hasDiscovery: boolean;
+					cron: string | null;
+					description: string | null;
 				};
 				const out: Summary[] = [];
 				for (const project of deps.config.projects) {
@@ -253,6 +255,8 @@ export class ApiServer {
 								scope: "global",
 								args: def.args,
 								hasDiscovery: def.discovery !== null,
+								cron: def.cron,
+								description: def.description,
 							});
 						}
 						for (const def of listDefinitions(
@@ -265,6 +269,8 @@ export class ApiServer {
 								scope: "project",
 								args: def.args,
 								hasDiscovery: def.discovery !== null,
+								cron: def.cron,
+								description: def.description,
 							});
 						}
 						for (const summary of [...byName.values()].sort((a, b) =>

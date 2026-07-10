@@ -84,6 +84,71 @@ describe("QueueStore", () => {
 		expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
 	});
 
+	it("stamps finishedAt when a task transitions to done or failed", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		expect(t.finishedAt).toBeNull();
+
+		const running = store.update(t.id, { status: "running" });
+		expect(running.finishedAt).toBeNull();
+
+		const done = store.update(t.id, { status: "done" });
+		expect(done.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+		expect(store.get(t.id)?.finishedAt).toBe(done.finishedAt);
+
+		const failed = store.update(
+			store.create({ prompt: "y", repo: "r", ref: "temp", source: "tui" }).id,
+			{ status: "failed", error: "boom" },
+		);
+		expect(failed.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+	});
+
+	it("keeps finishedAt stable across a re-set of the same terminal status", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		const first = store.update(t.id, { status: "failed", error: "a" });
+		const second = store.update(t.id, { status: "failed", error: "b" });
+		expect(second.finishedAt).toBe(first.finishedAt);
+	});
+
+	it("clears finishedAt when a finished task is re-run", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "done" });
+		const rerun = store.update(t.id, { status: "running" });
+		expect(rerun.finishedAt).toBeNull();
+	});
+
+	it("leaves finishedAt untouched on a non-status patch", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		const done = store.update(t.id, { status: "done" });
+		const patched = store.update(t.id, {
+			target: { ...t.target, worktree: "wt-x" },
+		});
+		expect(patched.finishedAt).toBe(done.finishedAt);
+	});
+
 	it("update throws for unknown id", () => {
 		const store = freshStore();
 		expect(() => store.update("01UNKNOWN0000000000000000X", {})).toThrow(

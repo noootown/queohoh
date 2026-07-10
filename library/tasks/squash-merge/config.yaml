@@ -1,3 +1,4 @@
+description: Squash a branch into the target and land on it.
 args:
   - name: source
     description: branch to squash

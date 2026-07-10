@@ -3,11 +3,11 @@ source: crates/qoo-tui/tests/create_worktree_snapshot.rs
 expression: term.backend()
 ---
 " 1:platform                             daemon unreachable — retrying… running 0"
-"╭─────────────────────────╮╭DETAIL─────────────────────────────────────────────╮"
-"│QUEUE                    ││(nothing selected)                                 │"
-"│queue empty — [a] on a wo││                                                   │"
+"╭📋 QUEUE─── ➕ [c] ⚙️ [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " "), (29, " ")]
+"│                         ││(nothing selected)                                 │"
+"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││                                                   │"
-"│                         ││                                                   │"
+"│ queue empty — [a] on a  ││                                                   │"
 "│                         ││                                                   │"
 "│                         ││                                                   │"
 "│                         ││                                                   │"
@@ -15,14 +15,14 @@ expression: term.backend()
 "│   │ branch> bad name█                                                    │   │"
 "│   │ no whitespace allowed                                                │   │"
 "╰───│ enter submit · esc cancel                                            │   │"
-"╭───╰──────────────────────────────────────────────────────────────────────╯   │"
-"│TASKS                    ││                                                   │"
-"│no task definitions      ││                                                   │"
+"╭⚡ ╰──────────────────────────────────────────────────────────────────────╯   │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ no task definitions     ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
-"╭─────────────────────────╮│                                                   │"
-"│WORKTREES                ││                                                   │"
-"│no worktrees             ││                                                   │"
+"╭🌲 WORKTREES────── ➕ [c]╮│                                                   │" Hidden by multi-width symbols: [(2, " "), (21, " ")]
+"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ no worktrees            ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
-"[c] new run · [a] actions · [enter] detail · [↑↓] move · [/] filter · [?] help ·"
+"[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "

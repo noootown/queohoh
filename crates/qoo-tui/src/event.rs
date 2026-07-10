@@ -50,6 +50,9 @@ pub enum Cmd {
     FetchDefinition { repo: String, name: String },
     ReadRunFiles { task_id: String, tail_lines: usize, delay_ms: u64 },
     OpenTmux { path: String },
+    /// Write-through of the per-project pane layout. Fire-and-forget off the UI
+    /// thread; a failed write is silently tolerated (layout is a convenience).
+    SaveLayout { path: PathBuf, json: String },
     Heal,
     Quit,
 }
@@ -95,6 +98,11 @@ pub async fn run_event_loop<B: ratatui::backend::Backend>(
 
     draw(terminal, app)?; // first paint pre-snapshot
 
+    // Monotonic program-start anchor for the millisecond clock. `App::now_ms` is
+    // stamped from this before every `update()` so the update logic (double-click
+    // timing) reads a wall-independent, always-increasing millisecond count.
+    let start = std::time::Instant::now();
+
     loop {
         // wants_tick re-evaluated after EVERY event: the Tick arm exists only
         // while the active project has a running task.
@@ -134,6 +142,9 @@ pub async fn run_event_loop<B: ratatui::backend::Backend>(
             app.size = (size.width, size.height);
         }
 
+        // Stamp the millisecond clock before update() so double-click timing
+        // (and any future time-based logic) reads a monotonic source.
+        app.now_ms = start.elapsed().as_millis() as u64;
         let Update { dirty, mut cmds } = app.update(event);
         // Lazy per-tab definitions fetch: after every event, emit a fetch for the
         // active repo when its summaries are neither cached nor in flight (the TS
@@ -262,6 +273,16 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 if status.is_some() {
                     let _ = tx.send(Event::ActionResult { status, invalidate_defs_for: None });
                 }
+            });
+        }
+        Cmd::SaveLayout { path, json } => {
+            tokio::spawn(async move {
+                // Best-effort write-through: create the state dir if needed, then
+                // overwrite the file. Any failure is dropped (no UI surface).
+                if let Some(dir) = path.parent() {
+                    let _ = tokio::fs::create_dir_all(dir).await;
+                }
+                let _ = tokio::fs::write(&path, json).await;
             });
         }
         Cmd::Heal => {

@@ -15,6 +15,7 @@ const task: TaskInstance = {
 	target: { repo: "platform", ref: "pr:257", worktree: "JUS-257" },
 	priority: "normal",
 	created: "2026-07-08T10:00:00.000Z",
+	finishedAt: null,
 	source: "mcp",
 	ephemeralWorktree: false,
 	error: null,

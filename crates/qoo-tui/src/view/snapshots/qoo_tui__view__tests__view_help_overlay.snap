@@ -2,27 +2,27 @@
 source: crates/qoo-tui/src/view/mod.rs
 expression: terminal.backend()
 ---
-" 1:acme                                                            ● running 1/3"
-"╭─────────────────────────╮╭DETAIL─────────────────────────────────────────────╮"
-"│QUEUE                    ││ 1:transcript  2:report  3:prompt                  │"
-"│⠯ ⛓ acme:feature implemen││(no transcript yet)                                │"
-"│○ acme:╭ keymap ──────────────────────────────────────────────────────╮       │"
-"│✗ acme:│ Tab / Shift+Tab cycle focus between panes (incl. detail)     │       │"
-"│✓ acme:│ 1–9             switch project tab                           │       │"
-"│       │ [ / ]           previous / next project tab                  │       │"
-"│       │ { / }           previous / next detail sub-tab               │       │"
-"│       │ j/k · arrows    move cursor (detail: scroll)                 │       │"
-"│       │ J/K · shift+↑↓  extend selection                             │       │"
-"│       │ Enter / a       action menu for selection                    │       │"
-"╰───────│ c               create (queue: adhoc task · worktrees: worktr│       │"
-"╭───────│ /               filter focused pane                          │       │"
-"│TASKS  │ esc             clear range → clear filter → close overlay   │       │"
-"│no task│ g / G           top / bottom (detail scroll or list jump)    │       │"
-"│       │ ?               this help                                    │       │"
-"╰───────│ q               quit                                         │       │"
-"╭───────│ any key to close                                             │       │"
-"│WORKTRE╰──────────────────────────────────────────────────────────────╯       │"
-"│● feature ◆ [1]          ││                                                   │"
-"│● hotfix                 ││                                                   │"
-"╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
-"[c] new run · [a] actions · [enter] detail · [↑↓] move · [/] filter · [?] help ·"
+" 1:acme ╭ keymap ──────────────────────────────────────────────────────╮ning 1/3"
+"╭📋 QUEU│ Tab / Shift+Tab cycle focus: queue → tasks → worktrees       │───────╮" Hidden by multi-width symbols: [(2, " ")]
+"│       │ 1–9 / 0         switch project tab (0 = 10th)                │       │"
+"│ 🔍 [/]│ ctrl+s then n/p next / previous project tab                  │       │" Hidden by multi-width symbols: [(3, " ")]
+"│       │ ctrl+x / ctrl+z next / previous detail sub-tab               │       │"
+"│ ⠯ ⌂  f│ j/k · arrows    move cursor                                  │       │"
+"│ ○    f│ J/K · shift+↑↓  extend selection                             │       │"
+"│ ──────│ Enter / a       action menu (or double-click a row)          │       │"
+"│ ✗    m│ c               create (queue: adhoc task · worktrees: worktr│       │"
+"│ ✓    m│ z               collapse / expand focused list pane          │       │"
+"│       │ /               filter focused pane                          │       │"
+"│       │ esc             clear range → clear filter → close overlay   │       │"
+"╰───────│ g / G           jump to top / bottom                         │       │"
+"╭⚡ TASK│ ?               this help                                    │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ q               quit                                         │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no tas│                                                              │       │"
+"│       │ legend                                                       │       │"
+"╰───────│ ✓ ✗ ○ ?         task done / failed / queued / needs input    │       │"
+"╭🌲 WORK│ ● (colored)     worktree: green free · yellow busy · red fail│       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ ⏱               elapsed time of the running task on that lane│       │" Hidden by multi-width symbols: [(3, " ")]
+"│ ● ⌂ fe│ ⌂               lane has a main session (tasks can resume it)│       │"
+"│ ●   ho│ ±               worktree has uncommitted changes             │       │"
+"╰───────│ koshea · 3d ago last commit author · last commit age         │───────╯"
+"[1-9/0 ·╰──────────────────────────────────────────────────────────────╯        "

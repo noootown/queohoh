@@ -66,6 +66,10 @@ pub struct TaskInstance {
     pub target: TaskTarget,
     pub priority: String,
     pub created: String,
+    /// Completion timestamp (ISO UTC), present once the task reaches a terminal
+    /// status. `None` on an old daemon that omits it (via the container `default`)
+    /// or on a task that hasn't finished — drives the FINISHED-section ordering.
+    pub finished_at: Option<String>,
     pub source: String,
     pub ephemeral_worktree: bool,
     pub error: Option<String>,
@@ -102,6 +106,14 @@ pub struct WorktreeInfo {
     pub name: String,
     pub path: String,
     pub branch: String,
+    /// Daemon git enrichment (all `None` on an old daemon that omits them, via
+    /// the container `default`): working tree has uncommitted changes,
+    pub dirty: Option<bool>,
+    /// unix epoch SECONDS of the last commit,
+    pub last_commit_epoch: Option<u64>,
+    /// and the author name of the last commit. A stale daemon may still send the
+    /// retired `ahead`/`behind` fields — serde ignores them (no deny_unknown).
+    pub last_commit_author: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -121,6 +133,12 @@ pub struct DefinitionSummary {
     pub scope: String,
     pub args: Vec<ArgSpec>,
     pub has_discovery: bool,
+    /// Human-editable cron expression, or `None` when the def has no schedule.
+    /// `default` on the container covers old daemons that omit the field.
+    pub cron: Option<String>,
+    /// One-line human description of the def, or `None` when unset. `default` on
+    /// the container covers old daemons that omit the field.
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -129,6 +147,7 @@ pub struct TaskDefinition {
     pub name: String,
     pub repo: String,
     pub discovery: Option<Discovery>,
+    pub cron: Option<String>,
     pub args: Vec<ArgSpec>,
     pub dedup: String,
     pub worktree: String,
@@ -163,6 +182,7 @@ mod tests {
             "target": {"repo": "platform", "ref": "worktree:platform.feat-a", "worktree": "platform.feat-a"},
             "priority": "normal",
             "created": "2026-07-08T10:00:00.000Z",
+            "finishedAt": "2026-07-08T10:05:00.000Z",
             "source": "tui",
             "ephemeralWorktree": false,
             "error": null,
@@ -180,7 +200,8 @@ mod tests {
           "running": ["01TASKAAA000000000000000000"],
           "maxConcurrent": 3,
           "projects": [{"name": "platform"}, {"name": "web"}],
-          "worktrees": {"platform": [{"name": "platform.feat-a", "path": "/wt/platform.feat-a", "branch": "feat-a"}]},
+          "worktrees": {"platform": [{"name": "platform.feat-a", "path": "/wt/platform.feat-a", "branch": "feat-a",
+            "dirty": true, "lastCommitEpoch": 1751970000, "lastCommitAuthor": "Kevin O'Shea"}]},
           "mainSessions": {"platform:platform.feat-a": "sess-main"},
           "buildId": "1751970000000"
         }"#
@@ -204,11 +225,16 @@ mod tests {
         assert_eq!(t.resume_session_id.as_deref(), Some("sess-1"));
         assert_eq!(t.model.as_deref(), Some("opus"));
         assert_eq!(t.prompt, "do the thing\n");
+        assert_eq!(t.finished_at.as_deref(), Some("2026-07-08T10:05:00.000Z"));
         assert_eq!(s.sessions[0].kind, "interactive");
         assert_eq!(s.sessions[0].pid, Some(4242));
         assert_eq!(s.max_concurrent, Some(3));
         assert_eq!(s.projects, vec![Project { name: "platform".into() }, Project { name: "web".into() }]);
-        assert_eq!(s.worktrees["platform"][0].branch, "feat-a");
+        let wt = &s.worktrees["platform"][0];
+        assert_eq!(wt.branch, "feat-a");
+        assert_eq!(wt.dirty, Some(true));
+        assert_eq!(wt.last_commit_epoch, Some(1_751_970_000));
+        assert_eq!(wt.last_commit_author.as_deref(), Some("Kevin O'Shea"));
         assert_eq!(s.main_sessions["platform:platform.feat-a"], "sess-main");
         assert_eq!(s.build_id.as_deref(), Some("1751970000000"));
     }
@@ -225,6 +251,8 @@ mod tests {
         // status absent → Unknown (default); target.worktree absent → None.
         assert_eq!(s.tasks[0].status, TaskStatus::Unknown);
         assert_eq!(s.tasks[0].target.worktree, None);
+        // finishedAt absent on an old daemon → None (additive field).
+        assert_eq!(s.tasks[0].finished_at, None);
         assert_eq!(s.projects, vec![]);
         assert!(s.worktrees.is_empty());
         assert!(s.main_sessions.is_empty());
@@ -247,10 +275,59 @@ mod tests {
     }
 
     #[test]
+    fn worktree_git_enrichment_absent_defaults_to_none() {
+        // An old daemon emits only name/path/branch; the git-enrichment fields
+        // default to None (container `default`) rather than erroring.
+        let s: StateSnapshot = serde_json::from_str(
+            r#"{"worktrees": {"platform": [{"name": "wt-a", "path": "/wt/wt-a", "branch": "a"}]}}"#,
+        )
+        .unwrap();
+        let wt = &s.worktrees["platform"][0];
+        assert_eq!(wt.dirty, None);
+        assert_eq!(wt.last_commit_epoch, None);
+        assert_eq!(wt.last_commit_author, None);
+    }
+
+    #[test]
+    fn stale_daemon_ahead_behind_fields_are_ignored() {
+        // A daemon predating the author rewrite still emits ahead/behind; without
+        // deny_unknown_fields serde silently drops them (new field stays None).
+        let s: StateSnapshot = serde_json::from_str(
+            r#"{"worktrees": {"platform": [{"name": "wt-a", "path": "/wt/wt-a", "branch": "a",
+                "ahead": 3, "behind": 12, "lastCommitEpoch": 1751970000}]}}"#,
+        )
+        .unwrap();
+        let wt = &s.worktrees["platform"][0];
+        assert_eq!(wt.last_commit_epoch, Some(1_751_970_000));
+        assert_eq!(wt.last_commit_author, None);
+    }
+
+    #[test]
     fn unknown_status_maps_to_unknown_variant() {
         let t: TaskInstance =
             serde_json::from_str(r#"{"id": "x", "status": "paused-by-alien"}"#).unwrap();
         assert_eq!(t.status, TaskStatus::Unknown);
+    }
+
+    #[test]
+    fn definition_summary_cron_and_description_present_and_absent() {
+        // camelCase `cron`/`description` deserialize into their fields...
+        let with: DefinitionSummary = serde_json::from_str(
+            r#"{"repo": "platform", "name": "pr-review", "scope": "project",
+                "args": [], "hasDiscovery": true, "cron": "30 13 * * *",
+                "description": "Review an open PR."}"#,
+        )
+        .unwrap();
+        assert_eq!(with.cron.as_deref(), Some("30 13 * * *"));
+        assert_eq!(with.description.as_deref(), Some("Review an open PR."));
+        // ...and an old daemon that omits them defaults to None (container `default`).
+        let without: DefinitionSummary = serde_json::from_str(
+            r#"{"repo": "platform", "name": "lint", "scope": "global",
+                "args": [], "hasDiscovery": false}"#,
+        )
+        .unwrap();
+        assert_eq!(without.cron, None);
+        assert_eq!(without.description, None);
     }
 
     #[test]

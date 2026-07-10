@@ -26,6 +26,7 @@ function setup(
 		resolverIO?: Partial<ResolverIO>;
 		config?: Partial<GlobalConfig>;
 		claudeResult?: RunResult;
+		exec?: Exec;
 	} = {},
 ) {
 	const base = mkdtempSync(join(tmpdir(), "qo-engine-"));
@@ -55,7 +56,8 @@ function setup(
 		removeWorktree: async () => {},
 		...overrides.resolverIO,
 	};
-	const exec: Exec = async () => ({ stdout: "", exitCode: 0 });
+	const exec: Exec =
+		overrides.exec ?? (async () => ({ stdout: "", exitCode: 0 }));
 	const mainSessions = new MainSessionStore(join(base, "main-sessions.json"));
 	const engine = new Engine({
 		store,
@@ -85,6 +87,9 @@ describe("Engine.tick", () => {
 		await engine.tick(); // start pass
 		await engine.drain();
 		expect(store.list()[0]?.status).toBe("done");
+		// The terminal transition stamps finishedAt, which the state snapshot
+		// then carries verbatim (camelCase) to the TUI.
+		expect(store.list()[0]?.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
 	});
 
 	it("advances the main-session pointer after a completed main run", async () => {
@@ -306,14 +311,111 @@ describe("Engine.createWorktree", () => {
 });
 
 describe("Engine.worktreesByRepo", () => {
-	it("exposes the cached worktrees per repo after a tick", async () => {
+	it("exposes the cached worktrees per repo, merged with git enrichment, after a tick", async () => {
 		const { engine, base } = setup();
 		await engine.tick();
+		await engine.refreshGitEnrichment();
+		// With the default all-zero-exit / empty-stdout exec stub: status "" → not
+		// dirty; log "" → epoch parseInt(NaN) → null and empty author → null.
 		expect(engine.worktreesByRepo()).toEqual({
 			platform: [
-				{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+				{
+					name: "JUS-1",
+					path: join(base, "wt-jus1"),
+					branch: "JUS-1",
+					dirty: false,
+					lastCommitEpoch: null,
+					lastCommitAuthor: null,
+				},
 			],
 		});
+	});
+});
+
+describe("Engine git enrichment", () => {
+	// Route git subcommands by their args[2] (the subcommand after `-C <path>`).
+	function gitExec(
+		handlers: Partial<
+			Record<string, () => { stdout: string; exitCode: number }>
+		>,
+		onCall?: (sub: string) => void,
+	): Exec {
+		return async (_command, args) => {
+			// args = ["-C", path, <subcommand>, ...rest]
+			const sub = args[2] ?? "";
+			onCall?.(sub);
+			const h = handlers[sub];
+			return h ? h() : { stdout: "", exitCode: 0 };
+		};
+	}
+
+	it("populates dirty, lastCommitEpoch and lastCommitAuthor from git output", async () => {
+		const exec = gitExec({
+			status: () => ({ stdout: " M src/a.ts\n", exitCode: 0 }),
+			// one call: "<epoch>\t<author>"
+			log: () => ({ stdout: "1700000000\tKevin O'Shea\n", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		const wt = engine.worktreesByRepo().platform?.[0];
+		expect(wt).toMatchObject({
+			dirty: true,
+			lastCommitEpoch: 1700000000,
+			lastCommitAuthor: "Kevin O'Shea",
+		});
+	});
+
+	it("yields null for a field whose git subcommand fails, still computing the rest", async () => {
+		const exec = gitExec({
+			status: () => ({ stdout: "", exitCode: 128 }), // fails → dirty null
+			log: () => ({ stdout: "1700000000\tAda Lovelace\n", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		const wt = engine.worktreesByRepo().platform?.[0];
+		expect(wt).toMatchObject({
+			dirty: null,
+			lastCommitEpoch: 1700000000,
+			lastCommitAuthor: "Ada Lovelace",
+		});
+	});
+
+	it("nulls the author when the log line carries an epoch but no author", async () => {
+		const exec = gitExec({
+			status: () => ({ stdout: "", exitCode: 0 }),
+			log: () => ({ stdout: "1700000000\t\n", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		const wt = engine.worktreesByRepo().platform?.[0];
+		expect(wt).toMatchObject({
+			lastCommitEpoch: 1700000000,
+			lastCommitAuthor: null,
+		});
+	});
+
+	it("serves last-known within the TTL without re-shelling git", async () => {
+		const counts: Record<string, number> = {};
+		const exec = gitExec(
+			{
+				status: () => ({ stdout: " M x\n", exitCode: 0 }),
+				log: () => ({ stdout: "1\tHopper\n", exitCode: 0 }),
+			},
+			(sub) => {
+				counts[sub] = (counts[sub] ?? 0) + 1;
+			},
+		);
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		const statusAfterFirst = counts.status;
+		const logAfterFirst = counts.log;
+		await engine.refreshGitEnrichment(); // within TTL → no re-shell for same path
+		expect(counts.status).toBe(statusAfterFirst);
+		expect(counts.log).toBe(logAfterFirst);
 	});
 });
 

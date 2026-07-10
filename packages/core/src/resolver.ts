@@ -14,6 +14,12 @@ export interface WorktreeInfo {
 	name: string;
 	path: string;
 	branch: string;
+	/** Working tree has uncommitted changes (git status --porcelain non-empty). null = unknown. */
+	dirty?: boolean | null;
+	/** Unix epoch SECONDS of the last commit (git log -1 --format=%ct). null = unknown. */
+	lastCommitEpoch?: number | null;
+	/** Author name of the last commit (git log -1 --format=%an). null = unknown. */
+	lastCommitAuthor?: string | null;
 }
 
 export interface ResolverIO {

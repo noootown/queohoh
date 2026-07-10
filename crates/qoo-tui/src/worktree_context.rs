@@ -182,6 +182,7 @@ mod tests {
             has_main_session: false,
             queued: 0,
             is_session,
+            ..Default::default()
         }
     }
     fn arg(name: &str) -> ArgSpec {

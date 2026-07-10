@@ -24,6 +24,16 @@ import {
 	schedule,
 } from "@queohoh/core";
 
+/** Per-worktree git facts merged onto WorktreeInfo. Each field null = unknown. */
+interface GitEnrichment {
+	dirty: boolean | null;
+	lastCommitEpoch: number | null;
+	lastCommitAuthor: string | null;
+}
+
+/** Serve last-known enrichment for a worktree this long before re-shelling git. */
+const GIT_ENRICH_TTL_MS = 60_000;
+
 export interface EngineDeps {
 	store: QueueStore;
 	runStore: RunStore;
@@ -41,6 +51,10 @@ export class Engine {
 	private running = new Map<string, Promise<void>>();
 	private ticking = false;
 	private worktreeCache = new Map<string, WorktreeInfo[]>(); // repo name -> worktrees
+	// Git enrichment, keyed by worktree PATH, refreshed off the hot pass() path.
+	private gitEnrichCache = new Map<string, GitEnrichment>();
+	private gitEnrichFetchedAt = new Map<string, number>(); // path -> last fetch (ms)
+	private enrichInFlight: Promise<void> | null = null; // single-flight guard (mirrors `ticking`)
 
 	constructor(private readonly deps: EngineDeps) {}
 
@@ -48,8 +62,20 @@ export class Engine {
 		return [...this.running.keys()];
 	}
 
+	/**
+	 * Base worktree cache merged with any available git enrichment. Enrichment is
+	 * populated asynchronously (see refreshGitEnrichment), so a worktree without a
+	 * cache entry is returned unchanged (fields stay `undefined` → TUI unknown).
+	 */
 	worktreesByRepo(): Record<string, WorktreeInfo[]> {
-		return Object.fromEntries(this.worktreeCache);
+		const out: Record<string, WorktreeInfo[]> = {};
+		for (const [repo, list] of this.worktreeCache) {
+			out[repo] = list.map((wt) => {
+				const e = this.gitEnrichCache.get(wt.path);
+				return e ? { ...wt, ...e } : wt;
+			});
+		}
+		return out;
 	}
 
 	/** Await all in-flight workers (test helper / shutdown). */
@@ -168,6 +194,9 @@ export class Engine {
 		const { deps } = this;
 		deps.registry.sweep();
 		await this.refreshWorktreeCache();
+		// Fire-and-forget: git enrichment must never add latency to the pass. It
+		// is TTL-throttled and single-flighted, and pushes onChange when it moves.
+		void this.refreshGitEnrichment();
 
 		// Orphan sweep: running on disk but not in this process.
 		for (const t of deps.store.list()) {
@@ -213,6 +242,109 @@ export class Engine {
 			} catch {
 				this.worktreeCache.set(project.name, []);
 			}
+		}
+	}
+
+	/**
+	 * Refresh per-worktree git facts (dirty/lastCommit epoch+author) off the hot
+	 * path. Single-flighted via `enrichInFlight`, TTL-throttled per worktree, prunes
+	 * dead paths, and fires `onChange` only when a value actually moved. Public so
+	 * tests can await it deterministically; in production it is fire-and-forget.
+	 * Never throws — every helper swallows errors into null.
+	 */
+	refreshGitEnrichment(): Promise<void> {
+		// Single-flight: while a run is active, hand back the same promise rather
+		// than starting a second concurrent sweep. tick()'s fire-and-forget kick
+		// and a test's explicit await therefore share one deterministic run.
+		if (this.enrichInFlight) return this.enrichInFlight;
+		this.enrichInFlight = this.runGitEnrichment().finally(() => {
+			this.enrichInFlight = null;
+		});
+		return this.enrichInFlight;
+	}
+
+	private async runGitEnrichment(): Promise<void> {
+		const now = Date.now();
+		let changed = false;
+		const live = new Set<string>();
+		for (const [, list] of this.worktreeCache) {
+			for (const wt of list) {
+				live.add(wt.path);
+				if (
+					now - (this.gitEnrichFetchedAt.get(wt.path) ?? 0) <
+					GIT_ENRICH_TTL_MS
+				)
+					continue; // serve last-known within TTL
+				const e = await this.computeGitEnrichment(wt.path);
+				this.gitEnrichFetchedAt.set(wt.path, Date.now());
+				const prev = this.gitEnrichCache.get(wt.path);
+				if (
+					!prev ||
+					prev.dirty !== e.dirty ||
+					prev.lastCommitEpoch !== e.lastCommitEpoch ||
+					prev.lastCommitAuthor !== e.lastCommitAuthor
+				) {
+					changed = true;
+				}
+				this.gitEnrichCache.set(wt.path, e);
+			}
+		}
+		// Prune worktrees that no longer exist.
+		for (const path of [...this.gitEnrichCache.keys()]) {
+			if (!live.has(path)) {
+				this.gitEnrichCache.delete(path);
+				this.gitEnrichFetchedAt.delete(path);
+			}
+		}
+		if (changed) this.deps.onChange?.();
+	}
+
+	private async computeGitEnrichment(path: string): Promise<GitEnrichment> {
+		const dirty = await this.gitDirty(path);
+		const { epoch: lastCommitEpoch, author: lastCommitAuthor } =
+			await this.gitLastCommit(path);
+		return { dirty, lastCommitEpoch, lastCommitAuthor };
+	}
+
+	/** True when the working tree has uncommitted changes; null on failure. */
+	private async gitDirty(path: string): Promise<boolean | null> {
+		try {
+			const { stdout, exitCode } = await this.deps.exec(
+				"git",
+				["-C", path, "status", "--porcelain", "--untracked-files=normal"],
+				{ cwd: path },
+			);
+			if (exitCode !== 0) return null;
+			return stdout.trim().length > 0;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * HEAD's commit epoch SECONDS + author name in ONE `git log` call:
+	 * `--format=%ct%x09%an` prints "<epoch>\t<author>". Either field is null on
+	 * failure or when unparseable/empty.
+	 */
+	private async gitLastCommit(
+		path: string,
+	): Promise<{ epoch: number | null; author: string | null }> {
+		try {
+			const { stdout, exitCode } = await this.deps.exec(
+				"git",
+				["-C", path, "log", "-1", "--format=%ct%x09%an"],
+				{ cwd: path },
+			);
+			if (exitCode !== 0) return { epoch: null, author: null };
+			const [epochRaw, ...authorParts] = stdout.trim().split("\t");
+			const n = Number.parseInt(epochRaw ?? "", 10);
+			const author = authorParts.join("\t").trim();
+			return {
+				epoch: Number.isFinite(n) ? n : null,
+				author: author.length > 0 ? author : null,
+			};
+		} catch {
+			return { epoch: null, author: null };
 		}
 	}
 

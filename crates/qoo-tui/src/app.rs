@@ -19,6 +19,18 @@ pub enum PaneId {
     Detail,
 }
 
+/// What a left-mouse drag is currently manipulating, recorded on `Down` over a
+/// draggable target and cleared on `Up`. Generalizes the old scrollbar-only drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragKind {
+    /// Proportional scrollbar drag on a pane (behavior unchanged).
+    Scrollbar(PaneId),
+    /// Horizontal pane divider: `0` = queue/tasks, `1` = tasks/worktrees.
+    DividerH(usize),
+    /// Vertical divider between the left pane stack and DETAIL.
+    DividerV,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListPane {
     Queue = 0,
@@ -50,6 +62,11 @@ pub struct Selection {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabUiState {
+    /// Invariant: always one of the three list panes (`Queue`/`Tasks`/
+    /// `Worktrees`). Detail is display-only and can never be focused — no code
+    /// path sets `focus = PaneId::Detail`. `TabUiState` is session-only (never
+    /// serialized), so there is no persisted value to coerce; the invariant is
+    /// upheld at the mutation sites (`set_focus`, `CyclePane`).
     pub focus: PaneId,
     pub last_list_pane: ListPane,
     pub selections: [Selection; 3],
@@ -155,14 +172,64 @@ pub struct App {
     pub defs_inflight: HashSet<String>,
     pub full_defs: HashMap<String, TaskDefinition>, // keyed "repo/name"
     pub now_epoch_s: u64,
+    /// Monotonic millisecond clock stamped by the event loop before every
+    /// `update()` (from an `Instant` taken at program start). Read by
+    /// double-click timing; tests set it directly to simulate fast/slow clicks.
+    pub now_ms: u64,
+    /// tmux-style `ctrl+s` prefix state. When armed, the next key is `n` (next
+    /// project tab) / `p` (previous) and anything else disarms and is swallowed.
+    /// Only armed/consumed inside `Mode::List`, never in text-input modes.
+    pub prefix_armed: bool,
+    /// Last plain (non-shift) row click: `(pane, row_identity, now_ms)`. A second
+    /// click on the SAME ROW IDENTITY within `DOUBLE_CLICK_MS` opens the action
+    /// menu; a single click only selects. Keying on the stable per-row identity
+    /// (queue: task id · tasks: `repo/name` · worktrees: raw_name) rather than the
+    /// row index means a resort between the two clicks (e.g. a task finishing) can
+    /// never open the menu on whatever row slid into the clicked slot.
+    pub last_click: Option<(ListPane, String, u64)>,
     pub size: (u16, u16),
     /// Previous frame's hit geometry, stored by the main loop after every draw.
     /// Mouse routing reads it; it always matches the screen because every state
     /// change redraws before the next event is processed.
     pub hit: HitMap,
-    /// Scrollbar drag state: `Some(pane)` between a Down on that pane's
-    /// `ScrollbarThumb`/`ScrollbarTrack` and the matching Up.
-    pub drag: Option<PaneId>,
+    /// Render-feedback twin of `hit`: the detail pane's true max scroll offset
+    /// (`rendered lines − viewport height`), written by the view each draw via
+    /// interior mutability (the view only holds `&App`). `detail_scroll` clamps
+    /// against it so the STORED offset can never run past the content — an
+    /// unclamped offset kept growing on over-scroll and made the user "scroll
+    /// back through" phantom distance. Same freshness argument as `hit`: every
+    /// state change redraws, so it always matches what is on screen.
+    pub detail_max_scroll: std::cell::Cell<usize>,
+    /// Render-feedback twin of `detail_max_scroll`: the detail pane's WRAPPED
+    /// display-line count for the last frame (post line-wrapping). Written by the
+    /// view each draw; the scrollbar-drag math reads it so its scrollable extent
+    /// matches the on-screen wrapped lines instead of recomputing the wrap.
+    pub detail_wrapped_len: std::cell::Cell<usize>,
+    /// Active left-mouse drag: `Some(kind)` between a `Down` on a draggable
+    /// target (scrollbar thumb/track, a pane divider) and the matching `Up`.
+    pub drag: Option<DragKind>,
+    /// Session-only pane-layout overrides set by dragging the dividers (global,
+    /// not per-tab, not persisted to disk). `None` = the default size formula.
+    /// Held as requested heights/width; `pane_layout`/`clamp_left_cols` re-clamp
+    /// every frame, so a terminal resize can never leave them invalid.
+    pub left_cols: Option<u16>,
+    pub queue_h_override: Option<u16>,
+    pub tasks_h_override: Option<u16>,
+    /// Collapsed flag per list pane `[queue, tasks, worktrees]`. A collapsed pane
+    /// renders only its title bar; its rows/selection survive the collapse.
+    /// Part of the per-project layout (mirrors the active project's saved state).
+    pub collapsed: [bool; 3],
+    /// Per-project persisted layout (divider overrides + collapsed flags), keyed
+    /// by project name like `ui_by_tab`. The live `left_cols`/`*_override`/
+    /// `collapsed` fields mirror the active project; this map is the store that is
+    /// serialized to disk. Loaded once at startup, written through on collapse
+    /// toggle and divider drag-end.
+    pub layout_by_project: HashMap<String, crate::layout::ProjectLayout>,
+    /// Which project's layout the live fields currently reflect. Drives the
+    /// stash-old / load-new swap when the active project changes.
+    applied_layout_repo: Option<String>,
+    /// Where `layout_by_project` persists (`<state_dir>/tui-layout.json`).
+    layout_path: PathBuf,
     pub last_healed_build_id: Option<String>,
     // self-heal effect state (mirror heal.ts App refs: `healing`, `healStatusShown`)
     healing: bool,
@@ -178,6 +245,10 @@ fn now_epoch_s() -> u64 {
         .unwrap_or(0)
 }
 
+/// A second click on the same row within this many milliseconds is a
+/// double-click (opens the action menu). A slower second click only re-selects.
+const DOUBLE_CLICK_MS: u64 = 400;
+
 impl App {
     pub fn new(runs_dir: PathBuf, sock_path: PathBuf) -> Self {
         Self {
@@ -192,15 +263,102 @@ impl App {
             defs_inflight: HashSet::new(),
             full_defs: HashMap::new(),
             now_epoch_s: now_epoch_s(),
+            now_ms: 0,
+            prefix_armed: false,
+            last_click: None,
             size: (0, 0),
             hit: HitMap::new(),
+            detail_max_scroll: std::cell::Cell::new(0),
+            detail_wrapped_len: std::cell::Cell::new(0),
             drag: None,
+            left_cols: None,
+            queue_h_override: None,
+            tasks_h_override: None,
+            collapsed: [false, false, false],
+            layout_by_project: HashMap::new(),
+            applied_layout_repo: None,
+            // Derived here (not read yet) so `App::new` stays disk-free — unit
+            // tests never depend on the developer's real state file. `main`
+            // calls `load_layout` to populate the map from disk at startup.
+            layout_path: crate::paths::layout_path(&crate::paths::state_path()),
             last_healed_build_id: None,
             healing: false,
             heal_status_shown: false,
             sock_path,
             runs_dir,
         }
+    }
+
+    /// Load persisted per-project layout from disk (best-effort; missing/corrupt
+    /// → empty map). Called once at startup from `main`; unit-test constructions
+    /// skip it so tests never depend on the developer's real state file.
+    pub fn load_layout(&mut self) {
+        self.layout_by_project = crate::layout::load(&self.layout_path);
+    }
+
+    /// The live layout fields as a `ProjectLayout` (what the active project shows
+    /// right now).
+    fn live_layout(&self) -> crate::layout::ProjectLayout {
+        crate::layout::ProjectLayout {
+            left_cols: self.left_cols,
+            queue_h: self.queue_h_override,
+            tasks_h: self.tasks_h_override,
+            collapsed: self.collapsed,
+        }
+    }
+
+    /// Copy the live layout fields into the map under the active repo.
+    fn stash_active_layout(&mut self) {
+        if let Some(repo) = self.active_repo() {
+            let live = self.live_layout();
+            self.layout_by_project.insert(repo, live);
+        }
+    }
+
+    /// Load a repo's saved layout into the live fields (defaults when absent).
+    fn apply_saved_layout(&mut self, repo: Option<&str>) {
+        let l = repo
+            .and_then(|r| self.layout_by_project.get(r).cloned())
+            .unwrap_or_default();
+        self.left_cols = l.left_cols;
+        self.queue_h_override = l.queue_h;
+        self.tasks_h_override = l.tasks_h;
+        self.collapsed = l.collapsed;
+    }
+
+    /// Keep the live layout fields aligned to the active project. When the active
+    /// project changes (tab switch, first snapshot), stash the outgoing project's
+    /// live fields into the map and load the incoming project's saved layout.
+    /// Returns true when the live fields were swapped (forces a redraw).
+    fn reconcile_active_layout(&mut self) -> bool {
+        let current = self.active_repo();
+        if current == self.applied_layout_repo {
+            return false;
+        }
+        if let Some(prev) = self.applied_layout_repo.take() {
+            let live = self.live_layout();
+            self.layout_by_project.insert(prev, live);
+        }
+        self.apply_saved_layout(current.as_deref());
+        self.applied_layout_repo = current;
+        true
+    }
+
+    /// Persist the whole per-project map off the UI thread. Stashes the live
+    /// fields first so the active project's latest geometry is included.
+    fn save_layout_cmd(&mut self) -> Cmd {
+        self.stash_active_layout();
+        Cmd::SaveLayout {
+            path: self.layout_path.clone(),
+            json: crate::layout::serialize(&self.layout_by_project),
+        }
+    }
+
+    /// Flip a list pane's collapsed flag and persist. Focus and selection are
+    /// untouched — a collapsed pane just hides its rows.
+    fn toggle_collapse(&mut self, pane: ListPane, cmds: &mut Vec<Cmd>) {
+        self.collapsed[pane.idx()] = !self.collapsed[pane.idx()];
+        cmds.push(self.save_layout_cmd());
     }
 
     /// Set a status line owned by the self-heal effect (so a later healthy snapshot
@@ -278,6 +436,17 @@ impl App {
     }
 
     pub fn update(&mut self, event: Event) -> Update {
+        let up = self.update_event(event);
+        // After any event, realign the live layout fields to the active project.
+        // A tab switch or the first snapshot changes the active project; this is
+        // the single place the stash-old / load-new swap happens. The event that
+        // moves the active project (snapshot, tab switch) is already `dirty`, so
+        // the swap needs no extra redraw signal of its own.
+        self.reconcile_active_layout();
+        up
+    }
+
+    fn update_event(&mut self, event: Event) -> Update {
         match event {
             Event::Snapshot(snapshot) => {
                 self.snapshot = Some(snapshot);
@@ -353,14 +522,16 @@ impl App {
                         Update { dirty: true, cmds: vec![] }
                     }
                     Up | Char('k') => {
-                        if let Mode::ActionMenu { index, .. } = &mut self.mode {
-                            *index = index.saturating_sub(1);
+                        if let Mode::ActionMenu { items, index, .. } = &mut self.mode {
+                            // Circular: k on the first item wraps to the last.
+                            *index = index.checked_sub(1).unwrap_or(items.len().saturating_sub(1));
                         }
                         Update { dirty: true, cmds: vec![] }
                     }
                     Down | Char('j') => {
                         if let Mode::ActionMenu { items, index, .. } = &mut self.mode {
-                            *index = (*index + 1).min(items.len().saturating_sub(1));
+                            // Circular: j on the last item wraps to the first.
+                            *index = if *index + 1 >= items.len() { 0 } else { *index + 1 };
                         }
                         Update { dirty: true, cmds: vec![] }
                     }
@@ -598,6 +769,28 @@ impl App {
                     Mode::List => {
                         // Status line clears on ANY list-mode keypress (even unbound keys).
                         let had_status = self.status_line.take().is_some();
+                        // tmux-style prefix: when armed, this key is consumed —
+                        // `n`/`p` cycle project tabs (wrapping), anything else just
+                        // disarms and is swallowed. Disarming always repaints (the
+                        // footer indicator turns off).
+                        if self.prefix_armed {
+                            self.prefix_armed = false;
+                            let action = match key.code {
+                                KeyCode::Char('n') => crate::keymap::AppAction::CycleTab(1),
+                                KeyCode::Char('p') => crate::keymap::AppAction::CycleTab(-1),
+                                _ => crate::keymap::AppAction::None,
+                            };
+                            let up = self.apply_action(action);
+                            return Update { dirty: true, cmds: up.cmds };
+                        }
+                        // Arm the prefix on ctrl+s. Consumed here so it never
+                        // reaches the keymap; the next key resolves it above.
+                        if matches!(key.code, KeyCode::Char('s'))
+                            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                        {
+                            self.prefix_armed = true;
+                            return Update { dirty: true, cmds: Vec::new() };
+                        }
                         let action = crate::keymap::list_mode_action(&key, self.ui().focus);
                         let mut up = self.apply_action(action);
                         up.dirty = up.dirty || had_status;
@@ -639,6 +832,11 @@ impl App {
                 // Cache the repo's summaries and clear its in-flight flag so the
                 // next `reconcile_defs` sees it cached (ports the TS effect that
                 // stores the fetch result and re-enables re-fetch after invalidation).
+                // The daemon's `definitions` call returns entries for EVERY project
+                // (a global def appears once per project) — keep only this repo's
+                // (ports App.tsx `all.filter((d) => d.repo === activeName)`).
+                let defs: Vec<DefinitionSummary> =
+                    defs.into_iter().filter(|d| d.repo == repo).collect();
                 self.defs_by_project.insert(repo.clone(), defs);
                 self.defs_inflight.remove(&repo);
                 Update { dirty: true, cmds: vec![] }
@@ -692,6 +890,19 @@ impl App {
         }
     }
 
+    /// The stable identity of the row at visible index `i` in `pane`, used to key
+    /// the double-click sequence so a resort between clicks can't misfire the menu
+    /// on the wrong row. Queue: `task_id`; tasks: `repo/name`; worktrees: `raw_name`.
+    /// `None` when the index is out of range (empty/shrunk list).
+    pub(crate) fn row_identity(&self, pane: ListPane, i: usize) -> Option<String> {
+        let c = crate::view::compute(self);
+        match pane {
+            ListPane::Queue => c.queue.get(i).map(|r| r.task_id.clone()),
+            ListPane::Tasks => c.defs.get(i).map(|d| format!("{}/{}", d.repo, d.name)),
+            ListPane::Worktrees => c.worktrees.get(i).map(|r| r.raw_name.clone()),
+        }
+    }
+
     fn focused_list(&mut self) -> Option<ListPane> {
         match self.ui().focus {
             PaneId::Queue => Some(ListPane::Queue),
@@ -734,7 +945,7 @@ impl App {
 
     /// Resolve an `AppAction` from the keymap into state mutations + commands.
     /// Pure per-key logic lives in `keymap::list_mode_action`; per-tab state and
-    /// focus-dependent semantics (g/G, FocusBack) resolve here.
+    /// focus-dependent semantics (g/G) resolve here.
     pub(crate) fn apply_action(&mut self, action: AppAction) -> Update {
         use AppAction as A;
         let mut cmds = Vec::new();
@@ -778,32 +989,29 @@ impl App {
                 }
             }
             A::CyclePane(d) => {
-                const ORDER: [PaneId; 4] =
-                    [PaneId::Queue, PaneId::Tasks, PaneId::Worktrees, PaneId::Detail];
+                // Detail is display-only — the cycle covers only the three list
+                // panes, upholding the "focus is always a list pane" invariant.
+                const ORDER: [PaneId; 3] = [PaneId::Queue, PaneId::Tasks, PaneId::Worktrees];
                 let cur = ORDER.iter().position(|p| *p == self.ui().focus).unwrap_or(0) as i64;
-                let next = ORDER[((cur + d as i64).rem_euclid(4)) as usize];
+                let next = ORDER[((cur + d as i64).rem_euclid(3)) as usize];
                 self.set_focus(next);
                 self.schedule_run_read(&mut cmds, 120);
                 true
             }
-            A::FocusPane(p) => {
-                self.set_focus(p);
-                true
-            }
-            A::FocusBack => {
-                let back = self.ui().last_list_pane;
-                self.set_focus(match back {
-                    ListPane::Queue => PaneId::Queue,
-                    ListPane::Tasks => PaneId::Tasks,
-                    ListPane::Worktrees => PaneId::Worktrees,
-                });
-                true
-            }
             A::MoveCursor(d) => match self.focused_list() {
                 Some(pane) => {
-                    let cur = self.ui().selections[pane as usize].cursor as i64;
-                    let next = (cur + d as i64).max(0) as usize;
-                    self.set_cursor(pane, next, &mut cmds)
+                    let len = self.visible_len(pane);
+                    if len == 0 {
+                        false
+                    } else {
+                        // Circular navigation: k on the first row lands on the
+                        // last, j on the last wraps to the first. (Extend-
+                        // selection stays clamped — a wrapping range would be
+                        // ambiguous.)
+                        let cur = self.ui().selections[pane as usize].cursor.min(len - 1) as i64;
+                        let next = (cur + d as i64).rem_euclid(len as i64) as usize;
+                        self.set_cursor(pane, next, &mut cmds)
+                    }
                 }
                 None => false,
             },
@@ -830,7 +1038,6 @@ impl App {
                 }
                 None => false,
             },
-            A::Scroll(d) => self.detail_scroll(d),
             A::ScrollEdge(dir) => match self.focused_list() {
                 // Lists: g/G jump the cursor to the first/last row.
                 Some(pane) => {
@@ -885,6 +1092,14 @@ impl App {
                 }
                 true
             }
+            A::ToggleCollapse => match self.focused_list() {
+                // Collapse/expand the focused list pane; detail focus is a no-op.
+                Some(pane) => {
+                    self.toggle_collapse(pane, &mut cmds);
+                    true
+                }
+                None => false,
+            },
         };
         Update { dirty, cmds }
     }
@@ -1340,14 +1555,16 @@ impl App {
                 Update { dirty: true, cmds: vec![] }
             }
             Up | Char('k') => {
-                let i = index.saturating_sub(1);
+                // Circular: k on the first item wraps to the last.
+                let i = index.checked_sub(1).unwrap_or(len.saturating_sub(1));
                 if let Mode::DefPick { index, .. } = &mut self.mode {
                     *index = i;
                 }
                 Update { dirty: true, cmds: vec![] }
             }
             Down | Char('j') => {
-                let i = (index + 1).min(len.saturating_sub(1));
+                // Circular: j on the last item wraps to the first.
+                let i = if index + 1 >= len { 0 } else { index + 1 };
                 if let Mode::DefPick { index, .. } = &mut self.mode {
                     *index = i;
                 }
@@ -1581,8 +1798,12 @@ impl App {
     pub(crate) fn detail_scroll(&mut self, delta: i32) -> bool {
         let (kind, sub) = self.detail_kind_and_subtab();
         let step = if crate::detail::bottom_anchored(kind, sub) { -delta } else { delta };
+        // Clamp BOTH ends: 0 and the render-fed max. Without the upper clamp the
+        // stored offset kept growing on over-scroll past the edge, and the user
+        // had to scroll back through the phantom distance before the view moved.
+        let max = self.detail_max_scroll.get();
         let ui = self.ui();
-        let next = (ui.scroll_offset as i64 + step as i64).max(0) as usize;
+        let next = ((ui.scroll_offset as i64 + step as i64).max(0) as usize).min(max);
         if next == ui.scroll_offset {
             return false;
         }
@@ -1591,18 +1812,21 @@ impl App {
     }
 
     /// `ScrollEdge(dir)` in the detail pane. dir < 0 = head/oldest, dir > 0 =
-    /// tail/end. Uses a large sentinel that `window_lines` clamps to the real max.
+    /// tail/end. Jumps to the render-fed max (not an unclamped sentinel, which
+    /// left the stored offset far past the edge — same phantom-scroll bug class
+    /// as `detail_scroll`'s missing upper clamp).
     pub(crate) fn detail_scroll_edge(&mut self, dir: i32) -> bool {
         let (kind, sub) = self.detail_kind_and_subtab();
         let bottom = crate::detail::bottom_anchored(kind, sub);
         let to_head = dir < 0;
-        // Bottom-anchored: head = large offset, tail = 0. Top-anchored: reverse.
+        let max = self.detail_max_scroll.get();
+        // Bottom-anchored: head = max offset, tail = 0. Top-anchored: reverse.
         let offset = if bottom {
-            if to_head { 1_000_000 } else { 0 }
+            if to_head { max } else { 0 }
         } else if to_head {
             0
         } else {
-            1_000_000
+            max
         };
         let ui = self.ui();
         if ui.scroll_offset == offset {
@@ -1761,8 +1985,15 @@ impl App {
                 }
                 Some(HitTarget::SubTab(i)) => self.set_sub_tab_clamped(i, &mut cmds),
                 Some(HitTarget::PaneBody(p)) => {
-                    self.set_focus(p);
-                    true
+                    // Detail is display-only: clicking its body must not steal
+                    // focus (wheel scrolling over it still works — that routes by
+                    // hover, not focus).
+                    if p == PaneId::Detail {
+                        false
+                    } else {
+                        self.set_focus(p);
+                        true
+                    }
                 }
                 Some(HitTarget::Row(pane, i)) => {
                     let focus = match pane {
@@ -1774,6 +2005,8 @@ impl App {
                     self.set_focus(focus);
                     if shift {
                         // Extend: keep (or seed) the anchor, move the cursor to i.
+                        // A shift-click is not part of a double-click sequence.
+                        self.last_click = None;
                         let sel = self.ui().selections[pane as usize];
                         let anchor = Some(sel.anchor.unwrap_or(sel.cursor));
                         let len = self.visible_len(pane);
@@ -1786,32 +2019,93 @@ impl App {
                         self.schedule_run_read(&mut cmds, 120);
                         true
                     } else {
-                        let sel = self.ui().selections[pane as usize];
-                        let already = sel.cursor == i && sel.anchor.is_none();
+                        // Single click selects only. A real double-click — a second
+                        // click on the SAME ROW IDENTITY within DOUBLE_CLICK_MS —
+                        // opens the action menu (same target as Enter/a). Keying on
+                        // identity (resolved from the clicked index) not the index
+                        // means a resort between clicks can't fire the menu on a
+                        // row that merely slid into the clicked slot.
+                        let now = self.now_ms;
+                        let identity = self.row_identity(pane, i);
+                        let double = match (&self.last_click, &identity) {
+                            (Some((lp, lid, lt)), Some(id)) => {
+                                *lp == pane
+                                    && lid == id
+                                    && now.saturating_sub(*lt) < DOUBLE_CLICK_MS
+                            }
+                            _ => false,
+                        };
                         self.set_cursor(pane, i, &mut cmds);
-                        if already {
-                            // Second click on the already-selected row opens its
-                            // action menu (same target as Enter/a).
+                        if double {
+                            // Consume the sequence so a third click starts fresh.
+                            self.last_click = None;
                             match self.open_action_menu() {
                                 Some(mode) => self.mode = mode,
                                 None => self.status_line = Some("nothing selected".into()),
                             }
+                        } else {
+                            // Arm on the clicked row's identity (None → nothing to
+                            // match against next click; disarms the sequence).
+                            self.last_click = identity.map(|id| (pane, id, now));
                         }
                         true
                     }
                 }
                 Some(HitTarget::ScrollbarThumb(p)) | Some(HitTarget::ScrollbarTrack(p)) => {
-                    self.drag = Some(p);
+                    self.drag = Some(DragKind::Scrollbar(p));
                     self.drag_to_offset(p, m.row, &mut cmds)
+                }
+                Some(HitTarget::PaneDividerH(i)) => {
+                    self.drag = Some(DragKind::DividerH(i));
+                    self.drag_divider_h(i, m.row)
+                }
+                Some(HitTarget::PaneDividerV) => {
+                    self.drag = Some(DragKind::DividerV);
+                    self.drag_divider_v(m.column)
+                }
+                Some(HitTarget::PaneButton(p, btn)) => {
+                    // A title-bar button behaves exactly like pressing its hotkey
+                    // with that pane focused. `Create`/`Actions` need the focus
+                    // (they read `last_list_pane`); `Collapse` is focus-independent
+                    // (its outcome — collapsing pane P — matches pressing `x` with
+                    // P focused regardless), so it skips the focus/scroll reset.
+                    let lp = match p {
+                        PaneId::Queue => ListPane::Queue,
+                        PaneId::Tasks => ListPane::Tasks,
+                        PaneId::Worktrees => ListPane::Worktrees,
+                        PaneId::Detail => return Update { dirty: false, cmds }, // no detail buttons
+                    };
+                    match btn {
+                        crate::hit::PaneButton::Collapse => {
+                            self.toggle_collapse(lp, &mut cmds);
+                            true
+                        }
+                        crate::hit::PaneButton::Create => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::Create);
+                        }
+                        crate::hit::PaneButton::Actions => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::OpenActionMenu);
+                        }
+                    }
                 }
                 Some(_) => false, // MenuItem/FormField/DropdownItem/Button: M2/M3
             },
             K::Drag(MouseButton::Left) => match self.drag {
-                Some(p) => self.drag_to_offset(p, m.row, &mut cmds),
+                Some(DragKind::Scrollbar(p)) => self.drag_to_offset(p, m.row, &mut cmds),
+                Some(DragKind::DividerH(i)) => self.drag_divider_h(i, m.row),
+                Some(DragKind::DividerV) => self.drag_divider_v(m.column),
                 None => false,
             },
             K::Up(MouseButton::Left) => {
-                self.drag = None;
+                // Drag ends. A divider drag changed the per-project layout → write
+                // it through to disk (once, on release — not on every drag frame).
+                // Scrollbar drags change no layout, so they don't persist.
+                let ended = self.drag.take();
+                if matches!(ended, Some(DragKind::DividerH(_)) | Some(DragKind::DividerV)) {
+                    cmds.push(self.save_layout_cmd());
+                }
                 false
             }
             K::ScrollDown | K::ScrollUp => {
@@ -1880,6 +2174,60 @@ impl App {
                 self.set_cursor(list, cursor, cmds)
             }
         }
+    }
+
+    /// The left-pane body rectangle geometry the dividers move within. The header
+    /// is a single row, the footer a single row (`view::render`), so the body
+    /// starts at row 1 and the left column starts at column 0.
+    fn body_height(&self) -> u16 {
+        self.size.1.saturating_sub(2)
+    }
+
+    /// Drag a horizontal pane divider to absolute mouse row `y`. `which` selects
+    /// the boundary (0 = queue/tasks, 1 = tasks/worktrees). The requested height is
+    /// the rows between the body top and the drop point; `pane_layout` re-clamps it
+    /// so every pane keeps its minimum. Overrides are canonicalized to the realized
+    /// (clamped) heights so a drag past the limit can't accumulate stale slack.
+    fn drag_divider_h(&mut self, which: usize, y: u16) -> bool {
+        // A boundary adjacent to a collapsed pane can't move — the collapsed pane
+        // is pinned to COLLAPSED_H. Ignore the drag rather than fight the clamp.
+        // `which` 0 = queue/tasks (panes 0,1); 1 = tasks/worktrees (panes 1,2).
+        if self.collapsed[which] || self.collapsed[which + 1] {
+            return false;
+        }
+        const BODY_TOP: u16 = 1; // header occupies row 0
+        let body_h = self.body_height();
+        let rel = y.saturating_sub(BODY_TOP);
+        let before = crate::selectors::pane_layout(
+            body_h,
+            self.queue_h_override,
+            self.tasks_h_override,
+            self.collapsed,
+        );
+        let (mut q_ov, mut t_ov) = (self.queue_h_override, self.tasks_h_override);
+        match which {
+            // queue/tasks boundary → queue height = rows above the boundary.
+            0 => q_ov = Some(rel),
+            // tasks/worktrees boundary → tasks height = rows between the two
+            // boundaries (drop point minus the current queue height).
+            _ => t_ov = Some(rel.saturating_sub(before.queue_h)),
+        }
+        let after = crate::selectors::pane_layout(body_h, q_ov, t_ov, self.collapsed);
+        self.queue_h_override = Some(after.queue_h);
+        self.tasks_h_override = Some(after.tasks_h);
+        after != before
+    }
+
+    /// Drag the vertical divider to absolute mouse column `x`: the drop column
+    /// becomes the first column of DETAIL, i.e. the left-column width. Clamped so
+    /// neither side collapses.
+    fn drag_divider_v(&mut self, x: u16) -> bool {
+        let clamped = crate::selectors::clamp_left_cols(self.size.0, x);
+        if self.left_cols == Some(clamped) {
+            return false;
+        }
+        self.left_cols = Some(clamped);
+        true
     }
 
     /// Queue a debounced run-file read for the current selection (no-op for
@@ -1996,6 +2344,7 @@ mod tests {
         // fixture_app: active detail context is the running task's transcript,
         // which is bottom-anchored (k = older, so a negative delta grows offset).
         let mut app = crate::test_fixtures::fixture_app();
+        app.detail_max_scroll.set(10); // as if the last render had 10 lines of slack
         assert!(!app.detail_scroll(1)); // toward newest — already at tail, no-op
         assert!(app.detail_scroll(-1)); // toward older — offset grows
         assert_eq!(app.ui().scroll_offset, 1);
@@ -2004,16 +2353,33 @@ mod tests {
     #[test]
     fn detail_scroll_edge_jumps_head_and_tail() {
         let mut app = crate::test_fixtures::fixture_app();
-        assert!(app.detail_scroll_edge(-1)); // head/oldest → large sentinel
-        assert_eq!(app.ui().scroll_offset, 1_000_000);
+        app.detail_max_scroll.set(42);
+        assert!(app.detail_scroll_edge(-1)); // head/oldest → the render-fed max
+        assert_eq!(app.ui().scroll_offset, 42);
         assert!(app.detail_scroll_edge(1)); // tail → 0
         assert_eq!(app.ui().scroll_offset, 0);
         assert!(!app.detail_scroll_edge(1)); // already at tail
     }
 
     #[test]
+    fn detail_scroll_clamps_at_max_so_overscroll_banks_no_phantom_distance() {
+        // Regression: over-scrolling past the head kept growing the stored
+        // offset, so scrolling back required burning through phantom distance.
+        let mut app = crate::test_fixtures::fixture_app();
+        app.detail_max_scroll.set(3);
+        for _ in 0..10 {
+            app.detail_scroll(-1); // way past the head
+        }
+        assert_eq!(app.ui().scroll_offset, 3, "stored offset stops at the content max");
+        // The very next scroll toward the tail must move the view immediately.
+        assert!(app.detail_scroll(1));
+        assert_eq!(app.ui().scroll_offset, 2);
+    }
+
+    #[test]
     fn reset_scroll_returns_to_anchor() {
         let mut app = crate::test_fixtures::fixture_app();
+        app.detail_max_scroll.set(10);
         app.detail_scroll(-5);
         assert_eq!(app.ui().scroll_offset, 5);
         app.reset_scroll();
@@ -2031,6 +2397,7 @@ mod tests {
         ui.last_list_pane = ListPane::Tasks;
         app.ui_by_tab.insert("acme".into(), ui);
         // Definition context is head-anchored: positive delta grows offset directly.
+        app.detail_max_scroll.set(10);
         assert!(app.detail_scroll(1));
         assert_eq!(app.ui().scroll_offset, 1);
         assert!(app.detail_scroll(-1));
@@ -2128,9 +2495,10 @@ mod tests {
     }
 
     #[test]
-    fn cycle_pane_wraps_queue_tasks_worktrees_detail() {
+    fn cycle_pane_wraps_queue_tasks_worktrees() {
         let mut app = crate::test_fixtures::fixture_app();
-        let order = [PaneId::Tasks, PaneId::Worktrees, PaneId::Detail, PaneId::Queue];
+        // Detail is display-only and never enters the focus cycle.
+        let order = [PaneId::Tasks, PaneId::Worktrees, PaneId::Queue];
         for expected in order {
             press(&mut app, KeyCode::Tab);
             assert_eq!(app.ui().focus, expected);
@@ -2138,27 +2506,71 @@ mod tests {
     }
 
     #[test]
-    fn focus_back_returns_to_last_list_pane() {
+    fn hl_keys_do_not_focus_detail() {
         let mut app = crate::test_fixtures::fixture_app();
         press(&mut app, KeyCode::Tab); // → tasks
-        press(&mut app, KeyCode::Char('l')); // → detail, last_list_pane = tasks
-        assert_eq!(app.ui().focus, PaneId::Detail);
-        press(&mut app, KeyCode::Char('h'));
+        press(&mut app, KeyCode::Char('l')); // no-op: detail is display-only
+        assert_eq!(app.ui().focus, PaneId::Tasks);
+        press(&mut app, KeyCode::Char('h')); // no-op
         assert_eq!(app.ui().focus, PaneId::Tasks);
     }
 
     #[test]
-    fn move_cursor_clamps_and_clears_anchor() {
+    fn move_cursor_wraps_circularly_and_extend_stays_clamped() {
         let mut app = crate::test_fixtures::fixture_app();
-        // 4 queue rows (3 live + 1 archived); hammer j past the end.
+        // 4 queue rows (3 live + 1 archived). Navigation is circular: 10 j
+        // presses from row 0 land on 10 % 4 = row 2.
         for _ in 0..10 {
             press(&mut app, KeyCode::Char('j'));
         }
+        assert_eq!(app.ui().selections[0].cursor, 2);
+        press(&mut app, KeyCode::Char('j')); // → 3 (last)
+        press(&mut app, KeyCode::Char('j')); // wraps → 0
+        assert_eq!(app.ui().selections[0].cursor, 0);
+        press(&mut app, KeyCode::Char('k')); // wraps back → 3
         assert_eq!(app.ui().selections[0].cursor, 3);
+        // Extend-selection does NOT wrap (a wrapping range would be ambiguous).
         press(&mut app, KeyCode::Char('J')); // can't extend past end → anchor stays None
         assert_eq!(app.ui().selections[0].anchor, None);
         press(&mut app, KeyCode::Char('K'));
         assert_eq!(app.ui().selections[0], Selection { cursor: 2, anchor: Some(3) });
+    }
+
+    #[test]
+    fn queue_nav_crosses_divider_onto_a_real_finished_row() {
+        // Real render so app.hit carries the true divider geometry.
+        let mut app = app_rendered(80, 24);
+        // The ACTIVE/FINISHED divider is inert: exactly 4 queue rows are
+        // clickable (2 active + 2 finished), and none of them is the divider.
+        let queue_row_hits = app
+            .hit
+            .iter()
+            .filter(|(_, t)| matches!(t, HitTarget::Row(ListPane::Queue, _)))
+            .count();
+        assert_eq!(queue_row_hits, 4, "the divider adds no Row hit target");
+        // From the last ACTIVE row, j crosses the divider onto the first FINISHED
+        // row (index 2) — the cursor never stalls on the divider line.
+        press(&mut app, KeyCode::Char('j')); // 0 → 1 (last active)
+        press(&mut app, KeyCode::Char('j')); // 1 → 2 (first finished, across divider)
+        assert_eq!(app.ui().selections[0].cursor, 2);
+        // Opening the menu targets that real finished task — the cursor index maps
+        // 1:1 to a real row, so the divider never shifts the row lookup.
+        press(&mut app, KeyCode::Char('a'));
+        match &app.mode {
+            Mode::ActionMenu { title, .. } => assert_eq!(title, "flaky migration"),
+            other => panic!("expected ActionMenu on the failed task, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn queue_range_selection_spans_the_section_divider() {
+        let mut app = app_rendered(80, 24);
+        press(&mut app, KeyCode::Char('j')); // cursor 0 → 1 (last active row)
+        press(&mut app, KeyCode::Char('J')); // extend into row 2 (first finished)
+        assert_eq!(app.ui().selections[0], Selection { cursor: 2, anchor: Some(1) });
+        // The range covers a real row on EACH side of the divider (active 1 +
+        // finished 2) — selections/cursor operate purely in real-row space.
+        assert_eq!(crate::view::selection_range(&app.ui().selections[0]), (1, 2));
     }
 
     #[test]
@@ -2281,13 +2693,15 @@ mod tests {
     #[test]
     fn cycle_sub_tab_wraps_within_kind() {
         let mut app = crate::test_fixtures::fixture_app();
-        // Run context (queue cursor 0 → 01RUN): 3 sub-tabs.
-        press(&mut app, KeyCode::Char('}'));
+        // Run context (queue cursor 0 → 01RUN): 3 sub-tabs. ctrl+x = next (global,
+        // no detail focus needed), ctrl+z = previous.
+        let ctrl = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        app.update(ctrl('x'));
         assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 1);
-        press(&mut app, KeyCode::Char('}'));
-        press(&mut app, KeyCode::Char('}'));
+        app.update(ctrl('x'));
+        app.update(ctrl('x'));
         assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 0, "wraps past the end");
-        press(&mut app, KeyCode::Char('{'));
+        app.update(ctrl('z'));
         assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 2, "wraps below zero");
     }
 
@@ -2319,21 +2733,24 @@ mod tests {
     }
 
     #[test]
-    fn click_row_focuses_and_selects() {
+    fn click_row_focuses_and_selects_without_opening_menu() {
         let mut app = app_with_hits();
-        app.set_focus(PaneId::Detail); // start elsewhere
+        app.set_focus(PaneId::Tasks); // start on another list pane
         let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 4)); // row 2
         assert!(up.dirty);
         assert_eq!(app.ui().focus, PaneId::Queue);
         assert_eq!(app.ui().selections[0], Selection { cursor: 2, anchor: None });
+        assert!(matches!(app.mode, Mode::List), "single click selects only");
     }
 
     #[test]
-    fn click_selected_row_again_opens_menu() {
+    fn double_click_same_row_within_window_opens_menu() {
         let mut app = app_with_hits();
-        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3)); // select row 1
+        app.now_ms = 1_000;
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3)); // click row 1
         app.status_line = None;
-        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3)); // same row → menu
+        app.now_ms = 1_200; // 200ms later (< 400ms) → double-click
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
         match &app.mode {
             // Row 1 is the queued fixture task "write docs for the cache".
             Mode::ActionMenu { title, items, index } => {
@@ -2343,6 +2760,159 @@ mod tests {
             }
             other => panic!("expected ActionMenu, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn slow_second_click_only_reselects() {
+        let mut app = app_with_hits();
+        app.now_ms = 1_000;
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3)); // click row 1
+        app.now_ms = 1_500; // 500ms later (> 400ms) → NOT a double-click
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+        assert!(matches!(app.mode, Mode::List), "slow second click must not open the menu");
+        assert_eq!(app.ui().selections[0], Selection { cursor: 1, anchor: None });
+    }
+
+    #[test]
+    fn resort_between_clicks_keys_on_identity_not_index() {
+        // Click row 0 (arms on the row's task id), then a new snapshot resorts a
+        // DIFFERENT task into index 0. A second click at index 0 within the window
+        // must NOT open the menu — the identity changed — it only re-selects.
+        let mut app = app_with_hits();
+        app.now_ms = 1_000;
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 2)); // click row 0
+        // Snapshot with a single running task whose id differs from the fixture's
+        // row-0 task → index 0 now resolves to a different identity.
+        app.update(Event::Snapshot(snapshot_with(&["acme"], vec![running_task("acme")])));
+        app.now_ms = 1_200; // within 400ms
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 2)); // click index 0 again
+        assert!(
+            matches!(app.mode, Mode::List),
+            "a resort into the clicked slot must not fire the menu on the wrong row"
+        );
+        assert_eq!(app.ui().selections[0], Selection { cursor: 0, anchor: None });
+    }
+
+    fn ctrl_s(app: &mut App) -> Update {
+        app.update(Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)))
+    }
+
+    #[test]
+    fn ctrl_s_prefix_then_n_p_cycles_project_tabs() {
+        let mut app = app();
+        app.update(Event::Snapshot(snapshot_with(&["a", "b", "c"], vec![])));
+        app.active_tab = 0;
+        assert!(ctrl_s(&mut app).dirty);
+        assert!(app.prefix_armed, "ctrl+s arms the prefix");
+        press(&mut app, KeyCode::Char('n')); // next tab, disarms
+        assert!(!app.prefix_armed);
+        assert_eq!(app.active_tab, 1);
+        ctrl_s(&mut app);
+        press(&mut app, KeyCode::Char('p')); // previous tab (wraps)
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn ctrl_s_prefix_swallows_other_keys_and_disarms() {
+        let mut app = app();
+        app.update(Event::Snapshot(snapshot_with(&["a", "b"], vec![])));
+        app.active_tab = 0;
+        ctrl_s(&mut app);
+        let before = app.collapsed;
+        press(&mut app, KeyCode::Char('z')); // would collapse — swallowed by the prefix
+        assert!(!app.prefix_armed, "any other key disarms");
+        assert_eq!(app.active_tab, 0, "tab unchanged");
+        assert_eq!(app.collapsed, before, "swallowed key had no effect");
+    }
+
+    #[test]
+    fn pane_button_create_click_focuses_pane_then_acts() {
+        let mut app = app_with_hits();
+        app.set_focus(PaneId::Queue);
+        let mut hits = app.hit.clone();
+        hits.push(
+            Rect { x: 20, y: 0, width: 4, height: 1 },
+            HitTarget::PaneButton(PaneId::Worktrees, crate::hit::PaneButton::Create),
+        );
+        app.hit = hits;
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 21, 0));
+        // Focus moved to worktrees first, then `c` opened the create-worktree modal.
+        assert_eq!(app.active_ui().last_list_pane, ListPane::Worktrees);
+        assert!(matches!(app.mode, Mode::CreateWorktree { .. }));
+    }
+
+    #[test]
+    fn pane_button_collapse_click_toggles_without_moving_focus() {
+        let mut app = app_with_hits();
+        app.set_focus(PaneId::Queue);
+        let before = app.collapsed[ListPane::Tasks.idx()];
+        let mut hits = app.hit.clone();
+        hits.push(
+            Rect { x: 20, y: 0, width: 4, height: 1 },
+            HitTarget::PaneButton(PaneId::Tasks, crate::hit::PaneButton::Collapse),
+        );
+        app.hit = hits;
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 21, 0));
+        assert_ne!(app.collapsed[ListPane::Tasks.idx()], before, "collapse toggled");
+        assert_eq!(app.ui().focus, PaneId::Queue, "collapse button leaves focus put");
+    }
+
+    /// The right-aligned `PaneButton` rect for `(pane, btn)` from a real render.
+    fn pane_button_rect(app: &App, pane: PaneId, btn: crate::hit::PaneButton) -> Rect {
+        app.hit
+            .iter()
+            .find_map(|(r, t)| (*t == HitTarget::PaneButton(pane, btn)).then_some(*r))
+            .unwrap_or_else(|| panic!("pane button {pane:?}/{btn:?} registered"))
+    }
+
+    #[test]
+    fn real_render_worktrees_create_chip_click_opens_modal() {
+        // Worktrees' top border is the lower row of divider band 1; the chip must
+        // still win the click (PaneButton registered after PaneDividerH).
+        let mut app = app_rendered(80, 24);
+        app.set_focus(PaneId::Queue);
+        let r = pane_button_rect(&app, PaneId::Worktrees, crate::hit::PaneButton::Create);
+        app.update(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            r.x + r.width / 2,
+            r.y,
+        ));
+        assert_eq!(app.active_ui().last_list_pane, ListPane::Worktrees, "focus moved");
+        assert!(matches!(app.mode, Mode::CreateWorktree { .. }), "create modal opened");
+    }
+
+    #[test]
+    fn real_render_tasks_collapse_chip_click_toggles_over_divider() {
+        // Tasks' top border is the lower row of divider band 0; the collapse chip
+        // must win over the divider and leave focus unchanged.
+        let mut app = app_rendered(80, 24);
+        app.set_focus(PaneId::Queue);
+        let before = app.collapsed[ListPane::Tasks.idx()];
+        let r = pane_button_rect(&app, PaneId::Tasks, crate::hit::PaneButton::Collapse);
+        assert_eq!(app.drag, None);
+        app.update(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            r.x + r.width / 2,
+            r.y,
+        ));
+        assert_ne!(app.collapsed[ListPane::Tasks.idx()], before, "collapse toggled");
+        assert_eq!(app.ui().focus, PaneId::Queue, "collapse leaves focus put");
+        assert_eq!(app.drag, None, "chip click did not start a divider drag");
+    }
+
+    #[test]
+    fn detail_body_click_does_not_steal_focus() {
+        let mut app = app_with_hits();
+        app.set_focus(PaneId::Queue);
+        let mut hits = app.hit.clone();
+        hits.push(
+            Rect { x: 40, y: 2, width: 20, height: 10 },
+            HitTarget::PaneBody(PaneId::Detail),
+        );
+        app.hit = hits;
+        let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 45, 5));
+        assert!(!up.dirty, "detail body click is inert");
+        assert_eq!(app.ui().focus, PaneId::Queue);
     }
 
     #[test]
@@ -2364,10 +2934,10 @@ mod tests {
     #[test]
     fn wheel_moves_pane_under_cursor_without_focus_change() {
         let mut app = app_with_hits();
-        app.set_focus(PaneId::Detail);
+        app.set_focus(PaneId::Tasks);
         let up = app.update(mouse(MouseEventKind::ScrollDown, 5, 3)); // over queue body
         assert!(up.dirty);
-        assert_eq!(app.ui().focus, PaneId::Detail, "wheel must not steal focus");
+        assert_eq!(app.ui().focus, PaneId::Tasks, "wheel must not steal focus");
         assert_eq!(app.ui().selections[0].cursor, 1);
         app.update(mouse(MouseEventKind::ScrollUp, 5, 3));
         assert_eq!(app.ui().selections[0].cursor, 0);
@@ -2378,7 +2948,7 @@ mod tests {
         let mut app = app_with_hits();
         // Track: y=2, h=10. Queue has 4 rows → scrollable = 3.
         app.update(mouse(MouseEventKind::Down(MouseButton::Left), 30, 2)); // top
-        assert!(app.drag == Some(PaneId::Queue));
+        assert!(app.drag == Some(DragKind::Scrollbar(PaneId::Queue)));
         assert_eq!(app.ui().selections[0].cursor, 0); // (2−2)*3/10 = 0
         app.update(mouse(MouseEventKind::Drag(MouseButton::Left), 30, 11)); // near bottom
         assert_eq!(app.ui().selections[0].cursor, 2); // (11−2)*3/10 = 2
@@ -2386,6 +2956,208 @@ mod tests {
         assert_eq!(app.ui().selections[0].cursor, 3);
         app.update(mouse(MouseEventKind::Up(MouseButton::Left), 30, 40));
         assert_eq!(app.drag, None);
+    }
+
+    /// Render a real fixture app to a `TestBackend` so `app.hit` carries the true
+    /// divider geometry (mirrors the view tests' `render_at`).
+    fn app_rendered(w: u16, h: u16) -> App {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = crate::test_fixtures::fixture_app();
+        app.size = (w, h);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let mut hits = crate::hit::HitMap::new();
+        terminal.draw(|f| hits = crate::view::render(&app, f)).unwrap();
+        app.hit = hits;
+        app
+    }
+
+    fn divider_h_rect(app: &App, which: usize) -> Rect {
+        app.hit
+            .iter()
+            .find_map(|(r, t)| (*t == HitTarget::PaneDividerH(which)).then_some(*r))
+            .expect("horizontal divider registered")
+    }
+
+    fn divider_v_rect(app: &App) -> Rect {
+        app.hit
+            .iter()
+            .find_map(|(r, t)| (*t == HitTarget::PaneDividerV).then_some(*r))
+            .expect("vertical divider registered")
+    }
+
+    #[test]
+    fn drag_horizontal_divider_resizes_queue_and_up_ends_drag() {
+        let mut app = app_rendered(80, 24);
+        // Default at 80x24: body_h = 22 → queue 12, tasks 5, worktrees 5.
+        assert_eq!(app.queue_h_override, None);
+        let r = divider_h_rect(&app, 0); // queue/tasks boundary
+        // Down on the divider records the drag kind.
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y));
+        assert_eq!(app.drag, Some(DragKind::DividerH(0)));
+        // Drag the boundary down several rows → the queue pane grows.
+        let u = app.update(mouse(MouseEventKind::Drag(MouseButton::Left), r.x + 2, r.y + 4));
+        assert!(u.dirty);
+        let q = app.queue_h_override.expect("queue override set by drag");
+        assert!(q > 12, "dragging the boundary down grows the queue (q={q})");
+        // Overrides never violate the minimum-height / exact-sum invariant.
+        let l = crate::selectors::pane_layout(22, app.queue_h_override, app.tasks_h_override, app.collapsed);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 22);
+        assert!(l.worktrees_h >= 4 && l.tasks_h >= 4);
+        // Up ends the drag; the override persists.
+        app.update(mouse(MouseEventKind::Up(MouseButton::Left), r.x + 2, r.y + 4));
+        assert_eq!(app.drag, None);
+        assert_eq!(app.queue_h_override, Some(q));
+    }
+
+    #[test]
+    fn drag_tasks_worktrees_divider_resizes_tasks() {
+        let mut app = app_rendered(80, 24);
+        let r = divider_h_rect(&app, 1); // tasks/worktrees boundary
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y));
+        assert_eq!(app.drag, Some(DragKind::DividerH(1)));
+        // Drag the lower boundary down → the tasks pane grows past its default 5.
+        app.update(mouse(MouseEventKind::Drag(MouseButton::Left), r.x + 2, r.y + 3));
+        let t = app.tasks_h_override.expect("tasks override set");
+        assert!(t > 5, "tasks pane grows (t={t})");
+        let l = crate::selectors::pane_layout(22, app.queue_h_override, app.tasks_h_override, app.collapsed);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 22);
+        assert!(l.worktrees_h >= 4);
+    }
+
+    #[test]
+    fn drag_vertical_divider_resizes_left_column() {
+        let mut app = app_rendered(80, 24);
+        assert_eq!(app.left_cols, None);
+        let r = divider_v_rect(&app);
+        // Down a few rows below the top corner (avoid the H-divider overlap).
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y + 3));
+        assert_eq!(app.drag, Some(DragKind::DividerV));
+        // Drag right → the left column widens to the clamped drop column.
+        let target_col = r.x + 12;
+        app.update(mouse(MouseEventKind::Drag(MouseButton::Left), target_col, r.y + 3));
+        assert_eq!(app.left_cols, Some(crate::selectors::clamp_left_cols(80, target_col)));
+        assert!(app.left_cols.unwrap() > r.x, "left column grew");
+        app.update(mouse(MouseEventKind::Up(MouseButton::Left), target_col, r.y + 3));
+        assert_eq!(app.drag, None);
+    }
+
+    // -- pane collapse + per-project layout persistence ----------------------
+
+    #[test]
+    fn key_z_toggles_focused_pane_collapse_and_emits_save() {
+        let mut app = crate::test_fixtures::fixture_app();
+        // Route the fixture through a snapshot so the active project's layout is
+        // reconciled (applied_layout_repo becomes Some("acme")).
+        app.update(Event::Snapshot(crate::test_fixtures::fixture_snapshot()));
+        assert_eq!(app.collapsed, [false, false, false]);
+        // Focus is Queue by default → `z` collapses the queue pane and persists.
+        let up = press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.collapsed, [true, false, false]);
+        assert!(
+            up.cmds.iter().any(|c| matches!(c, Cmd::SaveLayout { .. })),
+            "collapse toggle emits a SaveLayout Cmd"
+        );
+        // Toggling again expands it, again persisting.
+        let up = press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.collapsed, [false, false, false]);
+        assert!(up.cmds.iter().any(|c| matches!(c, Cmd::SaveLayout { .. })));
+    }
+
+    #[test]
+    fn key_z_on_detail_focus_is_noop() {
+        let mut app = crate::test_fixtures::fixture_app();
+        app.set_focus(PaneId::Detail);
+        let up = press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.collapsed, [false, false, false]);
+        assert!(!up.cmds.iter().any(|c| matches!(c, Cmd::SaveLayout { .. })));
+    }
+
+    #[test]
+    fn click_on_bare_title_row_does_not_toggle_collapse() {
+        // The whole-row collapse toggle was removed: it swallowed divider drags
+        // starting on the shared border row. Collapse is the chip or `z` only.
+        let mut app = app_rendered(80, 24);
+        let r = divider_h_rect(&app, 0); // queue/tasks boundary = TASKS title row
+        // Click a border cell away from any chip: starts a divider drag, never
+        // a collapse.
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y + 1));
+        assert_eq!(app.collapsed, [false, false, false]);
+        assert!(matches!(app.drag, Some(DragKind::DividerH(0))));
+        app.update(mouse(MouseEventKind::Up(MouseButton::Left), r.x + 2, r.y + 1));
+    }
+
+    #[test]
+    fn divider_drag_up_emits_save() {
+        let mut app = app_rendered(80, 24);
+        let r = divider_h_rect(&app, 0);
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y));
+        app.update(mouse(MouseEventKind::Drag(MouseButton::Left), r.x + 2, r.y + 4));
+        // No SaveLayout mid-drag; the write happens only on release.
+        let up = app.update(mouse(MouseEventKind::Up(MouseButton::Left), r.x + 2, r.y + 4));
+        assert_eq!(app.drag, None);
+        assert!(
+            up.cmds.iter().any(|c| matches!(c, Cmd::SaveLayout { .. })),
+            "divider drag-end emits a SaveLayout Cmd"
+        );
+    }
+
+    #[test]
+    fn scrollbar_drag_up_does_not_emit_save() {
+        let mut app = app_with_hits();
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 30, 2)); // scrollbar track
+        let up = app.update(mouse(MouseEventKind::Up(MouseButton::Left), 30, 5));
+        assert_eq!(app.drag, None);
+        assert!(!up.cmds.iter().any(|c| matches!(c, Cmd::SaveLayout { .. })));
+    }
+
+    #[test]
+    fn divider_drag_ignored_when_adjacent_pane_collapsed() {
+        let mut app = app_rendered(80, 24);
+        app.collapsed = [false, true, false]; // tasks collapsed → both H dividers pinned
+        let before = app.queue_h_override;
+        assert!(!app.drag_divider_h(0, 20), "queue/tasks boundary can't move");
+        assert!(!app.drag_divider_h(1, 20), "tasks/worktrees boundary can't move");
+        assert_eq!(app.queue_h_override, before);
+    }
+
+    #[test]
+    fn switching_projects_swaps_and_isolates_layout() {
+        let mut app = app();
+        app.update(Event::Snapshot(snapshot_with(&["platform", "web"], vec![])));
+        // On project 0 (platform): collapse the queue pane.
+        assert_eq!(app.active_tab, 0);
+        app.collapsed = [true, false, false];
+        // Switch to project 1 (web): platform's layout is stashed, web loads
+        // defaults (nothing saved yet).
+        press(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.collapsed, [false, false, false], "web starts at defaults");
+        // Give web a distinct layout, then switch back to platform.
+        app.collapsed = [false, false, true];
+        press(&mut app, KeyCode::Char('1'));
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.collapsed, [true, false, false], "platform's layout restored");
+        // And forward to web again → its own layout.
+        press(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.collapsed, [false, false, true], "web's layout restored");
+    }
+
+    #[test]
+    fn loaded_layout_applies_to_active_project_on_first_snapshot() {
+        let mut app = app();
+        // Simulate a persisted layout for "platform" loaded at startup.
+        app.layout_by_project.insert(
+            "platform".to_string(),
+            crate::layout::ProjectLayout {
+                left_cols: Some(50),
+                queue_h: None,
+                tasks_h: None,
+                collapsed: [false, true, false],
+            },
+        );
+        app.update(Event::Snapshot(snapshot_with(&["platform"], vec![])));
+        assert_eq!(app.collapsed, [false, true, false]);
+        assert_eq!(app.left_cols, Some(50));
     }
 
     #[test]
@@ -2590,7 +3362,7 @@ mod menu_flow_tests {
         let mut wts = HashMap::new();
         wts.insert(
             "platform".into(),
-            vec![WorktreeInfo { name: "platform.wt-a".into(), path: "/wt/wt-a".into(), branch: "wt-a".into() }],
+            vec![WorktreeInfo { name: "platform.wt-a".into(), path: "/wt/wt-a".into(), branch: "wt-a".into(), ..Default::default() }],
         );
         StateSnapshot {
             projects: vec![Project { name: "platform".into() }],
@@ -2872,6 +3644,7 @@ mod input_modal_tests {
                 name: "platform.wt-a".into(),
                 path: "/wt/wt-a".into(),
                 branch: "jus-42".into(),
+                ..Default::default()
             }],
         );
         a.update(Event::Snapshot(StateSnapshot {
@@ -3190,9 +3963,9 @@ mod bulk_flow_tests {
     fn three_worktrees() -> StateSnapshot {
         let mut wts = HashMap::new();
         wts.insert("platform".into(), vec![
-            WorktreeInfo { name: "wt-a".into(), path: "/wt/a".into(), branch: "wt-a".into() },
-            WorktreeInfo { name: "wt-b".into(), path: "/wt/b".into(), branch: "wt-b".into() },
-            WorktreeInfo { name: "wt-c".into(), path: "/wt/c".into(), branch: "wt-c".into() },
+            WorktreeInfo { name: "wt-a".into(), path: "/wt/a".into(), branch: "wt-a".into(), ..Default::default() },
+            WorktreeInfo { name: "wt-b".into(), path: "/wt/b".into(), branch: "wt-b".into(), ..Default::default() },
+            WorktreeInfo { name: "wt-c".into(), path: "/wt/c".into(), branch: "wt-c".into(), ..Default::default() },
         ]);
         StateSnapshot { projects: vec![Project { name: "platform".into() }], worktrees: wts, ..Default::default() }
     }
@@ -3310,7 +4083,7 @@ mod def_pick_tests {
     }
 
     fn dsum(repo: &str, name: &str, scope: &str, args: Vec<ArgSpec>) -> DefinitionSummary {
-        DefinitionSummary { repo: repo.into(), name: name.into(), scope: scope.into(), args, has_discovery: false }
+        DefinitionSummary { repo: repo.into(), name: name.into(), scope: scope.into(), args, has_discovery: false, cron: None, description: None }
     }
 
     fn fixture_app_one_project(name: &str) -> App {
@@ -3343,6 +4116,7 @@ mod def_pick_tests {
                 name: format!("{repo}.{wt_name}"),
                 path: format!("/wt/{wt_name}"),
                 branch: branch.into(),
+                ..Default::default()
             }],
         );
         app.snapshot = Some(StateSnapshot {
@@ -3378,6 +4152,28 @@ mod def_pick_tests {
         assert!(app.defs_by_project.contains_key("platform"));
         assert!(!app.defs_inflight.contains("platform"));
         assert!(app.reconcile_defs().is_none());
+    }
+
+    #[test]
+    fn definitions_event_keeps_only_the_fetched_repos_defs() {
+        // The daemon's `definitions` call returns entries for EVERY project (a
+        // global def like squash-merge appears once per project). Caching the
+        // unfiltered list rendered N duplicate rows in the TASKS pane.
+        let mut app = fixture_app_one_project("platform");
+        app.update(Event::Definitions {
+            repo: "platform".into(),
+            defs: vec![
+                dsum("platform", "squash-merge", "global", vec![]),
+                dsum("web", "squash-merge", "global", vec![]),
+                dsum("dotfiles", "squash-merge", "global", vec![]),
+                dsum("platform", "pr-review", "project", vec![]),
+            ],
+        });
+        let cached = &app.defs_by_project["platform"];
+        assert_eq!(
+            cached.iter().map(|d| (d.repo.as_str(), d.name.as_str())).collect::<Vec<_>>(),
+            vec![("platform", "squash-merge"), ("platform", "pr-review")]
+        );
     }
 
     #[test]
@@ -3465,14 +4261,14 @@ mod def_pick_tests {
 
     // --- Step 21: Mode::DefPick navigation + Enter ---
     #[test]
-    fn def_pick_moves_clamped_and_closes_on_q_esc() {
+    fn def_pick_moves_circularly_and_closes_on_q_esc() {
         let mut app = fixture_def_pick(vec!["a", "b"], Some("platform.wt"), Some("jus-1-x"));
         app.update(key(KeyCode::Char('j'))); // 0 -> 1
         assert!(matches!(app.mode, Mode::DefPick { index: 1, .. }));
-        app.update(key(KeyCode::Char('j'))); // clamp at last
-        assert!(matches!(app.mode, Mode::DefPick { index: 1, .. }));
-        app.update(key(KeyCode::Char('k'))); // 1 -> 0
+        app.update(key(KeyCode::Char('j'))); // wraps -> 0
         assert!(matches!(app.mode, Mode::DefPick { index: 0, .. }));
+        app.update(key(KeyCode::Char('k'))); // wraps back -> 1
+        assert!(matches!(app.mode, Mode::DefPick { index: 1, .. }));
         app.update(key(KeyCode::Char('q')));
         assert!(matches!(app.mode, Mode::List));
     }
@@ -3715,7 +4511,7 @@ mod task21_tests {
     /// One project, worktrees pane focused (so `c` opens the create modal).
     fn fixture_app_worktrees_focused(repo: &str) -> App {
         let mut app = fixture_app_one_project(repo);
-        app.apply_action(AppAction::FocusPane(PaneId::Worktrees));
+        app.set_focus(PaneId::Worktrees);
         app
     }
 
@@ -3727,7 +4523,12 @@ mod task21_tests {
         let mut worktrees = HashMap::new();
         worktrees.insert(
             repo.to_string(),
-            vec![WorktreeInfo { name: raw.clone(), path: format!("/wt/{wt}"), branch: "feat-x".into() }],
+            vec![WorktreeInfo {
+                name: raw.clone(),
+                path: format!("/wt/{wt}"),
+                branch: "feat-x".into(),
+                ..Default::default()
+            }],
         );
         let mut running = TaskInstance::default();
         running.id = "01RUN".into();
@@ -3740,7 +4541,7 @@ mod task21_tests {
             tasks: vec![running],
             ..Default::default()
         });
-        app.apply_action(AppAction::FocusPane(PaneId::Worktrees));
+        app.set_focus(PaneId::Worktrees);
         app
     }
 
@@ -3833,6 +4634,8 @@ mod task21_tests {
                     ArgSpec { default: Some("main".into()), ..arg("target") },
                 ],
                 has_discovery: false,
+                cron: None,
+                description: None,
             }],
         );
         let update = app.execute_menu_action(MenuAction::SquashMerge { branch: "wt-a".into() });

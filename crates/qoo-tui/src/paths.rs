@@ -20,6 +20,12 @@ pub fn runs_path(state: &Path) -> PathBuf {
     state.join("runs")
 }
 
+/// Per-project TUI pane-layout persistence file (collapsed flags + divider
+/// overrides). Sits directly under the state dir so it survives daemon restarts.
+pub fn layout_path(state: &Path) -> PathBuf {
+    state.join("tui-layout.json")
+}
+
 pub fn daemon_dist_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("QUEOHOH_DAEMON_DIST") {
         return PathBuf::from(dir);
@@ -68,6 +74,7 @@ mod tests {
         assert_eq!(socket_path(state), PathBuf::from("/s/daemon/daemon.sock"));
         assert_eq!(pid_path(state), PathBuf::from("/s/daemon/daemon.pid"));
         assert_eq!(runs_path(state), PathBuf::from("/s/runs"));
+        assert_eq!(layout_path(state), PathBuf::from("/s/tui-layout.json"));
     }
 
     #[test]

@@ -1,35 +1,78 @@
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::Text;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{App, PaneId};
 use crate::view::theme::Palette;
 use crate::view::{Computed, selection_range};
 
-const LIST_HINT: &str =
-    "[a] actions · [enter] detail · [↑↓] move · [/] filter · [?] help · [q]uit";
-
-fn hint_for(focus: PaneId) -> String {
-    match focus {
-        PaneId::Queue => format!("[c] new run · {LIST_HINT}"),
-        PaneId::Tasks => LIST_HINT.to_string(),
-        PaneId::Worktrees => format!("[c] new worktree · {LIST_HINT}"),
-        PaneId::Detail => {
-            "[↑↓/jk] scroll · [g/G] top/bottom · [{ }] sub-tab · [a] actions · [?] help · [q]uit"
-                .to_string()
+/// Style a hint string so the key tokens stand out instead of the whole line
+/// rendering dim: `[key]` chunks get the accent color (bold), `·` separators
+/// stay dim, and the remaining label text uses the normal foreground.
+fn hint_line(s: &str, p: &Palette) -> Line<'static> {
+    let key_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(p.fg);
+    let mut spans: Vec<Span> = Vec::new();
+    let mut label = String::new();
+    let mut key: Option<String> = None;
+    for ch in s.chars() {
+        match (ch, &mut key) {
+            ('[', None) => {
+                if !label.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut label), label_style));
+                }
+                key = Some(String::new());
+            }
+            (']', Some(k)) => {
+                spans.push(Span::styled(format!("[{k}]"), key_style));
+                key = None;
+            }
+            ('·', None) => {
+                if !label.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut label), label_style));
+                }
+                spans.push(Span::styled("·".to_string(), p.dim_style()));
+            }
+            (_, Some(k)) => k.push(ch),
+            (_, None) => label.push(ch),
         }
     }
+    // Unterminated `[...` (never in practice) renders literally as label text.
+    if let Some(k) = key {
+        label.push('[');
+        label.push_str(&k);
+    }
+    if !label.is_empty() {
+        spans.push(Span::styled(label, label_style));
+    }
+    Line::from(spans)
 }
+
+/// The single global-key footer line. Pane-scoped actions (new/actions/collapse)
+/// now live on the pane title bars, so the footer only lists keys that are global
+/// regardless of focus.
+const GLOBAL_HINT: &str =
+    "[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit";
 
 pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
     let p: &Palette = &c.palette;
-    // Priority: searching > status line > selection-count > per-pane hints.
-    // `searching` is all-false until Task 11 wires `Mode::Search`.
+    // Priority: armed prefix > searching > status line > selection-count > global.
+    // The armed `ctrl+s` prefix takes the line so its awaiting-n/p state is obvious.
+    if app.prefix_armed {
+        frame.render_widget(
+            Paragraph::new(hint_line(
+                "prefix [ctrl+s] · [n] next tab · [p] prev tab · any other key cancels",
+                p,
+            )),
+            area,
+        );
+        return;
+    }
     let searching = c.searching.iter().any(|&s| s);
     if searching {
         frame.render_widget(
-            Paragraph::new("type to filter · [enter] apply · [esc] clear").style(p.dim_style()),
+            Paragraph::new(hint_line("type to filter · [enter] apply · [esc] clear", p)),
             area,
         );
         return;
@@ -57,13 +100,13 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
         .unwrap_or(0);
     if count > 1 {
         frame.render_widget(
-            Paragraph::new(format!(
-                "{count} selected · [a] bulk actions · [shift+↑↓] extend · [esc] clear"
-            ))
-            .style(p.dim_style()),
+            Paragraph::new(hint_line(
+                &format!("{count} selected · [a] bulk actions · [shift+↑↓] extend · [esc] clear"),
+                p,
+            )),
             area,
         );
         return;
     }
-    frame.render_widget(Paragraph::new(hint_for(c.ui.focus)).style(p.dim_style()), area);
+    frame.render_widget(Paragraph::new(hint_line(GLOBAL_HINT, p)), area);
 }

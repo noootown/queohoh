@@ -6,25 +6,39 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use crate::hit::{HitMap, HitTarget};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 13] = [
-    ("Tab / Shift+Tab", "cycle focus between panes (incl. detail)"),
-    ("1–9", "switch project tab"),
-    ("[ / ]", "previous / next project tab"),
-    ("{ / }", "previous / next detail sub-tab"),
-    ("j/k · arrows", "move cursor (detail: scroll)"),
+const HELP_ROWS: [(&str, &str); 14] = [
+    ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
+    ("1–9 / 0", "switch project tab (0 = 10th)"),
+    ("ctrl+s then n/p", "next / previous project tab"),
+    ("ctrl+x / ctrl+z", "next / previous detail sub-tab"),
+    ("j/k · arrows", "move cursor"),
     ("J/K · shift+↑↓", "extend selection"),
-    ("Enter / a", "action menu for selection"),
+    ("Enter / a", "action menu (or double-click a row)"),
     ("c", "create (queue: adhoc task · worktrees: worktree)"),
+    ("z", "collapse / expand focused list pane"),
     ("/", "filter focused pane"),
     ("esc", "clear range → clear filter → close overlay"),
-    ("g / G", "top / bottom (detail scroll or list jump)"),
+    ("g / G", "jump to top / bottom"),
     ("?", "this help"),
     ("q", "quit"),
 ];
 
+/// Glyph legend shown under the keymap (the WORKTREES columns especially are
+/// dense with markers; this is their one written explanation).
+const LEGEND_ROWS: [(&str, &str); 6] = [
+    ("✓ ✗ ○ ?", "task done / failed / queued / needs input"),
+    ("● (colored)", "worktree: green free · yellow busy · red failed"),
+    ("⏱", "elapsed time of the running task on that lane"),
+    ("⌂", "lane has a main session (tasks can resume it)"),
+    ("±", "worktree has uncommitted changes"),
+    ("koshea · 3d ago", "last commit author · last commit age"),
+];
+
 pub fn render(frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap, p: &Palette) {
     let width = (area.width.saturating_sub(8)).clamp(20, 64);
-    let height = (HELP_ROWS.len() as u16 + 3).min(area.height);
+    // keymap rows + blank + "legend" heading + legend rows + hint + borders.
+    let height =
+        ((HELP_ROWS.len() + 2 + LEGEND_ROWS.len()) as u16 + 3).min(area.height);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect { x, y, width, height };
@@ -48,6 +62,17 @@ pub fn render(frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap, p: &Pal
             ])
         })
         .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " legend",
+        Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
+    )));
+    for (glyphs, what) in LEGEND_ROWS.iter() {
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {glyphs:<16}"), Style::default().fg(p.info)),
+            Span::styled((*what).to_string(), Style::default().fg(p.fg)),
+        ]));
+    }
     lines.push(Line::from(Span::styled(" any key to close", p.dim_style())));
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
     // Registered last → topmost: clicks inside never leak to the body.

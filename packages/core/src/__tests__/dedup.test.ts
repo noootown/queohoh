@@ -18,6 +18,7 @@ function existing(
 		target: { repo: "platform", ref: `pr:${itemKey}`, worktree: null },
 		priority: "normal",
 		created: "2026-07-08T00:00:00.000Z",
+		finishedAt: null,
 		source: "cron",
 		ephemeralWorktree: false,
 		error: null,

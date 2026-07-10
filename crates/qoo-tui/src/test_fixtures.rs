@@ -9,6 +9,7 @@ use crate::ipc::types::{
     Project, SessionEntry, StateSnapshot, TaskInstance, TaskStatus, TaskTarget, WorktreeInfo,
 };
 
+#[allow(clippy::too_many_arguments)]
 fn task(
     id: &str,
     status: TaskStatus,
@@ -17,6 +18,7 @@ fn task(
     prompt: &str,
     session: &str,
     created: &str,
+    finished: Option<&str>,
 ) -> TaskInstance {
     TaskInstance {
         id: id.to_string(),
@@ -33,6 +35,7 @@ fn task(
         },
         priority: "normal".to_string(),
         created: created.to_string(),
+        finished_at: finished.map(str::to_string),
         source: "tui".to_string(),
         ephemeral_worktree: false,
         error: None,
@@ -48,15 +51,20 @@ fn task(
 /// fixed ISO strings so elapsed labels are deterministic against `now_epoch_s`.
 pub fn fixture_snapshot() -> StateSnapshot {
     let tasks = vec![
-        task(
-            "01RUN",
-            TaskStatus::Running,
-            "acme",
-            Some("acme.feature"),
-            "implement the widget cache",
-            "main",
-            "2026-07-09T12:00:00.000Z",
-        ),
+        {
+            let mut t = task(
+                "01RUN",
+                TaskStatus::Running,
+                "acme",
+                Some("acme.feature"),
+                "implement the widget cache",
+                "main",
+                "2026-07-09T12:00:00.000Z",
+                None,
+            );
+            t.definition = Some("squash-merge".to_string());
+            t
+        },
         task(
             "01QUE",
             TaskStatus::Queued,
@@ -65,6 +73,7 @@ pub fn fixture_snapshot() -> StateSnapshot {
             "write docs for the cache",
             "fresh",
             "2026-07-09T12:04:00.000Z",
+            None,
         ),
         {
             let mut t = task(
@@ -75,6 +84,9 @@ pub fn fixture_snapshot() -> StateSnapshot {
                 "flaky migration",
                 "fresh",
                 "2026-07-09T11:50:00.000Z",
+                // Finished after the archived task below → sorts above it in the
+                // FINISHED section (most recently finished first).
+                Some("2026-07-09T11:52:00.000Z"),
             );
             t.error = Some("exit code 1".to_string());
             t
@@ -88,6 +100,7 @@ pub fn fixture_snapshot() -> StateSnapshot {
         "earlier cleanup task",
         "fresh",
         "2026-07-09T10:00:00.000Z",
+        Some("2026-07-09T10:05:00.000Z"),
     )];
     let mut worktrees: HashMap<String, Vec<WorktreeInfo>> = HashMap::new();
     worktrees.insert(
@@ -97,11 +110,13 @@ pub fn fixture_snapshot() -> StateSnapshot {
                 name: "acme.feature".to_string(),
                 path: "/repos/acme.feature".to_string(),
                 branch: "feature/JB-1200-cache".to_string(),
+                ..Default::default()
             },
             WorktreeInfo {
                 name: "acme.hotfix".to_string(),
                 path: "/repos/acme.hotfix".to_string(),
                 branch: "hotfix/login".to_string(),
+                ..Default::default()
             },
         ],
     );

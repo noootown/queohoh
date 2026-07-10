@@ -2,24 +2,25 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::PaneId;
 
-/// Contract enum + two additions (see plan): `CycleSubTab(i32)` — `{`/`}` cycle
-/// the detail sub-tab (digits are project tabs globally); `FocusBack` — detail
-/// h/← returns to `last_list_pane`, resolved in `apply_action`.
+/// Pure key → action for `Mode::List`. Focus is invariantly one of the three
+/// list panes (detail is display-only and never focused), so per-pane branching
+/// is gone; `_focus` is retained for signature stability. Detail sub-tab cycling
+/// is global via `ctrl+x`/`ctrl+z` → `CycleSubTab`. Project-tab cycling
+/// (`CycleTab`) is driven by the stateful `ctrl+s` prefix in `App`, not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppAction {
     MoveCursor(i32),
     ExtendSelection(i32),
-    FocusPane(PaneId),
-    FocusBack,
     CyclePane(i32),
     SwitchTab(usize),
     CycleTab(i32),
     CycleSubTab(i32),
     OpenActionMenu,
     Create,
+    /// Collapse/expand the focused list pane (`z`). `x` is reserved (unbound).
+    ToggleCollapse,
     OpenSearch,
     ClearEsc,
-    Scroll(i32),
     ScrollEdge(i32),
     SwitchSubTab(usize),
     Help,
@@ -27,55 +28,42 @@ pub enum AppAction {
     None,
 }
 
-/// KeyEvent → AppAction in `Mode::List`. Pure; per-pane semantics resolved here
-/// (lists vs detail), per-tab state resolved by `App::apply_action`.
-/// Version note: crossterm delivers shifted letters as uppercase `Char('J')`
-/// with `SHIFT` set; we match on the char and treat the modifier as advisory.
-pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
+/// KeyEvent → AppAction in `Mode::List`. Pure. Focus is always a list pane, so
+/// there is no lists-vs-detail branching. Version note: crossterm delivers
+/// shifted letters as uppercase `Char('J')` with `SHIFT` set; we match on the
+/// char and treat the modifier as advisory.
+pub fn list_mode_action(key: &KeyEvent, _focus: PaneId) -> AppAction {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    let detail = matches!(focus, PaneId::Detail);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
+        // ctrl+x / ctrl+z cycle the detail sub-tab globally (no detail focus
+        // needed). Guarded before the bare `z` (collapse) arm so ctrl+z is the
+        // sub-tab cycle while plain z toggles collapse.
+        KeyCode::Char('x') if ctrl => AppAction::CycleSubTab(1),
+        KeyCode::Char('z') if ctrl => AppAction::CycleSubTab(-1),
         KeyCode::Tab => AppAction::CyclePane(1),
         KeyCode::BackTab => AppAction::CyclePane(-1),
         KeyCode::Char(c @ '1'..='9') => AppAction::SwitchTab(c as usize - '1' as usize),
-        KeyCode::Char('[') => AppAction::CycleTab(-1),
-        KeyCode::Char(']') => AppAction::CycleTab(1),
-        KeyCode::Char('{') => AppAction::CycleSubTab(-1),
-        KeyCode::Char('}') => AppAction::CycleSubTab(1),
+        KeyCode::Char('0') => AppAction::SwitchTab(9),
         KeyCode::Char('q') => AppAction::Quit,
         KeyCode::Char('?') => AppAction::Help,
         KeyCode::Char('a') => AppAction::OpenActionMenu,
         KeyCode::Char('c') => AppAction::Create,
+        // `z` (plain) toggles collapse; `x` is reserved for a future delete
+        // action and stays unbound.
+        KeyCode::Char('z') => AppAction::ToggleCollapse,
         KeyCode::Char('g') => AppAction::ScrollEdge(-1),
         KeyCode::Char('G') => AppAction::ScrollEdge(1),
         KeyCode::Esc => AppAction::ClearEsc,
-        KeyCode::Char('/') if !detail => AppAction::OpenSearch,
-        KeyCode::Enter if !detail => AppAction::OpenActionMenu,
-        KeyCode::Char('J') if !detail => AppAction::ExtendSelection(1),
-        KeyCode::Char('K') if !detail => AppAction::ExtendSelection(-1),
+        KeyCode::Char('/') => AppAction::OpenSearch,
+        KeyCode::Enter => AppAction::OpenActionMenu,
+        KeyCode::Char('J') => AppAction::ExtendSelection(1),
+        KeyCode::Char('K') => AppAction::ExtendSelection(-1),
         KeyCode::Down | KeyCode::Char('j') => {
-            if detail {
-                AppAction::Scroll(1)
-            } else if shift {
-                AppAction::ExtendSelection(1)
-            } else {
-                AppAction::MoveCursor(1)
-            }
+            if shift { AppAction::ExtendSelection(1) } else { AppAction::MoveCursor(1) }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if detail {
-                AppAction::Scroll(-1)
-            } else if shift {
-                AppAction::ExtendSelection(-1)
-            } else {
-                AppAction::MoveCursor(-1)
-            }
-        }
-        KeyCode::Right | KeyCode::Char('l') => {
-            if detail { AppAction::None } else { AppAction::FocusPane(PaneId::Detail) }
-        }
-        KeyCode::Left | KeyCode::Char('h') => {
-            if detail { AppAction::FocusBack } else { AppAction::None }
+            if shift { AppAction::ExtendSelection(-1) } else { AppAction::MoveCursor(-1) }
         }
         _ => AppAction::None,
     }
@@ -89,19 +77,19 @@ mod tests {
 
     fn k(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
     fn sk(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::SHIFT) }
+    fn ck(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::CONTROL) }
+    // Focus is invariantly a list pane; Queue stands in for "any focus".
     const LISTS: [PaneId; 3] = [PaneId::Queue, PaneId::Tasks, PaneId::Worktrees];
-    const ALL: [PaneId; 4] = [PaneId::Queue, PaneId::Tasks, PaneId::Worktrees, PaneId::Detail];
+    const F: PaneId = PaneId::Queue;
 
     #[test]
-    fn q_quits_from_every_pane() {
-        for f in ALL {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('q')), f), AppAction::Quit);
-        }
+    fn q_quits() {
+        assert_eq!(list_mode_action(&k(KeyCode::Char('q')), F), AppAction::Quit);
     }
 
     #[test]
     fn digits_switch_project_tabs_globally() {
-        for f in ALL {
+        for f in LISTS {
             for n in 1..=9u32 {
                 let c = char::from_digit(n, 10).unwrap();
                 assert_eq!(
@@ -109,41 +97,40 @@ mod tests {
                     AppAction::SwitchTab((n - 1) as usize)
                 );
             }
+            // 0 selects the 10th tab.
+            assert_eq!(list_mode_action(&k(KeyCode::Char('0')), f), AppAction::SwitchTab(9));
         }
     }
 
     #[test]
-    fn brackets_cycle_project_tabs_and_braces_cycle_sub_tabs() {
-        assert_eq!(list_mode_action(&k(KeyCode::Char('[')), PaneId::Queue), AppAction::CycleTab(-1));
-        assert_eq!(list_mode_action(&k(KeyCode::Char(']')), PaneId::Queue), AppAction::CycleTab(1));
-        assert_eq!(list_mode_action(&k(KeyCode::Char('{')), PaneId::Detail), AppAction::CycleSubTab(-1));
-        assert_eq!(list_mode_action(&k(KeyCode::Char('}')), PaneId::Detail), AppAction::CycleSubTab(1));
+    fn ctrl_x_z_cycle_detail_sub_tabs_globally() {
+        for f in LISTS {
+            assert_eq!(list_mode_action(&ck(KeyCode::Char('x')), f), AppAction::CycleSubTab(1));
+            assert_eq!(list_mode_action(&ck(KeyCode::Char('z')), f), AppAction::CycleSubTab(-1));
+        }
+    }
+
+    #[test]
+    fn old_bracket_and_brace_bindings_are_gone() {
+        for c in ['[', ']', '{', '}'] {
+            assert_eq!(list_mode_action(&k(KeyCode::Char(c)), F), AppAction::None);
+        }
     }
 
     #[test]
     fn tab_cycles_panes() {
-        assert_eq!(list_mode_action(&k(KeyCode::Tab), PaneId::Queue), AppAction::CyclePane(1));
-        assert_eq!(list_mode_action(&k(KeyCode::BackTab), PaneId::Detail), AppAction::CyclePane(-1));
+        assert_eq!(list_mode_action(&k(KeyCode::Tab), F), AppAction::CyclePane(1));
+        assert_eq!(list_mode_action(&k(KeyCode::BackTab), F), AppAction::CyclePane(-1));
     }
 
     #[test]
-    fn jk_arrows_move_cursor_in_lists() {
+    fn jk_arrows_move_cursor() {
         for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Char('j')), f), AppAction::MoveCursor(1));
             assert_eq!(list_mode_action(&k(KeyCode::Down), f), AppAction::MoveCursor(1));
             assert_eq!(list_mode_action(&k(KeyCode::Char('k')), f), AppAction::MoveCursor(-1));
             assert_eq!(list_mode_action(&k(KeyCode::Up), f), AppAction::MoveCursor(-1));
         }
-    }
-
-    #[test]
-    fn jk_arrows_scroll_in_detail() {
-        assert_eq!(list_mode_action(&k(KeyCode::Char('j')), PaneId::Detail), AppAction::Scroll(1));
-        assert_eq!(list_mode_action(&k(KeyCode::Down), PaneId::Detail), AppAction::Scroll(1));
-        assert_eq!(list_mode_action(&k(KeyCode::Char('k')), PaneId::Detail), AppAction::Scroll(-1));
-        assert_eq!(list_mode_action(&k(KeyCode::Up), PaneId::Detail), AppAction::Scroll(-1));
-        // shift+arrow in detail keeps scrolling (no extend) — parity with TS.
-        assert_eq!(list_mode_action(&sk(KeyCode::Down), PaneId::Detail), AppAction::Scroll(1));
     }
 
     #[test]
@@ -157,53 +144,62 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_focus_moves() {
+    fn hl_arrows_are_unbound() {
+        // Detail is display-only; horizontal focus nav is gone.
         for f in LISTS {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('l')), f), AppAction::FocusPane(PaneId::Detail));
-            assert_eq!(list_mode_action(&k(KeyCode::Right), f), AppAction::FocusPane(PaneId::Detail));
-            // h/← on a list pane stays put.
+            assert_eq!(list_mode_action(&k(KeyCode::Char('l')), f), AppAction::None);
+            assert_eq!(list_mode_action(&k(KeyCode::Right), f), AppAction::None);
             assert_eq!(list_mode_action(&k(KeyCode::Char('h')), f), AppAction::None);
             assert_eq!(list_mode_action(&k(KeyCode::Left), f), AppAction::None);
         }
-        assert_eq!(list_mode_action(&k(KeyCode::Char('h')), PaneId::Detail), AppAction::FocusBack);
-        assert_eq!(list_mode_action(&k(KeyCode::Left), PaneId::Detail), AppAction::FocusBack);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('l')), PaneId::Detail), AppAction::None);
     }
 
     #[test]
-    fn enter_opens_action_menu_on_lists_only() {
+    fn enter_opens_action_menu() {
         for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Enter), f), AppAction::OpenActionMenu);
         }
-        assert_eq!(list_mode_action(&k(KeyCode::Enter), PaneId::Detail), AppAction::None);
     }
 
     #[test]
     fn a_c_slash_esc_help() {
-        for f in ALL {
+        for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Char('a')), f), AppAction::OpenActionMenu);
             assert_eq!(list_mode_action(&k(KeyCode::Char('c')), f), AppAction::Create);
             assert_eq!(list_mode_action(&k(KeyCode::Char('?')), f), AppAction::Help);
             assert_eq!(list_mode_action(&k(KeyCode::Esc), f), AppAction::ClearEsc);
-        }
-        for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Char('/')), f), AppAction::OpenSearch);
         }
-        assert_eq!(list_mode_action(&k(KeyCode::Char('/')), PaneId::Detail), AppAction::None);
     }
 
     #[test]
-    fn g_edges_everywhere() {
-        for f in ALL {
+    fn g_edges() {
+        for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Char('g')), f), AppAction::ScrollEdge(-1));
             assert_eq!(list_mode_action(&sk(KeyCode::Char('G')), f), AppAction::ScrollEdge(1));
         }
     }
 
     #[test]
+    fn z_toggles_collapse_but_ctrl_z_does_not() {
+        // Plain z toggles collapse; ctrl+z is the sub-tab cycle. The two coexist.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('z')), F), AppAction::ToggleCollapse);
+        assert_eq!(list_mode_action(&ck(KeyCode::Char('z')), F), AppAction::CycleSubTab(-1));
+    }
+
+    #[test]
+    fn x_is_reserved_and_unbound_but_ctrl_x_still_cycles() {
+        // Plain `x` is reserved for a future delete action → unbound.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('x')), F), AppAction::None);
+        // ctrl+x remains the forward sub-tab cycle.
+        assert_eq!(list_mode_action(&ck(KeyCode::Char('x')), F), AppAction::CycleSubTab(1));
+    }
+
+    #[test]
     fn unbound_keys_are_none() {
         // r/s/w/f/m/t moved to the action menu (parity with the Ink keymap tests).
-        for c in ['r', 's', 'w', 'f', 'm', 't', 'z', '0'] {
+        // Plain `x` is reserved/unbound (ctrl+x is the sub-tab cycle).
+        for c in ['r', 's', 'w', 'f', 'm', 't', 'x'] {
             assert_eq!(list_mode_action(&k(KeyCode::Char(c)), PaneId::Queue), AppAction::None);
         }
     }

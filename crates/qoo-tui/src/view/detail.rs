@@ -11,11 +11,12 @@ use crate::detail::{
 };
 use crate::hit::{HitMap, HitTarget};
 use crate::ipc::types::{TaskDefinition, TaskStatus};
-use crate::markup::style_line;
+use crate::markup::{DisplayLine, LineCtx, fence_states, style_transcript_line, wrap_lines};
 use crate::selectors::{WtState, arg_summary, prompt_summary};
 use crate::view::Computed;
 use crate::view::theme::{
     GLYPH_DONE, GLYPH_FAILED, GLYPH_NEEDS_INPUT, GLYPH_QUEUED, GLYPH_RUNNING, Palette,
+    TITLE_DETAIL,
 };
 
 fn status_glyph(s: &TaskStatus) -> char {
@@ -105,41 +106,53 @@ pub(crate) fn content_for(
 }
 
 /// Total content lines of the current detail view — the drag math's scrollable
-/// extent. Recomputes the same context/content the renderer uses.
+/// extent. Reads the render-feedback [`crate::app::App::detail_wrapped_len`]
+/// (the post-wrap display-line count from the last frame) rather than recomputing
+/// the wrap: a scrollbar can only be dragged after it renders, so the cell is
+/// always fresh — same freshness argument as `hit` / `detail_max_scroll`.
 pub(crate) fn detail_content_len(app: &crate::app::App) -> usize {
-    let c = crate::view::compute(app);
-    let ctx = match (&app.snapshot, &c.active_name) {
-        (Some(snap), Some(name)) => derive_context(
-            snap, name, c.ui.last_list_pane, &c.queue, &c.worktrees, &c.defs, &c.ui.selections,
-        ),
-        _ => DetailContext::Empty,
-    };
-    let kind = ctx.kind();
-    let sub = clamp_sub_tab(c.ui.sub_tab[kind as usize], kind);
-    let def = if let DetailContext::Definition { repo, name } = &ctx {
-        app.full_defs.get(&format!("{repo}/{name}")).cloned()
+    app.detail_wrapped_len.get()
+}
+
+/// Wrap `lines` for a `width`×`height` viewport, resolving the scrollbar
+/// chicken-and-egg: whether the scrollbar shows depends on the wrapped count,
+/// which depends on the width its column steals. Two deterministic passes — wrap
+/// at full width; if that overflows the viewport the scrollbar shows, so re-wrap
+/// one column narrower (narrower can only add segments, so the overflow verdict
+/// never flips back). Returns the display lines, whether a scrollbar is needed,
+/// and the text width fence rules must be sized to (one narrower with a scrollbar).
+fn wrap_for_viewport(
+    lines: &[String],
+    ctxs: &[LineCtx],
+    width: usize,
+    height: usize,
+) -> (Vec<DisplayLine>, bool, u16) {
+    let display = wrap_lines(lines, ctxs, width);
+    if display.len() > height && width > 1 {
+        (wrap_lines(lines, ctxs, width - 1), true, (width - 1) as u16)
     } else {
-        None
-    };
-    let run_files = match &ctx {
-        DetailContext::Run { task } => app
-            .run_files
-            .as_ref()
-            .filter(|(id, _)| id == &task.id)
-            .map(|(_, f)| f),
-        _ => None,
-    };
-    content_for(&ctx, sub, def.as_ref(), run_files).0.len()
+        let has_scrollbar = display.len() > height;
+        (display, has_scrollbar, width as u16)
+    }
 }
 
 pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap) {
     let p: &Palette = &c.palette;
     let focused = matches!(c.ui.focus, PaneId::Detail);
+    // Spotlight: while a list pane is being search-typed, detail mutes too.
+    let dimmed = c.searching.iter().any(|&s| s);
+    let title_style = if dimmed {
+        p.dim_style().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(if focused { p.accent } else { p.fg })
+            .add_modifier(Modifier::BOLD)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(p.border_style(focused))
-        .title(Span::styled("DETAIL", Style::default().fg(p.fg).add_modifier(Modifier::BOLD)));
+        .title(Span::styled(TITLE_DETAIL, title_style));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     hits.push(inner, HitTarget::PaneBody(PaneId::Detail));
@@ -172,7 +185,9 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         for (i, label) in tabs.iter().enumerate() {
             let chip = format!(" {}:{} ", i + 1, label);
             let w = chip.chars().count() as u16;
-            let style = if i == sub_tab {
+            let style = if dimmed {
+                p.dim_style()
+            } else if i == sub_tab {
                 Style::default().fg(p.selection_fg).bg(p.accent).add_modifier(Modifier::BOLD)
             } else {
                 p.dim_style()
@@ -217,21 +232,52 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
 
     let (lines, placeholder) = content_for(&ctx, sub_tab, def.as_ref(), run_files);
     if lines.is_empty() {
+        app.detail_max_scroll.set(0);
+        app.detail_wrapped_len.set(0);
         frame.render_widget(Paragraph::new(placeholder).style(p.dim_style()), content_area);
         return;
     }
     let bottom = bottom_anchored(kind, sub_tab);
     let height = content_area.height as usize;
-    let (start, end) = window_lines(lines.len(), height, app_scroll_offset(app, c), bottom);
-    let styled: Vec<Line> = lines[start..end]
+    // Fence state is stateful over the WHOLE transcript, so precompute it once —
+    // a window into the middle of a code block must still style as code, and each
+    // wrapped segment carries its line's ctx.
+    let ctxs = fence_states(&lines);
+    // Wrap logical lines into display lines FIRST, so every consumer (scroll
+    // ceiling, windowing, scrollbar) counts on-screen lines, not logical ones.
+    let (display, has_scrollbar, text_width) =
+        wrap_for_viewport(&lines, &ctxs, content_area.width as usize, height);
+    let total = display.len();
+    // Render feedback: the true scroll ceiling (see `App::detail_max_scroll`) and
+    // the wrapped length (for scrollbar-drag math), both over the WRAPPED content.
+    app.detail_max_scroll.set(total.saturating_sub(height));
+    app.detail_wrapped_len.set(total);
+    let (start, end) = window_lines(total, height, app_scroll_offset(app, c), bottom);
+    let styled: Vec<Line> = display[start..end]
         .iter()
-        .map(|l| if l.is_empty() { Line::from(" ") } else { style_line(l, p) })
+        .map(|seg| {
+            // Only original fence-delimiter lines carry `Fence` ctx (continuations
+            // never do), so `style_transcript_line` regenerates a rule only for a
+            // real rule line — `text_width` sizes it clear of the scrollbar column.
+            let mut line = if seg.text.is_empty() {
+                Line::from(" ")
+            } else {
+                style_transcript_line(&seg.text, &seg.ctx, text_width, p)
+            };
+            if dimmed {
+                // Spotlight mute: flatten the markup colors while filtering.
+                for span in line.spans.iter_mut() {
+                    span.style = span.style.patch(p.dim_style());
+                }
+            }
+            line
+        })
         .collect();
     frame.render_widget(Paragraph::new(Text::from(styled)), content_area);
 
     // Scrollbar over the content region.
-    if lines.len() > height {
-        let mut state = ScrollbarState::new(lines.len() - height).position(start);
+    if has_scrollbar {
+        let mut state = ScrollbarState::new(total - height).position(start);
         hits.push(
             Rect {
                 x: content_area.right().saturating_sub(1),
@@ -267,13 +313,16 @@ mod tests {
     /// fixture_app focused on the detail pane over the queue selection, with a
     /// 40-line transcript loaded for the running task.
     fn detail_app(sub_tab_run: usize) -> App {
+        detail_app_transcript((0..40).map(|i| format!("line {i}")).collect(), sub_tab_run)
+    }
+
+    /// Detail pane over the queue selection with a caller-supplied transcript —
+    /// the single fixture-builder both the plain and fenced snapshot tests use.
+    fn detail_app_transcript(transcript: Vec<String>, sub_tab_run: usize) -> App {
         let mut app = fixture_app();
         app.run_files = Some((
             "01RUN".to_string(),
-            RunFiles {
-                transcript_tail: (0..40).map(|i| format!("line {i}")).collect(),
-                report: vec![],
-            },
+            RunFiles { transcript_tail: transcript, report: vec![] },
         ));
         let mut ui = TabUiState::default();
         ui.focus = PaneId::Detail;
@@ -300,6 +349,94 @@ mod tests {
             hits.iter().any(|(_, t)| *t == HitTarget::SubTab(0)),
             "transcript sub-tab chip is clickable"
         );
+    }
+
+    #[test]
+    fn snapshot_detail_transcript_fenced() {
+        // A ```bash and ```json block: opening fences render as labeled rules,
+        // closing fences as plain rules, bodies get syntax accents — the literal
+        // backticks never appear.
+        let app = detail_app_transcript(
+            [
+                "Build steps:",
+                "```bash",
+                "cd ~/proj && make build",
+                "cat log.txt | grep error",
+                "```",
+                "Config:",
+                "```json",
+                "{\"name\": \"qoo\", \"count\": 3, \"ok\": true}",
+                "```",
+                "done",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            0,
+        );
+        let (terminal, _hits) = render_at(&app, 80, 24);
+        insta::assert_snapshot!("detail_transcript_fenced", terminal.backend());
+    }
+
+    #[test]
+    fn snapshot_detail_transcript_wrapped_url() {
+        // A long GitHub URL on the final (bottom-anchored) transcript line wraps
+        // onto the next row instead of clipping at the pane edge. The preceding
+        // short lines push the view past the viewport so this also exercises the
+        // scrollbar-column two-pass and the bottom-anchored tail landing on the
+        // last WRAPPED segment.
+        let mut lines: Vec<String> = (0..24).map(|i| format!("line {i}")).collect();
+        lines.push(
+            "See https://github.com/justicebid/monorepo/pull/1234/files#diff-0a1b2c3d4e5f done"
+                .to_string(),
+        );
+        let (terminal, _hits) = render_at(&detail_app_transcript(lines, 0), 80, 24);
+        insta::assert_snapshot!("detail_transcript_wrapped_url", terminal.backend());
+    }
+
+    #[test]
+    fn wrap_for_viewport_reserves_scrollbar_column_on_overflow() {
+        // Four 10-cell lines into a width-10, height-3 viewport fit at full width
+        // (4 display lines) but 4 > 3 forces a scrollbar, so the second pass
+        // re-wraps at width 9 — each 10-cell line splits in two → 8 display lines.
+        let lines: Vec<String> = vec!["abcdefghij".into(); 4];
+        let ctxs = fence_states(&lines);
+        let (display, has_scrollbar, text_width) = wrap_for_viewport(&lines, &ctxs, 10, 3);
+        assert!(has_scrollbar);
+        assert_eq!(text_width, 9);
+        assert_eq!(display.len(), 8);
+    }
+
+    #[test]
+    fn wrap_for_viewport_keeps_full_width_when_it_fits() {
+        let lines: Vec<String> = vec!["abcdefghij".into(); 2];
+        let ctxs = fence_states(&lines);
+        let (display, has_scrollbar, text_width) = wrap_for_viewport(&lines, &ctxs, 10, 10);
+        assert!(!has_scrollbar);
+        assert_eq!(text_width, 10);
+        assert_eq!(display.len(), 2);
+    }
+
+    #[test]
+    fn wrapping_counts_display_lines_for_scroll_ceiling() {
+        // One 2000-char logical line wraps into many display lines. The render-fed
+        // ceiling + wrapped length count DISPLAY lines — a single unwrapped logical
+        // line would have left `detail_max_scroll` at 0 (nothing to scroll).
+        // Render the same instance (not `render_at`, which clones) so the
+        // interior-mutability feedback cells are observable afterwards.
+        let mut app = detail_app_transcript(vec!["x".repeat(2000)], 0);
+        app.size = (80, 24);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| {
+            render_frame(&app, frame);
+        }).unwrap();
+        let wrapped = app.detail_wrapped_len.get();
+        assert!(wrapped > 1, "the long line wrapped into many display lines");
+        assert!(
+            app.detail_max_scroll.get() > 0,
+            "wrapping opened scroll room a single logical line would not have"
+        );
+        assert!(app.detail_max_scroll.get() < wrapped, "ceiling stays below the wrapped total");
     }
 
     #[test]

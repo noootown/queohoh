@@ -125,6 +125,8 @@ describe("agent247 pr-review port shape", () => {
 			scope: string;
 			args: unknown[];
 			hasDiscovery: boolean;
+			cron: string | null;
+			description: string | null;
 		}[];
 		expect(defs).toEqual([
 			{
@@ -133,6 +135,8 @@ describe("agent247 pr-review port shape", () => {
 				scope: "project",
 				args: [],
 				hasDiscovery: true,
+				cron: null,
+				description: null,
 			},
 		]);
 	});

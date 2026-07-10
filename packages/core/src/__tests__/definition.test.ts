@@ -20,9 +20,11 @@ function makeRepo(defs: Record<string, { config: string; prompt: string }>) {
 }
 
 const PR_REVIEW_CONFIG = `
+description: Review an open PR end to end.
 discovery:
   command: gh pr list --json number,title
   item_key: "{{number}}"
+cron: "30 13 * * *"
 args: [number]
 worktree: "pr:{{number}}"
 pre_run: mise run setup
@@ -43,10 +45,12 @@ describe("loadDefinition", () => {
 		expect(def).toEqual({
 			name: "pr-review",
 			repo: "platform",
+			description: "Review an open PR end to end.",
 			discovery: {
 				command: "gh pr list --json number,title",
 				itemKey: "{{number}}",
 			},
+			cron: "30 13 * * *",
 			args: [{ name: "number" }],
 			dedup: "skip_seen",
 			worktree: "pr:{{number}}",
@@ -70,7 +74,42 @@ describe("loadDefinition", () => {
 		expect(def.timeoutMs).toBe(1_800_000);
 		expect(def.priority).toBe("normal");
 		expect(def.discovery).toBeNull();
+		expect(def.cron).toBeNull();
+		expect(def.description).toBeNull();
 		expect(def.args).toEqual([]);
+	});
+
+	it("parses a top-level description string", () => {
+		const projectDir = makeRepo({
+			squash: {
+				config: "description: Squash a branch into the target.",
+				prompt: "x",
+			},
+		});
+		const def = loadDefinition(projectDir, "platform", "squash");
+		expect(def.description).toBe("Squash a branch into the target.");
+	});
+
+	it("rejects an empty description string", () => {
+		const projectDir = makeRepo({
+			bad: { config: 'description: ""', prompt: "x" },
+		});
+		expect(() => loadDefinition(projectDir, "platform", "bad")).toThrow();
+	});
+
+	it("parses a top-level cron schedule string", () => {
+		const projectDir = makeRepo({
+			nightly: { config: 'cron: "0 9 * * 1-5"', prompt: "x" },
+		});
+		const def = loadDefinition(projectDir, "platform", "nightly");
+		expect(def.cron).toBe("0 9 * * 1-5");
+	});
+
+	it("rejects an empty cron string", () => {
+		const projectDir = makeRepo({
+			bad: { config: 'cron: ""', prompt: "x" },
+		});
+		expect(() => loadDefinition(projectDir, "platform", "bad")).toThrow();
 	});
 
 	it("rejects a bad dedup value", () => {

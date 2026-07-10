@@ -59,6 +59,7 @@ export class QueueStore {
 			target: { repo: input.repo, ref: input.ref, worktree: null },
 			priority: input.priority ?? "normal",
 			created: new Date().toISOString(),
+			finishedAt: null,
 			source: input.source,
 			ephemeralWorktree: false,
 			error: null,
@@ -98,6 +99,17 @@ export class QueueStore {
 		const current = this.get(id);
 		if (!current) throw new Error(`task not found: ${id}`);
 		const next: TaskInstance = { ...current, ...patch, id };
+		// Stamp/clear the completion timestamp on a status transition (unless the
+		// caller set finishedAt explicitly): terminal (done/failed) stamps now,
+		// keeping an existing stamp so a re-set of the same terminal status is
+		// idempotent; any non-terminal status clears it (a re-run un-finishes the
+		// task). A patch that doesn't touch status leaves finishedAt untouched.
+		if (patch.status !== undefined && !("finishedAt" in patch)) {
+			next.finishedAt =
+				patch.status === "done" || patch.status === "failed"
+					? (current.finishedAt ?? new Date().toISOString())
+					: null;
+		}
 		this.write(next);
 		return next;
 	}

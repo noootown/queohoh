@@ -14,6 +14,8 @@ fn def_pick_popup_snapshot() {
                 scope: "project".into(),
                 args: vec![],
                 has_discovery: true,
+                cron: None,
+                description: None,
             },
             DefinitionSummary {
                 repo: "platform".into(),
@@ -24,6 +26,8 @@ fn def_pick_popup_snapshot() {
                     ArgSpec { name: "target".into(), default: Some("main".into()), options: None, description: None },
                 ],
                 has_discovery: false,
+                cron: None,
+                description: None,
             },
         ],
         index: 1,

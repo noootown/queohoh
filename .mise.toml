@@ -1,5 +1,6 @@
 [tools]
 node = "22"
+rust = "1.97"
 
 # --- dev loop ---
 
@@ -12,7 +13,7 @@ run = [
 ]
 
 [tasks.build]
-description = "Compile all packages (core, daemon, tui) to dist/"
+description = "Compile all packages (core, daemon) to dist/"
 run = "pnpm -r build"
 
 [tasks.test]
@@ -60,19 +61,9 @@ run = "node packages/daemon/dist/cli.js status"
 description = "Launch the qoo-tui cockpit (ratatui; builds the release binary, self-heals the daemon)"
 depends = ["daemon:ensure"]
 run = [
-	"$HOME/.cargo/bin/cargo build --release -p qoo-tui",
+	"cargo build --release -p qoo-tui",
 	"./target/release/qoo-tui",
 ]
-
-[tasks."tui:ink"]
-description = "Launch the legacy Ink TUI (fallback during the ratatui bake; rebuilds first, self-heals the daemon)"
-depends = ["build", "daemon:ensure"]
-run = "node packages/tui/dist/cli.js"
-
-[tasks."dev:tui"]
-description = "Launch the TUI with hot reload (tsc --watch + node --watch; daemon is NOT reloaded)"
-depends = ["build", "daemon:ensure"]
-run = "scripts/dev-tui.sh"
 
 # --- integrations ---
 
@@ -95,15 +86,15 @@ run = [
 	"node packages/daemon/dist/cli.js launchd:uninstall",
 ]
 
-# --- rust tui (parallel to the Ink TUI until parity) ---
+# --- rust tui ---
 
 [tasks."tui:rs"]
 description = "Build and launch the Rust ratatui TUI (release)"
 run = [
-	"$HOME/.cargo/bin/cargo build --release -p qoo-tui",
+	"cargo build --release -p qoo-tui",
 	"./target/release/qoo-tui",
 ]
 
 [tasks."tui:rs:dev"]
 description = "Run the Rust ratatui TUI unoptimized (fast rebuild loop)"
-run = "$HOME/.cargo/bin/cargo run -p qoo-tui"
+run = "cargo run -p qoo-tui"

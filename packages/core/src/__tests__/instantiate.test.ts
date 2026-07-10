@@ -12,6 +12,8 @@ function def(overrides: Partial<TaskDefinition> = {}): TaskDefinition {
 		name: "pr-review",
 		repo: "platform",
 		discovery: { command: "gh pr list", itemKey: "{{number}}" },
+		description: null,
+		cron: null,
 		args: [{ name: "number" }],
 		dedup: "skip_seen",
 		worktree: "pr:{{number}}",

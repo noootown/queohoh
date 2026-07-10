@@ -24,6 +24,7 @@ function task(overrides: {
 		},
 		priority: overrides.priority ?? "normal",
 		created: "2026-07-08T00:00:00.000Z",
+		finishedAt: null,
 		source: "tui",
 		ephemeralWorktree: false,
 		error: null,

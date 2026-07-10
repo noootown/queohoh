@@ -284,10 +284,15 @@ mod builder_tests {
             glyph: '?',
             running: false,
             main_session: false,
-            lane: "platform:main".into(),
+            worktree: "main".into(),
+            def_name: None,
             summary: "do the thing".into(),
             detail: String::new(),
+            created_epoch_s: 0,
             archived,
+            status: TaskStatus::NeedsInput,
+            priority: "normal".into(),
+            finished_epoch_s: None,
         }
     }
     fn task(status: TaskStatus) -> TaskInstance {
@@ -355,6 +360,7 @@ mod builder_tests {
             has_main_session: false,
             queued: 0,
             is_session,
+            ..Default::default()
         }
     }
 

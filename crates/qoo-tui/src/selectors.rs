@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::app::Selection;
-use crate::ipc::types::{ArgSpec, StateSnapshot, TaskInstance, TaskStatus};
+use crate::ipc::types::{ArgSpec, DefinitionSummary, StateSnapshot, TaskInstance, TaskStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabInfo {
@@ -18,21 +18,36 @@ pub struct QueueRow {
     pub running: bool,
     /// ⛓ marker: task resumes the lane's main session
     pub main_session: bool,
-    pub lane: String,
+    /// worktree name only (the `<repo>:` lane prefix dropped)
+    pub worktree: String,
+    /// task definition name; None for ad-hoc prompts
+    pub def_name: Option<String>,
     pub summary: String,
     pub detail: String,
+    /// creation epoch seconds (parsed from the daemon ISO timestamp)
+    pub created_epoch_s: u64,
     pub archived: bool,
+    /// task status — drives the ACTIVE-section status ordering and the
+    /// active/finished section split (see [`queue_rows`]).
+    pub status: TaskStatus,
+    /// task priority string (`high`/`normal`/`low`) — the second ACTIVE-section
+    /// sort key after status.
+    pub priority: String,
+    /// completion epoch seconds (parsed from the daemon `finishedAt`), `None`
+    /// until the task finishes / on an old daemon — the FINISHED-section sort key.
+    pub finished_epoch_s: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WtState {
+    #[default]
     Free,
     Busy,
     You,
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorktreeRow {
     /// display name (`<repo>.` prefix stripped) — never an identifier
     pub name: String,
@@ -45,6 +60,23 @@ pub struct WorktreeRow {
     pub has_main_session: bool,
     pub queued: usize,
     pub is_session: bool,
+    /// creation epoch of the task RUNNING on this lane, if any — the pane formats
+    /// the live timer via `elapsed_label` against `now`.
+    pub running_elapsed: Option<u64>,
+    /// display name of the head-of-lane queued task (def name, else clipped
+    /// prompt); paired with `queued > 0`.
+    pub next_name: Option<String>,
+    /// whether `next_name` is a definition name (colors it mauve vs a prompt fg).
+    pub next_is_def: bool,
+    /// most recent finished (non-running/non-queued) lane task, newest by id:
+    /// (status glyph, display name, creation epoch for the relative-age label,
+    /// whether the name is a def name — colors it mauve vs a prompt fg).
+    pub last: Option<(char, String, u64, bool)>,
+    /// git enrichment passthrough from the daemon (all `None` on an old daemon):
+    /// uncommitted changes, last-commit epoch, last-commit author name.
+    pub dirty: Option<bool>,
+    pub last_commit_epoch: Option<u64>,
+    pub last_commit_author: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,55 +121,122 @@ fn status_glyph(status: TaskStatus) -> char {
     }
 }
 
-fn status_str(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Queued => "queued",
-        TaskStatus::NeedsInput => "needs-input",
-        TaskStatus::Running => "running",
-        TaskStatus::Done => "done",
-        TaskStatus::Failed => "failed",
-        TaskStatus::Unknown => "unknown",
-    }
-}
-
 /// `repo:worktree-or-ref` with the redundant `<repo>.` display prefix stripped.
 fn lane_label(task: &TaskInstance) -> String {
     let lane = task.target.worktree.as_deref().unwrap_or(&task.target.git_ref);
     format!("{}:{}", task.target.repo, strip_repo_prefix(lane, &task.target.repo))
 }
 
+/// ACTIVE-section status priority: running first, then needs-input, then queued.
+/// Finished statuses share the max rank (they never sort in the active section).
+fn status_active_rank(status: TaskStatus) -> u8 {
+    match status {
+        TaskStatus::Running => 0,
+        TaskStatus::NeedsInput => 1,
+        TaskStatus::Queued => 2,
+        _ => 3,
+    }
+}
+
+/// Priority sort rank: high first, then normal, then low (an unknown priority
+/// string sorts with `normal`).
+fn priority_rank(priority: &str) -> u8 {
+    match priority {
+        "high" => 0,
+        "low" => 2,
+        _ => 1, // "normal" and any unrecognized value
+    }
+}
+
+/// Whether a queue row belongs to the FINISHED section: any terminal/unknown
+/// status, or an archived row (archived rows are always finished).
+pub fn queue_row_finished(row: &QueueRow) -> bool {
+    row.archived
+        || matches!(
+            row.status,
+            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Unknown
+        )
+}
+
+/// Real-row index AFTER which the ACTIVE/FINISHED divider is drawn, or `None`
+/// when either section is empty (no divider on a single-section queue). The rows
+/// are already partitioned active-before-finished by [`queue_rows`], so this is
+/// simply "one before the first finished row" — provided an active row precedes
+/// it. Operates on the FINAL (post-filter) row list so filtering a whole section
+/// away drops the divider with it.
+pub fn queue_divider_after(rows: &[QueueRow]) -> Option<usize> {
+    match rows.iter().position(queue_row_finished) {
+        Some(first_finished) if first_finished > 0 => Some(first_finished - 1),
+        _ => None,
+    }
+}
+
+/// Comparator ordering the queue rows into two sections. ACTIVE
+/// (running/needs-input/queued) sorts first — by status, then priority, then id
+/// (ULID, stable). FINISHED (done/failed/unknown + the archived tail) sorts after
+/// — by completion timestamp DESCENDING (most recently finished first); a row
+/// without `finished_epoch_s` falls back to its id, newest first.
+fn queue_sort(a: &QueueRow, b: &QueueRow) -> std::cmp::Ordering {
+    let (fa, fb) = (queue_row_finished(a), queue_row_finished(b));
+    fa.cmp(&fb).then_with(|| {
+        if fa {
+            // Both finished: newest completion first, then newest id first.
+            b.finished_epoch_s
+                .unwrap_or(0)
+                .cmp(&a.finished_epoch_s.unwrap_or(0))
+                .then_with(|| b.task_id.cmp(&a.task_id))
+        } else {
+            // Both active: status, then priority, then id ascending (stable).
+            status_active_rank(a.status)
+                .cmp(&status_active_rank(b.status))
+                .then_with(|| priority_rank(&a.priority).cmp(&priority_rank(&b.priority)))
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        }
+    })
+}
+
 pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> Vec<QueueRow> {
-    // Live rows in snapshot order (the daemon stores by creation), then the
-    // last 10 archived rows, dimmed by the view via `archived: true`.
+    // Live rows plus the last 10 archived rows (dimmed by the view via
+    // `archived: true`), then sorted into an ACTIVE section (running/needs-input/
+    // queued) followed by a FINISHED section (done/failed/unknown + archived).
+    // The per-lane queue position (`#N in lane`) is computed in snapshot order
+    // (creation order) BEFORE the display sort so it reflects execution order,
+    // not the re-sorted display position.
     let mut queued_position: HashMap<String, usize> = HashMap::new();
     let mut rows: Vec<QueueRow> = Vec::new();
     for task in snapshot.tasks.iter().filter(|t| t.target.repo == project) {
+        // The detail column is a live-progress hint only: elapsed for Running,
+        // queue position for Queued. Done/Failed/NeedsInput/Unknown carry NOTHING
+        // — the ✓/✗/? glyph already says the outcome and the full error/status
+        // lives in the DETAIL pane; a trailing "done"/"exit code 1" duplicated it.
         let detail = match task.status {
-            TaskStatus::Running => {
-                elapsed_label(parse_iso_epoch_s(&task.created), now_epoch_s)
-            }
+            TaskStatus::Running => elapsed_label(parse_iso_epoch_s(&task.created), now_epoch_s),
             TaskStatus::Queued => {
                 let lane = lane_label(task);
                 let position = queued_position.get(&lane).copied().unwrap_or(0) + 1;
                 queued_position.insert(lane, position);
                 format!("#{position} in lane")
             }
-            TaskStatus::NeedsInput | TaskStatus::Failed => task
-                .error
-                .clone()
-                .unwrap_or_else(|| status_str(task.status).to_string()),
-            TaskStatus::Done => "done".to_string(),
-            TaskStatus::Unknown => status_str(task.status).to_string(),
+            _ => String::new(),
         };
         rows.push(QueueRow {
             task_id: task.id.clone(),
             glyph: status_glyph(task.status),
             running: task.status == TaskStatus::Running,
             main_session: task.session == "main",
-            lane: lane_label(task),
+            worktree: strip_repo_prefix(
+                task.target.worktree.as_deref().unwrap_or(&task.target.git_ref),
+                &task.target.repo,
+            )
+            .to_string(),
+            def_name: task.definition.as_deref().map(def_display_name),
             summary: prompt_summary(&task.prompt),
             detail,
+            created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: false,
+            status: task.status,
+            priority: task.priority.clone(),
+            finished_epoch_s: task.finished_at.as_deref().map(parse_iso_epoch_s),
         });
     }
     let archived: Vec<&TaskInstance> = snapshot
@@ -152,13 +251,33 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
             glyph: status_glyph(task.status),
             running: false,
             main_session: task.session == "main",
-            lane: lane_label(task),
+            worktree: strip_repo_prefix(
+                task.target.worktree.as_deref().unwrap_or(&task.target.git_ref),
+                &task.target.repo,
+            )
+            .to_string(),
+            def_name: task.definition.as_deref().map(def_display_name),
             summary: prompt_summary(&task.prompt),
-            detail: "archived".to_string(),
+            // Archived rows carry no detail text (the dimming + glyph convey state).
+            detail: String::new(),
+            created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: true,
+            status: task.status,
+            priority: task.priority.clone(),
+            finished_epoch_s: task.finished_at.as_deref().map(parse_iso_epoch_s),
         });
     }
+    // Sort into the ACTIVE then FINISHED sections (sort_by is stable; the id
+    // tiebreak makes every comparison total regardless).
+    rows.sort_by(queue_sort);
     rows
+}
+
+/// Display name for a task's definition: the daemon qualifies project-scoped
+/// defs as `repo/name` (e.g. `platform/pr-ready`), but the scope carries no
+/// meaning in the queue — show only the final segment.
+pub fn def_display_name(definition: &str) -> String {
+    definition.rsplit('/').next().unwrap_or(definition).to_string()
 }
 
 /// `repo:worktree` from a task's target; None while the worktree is unresolved
@@ -194,6 +313,90 @@ fn queued_on_lane(snapshot: &StateSnapshot, lane: &str) -> usize {
         .count()
 }
 
+/// Creation epoch of a task RUNNING on `lane` (the first in snapshot order), or
+/// None. Drives the worktree row's live `⏱` timer.
+fn running_elapsed_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<u64> {
+    snapshot
+        .tasks
+        .iter()
+        .find(|t| task_lane(t).as_deref() == Some(lane) && t.status == TaskStatus::Running)
+        .map(|t| parse_iso_epoch_s(&t.created))
+}
+
+/// Display name of the head-of-lane queued task (first in snapshot order): the
+/// def's short name, else the prompt clipped to `NEXT_NAME_CAP`. The bool is
+/// whether the name came from a definition (drives mauve vs fg coloring).
+fn next_queued_name_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<(String, bool)> {
+    snapshot
+        .tasks
+        .iter()
+        .find(|t| task_lane(t).as_deref() == Some(lane) && t.status == TaskStatus::Queued)
+        .map(|t| lane_task_display_name(t, NEXT_NAME_CAP))
+}
+
+/// The lane's most recent FINISHED task (anything not running/queued) across both
+/// the live and archived lists, newest by id (ULIDs sort chronologically):
+/// (status glyph, display name, creation epoch).
+fn last_finished_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<(char, String, u64, bool)> {
+    snapshot
+        .tasks
+        .iter()
+        .chain(snapshot.archived_recent.iter())
+        .filter(|t| {
+            task_lane(t).as_deref() == Some(lane)
+                && !matches!(t.status, TaskStatus::Running | TaskStatus::Queued)
+        })
+        .max_by(|a, b| a.id.cmp(&b.id))
+        .map(|t| {
+            // Uncapped at derivation (prompt_summary already bounds it at 240):
+            // the last-task cell is the pane's FILL column, so the render clips
+            // to whatever width the row actually has — a 16-char pre-clip here
+            // left the wide fill rendering blank padding (the exact complaint
+            // that made this column the fill).
+            let (name, is_def) = lane_task_display_name(t, usize::MAX);
+            (status_glyph(t.status), name, parse_iso_epoch_s(&t.created), is_def)
+        })
+}
+
+/// Recency epoch of the lane's most recent FINISHED task (newest by id across the
+/// live + archived lists): its `finishedAt` when present, else its creation epoch.
+/// Drives the WORKTREES "last activity" ordering tier. `None` when the lane has no
+/// finished task.
+fn last_finished_epoch_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<u64> {
+    snapshot
+        .tasks
+        .iter()
+        .chain(snapshot.archived_recent.iter())
+        .filter(|t| {
+            task_lane(t).as_deref() == Some(lane)
+                && !matches!(t.status, TaskStatus::Running | TaskStatus::Queued)
+        })
+        .max_by(|a, b| a.id.cmp(&b.id))
+        .map(|t| {
+            t.finished_at
+                .as_deref()
+                .map(parse_iso_epoch_s)
+                .unwrap_or_else(|| parse_iso_epoch_s(&t.created))
+        })
+}
+
+/// A lane task's short label plus whether it came from a definition: its def's
+/// display name (`true`), else the first prompt line clipped to `cap` chars
+/// (`false`). Shared by the head-of-lane and last-finished columns; the bool
+/// drives mauve (def) vs fg (prompt) coloring in the worktree row.
+fn lane_task_display_name(task: &TaskInstance, cap: usize) -> (String, bool) {
+    match task.definition.as_deref() {
+        Some(def) => (def_display_name(def), true),
+        None => (clip(&prompt_summary(&task.prompt), cap), false),
+    }
+}
+
+/// Clip width for the head-of-lane (`next:`) task name in the worktree pane —
+/// its column is a fixed 30-cell slot, so the name is trimmed to keep the
+/// `N queued · next:` lead visible. The last-finished cell is deliberately NOT
+/// pre-clipped (it is the pane's FILL column; the render clips to the row).
+pub const NEXT_NAME_CAP: usize = 16;
+
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -201,11 +404,13 @@ fn basename(path: &str) -> &str {
 pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow> {
     let empty: Vec<crate::ipc::types::WorktreeInfo> = Vec::new();
     let worktrees = snapshot.worktrees.get(project).unwrap_or(&empty);
-    let mut rows: Vec<WorktreeRow> = worktrees
+    // Build each real-worktree row paired with its last-finished recency epoch
+    // (the sort key that isn't already on the row).
+    let mut keyed: Vec<(WorktreeRow, Option<u64>)> = worktrees
         .iter()
         .map(|wt| {
             let lane = lane_key(project, &wt.name);
-            WorktreeRow {
+            let row = WorktreeRow {
                 name: strip_repo_prefix(&wt.name, project).to_string(),
                 raw_name: wt.name.clone(),
                 path: wt.path.clone(),
@@ -214,9 +419,43 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 has_main_session: snapshot.main_sessions.contains_key(&lane),
                 queued: queued_on_lane(snapshot, &lane),
                 is_session: false,
-            }
+                running_elapsed: running_elapsed_on_lane(snapshot, &lane),
+                next_name: next_queued_name_on_lane(snapshot, &lane).map(|(n, _)| n),
+                next_is_def: next_queued_name_on_lane(snapshot, &lane)
+                    .map(|(_, d)| d)
+                    .unwrap_or(false),
+                last: last_finished_on_lane(snapshot, &lane),
+                dirty: wt.dirty,
+                last_commit_epoch: wt.last_commit_epoch,
+                last_commit_author: wt.last_commit_author.clone(),
+            };
+            let last_finished = last_finished_epoch_on_lane(snapshot, &lane);
+            (row, last_finished)
         })
         .collect();
+
+    // Order by recency of activity, descending: busy lanes (a running task) first
+    // — newest start first; then by last-finished recency; then by last-commit
+    // age; then name as the final tiebreak. Session rows (below) keep their
+    // append-at-end placement.
+    keyed.sort_by(|(a, la), (b, lb)| {
+        let busy = |r: &WorktreeRow| r.running_elapsed.is_some();
+        busy(b)
+            .cmp(&busy(a)) // busy (true) sorts first
+            .then_with(|| {
+                b.running_elapsed
+                    .unwrap_or(0)
+                    .cmp(&a.running_elapsed.unwrap_or(0)) // newest start first
+            })
+            .then_with(|| lb.unwrap_or(0).cmp(&la.unwrap_or(0))) // last finished, newest first
+            .then_with(|| {
+                b.last_commit_epoch
+                    .unwrap_or(0)
+                    .cmp(&a.last_commit_epoch.unwrap_or(0)) // newest commit first
+            })
+            .then_with(|| a.name.cmp(&b.name)) // name ascending
+    });
+    let mut rows: Vec<WorktreeRow> = keyed.into_iter().map(|(r, _)| r).collect();
 
     // One "You" row per interactive session whose cwd is inside a project
     // worktree (exact path or path + "/" prefix — never a sibling).
@@ -243,18 +482,109 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
             has_main_session: false,
             queued: 0,
             is_session: true,
+            // A session is not a real worktree: no lane tasks, no git enrichment.
+            ..Default::default()
         });
     }
     rows
 }
 
-pub fn pane_layout(body_height: u16) -> PaneLayout {
-    // queue : tasks : worktrees ≈ 2:1:1, explicit heights (no flex-grow) so a
-    // pane never balloons past its capped content. Row capacity per pane is
-    // height − 3 (border + title chrome), computed by the view.
-    let list_h = std::cmp::max(4, body_height / 4);
-    let queue_h = std::cmp::max(4, body_height.saturating_sub(2 * list_h));
-    PaneLayout { queue_h, tasks_h: list_h, worktrees_h: list_h }
+/// Minimum rows any expanded left pane keeps (border + title-on-border + two
+/// content rows). With the title now embedded in the top border, four rows still
+/// leaves two rows of content.
+pub const PANE_MIN_H: u16 = 4;
+
+/// Rows a collapsed pane occupies: just the title border row and the bottom
+/// border. No content, no scrollbar.
+pub const COLLAPSED_H: u16 = 2;
+
+/// Heights of the three stacked left panes. Pure and re-clamped every frame so
+/// session drag overrides never violate the invariants: every EXPANDED pane
+/// ≥ `PANE_MIN_H`, every COLLAPSED pane is pinned to `COLLAPSED_H`, and the three
+/// sum to exactly `body_height` (the last expanded pane — or, when all three are
+/// collapsed, the last pane — absorbs the remainder).
+///
+/// With no pane collapsed and both overrides `None` this reproduces the historic
+/// 2:1:1 default exactly (so default snapshots never move). `queue_h`/`tasks_h`
+/// overrides are the requested heights from a divider drag; they are clamped, not
+/// trusted. `collapsed` is `[queue, tasks, worktrees]`.
+pub fn pane_layout(
+    body_height: u16,
+    queue_h: Option<u16>,
+    tasks_h: Option<u16>,
+    collapsed: [bool; 3],
+) -> PaneLayout {
+    const MIN: u16 = PANE_MIN_H;
+    const COL: u16 = COLLAPSED_H;
+
+    // No pane collapsed → the historic formula, byte-for-byte (default snapshots
+    // and every legacy override test stay pinned).
+    if collapsed == [false, false, false] {
+        // Below room for three floors nobody can be satisfied; hand each the floor
+        // and let the view's Length constraints clamp the overflow. Matches the old
+        // default, which also produced (MIN,MIN,MIN) for any body ≤ 3·MIN.
+        if body_height <= 3 * MIN {
+            return PaneLayout { queue_h: MIN, tasks_h: MIN, worktrees_h: MIN };
+        }
+        // Default 2:1:1 heights, used for whichever override is absent.
+        let def_tasks = std::cmp::max(MIN, body_height / 4);
+        let def_queue = std::cmp::max(MIN, body_height.saturating_sub(2 * def_tasks));
+        // Clamp queue into [MIN, body − 2·MIN] (leaves a floor each for tasks +
+        // worktrees), then tasks into [MIN, body − queue − MIN] (leaves a floor for
+        // worktrees). worktrees takes whatever is left — always ≥ MIN by construction.
+        let q = queue_h.unwrap_or(def_queue).clamp(MIN, body_height - 2 * MIN);
+        let t = tasks_h.unwrap_or(def_tasks).clamp(MIN, body_height - q - MIN);
+        let w = body_height - q - t;
+        return PaneLayout { queue_h: q, tasks_h: t, worktrees_h: w };
+    }
+
+    // Collapse-aware allocation. Collapsed panes are pinned to COL rows; the
+    // expanded panes share what remains, each ≥ MIN, and the three heights sum to
+    // exactly body_height.
+    let ncol = collapsed.iter().filter(|&&c| c).count() as u16;
+    let mut h = [0u16; 3];
+    for (i, &c) in collapsed.iter().enumerate() {
+        if c {
+            h[i] = COL;
+        }
+    }
+    let avail = body_height.saturating_sub(ncol * COL);
+    let expanded: Vec<usize> = (0..3).filter(|&i| !collapsed[i]).collect();
+    match expanded.as_slice() {
+        // All three collapsed: no content pane. The leftover becomes a blank
+        // filler region folded into the last pane's allocation (the collapsed bar
+        // still renders only COL rows at its top, leaving the rest blank).
+        [] => h[2] = h[2].saturating_add(avail),
+        // One expanded pane takes everything left.
+        [a] => h[*a] = std::cmp::max(MIN, avail),
+        // Two expanded panes split `avail`: the upper honors its override (or an
+        // even split), the lower absorbs the remainder. The upper index is always
+        // 0 or 1, so it always has an override field; worktrees (index 2) is only
+        // ever the lower of a pair.
+        [a, b] => {
+            let ov = match *a {
+                0 => queue_h,
+                1 => tasks_h,
+                _ => None,
+            };
+            let hi = avail.saturating_sub(MIN).max(MIN);
+            let ha = ov.unwrap_or(avail / 2).clamp(MIN, hi);
+            h[*a] = ha;
+            h[*b] = avail.saturating_sub(ha);
+        }
+        _ => unreachable!("at least one pane is collapsed in this branch"),
+    }
+    PaneLayout { queue_h: h[0], tasks_h: h[1], worktrees_h: h[2] }
+}
+
+/// Clamp a requested left-column width so both sides stay usable: left keeps
+/// `MIN_LEFT`, DETAIL keeps `MIN_RIGHT`. The `.max(MIN_LEFT)` on the ceiling keeps
+/// the range non-empty (so `clamp` never panics) even at the 60-col minimum.
+pub fn clamp_left_cols(total_width: u16, want: u16) -> u16 {
+    const MIN_LEFT: u16 = 24;
+    const MIN_RIGHT: u16 = 30;
+    let hi = total_width.saturating_sub(MIN_RIGHT).max(MIN_LEFT);
+    want.clamp(MIN_LEFT, hi)
 }
 
 /// Cursor-centered scroll window: half-open `(start, end)` slice indices of the
@@ -271,21 +601,19 @@ pub fn window_rows(len: usize, cursor: usize, capacity: usize) -> (usize, usize)
     (start, start + capacity)
 }
 
-pub fn pane_title(base: &str, sel: &Selection, filter: &str, searching: bool) -> String {
+/// The pane's border title: the base plus a `· N selected` suffix when a range is
+/// active. The `/filter` + cursor decoration lives in the inline hint row now (see
+/// `view::panes`), so it is no longer part of the title.
+pub fn pane_title(base: &str, sel: &Selection) -> String {
     let selected = match sel.anchor {
         Some(anchor) => anchor.abs_diff(sel.cursor) + 1,
         None => 1,
     };
-    let title = if selected > 1 {
+    if selected > 1 {
         format!("{base} · {selected} selected")
     } else {
         base.to_string()
-    };
-    if !searching && filter.is_empty() {
-        return title;
     }
-    let cursor = if searching { "█" } else { "" };
-    format!("{title} /{filter}{cursor}")
 }
 
 /// Indices of rows whose text matches the filter (case-insensitive substring;
@@ -327,7 +655,10 @@ pub fn lane_key(repo: &str, worktree: &str) -> String {
     format!("{repo}:{worktree}")
 }
 
-/// First non-blank line of the prompt, trimmed, clipped to ≤60 chars with `…`.
+/// First non-blank line of the prompt, trimmed, clipped to ≤240 chars with `…`.
+/// The generous cap only bounds pathological one-line prompts — the queue's
+/// summary column does the real width-fitting per frame, so the summary can
+/// flex across however much row the pane has.
 pub fn prompt_summary(prompt: &str) -> String {
     let line = prompt
         .lines()
@@ -335,10 +666,10 @@ pub fn prompt_summary(prompt: &str) -> String {
         .map(str::trim)
         .unwrap_or("");
     let chars: Vec<char> = line.chars().collect();
-    if chars.len() <= 60 {
+    if chars.len() <= 240 {
         return line.to_string();
     }
-    let mut out: String = chars[..59].iter().collect();
+    let mut out: String = chars[..239].iter().collect();
     out.push('…');
     out
 }
@@ -382,6 +713,612 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// Inverse of `days_from_civil`: (year, month, day) for a days-since-epoch count
+/// (Howard Hinnant's `civil_from_days`).
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// "MM/DD HH:MM" in local time. `utc_offset_s` is injected so tests are
+/// deterministic (production passes the real local offset).
+pub fn absolute_local_label(created_epoch_s: u64, utc_offset_s: i32) -> String {
+    let local = created_epoch_s as i64 + utc_offset_s as i64;
+    let days = local.div_euclid(86_400);
+    let secs = local.rem_euclid(86_400);
+    let (_, m, d) = civil_from_days(days);
+    let hh = secs / 3600;
+    let mm = (secs % 3600) / 60;
+    format!("{m:02}/{d:02} {hh:02}:{mm:02}")
+}
+
+/// "just now" / "5m ago" / "1h ago" / "2d ago".
+pub fn relative_age_label(created_epoch_s: u64, now_epoch_s: u64) -> String {
+    let delta = now_epoch_s.saturating_sub(created_epoch_s);
+    if delta < 60 {
+        "just now".to_string()
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h ago", delta / 3600)
+    } else {
+        format!("{}d ago", delta / 86_400)
+    }
+}
+
+// ---- cron humanizer (pure) -----------------------------------------------------
+
+/// `HH:MM` on a 12-hour clock with an `am`/`pm` suffix; the `:MM` is dropped when
+/// the minute is zero. e.g. `(30, 13) → "1:30pm"`, `(0, 9) → "9am"`, `(0, 0) → "12am"`.
+fn fmt_time(min: u32, hour: u32) -> String {
+    let ampm = if hour < 12 { "am" } else { "pm" };
+    let h12 = match hour % 12 {
+        0 => 12,
+        h => h,
+    };
+    if min == 0 {
+        format!("{h12}{ampm}")
+    } else {
+        format!("{h12}:{min:02}{ampm}")
+    }
+}
+
+/// Abbreviated weekday for a cron day-of-week number (0 or 7 == Sunday).
+fn day_name(d: u32) -> &'static str {
+    match d % 7 {
+        0 => "Sun",
+        1 => "Mon",
+        2 => "Tue",
+        3 => "Wed",
+        4 => "Thu",
+        5 => "Fri",
+        _ => "Sat",
+    }
+}
+
+/// `1 → "1st"`, `2 → "2nd"`, `3 → "3rd"`, `11..=13 → "…th"`, else `"…th"`.
+fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// A cron field made only of the characters a standard schedule uses.
+fn is_cron_field(f: &str) -> bool {
+    !f.is_empty()
+        && f.chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '*' | '/' | ',' | '-'))
+}
+
+/// Parse a field that must be a single integer in `[lo, hi]`; `None` otherwise
+/// (a range/step/list is not a single value).
+fn single(f: &str, lo: u32, hi: u32) -> Option<u32> {
+    let v: u32 = f.parse().ok()?;
+    (lo..=hi).contains(&v).then_some(v)
+}
+
+/// The `N` of a `*/N` step field, or `None` when the field isn't a step.
+fn step(f: &str) -> Option<u32> {
+    f.strip_prefix("*/").and_then(|s| s.parse().ok())
+}
+
+/// A comma list whose members are exactly {Sat, Sun} (any 0/6/7 spelling).
+fn is_weekend(dow: &str) -> bool {
+    let mut days: Vec<u32> = dow
+        .split(',')
+        .filter_map(|s| s.parse::<u32>().ok())
+        .map(|d| d % 7)
+        .collect();
+    days.sort_unstable();
+    days.dedup();
+    days == [0, 6]
+}
+
+/// Best-effort humanization of the five parsed cron fields. Returns `None` when
+/// the pattern is a valid cron shape we don't confidently phrase — `cron_human`
+/// then falls back to the raw expression rather than dropping it.
+fn humanize_fields(f: &[&str; 5]) -> Option<String> {
+    let [m, h, dom, mon, dow] = *f;
+    let all_dmw = dom == "*" && mon == "*" && dow == "*";
+
+    // Frequency tiers: minute/hour carry a step or the top-of-hour marker. A
+    // tuple match keeps the arms flat (nested ifs here would be collapsible).
+    if all_dmw {
+        match (step(m), step(h), m, h) {
+            (Some(n), _, _, "*") => return Some(format!("Every {n}m")),
+            (_, _, "0", "*") => return Some("Hourly".to_string()),
+            (_, Some(n), "0", _) => return Some(format!("Every {n}h")),
+            _ => {}
+        }
+    }
+
+    // Time-of-day tiers need a concrete minute + hour.
+    let time = fmt_time(single(m, 0, 59)?, single(h, 0, 23)?);
+
+    if dom == "*" && mon == "*" {
+        if dow == "*" {
+            return Some(format!("Everyday {time}"));
+        }
+        if dow == "1-5" {
+            return Some(format!("Weekdays {time}"));
+        }
+        if is_weekend(dow) {
+            return Some(format!("Weekends {time}"));
+        }
+        if let Some(d) = single(dow, 0, 7) {
+            return Some(format!("{} {time}", day_name(d)));
+        }
+        return None; // an unhandled day-of-week list → raw fallback
+    }
+
+    if mon == "*" && dow == "*" {
+        return single(dom, 1, 31).map(|d| format!("Monthly {} {time}", ordinal(d)));
+    }
+
+    None
+}
+
+/// Turn a standard 5-field cron expression into a short human phrase for the
+/// TASKS schedule column. Best-effort: recognized patterns get a friendly phrase
+/// (`"30 13 * * *" → "Everyday 1:30pm"`), any other valid-shaped cron falls back
+/// to the raw expression, and empty/non-cron input returns `None` (showing
+/// nothing beats noise). See the unit tests for the full tier table.
+pub fn cron_human(expr: &str) -> Option<String> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return None;
+    }
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    if fields.len() != 5 || !fields.iter().all(|f| is_cron_field(f)) {
+        return None; // not a standard 5-field cron
+    }
+    let five = [fields[0], fields[1], fields[2], fields[3], fields[4]];
+    Some(humanize_fields(&five).unwrap_or_else(|| expr.to_string()))
+}
+
+// ---- column layout (pure, per-frame, computed from the VISIBLE rows) ----------
+//
+// Every content glyph the list rows use (▶ ✓ ✗ ○ ? · ⛓ ⏱ ◆ ●) measures one
+// terminal cell, so column widths can be reasoned about in chars. Truncation is
+// char-based (never byte slicing) so unicode text can't panic.
+
+/// Char count of `s` (== cell width for the row content we render).
+fn cw(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// Clip `s` to `width` chars, appending `…` when truncated (mirrors
+/// `prompt_summary`). `width == 0` yields the empty string.
+pub fn clip(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= width {
+        return s.to_string();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+    let mut out: String = chars[..width - 1].iter().collect();
+    out.push('…');
+    out
+}
+
+/// Left-align `s` in a `width`-char field: clip if too long, right-pad with
+/// spaces if short. The result is always exactly `width` chars.
+pub fn pad_clip(s: &str, width: usize) -> String {
+    let mut out = clip(s, width);
+    let n = out.chars().count();
+    if n < width {
+        out.extend(std::iter::repeat_n(' ', width - n));
+    }
+    out
+}
+
+/// Largest char-width among `values`, capped at `cap` (0 if the iterator is
+/// empty). Used to size the name/worktree/def columns to the widest visible cell.
+fn capped_max<'a>(values: impl Iterator<Item = &'a str>, cap: usize) -> usize {
+    values.map(cw).max().unwrap_or(0).min(cap)
+}
+
+pub const WORKTREE_CAP: usize = 28;
+pub const DEF_CAP: usize = 20;
+pub const NAME_CAP: usize = 48;
+/// Max width of the humanized schedule text in the TASKS pane (the `⏰` icon and
+/// its trailing space sit outside this budget). A raw-cron fallback longer than
+/// this is clipped with `…` rather than blowing out the row.
+pub const SCHED_CAP: usize = 20;
+pub const SUMMARY_MIN: usize = 10;
+/// Gutter between adjacent field columns (glyph/chain markers keep single
+/// spaces; the field columns get a wider gap so they read as columns).
+pub const COL_GAP: usize = 2;
+/// Fixed width of the absolute timestamp column (`MM/DD HH:MM`).
+pub const TIMESTAMP_W: usize = 11;
+
+// ---- FIXED reserved widths for the metadata/marker/time/live columns --------
+//
+// Column PRESENCE is a function of the pane width (and, for capability columns,
+// whole-pane data availability) — never of an individual row's data. A row that
+// lacks a value renders blanks (`pad_clip("", W)`) in its reserved cell, so a
+// timer appearing or a wide value scrolling in never shifts any other column.
+// Values fit the realistic max label under `cw`.
+
+/// Live timer column (`⏱ 99h59m`: ⏱ + space + up-to-2-digit hours).
+pub const TIMER_W: usize = 8;
+/// Relative-age column (`relative_age_label` max is `just now` = 8).
+pub const AGE_W: usize = 8;
+/// Last-commit author column (fixed reserved width; longer names clip with `…`).
+pub const AUTHOR_W: usize = 14;
+/// Last-commit relative-age column (`relative_age_label` max `just now`).
+pub const COMMIT_AGE_W: usize = 8;
+/// Shared QUEUE live slot: `⏱ 99h59m` (8) or `#N in lane` (`#9 in lane` = 10);
+/// `#10 in lane` and beyond clip.
+pub const QUEUE_LIVE_W: usize = 10;
+/// Fill floor for the worktrees `queued · next` column: the minimum width that
+/// keeps it "present" (below this the ladder drops it before dirty/live). It is
+/// a flex column — this is only its minimum, not a reserved fixed width.
+/// Fixed reserved width of the worktrees `N queued · next: <name>` column
+/// (always a candidate, blank when nothing is queued — data-independent so a
+/// queued task appearing never shifts columns). Fits "9 queued · next: " plus a
+/// ~13-char name; longer names clip with `…`.
+const WT_QUEUED_W: usize = 30;
+/// Floor of the worktrees last-task FILL column (the pane's flex column — it
+/// absorbs remaining width like the queue pane's summary, per user request).
+const WT_LAST_MIN: usize = 12;
+
+/// Resolved per-frame column widths for the QUEUE pane. A width of `0` (or
+/// `false`) means the column is omitted for this frame; `summary_w` is the flex
+/// remainder. Computed from the windowed (visible) rows so alignment tracks what
+/// is actually on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueColLayout {
+    pub has_chain: bool,
+    pub worktree_w: usize,
+    pub def_w: usize,
+    pub summary_w: usize,
+    pub show_timestamp: bool,
+    /// `AGE_W` when the relative-age column is kept, else 0 (fixed width).
+    pub age_w: usize,
+    /// `QUEUE_LIVE_W` when the trailing live slot is kept, else 0 (fixed width).
+    /// Renders `row.detail` — `⏱ <elapsed>` (running) or `#N in lane` (queued).
+    pub live_w: usize,
+}
+
+/// Fit the QUEUE columns into `avail` inner cells. The identity/content columns
+/// (glyph, optional ⛓ chain, worktree, def) are sized to the widest visible value
+/// (capped so the summary keeps room); the summary flexes into what remains. The
+/// trailing timestamp / age / live columns have FIXED reserved widths (never
+/// sized from row data) — their PRESENCE is decided purely by the width ladder,
+/// so a row gaining a timer or a wider value never shifts any column. When space
+/// is tight the trailing columns degrade in a fixed order — timestamp, then age,
+/// then live — so the summary keeps at least `SUMMARY_MIN` cells; only if that
+/// still isn't enough does def drop and then worktree shrink.
+pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> QueueColLayout {
+    let has_chain = rows.iter().any(|r| r.main_session);
+    let worktree_w = capped_max(rows.iter().map(|r| r.worktree.as_str()), WORKTREE_CAP);
+    let mut def_w = capped_max(rows.iter().filter_map(|r| r.def_name.as_deref()), DEF_CAP);
+
+    let chain_cost = if has_chain { 2 } else { 0 }; // separator + 1-cell ⛓
+    // Non-flex prefix width: glyph(1) + chain + worktree(+gutter) + def(+gutter)
+    // + the gutter before the summary. The summary itself is the remainder.
+    let prefix = |worktree_w: usize, def_w: usize| -> usize {
+        1 + chain_cost
+            + if worktree_w > 0 { COL_GAP + worktree_w } else { 0 }
+            + if def_w > 0 { COL_GAP + def_w } else { 0 }
+            + COL_GAP
+    };
+    // Summary width given the current column choices (may be negative → too tight).
+    // Trailing columns are fixed-width: timestamp=TIMESTAMP_W, age=AGE_W,
+    // live=QUEUE_LIVE_W — each present as a bool.
+    let summary_of =
+        |worktree_w: usize, def_w: usize, show_ts: bool, age_w: usize, live_w: usize| -> isize {
+            let mut used = prefix(worktree_w, def_w) as isize;
+            if show_ts {
+                used += (COL_GAP + TIMESTAMP_W) as isize;
+            }
+            if age_w > 0 {
+                used += (COL_GAP + age_w) as isize;
+            }
+            if live_w > 0 {
+                used += (COL_GAP + live_w) as isize;
+            }
+            avail as isize - used
+        };
+
+    let min = SUMMARY_MIN as isize;
+    let mut show_timestamp = true;
+    let mut age_w = AGE_W;
+    let mut live_w = QUEUE_LIVE_W;
+    let mut worktree_w = worktree_w;
+
+    // Trailing columns degrade first: timestamp, then age, then live.
+    if summary_of(worktree_w, def_w, show_timestamp, age_w, live_w) < min {
+        show_timestamp = false;
+    }
+    if summary_of(worktree_w, def_w, show_timestamp, age_w, live_w) < min {
+        age_w = 0;
+    }
+    if summary_of(worktree_w, def_w, show_timestamp, age_w, live_w) < min {
+        live_w = 0;
+    }
+    // Still cramped → drop def, then shrink worktree toward the summary floor.
+    if summary_of(worktree_w, def_w, show_timestamp, age_w, live_w) < min {
+        def_w = 0;
+    }
+    let s = summary_of(worktree_w, def_w, show_timestamp, age_w, live_w);
+    if s < min && worktree_w > 0 {
+        worktree_w = worktree_w.saturating_sub((min - s) as usize);
+    }
+    let summary_w = summary_of(worktree_w, def_w, show_timestamp, age_w, live_w).max(0) as usize;
+
+    QueueColLayout { has_chain, worktree_w, def_w, summary_w, show_timestamp, age_w, live_w }
+}
+
+/// Resolved column widths for the TASKS pane: `name | args | description | ⏰
+/// schedule`. `name_w`/`args_w` are content-capped columns; `desc_w` is the FILL
+/// (the remainder, like the queue pane's summary — prose gets the slack), 0 when
+/// no visible def has a description or the pane is too narrow to spare any; the
+/// schedule stays the trailing capped column (`sched_w` sizes the humanized cron
+/// text; the `⏰ ` prefix is reserved separately). Narrow-pane drop order: the
+/// desc FILL shrinks to 0 first, then args drops, then `name_w` shrinks last; the
+/// schedule column is always kept. A width of 0 means that column is omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DefColLayout {
+    pub name_w: usize,
+    pub args_w: usize,
+    pub desc_w: usize,
+    pub sched_w: usize,
+}
+
+pub const ARGS_CAP: usize = 40;
+/// Reserved cells for the `⏰` schedule icon (double-width emoji). The layout is
+/// otherwise char-based; over-reserving the icon by a cell keeps the trailing
+/// schedule text from clipping when the desc FILL right-pins it.
+pub const SCHED_ICON_W: usize = 2;
+
+/// The `(pr, mode=ready, …)` args cell text for a def ("" when it has none).
+pub fn def_args_text(def: &DefinitionSummary) -> String {
+    if def.args.is_empty() {
+        String::new()
+    } else {
+        format!("({})", arg_summary(&def.args))
+    }
+}
+
+/// The description cell text for a def ("" when it has none). Prose, rendered in
+/// plain fg and filling the remaining pane width (truncated with `…` when tight).
+pub fn def_desc_text(def: &DefinitionSummary) -> String {
+    def.description.clone().unwrap_or_default()
+}
+
+pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout {
+    let name_w0 = capped_max(rows.iter().map(|d| d.name.as_str()), NAME_CAP);
+    let args_w0 = rows
+        .iter()
+        .map(|d| cw(&def_args_text(d)))
+        .max()
+        .unwrap_or(0)
+        .min(ARGS_CAP);
+    let sched_w = rows
+        .iter()
+        .filter_map(|d| d.cron.as_deref().and_then(cron_human))
+        .map(|h| cw(&h))
+        .max()
+        .unwrap_or(0)
+        .min(SCHED_CAP);
+    // Trailing schedule column footprint (right-pinned by the desc fill): the ⏰
+    // icon + a space + the humanized text for cron defs; a bare ⏰ for a
+    // discovery-only def; nothing when no visible def schedules.
+    let has_cron = sched_w > 0;
+    let has_disc = rows.iter().any(|d| d.has_discovery);
+    let sched_col = if has_cron {
+        SCHED_ICON_W + 1 + sched_w
+    } else if has_disc {
+        SCHED_ICON_W
+    } else {
+        0
+    };
+    // The desc FILL is present only when some visible def actually has a
+    // description (else the schedule keeps its today-position, no layout shift).
+    let has_desc = rows.iter().any(|d| d.description.as_deref().is_some_and(|s| !s.is_empty()));
+
+    // Cells used by the fixed (non-fill) columns for a given name/args width.
+    let used_wo_desc = |name_w: usize, args_w: usize| -> usize {
+        name_w
+            + if args_w > 0 { COL_GAP + args_w } else { 0 }
+            + if sched_col > 0 { COL_GAP + sched_col } else { 0 }
+    };
+    // Reclaim when even the fixed columns overflow: drop args, then shrink name.
+    // (The desc fill has already implicitly shrunk to 0 — it is only ever the
+    // leftover remainder below.)
+    let mut args_w = args_w0;
+    if used_wo_desc(name_w0, args_w) > avail {
+        args_w = 0;
+    }
+    let mut name_w = name_w0;
+    let u = used_wo_desc(name_w, args_w);
+    if u > avail {
+        name_w = name_w.saturating_sub(u - avail);
+    }
+    // Description is the FILL: the remainder after name/args/schedule and its
+    // leading gutter. Zero when absent or when nothing is left to give it.
+    let desc_w = if has_desc {
+        avail.saturating_sub(used_wo_desc(name_w, args_w) + COL_GAP)
+    } else {
+        0
+    };
+
+    DefColLayout { name_w, args_w, desc_w, sched_w }
+}
+
+/// The `N queued · next: <name>` cell text for a row with `queued > 0` (the
+/// `· next:` tail is dropped when the head-of-lane task has no resolvable name).
+pub fn wt_queued_text(row: &WorktreeRow) -> String {
+    match &row.next_name {
+        Some(name) => format!("{} queued · next: {name}", row.queued),
+        None => format!("{} queued", row.queued),
+    }
+}
+
+/// The last-commit author cell text, or None when the daemon didn't supply it
+/// (an old daemon, or a worktree whose `git log` failed) — the whole column is
+/// then omitted pane-wide.
+pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
+    row.last_commit_author.clone()
+}
+
+/// Resolved per-frame column widths for the WORKTREES pane. A width of `0` means
+/// the column is omitted this frame; `has_chain` reserves the front ⌂ slot.
+///
+/// Columns, left→right (identity → content → time → live):
+///   `● ⌂ ± name` (anchor; the ⌂ main-session and `±` dirty markers are
+///   single-cell front slots after the dot, per user request),
+///   last-finished (FILL), last-commit author (fixed `AUTHOR_W`),
+///   last-commit age (fixed `COMMIT_AGE_W`), `N queued · next` (fixed
+///   `WT_QUEUED_W`), live `⏱` (fixed `TIMER_W`, right-pinned by the fill).
+///   The author sits right before the commit-age so the pair reads
+///   `koshea  3d ago` = who · when.
+///
+/// The marker/time columns (`dirty`, `queued`, `author`, `commit_age`,
+/// `elapsed`) are FIXED widths — never sized from row data — so a row gaining a
+/// value never shifts any column; `name_w` stays content-capped and `last_w` is
+/// the FILL column (absorbs the remaining width, like the queue pane's summary
+/// — per user request the last task's description gets the slack). The live
+/// timer is ALWAYS reserved when the ladder keeps it; dirty/queued/author/
+/// commit-age are pane-gated (reserved only while some visible row carries the
+/// value — the slot's first pane-wide appearance is the one accepted shift).
+/// Degradation drop priority (first dropped first): commit-age → author →
+/// queued·next → dirty → last-finished → live; only after all of those drop
+/// does `name_w` shrink. The ⌂ slot is exempt and always kept when any visible
+/// row has a main session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WtColLayout {
+    pub name_w: usize,
+    pub dirty_w: usize,
+    pub elapsed_w: usize,
+    pub queued_w: usize,
+    pub last_w: usize,
+    pub author_w: usize,
+    pub commit_age_w: usize,
+    pub has_chain: bool,
+}
+
+/// Fit the WORKTREES columns into `avail` inner cells (see [`WtColLayout`] for the
+/// column order, fixed-width model, and drop priority). The live `⏱` column and
+/// the last-task fill are always candidates; the dirty/queued/author/
+/// commit-age columns stay gated on whole-pane data availability.
+pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
+    let name_w0 = capped_max(rows.iter().map(|r| r.name.as_str()), NAME_CAP);
+    // Fixed marker/time widths, gated on whole-pane data availability (except the
+    // live timer, the queued column, and the last-task fill, which are always
+    // candidates — blank when a row has no value — so a first value appearing
+    // anywhere never shifts columns).
+    let dirty_w0 = if rows.iter().any(|r| r.dirty == Some(true)) { 1 } else { 0 };
+    let elapsed_w0 = TIMER_W; // live timer: always reserved when the ladder keeps it
+    // Queued·next is pane-gated like dirty/author/commit-age: its fixed slot is
+    // reserved only while some visible row actually has a queued task. Always
+    // reserving it burned 30 blank cells that the last-task FILL should be
+    // stretching into (user feedback); rows shift only on the slot's first-ever
+    // pane-wide appearance, same accepted tradeoff as the others.
+    let queued_w0 = if rows.iter().any(|r| r.queued > 0) { WT_QUEUED_W } else { 0 };
+    let author_w0 = if rows.iter().any(|r| wt_author_text(r).is_some()) { AUTHOR_W } else { 0 };
+    let commit_w0 = if rows.iter().any(|r| r.last_commit_epoch.is_some()) { COMMIT_AGE_W } else { 0 };
+    let has_chain = rows.iter().any(|r| r.has_main_session);
+
+    // Anchor width: `● ` (dot + space) + the front marker cluster — `⌂ ` (main
+    // session) and `± ` (dirty), each a single cell + space when present — then
+    // the name. The markers sit up front per user request, not as mid-row columns.
+    let anchor = |name_w: usize, dirty: bool| {
+        2 + if has_chain { 2 } else { 0 } + if dirty { 2 } else { 0 } + name_w
+    };
+    // Used cells for a set of column widths and whether the last-task FILL is
+    // reserved (at its `WT_LAST_MIN` floor — the actual fill absorbs the slack).
+    // cols = [queued, author, commit]; `elapsed` is the trailing fixed
+    // live column.
+    let used = |name_w: usize, dirty: bool, cols: [usize; 3], elapsed_w: usize, last: bool| -> usize {
+        let mut u = anchor(name_w, dirty);
+        for w in cols {
+            if w > 0 {
+                u += COL_GAP + w;
+            }
+        }
+        if last {
+            u += COL_GAP + WT_LAST_MIN;
+        }
+        if elapsed_w > 0 {
+            u += COL_GAP + elapsed_w;
+        }
+        u
+    };
+
+    // Degrade in drop order: commit → author → queued → dirty → last →
+    // elapsed. cols = [queued(0), author(1), commit(2)].
+    let mut cols = [queued_w0, author_w0, commit_w0];
+    let mut dirty = dirty_w0 > 0;
+    let mut elapsed_w = elapsed_w0;
+    let mut last = true;
+    #[derive(Clone, Copy)]
+    enum Drop {
+        Col(usize),
+        Dirty,
+        Last,
+        Elapsed,
+    }
+    for op in [Drop::Col(2), Drop::Col(1), Drop::Col(0), Drop::Dirty, Drop::Last, Drop::Elapsed] {
+        if used(name_w0, dirty, cols, elapsed_w, last) <= avail {
+            break;
+        }
+        match op {
+            Drop::Col(i) => cols[i] = 0,
+            Drop::Dirty => dirty = false,
+            Drop::Last => last = false,
+            Drop::Elapsed => elapsed_w = 0,
+        }
+    }
+    // Still too wide with only `● ⌂ ± name` left → shrink the name column.
+    let mut name_w = name_w0;
+    let u = used(name_w, dirty, cols, elapsed_w, last);
+    if u > avail {
+        name_w = name_w.saturating_sub(u - avail);
+    }
+    // The last-task column is the FILL: the remainder after every reserved column
+    // (≥ WT_LAST_MIN by construction, 0 when dropped). Its width is data-
+    // independent — a lane finishing its first task changes only its own cell,
+    // never any other column's offset — and the trailing live timer stays
+    // right-pinned at the row edge.
+    let last_w = if last {
+        let base = used(name_w, dirty, cols, elapsed_w, false);
+        avail.saturating_sub(base + COL_GAP)
+    } else {
+        0
+    };
+
+    WtColLayout {
+        name_w,
+        dirty_w: if dirty { 1 } else { 0 },
+        elapsed_w,
+        queued_w: cols[0],
+        last_w,
+        author_w: cols[1],
+        commit_age_w: cols[2],
+        has_chain,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +1340,7 @@ mod tests {
             },
             priority: "normal".into(),
             created: "2026-07-08T10:00:00.000Z".into(),
+            finished_at: None,
             source: "tui".into(),
             ephemeral_worktree: false,
             error: None,
@@ -434,7 +1372,12 @@ mod tests {
     }
 
     fn wt(name: &str, path: &str, branch: &str) -> WorktreeInfo {
-        WorktreeInfo { name: name.into(), path: path.into(), branch: branch.into() }
+        WorktreeInfo {
+            name: name.into(),
+            path: path.into(),
+            branch: branch.into(),
+            ..Default::default()
+        }
     }
 
     fn platform_worktrees() -> HashMap<String, Vec<WorktreeInfo>> {
@@ -551,24 +1494,30 @@ mod tests {
         failed.error = Some("tree left dirty".into());
         let done = task_on(TaskStatus::Done, "t5", "platform", Some("wt-a"));
         let rows = queue_rows(&snap(vec![running, q1, q2, failed, done], vec![]), "platform", now());
-        assert_eq!(rows[0].detail, "⏱ 3m12s");
-        assert_eq!(rows[1].detail, "#1 in lane");
-        assert_eq!(rows[2].detail, "#2 in lane");
-        assert_eq!(rows[3].detail, "tree left dirty");
-        assert_eq!(rows[4].detail, "done");
-        assert_eq!(rows[0].lane, "platform:wt-a");
+        // ACTIVE section (running → queued) then FINISHED section (done/failed,
+        // ordered by completion; here both lack finishedAt so id-desc wins →
+        // t5(done) before t4(failed)). The `#N in lane` position is still computed
+        // in creation order, so q1/q2 keep #1/#2 regardless of the display sort.
+        // Only live-progress states carry detail text; Failed/Done are empty.
+        assert_eq!(rows[0].detail, "⏱ 3m12s"); // running
+        assert_eq!(rows[1].detail, "#1 in lane"); // q1
+        assert_eq!(rows[2].detail, "#2 in lane"); // q2
+        assert_eq!(rows[3].detail, ""); // done: no trailing "done"
+        assert_eq!(rows[4].detail, ""); // failed: no trailing error word
+        assert_eq!(rows[0].worktree, "wt-a");
+        assert_eq!(rows[0].created_epoch_s, parse_iso_epoch_s("2026-07-08T10:00:00.000Z"));
         assert!(rows[0].running && !rows[1].running);
         assert_eq!(
             rows.iter().map(|r| r.glyph).collect::<Vec<_>>(),
-            vec!['▶', '○', '○', '✗', '✓']
+            vec!['▶', '○', '○', '✓', '✗']
         );
     }
 
     #[test]
-    fn queue_rows_needs_input_without_error_falls_back_to_status_word() {
+    fn queue_rows_needs_input_has_no_detail_text() {
         let ni = task_on(TaskStatus::NeedsInput, "t1", "platform", Some("wt-a"));
         let rows = queue_rows(&snap(vec![ni], vec![]), "platform", now());
-        assert_eq!(rows[0].detail, "needs-input");
+        assert_eq!(rows[0].detail, ""); // the ? glyph carries the state
         assert_eq!(rows[0].glyph, '?');
     }
 
@@ -578,9 +1527,9 @@ mod tests {
         pending.target.git_ref = "pr:257".into();
         let old = task_on(TaskStatus::Done, "t0", "platform", Some("wt-a"));
         let rows = queue_rows(&snap(vec![pending], vec![old]), "platform", now());
-        assert_eq!(rows[0].lane, "platform:pr:257");
+        assert_eq!(rows[0].worktree, "pr:257");
         assert!(rows[1].archived);
-        assert_eq!(rows[1].detail, "archived");
+        assert_eq!(rows[1].detail, ""); // archived rows carry no detail text
     }
 
     #[test]
@@ -590,7 +1539,10 @@ mod tests {
             .collect();
         let rows = queue_rows(&snap(vec![], archived), "platform", now());
         assert_eq!(rows.len(), 10);
-        assert_eq!(rows[0].task_id, "t05"); // last 10 → t05..t14
+        // Cap keeps the last 10 archived (t05..t14); with no finishedAt the
+        // FINISHED section falls back to id-desc, so the newest (t14) leads.
+        assert_eq!(rows[0].task_id, "t14");
+        assert_eq!(rows[9].task_id, "t05");
     }
 
     #[test]
@@ -615,7 +1567,165 @@ mod tests {
             Some("platform.dedup-dependabot-run"),
         );
         let rows = queue_rows(&snap(vec![running], vec![]), "platform", now());
-        assert_eq!(rows[0].lane, "platform:dedup-dependabot-run");
+        assert_eq!(rows[0].worktree, "dedup-dependabot-run");
+    }
+
+    #[test]
+    fn queue_rows_carry_def_name_and_created_epoch() {
+        let mut t = task_on(TaskStatus::Running, "t1", "platform", Some("wt-a"));
+        t.definition = Some("squash-merge".into());
+        t.created = "2026-07-08T10:00:00.000Z".into();
+        let adhoc = task_on(TaskStatus::Queued, "t2", "platform", Some("wt-a"));
+        let rows = queue_rows(&snap(vec![t, adhoc], vec![]), "platform", now());
+        assert_eq!(rows[0].def_name, Some("squash-merge".into()));
+        assert_eq!(rows[1].def_name, None);
+        assert_eq!(rows[0].created_epoch_s, parse_iso_epoch_s("2026-07-08T10:00:00.000Z"));
+    }
+
+    #[test]
+    fn queue_rows_strip_repo_qualifier_from_def_name() {
+        // The daemon qualifies project-scoped defs as `repo/name`; the scope is
+        // meaningless in the queue display.
+        let mut t = task_on(TaskStatus::Running, "t1", "platform", Some("wt-a"));
+        t.definition = Some("platform/pr-ready".into());
+        let rows = queue_rows(&snap(vec![t], vec![]), "platform", now());
+        assert_eq!(rows[0].def_name, Some("pr-ready".into()));
+        assert_eq!(def_display_name("pr-ready"), "pr-ready");
+        assert_eq!(def_display_name("platform/pr-ready"), "pr-ready");
+    }
+
+    // ---- queue section ordering + divider ----
+
+    /// task_on with a priority + optional finishedAt override.
+    fn qtask(
+        status: TaskStatus,
+        id: &str,
+        priority: &str,
+        finished: Option<&str>,
+    ) -> TaskInstance {
+        let mut t = task_on(status, id, "platform", Some("wt-a"));
+        t.priority = priority.into();
+        t.finished_at = finished.map(str::to_string);
+        t
+    }
+
+    #[test]
+    fn queue_active_section_orders_by_status_then_priority_then_id() {
+        // Scrambled input; expect running → needs-input → queued(high,normal,low),
+        // with id as the final (stable) tiebreak inside the queued run.
+        let rows = queue_rows(
+            &snap(
+                vec![
+                    qtask(TaskStatus::Queued, "01Q_LOW", "low", None),
+                    qtask(TaskStatus::Running, "01RUNNING", "normal", None),
+                    qtask(TaskStatus::Queued, "01Q_NORMAL", "normal", None),
+                    qtask(TaskStatus::NeedsInput, "01NEEDS", "normal", None),
+                    qtask(TaskStatus::Queued, "01Q_HIGH", "high", None),
+                ],
+                vec![],
+            ),
+            "platform",
+            now(),
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["01RUNNING", "01NEEDS", "01Q_HIGH", "01Q_NORMAL", "01Q_LOW"]
+        );
+        // None of the active rows are in the FINISHED section, so no divider.
+        assert_eq!(queue_divider_after(&rows), None);
+    }
+
+    #[test]
+    fn queue_finished_section_orders_by_completion_desc_then_id_fallback() {
+        // All finished, no active. Rows WITH finishedAt sort newest-completion
+        // first; the row WITHOUT it falls back to id and sinks below them.
+        let rows = queue_rows(
+            &snap(
+                vec![
+                    qtask(TaskStatus::Done, "01D_1000", "normal", Some("2026-07-09T10:00:00.000Z")),
+                    qtask(TaskStatus::Failed, "01F_1200", "normal", Some("2026-07-09T12:00:00.000Z")),
+                    qtask(TaskStatus::Done, "01D_NONE", "normal", None),
+                    qtask(TaskStatus::Failed, "01F_1100", "normal", Some("2026-07-09T11:00:00.000Z")),
+                ],
+                vec![],
+            ),
+            "platform",
+            now(),
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["01F_1200", "01F_1100", "01D_1000", "01D_NONE"]
+        );
+        // Every row is finished → still no divider (needs both sections).
+        assert_eq!(queue_divider_after(&rows), None);
+    }
+
+    #[test]
+    fn queue_divider_sits_after_the_last_active_row() {
+        // Two active + two finished → the divider is drawn after real index 1
+        // (the last active row), i.e. immediately before the first finished row.
+        let rows = queue_rows(
+            &snap(
+                vec![
+                    qtask(TaskStatus::Failed, "01FAIL", "normal", Some("2026-07-09T11:00:00.000Z")),
+                    qtask(TaskStatus::Running, "01RUN", "normal", None),
+                    qtask(TaskStatus::Queued, "01QUE", "normal", None),
+                    qtask(TaskStatus::Done, "01DONE", "normal", Some("2026-07-09T10:00:00.000Z")),
+                ],
+                vec![],
+            ),
+            "platform",
+            now(),
+        );
+        // Sorted: [running, queued | failed, done].
+        assert_eq!(
+            rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["01RUN", "01QUE", "01FAIL", "01DONE"]
+        );
+        assert!(!queue_row_finished(&rows[1]) && queue_row_finished(&rows[2]));
+        assert_eq!(queue_divider_after(&rows), Some(1));
+    }
+
+    #[test]
+    fn queue_divider_none_for_single_section_or_empty() {
+        // Empty list, all-active, and all-finished each yield no divider.
+        assert_eq!(queue_divider_after(&[]), None);
+        let active = queue_rows(
+            &snap(vec![qtask(TaskStatus::Running, "01R", "normal", None)], vec![]),
+            "platform",
+            now(),
+        );
+        assert_eq!(queue_divider_after(&active), None);
+        let finished = queue_rows(
+            &snap(vec![qtask(TaskStatus::Done, "01D", "normal", None)], vec![]),
+            "platform",
+            now(),
+        );
+        assert_eq!(queue_divider_after(&finished), None);
+    }
+
+    #[test]
+    fn queue_archived_rows_join_the_finished_section_sorted_with_live() {
+        // A live failed task (finished 12:00) and an archived done task (finished
+        // 13:00) both land in the FINISHED section, ordered by completion — the
+        // newer archived row leads even though it lives in a different list.
+        let rows = queue_rows(
+            &snap(
+                vec![
+                    qtask(TaskStatus::Running, "01RUN", "normal", None),
+                    qtask(TaskStatus::Failed, "01FAIL", "normal", Some("2026-07-09T12:00:00.000Z")),
+                ],
+                vec![qtask(TaskStatus::Done, "01ARCH", "normal", Some("2026-07-09T13:00:00.000Z"))],
+            ),
+            "platform",
+            now(),
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["01RUN", "01ARCH", "01FAIL"]
+        );
+        assert!(rows[1].archived && !rows[2].archived);
+        assert_eq!(queue_divider_after(&rows), Some(0)); // after the single active row
     }
 
     // ---- elapsed_label / prompt_summary / strip_repo_prefix / lane_key / arg_summary ----
@@ -630,13 +1740,33 @@ mod tests {
     }
 
     #[test]
-    fn prompt_summary_first_non_blank_line_clipped_at_60() {
+    fn absolute_local_label_offsets_and_day_boundary() {
+        let noon = parse_iso_epoch_s("2026-07-09T12:00:00.000Z");
+        assert_eq!(absolute_local_label(noon, 0), "07/09 12:00");
+        assert_eq!(absolute_local_label(noon, 3600), "07/09 13:00");
+        // +1h pushes a 23:30Z time into the next local day.
+        let late = parse_iso_epoch_s("2026-07-09T23:30:00.000Z");
+        assert_eq!(absolute_local_label(late, 3600), "07/10 00:30");
+    }
+
+    #[test]
+    fn relative_age_label_buckets_and_skew() {
+        assert_eq!(relative_age_label(100, 100), "just now");
+        assert_eq!(relative_age_label(100, 159), "just now"); // <60s
+        assert_eq!(relative_age_label(0, 300), "5m ago");
+        assert_eq!(relative_age_label(0, 3600), "1h ago");
+        assert_eq!(relative_age_label(0, 172_800), "2d ago");
+        assert_eq!(relative_age_label(200, 100), "just now"); // created > now
+    }
+
+    #[test]
+    fn prompt_summary_first_non_blank_line_clipped_at_240() {
         assert_eq!(prompt_summary("\n\nfix the thing\nrest"), "fix the thing");
         assert_eq!(prompt_summary(""), "");
-        let long = "a".repeat(70);
-        let expected = format!("{}…", "a".repeat(59));
+        let long = "a".repeat(250);
+        let expected = format!("{}…", "a".repeat(239));
         assert_eq!(prompt_summary(&long), expected);
-        assert_eq!(prompt_summary(&"a".repeat(60)), "a".repeat(60)); // exactly 60 fits
+        assert_eq!(prompt_summary(&"a".repeat(240)), "a".repeat(240)); // exactly 240 fits
     }
 
     #[test]
@@ -725,20 +1855,56 @@ mod tests {
                 WorktreeRow {
                     name: "wt-a".into(), raw_name: "wt-a".into(), path: "/wt/wt-a".into(),
                     branch: "feat/a".into(), state: WtState::Free, has_main_session: false,
-                    queued: 0, is_session: false,
+                    queued: 0, is_session: false, ..Default::default()
                 },
                 WorktreeRow {
                     name: "wt-b".into(), raw_name: "wt-b".into(), path: "/wt/wt-b".into(),
                     branch: "feat/b".into(), state: WtState::Free, has_main_session: false,
-                    queued: 0, is_session: false,
+                    queued: 0, is_session: false, ..Default::default()
                 },
                 WorktreeRow {
                     name: "wt-c".into(), raw_name: "wt-c".into(), path: "/wt/wt-c".into(),
                     branch: "feat/c".into(), state: WtState::Free, has_main_session: false,
-                    queued: 0, is_session: false,
+                    queued: 0, is_session: false, ..Default::default()
                 },
             ]
         );
+    }
+
+    #[test]
+    fn worktree_rows_order_by_activity_recency_tiers() {
+        // Four lanes exercising each tier: two busy (newest start first), one with
+        // a recent finished task, one with only a recent commit. Session rows are
+        // appended after and never enter this ordering.
+        let mut running_old = task_on(TaskStatus::Running, "01R_OLD", "platform", Some("wt-a"));
+        running_old.created = "2026-07-09T12:00:00.000Z".into();
+        let mut running_new = task_on(TaskStatus::Running, "01R_NEW", "platform", Some("wt-b"));
+        running_new.created = "2026-07-09T12:05:00.000Z".into();
+        let mut finished = task_on(TaskStatus::Done, "01DONE", "platform", Some("wt-c"));
+        finished.finished_at = Some("2026-07-09T11:00:00.000Z".into());
+
+        let mut s = snap(vec![running_old, running_new, finished], vec![]);
+        s.worktrees = HashMap::from([(
+            "platform".to_string(),
+            vec![
+                wt("wt-a", "/wt/wt-a", "a"), // busy, older start
+                wt("wt-b", "/wt/wt-b", "b"), // busy, newer start
+                wt("wt-c", "/wt/wt-c", "c"), // recent finished task
+                {
+                    let mut w = wt("wt-d", "/wt/wt-d", "d"); // only a recent commit
+                    w.last_commit_epoch = Some(1_752_000_000);
+                    w
+                },
+            ],
+        )]);
+        s.sessions = vec![make_session("/wt/wt-a", "interactive")];
+        let rows = worktree_rows(&s, "platform");
+        assert_eq!(
+            rows.iter().filter(|r| !r.is_session).map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["wt-b", "wt-a", "wt-c", "wt-d"]
+        );
+        // The session row is still last, after every real worktree.
+        assert!(rows.last().unwrap().is_session);
     }
 
     #[test]
@@ -803,15 +1969,18 @@ mod tests {
             ],
         )]);
         let rows = worktree_rows(&s, "platform");
+        // Idle worktrees (no tasks, no git enrichment) tie on every ordering tier
+        // and fall to the name-ascending tiebreak → dedup-dependabot-run, platform.
         assert_eq!(
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-            vec!["platform", "dedup-dependabot-run"]
+            vec!["dedup-dependabot-run", "platform"]
         );
-        assert_eq!(
-            rows.iter().map(|r| r.raw_name.as_str()).collect::<Vec<_>>(),
-            vec!["platform", "platform.dedup-dependabot-run"]
-        );
-        assert_eq!(rows[1].path, "/wt/platform.dedup-dependabot-run");
+        // raw_name retains the full `<repo>.` prefix for daemon dispatch.
+        let dedup = rows.iter().find(|r| r.name == "dedup-dependabot-run").unwrap();
+        assert_eq!(dedup.raw_name, "platform.dedup-dependabot-run");
+        assert_eq!(dedup.path, "/wt/platform.dedup-dependabot-run");
+        let plain = rows.iter().find(|r| r.name == "platform").unwrap();
+        assert_eq!(plain.raw_name, "platform");
     }
 
     #[test]
@@ -847,17 +2016,19 @@ mod tests {
 
     // ---- pane_layout (mirrors computePaneLayout) ----
 
+    const NONE_COLLAPSED: [bool; 3] = [false, false, false];
+
     #[test]
     fn pane_layout_sums_exactly_to_body_height() {
         for body in [13u16, 20, 38, 50, 77] {
-            let l = pane_layout(body);
+            let l = pane_layout(body, None, None, NONE_COLLAPSED);
             assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, body, "body={body}");
         }
     }
 
     #[test]
     fn pane_layout_gives_queue_half_and_lists_quarter_each() {
-        let l = pane_layout(38);
+        let l = pane_layout(38, None, None, NONE_COLLAPSED);
         assert_eq!(l.tasks_h, 9);
         assert_eq!(l.worktrees_h, 9);
         assert_eq!(l.queue_h, 20);
@@ -865,10 +2036,129 @@ mod tests {
 
     #[test]
     fn pane_layout_keeps_minimums_for_tiny_body() {
-        let l = pane_layout(1);
+        let l = pane_layout(1, None, None, NONE_COLLAPSED);
         assert!(l.tasks_h >= 4);
         assert!(l.worktrees_h >= 4);
         assert!(l.queue_h >= 4);
+    }
+
+    #[test]
+    fn pane_layout_collapsed_panes_pinned_expanded_keep_floor_sum_exact() {
+        // Each single-collapsed case: the collapsed pane is exactly COLLAPSED_H,
+        // the two expanded panes each keep PANE_MIN_H, and the sum is exact.
+        for (collapsed, idx) in [
+            ([true, false, false], 0usize),
+            ([false, true, false], 1),
+            ([false, false, true], 2),
+        ] {
+            let l = pane_layout(40, None, None, collapsed);
+            let heights = [l.queue_h, l.tasks_h, l.worktrees_h];
+            assert_eq!(heights[idx], COLLAPSED_H, "collapsed pane pinned, case {idx}");
+            for (i, &h) in heights.iter().enumerate() {
+                if i != idx {
+                    assert!(h >= PANE_MIN_H, "expanded pane {i} keeps floor, case {idx}");
+                }
+            }
+            assert_eq!(heights.iter().sum::<u16>(), 40, "sum exact, case {idx}");
+        }
+    }
+
+    #[test]
+    fn pane_layout_two_collapsed_gives_remainder_to_single_expanded() {
+        // Queue + tasks collapsed → worktrees is the lone expanded pane and takes
+        // everything left over.
+        let l = pane_layout(40, None, None, [true, true, false]);
+        assert_eq!(l.queue_h, COLLAPSED_H);
+        assert_eq!(l.tasks_h, COLLAPSED_H);
+        assert_eq!(l.worktrees_h, 40 - 2 * COLLAPSED_H);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 40);
+    }
+
+    #[test]
+    fn pane_layout_all_collapsed_folds_filler_into_last_pane() {
+        // All three collapsed: the two upper panes pin to COLLAPSED_H, the last
+        // pane's region absorbs the blank filler; the sum stays exact.
+        let l = pane_layout(40, None, None, [true, true, true]);
+        assert_eq!(l.queue_h, COLLAPSED_H);
+        assert_eq!(l.tasks_h, COLLAPSED_H);
+        assert_eq!(l.worktrees_h, 40 - 2 * COLLAPSED_H);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 40);
+    }
+
+    #[test]
+    fn pane_layout_honors_override_on_upper_expanded_pane_with_one_collapsed() {
+        // Worktrees collapsed → queue + tasks split the rest; the queue override
+        // is honored, tasks absorbs the remainder, sum exact.
+        let l = pane_layout(40, Some(24), None, [false, false, true]);
+        assert_eq!(l.worktrees_h, COLLAPSED_H);
+        assert_eq!(l.queue_h, 24);
+        assert_eq!(l.tasks_h, 40 - COLLAPSED_H - 24);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 40);
+        assert!(l.tasks_h >= PANE_MIN_H);
+    }
+
+    #[test]
+    fn pane_layout_default_matches_legacy_formula() {
+        // The no-override path must reproduce the old 2:1:1 formula byte-for-byte
+        // so default snapshots never move.
+        for body in [13u16, 22, 30, 38, 50, 64, 77, 120] {
+            let list_h = std::cmp::max(4, body / 4);
+            let queue_h = std::cmp::max(4, body.saturating_sub(2 * list_h));
+            let l = pane_layout(body, None, None, NONE_COLLAPSED);
+            assert_eq!(
+                (l.queue_h, l.tasks_h, l.worktrees_h),
+                (queue_h, list_h, list_h),
+                "body={body}"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_layout_applies_overrides_and_sums_exactly() {
+        // Grow queue, shrink tasks; worktrees absorbs the remainder.
+        let l = pane_layout(40, Some(24), Some(6), NONE_COLLAPSED);
+        assert_eq!(l.queue_h, 24);
+        assert_eq!(l.tasks_h, 6);
+        assert_eq!(l.worktrees_h, 10);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 40);
+    }
+
+    #[test]
+    fn pane_layout_clamps_overrides_to_minimums() {
+        // A queue override that would starve tasks+worktrees is capped so each
+        // still keeps PANE_MIN_H, and the sum stays exact.
+        let l = pane_layout(40, Some(1000), None, NONE_COLLAPSED);
+        assert_eq!(l.queue_h, 40 - 2 * PANE_MIN_H); // body − two floors
+        assert!(l.tasks_h >= PANE_MIN_H);
+        assert!(l.worktrees_h >= PANE_MIN_H);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 40);
+
+        // A tasks override big enough to squeeze worktrees below the floor is
+        // capped to leave worktrees exactly PANE_MIN_H.
+        let l = pane_layout(30, Some(10), Some(1000), NONE_COLLAPSED);
+        assert_eq!(l.worktrees_h, PANE_MIN_H);
+        assert_eq!(l.queue_h, 10);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 30);
+
+        // A too-small override is raised to the floor.
+        let l = pane_layout(40, Some(0), Some(0), NONE_COLLAPSED);
+        assert_eq!(l.queue_h, PANE_MIN_H);
+        assert_eq!(l.tasks_h, PANE_MIN_H);
+        assert_eq!(l.queue_h + l.tasks_h + l.worktrees_h, 40);
+    }
+
+    #[test]
+    fn clamp_left_cols_keeps_both_sides_usable() {
+        // Wide terminal: honored within range.
+        assert_eq!(clamp_left_cols(120, 50), 50);
+        // Too wide → DETAIL keeps its floor.
+        assert_eq!(clamp_left_cols(120, 200), 120 - 30);
+        // Too narrow → left keeps its floor.
+        assert_eq!(clamp_left_cols(120, 5), 24);
+        // 60-col minimum: range [24, 30] stays non-empty (clamp never panics).
+        assert_eq!(clamp_left_cols(60, 40), 30); // hi = max(60−30, 24) = 30
+        assert_eq!(clamp_left_cols(60, 100), 30);
+        assert_eq!(clamp_left_cols(60, 10), 24);
     }
 
     // ---- window_rows (mirrors windowRows) ----
@@ -887,22 +2177,21 @@ mod tests {
     // ---- pane_title (mirrors paneTitle incl. selection count) ----
 
     #[test]
-    fn pane_title_variants() {
+    fn pane_title_plain_when_no_range() {
+        // The filter/cursor decoration moved to the inline hint row; the title is
+        // now just the base unless a multi-row range is active.
         let single = Selection { cursor: 0, anchor: None };
-        assert_eq!(pane_title("QUEUE", &single, "", false), "QUEUE");
-        assert_eq!(pane_title("QUEUE", &single, "foo", false), "QUEUE /foo");
-        assert_eq!(pane_title("QUEUE", &single, "fo", true), "QUEUE /fo█");
-        assert_eq!(pane_title("QUEUE", &single, "", true), "QUEUE /█");
+        assert_eq!(pane_title("QUEUE", &single), "QUEUE");
+        let anchored_single = Selection { cursor: 3, anchor: Some(3) };
+        assert_eq!(pane_title("QUEUE", &anchored_single), "QUEUE");
     }
 
     #[test]
     fn pane_title_selection_count() {
         let three = Selection { cursor: 4, anchor: Some(2) }; // rows 2..=4
-        assert_eq!(pane_title("WORKTREES", &three, "", false), "WORKTREES · 3 selected");
+        assert_eq!(pane_title("WORKTREES", &three), "WORKTREES · 3 selected");
         let two = Selection { cursor: 1, anchor: Some(2) };
-        assert_eq!(pane_title("WORKTREES", &two, "tmp", false), "WORKTREES · 2 selected /tmp");
-        let anchored_single = Selection { cursor: 3, anchor: Some(3) };
-        assert_eq!(pane_title("QUEUE", &anchored_single, "", false), "QUEUE");
+        assert_eq!(pane_title("WORKTREES", &two), "WORKTREES · 2 selected");
     }
 
     // ---- filter_rows (mirrors matchesFilter) ----
@@ -914,5 +2203,480 @@ mod tests {
         assert_eq!(filter_rows(&rows, "tui", |r| r.clone()), vec![0, 2]);
         assert_eq!(filter_rows(&rows, "TUI", |r| r.clone()), vec![0, 2]);
         assert_eq!(filter_rows(&rows, "xyz", |r| r.clone()), Vec::<usize>::new());
+    }
+
+    // ---- column layout helpers ----
+
+    #[test]
+    fn clip_and_pad_clip_are_char_safe() {
+        assert_eq!(clip("hello", 10), "hello"); // fits, unchanged
+        assert_eq!(clip("hello world", 5), "hell…"); // 4 chars + …
+        assert_eq!(clip("hi", 1), "…"); // width 1 → ellipsis only
+        assert_eq!(clip("hi", 0), ""); // width 0 → empty
+        // Multi-byte chars must not panic on truncation (é is 2 bytes, 1 char).
+        assert_eq!(clip("café-latte", 5), "café…");
+        // pad_clip always returns exactly `width` chars.
+        assert_eq!(pad_clip("ab", 5), "ab   ");
+        assert_eq!(pad_clip("abcdef", 4), "abc…");
+        assert_eq!(pad_clip("", 3), "   ");
+    }
+
+    fn qrow(worktree: &str, def: Option<&str>, summary: &str, main: bool) -> QueueRow {
+        QueueRow {
+            task_id: "t".into(),
+            glyph: '○',
+            running: false,
+            main_session: main,
+            worktree: worktree.into(),
+            def_name: def.map(str::to_string),
+            summary: summary.into(),
+            detail: String::new(),
+            created_epoch_s: 0,
+            archived: false,
+            status: TaskStatus::Queued,
+            priority: "normal".into(),
+            finished_epoch_s: None,
+        }
+    }
+
+    #[test]
+    fn queue_col_layout_wide_shows_all_columns_sized_to_visible_max() {
+        let rows = vec![
+            qrow("feature", Some("squash-merge"), "implement the widget cache", true),
+            qrow("main", None, "flaky migration", false),
+        ];
+        // Wide pane: every column present, summary flexes to fill the slack.
+        let l = queue_col_layout(&rows, 100, 0);
+        assert!(l.has_chain); // one row has a main session
+        assert_eq!(l.worktree_w, 7); // "feature"
+        assert_eq!(l.def_w, 12); // "squash-merge"
+        assert!(l.show_timestamp);
+        assert!(l.age_w > 0);
+        assert!(l.summary_w >= SUMMARY_MIN);
+    }
+
+    #[test]
+    fn queue_col_layout_narrow_degrades_trailing_then_def_keeping_summary_floor() {
+        let rows = vec![
+            qrow("feature", Some("squash-merge"), "implement the widget cache", true),
+            qrow("main", None, "flaky migration", false),
+        ];
+        // 23 inner cells (the 80x24 default left pane): timestamp/age/detail drop,
+        // then def drops, and the COL_GAP gutters cost one more cell than the
+        // old single spaces — so "feature" shrinks by 1 to hold the summary floor.
+        let l = queue_col_layout(&rows, 23, 0);
+        assert!(!l.show_timestamp);
+        assert_eq!(l.age_w, 0);
+        assert_eq!(l.live_w, 0);
+        assert_eq!(l.def_w, 0);
+        assert_eq!(l.worktree_w, 6);
+        assert!(l.summary_w >= SUMMARY_MIN, "summary keeps its floor (got {})", l.summary_w);
+    }
+
+    #[test]
+    fn queue_col_layout_caps_worktree_and_def() {
+        let rows = vec![qrow(
+            "a-very-long-worktree-name-indeed",
+            Some("a-very-long-definition-name"),
+            "s",
+            false,
+        )];
+        let l = queue_col_layout(&rows, 200, 0);
+        assert_eq!(l.worktree_w, WORKTREE_CAP);
+        assert_eq!(l.def_w, DEF_CAP);
+    }
+
+    #[test]
+    fn def_and_wt_col_layout_size_name_column() {
+        let defs = vec![
+            DefinitionSummary { name: "squash-merge".into(), ..Default::default() },
+            DefinitionSummary { name: "pr".into(), ..Default::default() },
+        ];
+        let l = def_col_layout(&defs, 80);
+        assert_eq!(l.name_w, 12); // "squash-merge"
+        assert_eq!(l.sched_w, 0); // no def carries a cron
+        assert_eq!(l.desc_w, 0); // no def carries a description
+
+        let mut s = snap(vec![], vec![]);
+        s.worktrees = platform_worktrees();
+        s.main_sessions = HashMap::from([("platform:wt-b".to_string(), "sess".to_string())]);
+        let rows = worktree_rows(&s, "platform");
+        let l = wt_col_layout(&rows, 80);
+        assert_eq!(l.name_w, 4); // "wt-a"/"wt-b"/"wt-c"
+        assert!(l.has_chain); // wt-b has a main session
+    }
+
+    #[test]
+    fn worktree_row_derives_running_next_and_last() {
+        let running = {
+            let mut t = task_on(TaskStatus::Running, "01R00000000000000000000001", "platform", Some("wt-a"));
+            t.created = "2026-07-08T10:00:00.000Z".into();
+            t
+        };
+        let queued = {
+            let mut t = task_on(TaskStatus::Queued, "01Q00000000000000000000001", "platform", Some("wt-a"));
+            t.definition = Some("platform/pr-ready".into());
+            t
+        };
+        // A live FAILED task and an archived DONE task on the same lane; the
+        // newest by id wins regardless of which list it lives in.
+        let done_new = {
+            let mut t = task_on(TaskStatus::Failed, "01D00000000000000000000009", "platform", Some("wt-a"));
+            t.definition = Some("platform/deploy".into());
+            t.created = "2026-07-08T09:30:00.000Z".into();
+            t
+        };
+        let done_old = {
+            let mut t = task_on(TaskStatus::Done, "01D00000000000000000000001", "platform", Some("wt-a"));
+            t.definition = Some("platform/squash-merge".into());
+            t.created = "2026-07-08T09:00:00.000Z".into();
+            t
+        };
+        let mut s = snap(vec![running, queued, done_new], vec![done_old]);
+        s.worktrees = platform_worktrees();
+        let rows = worktree_rows(&s, "platform");
+        let a = rows.iter().find(|r| r.name == "wt-a").unwrap();
+        assert_eq!(a.state, WtState::Busy);
+        assert_eq!(a.running_elapsed, Some(parse_iso_epoch_s("2026-07-08T10:00:00.000Z")));
+        assert_eq!(a.next_name.as_deref(), Some("pr-ready"));
+        assert!(a.next_is_def); // "pr-ready" came from a definition
+        assert_eq!(
+            a.last,
+            Some(('✗', "deploy".into(), parse_iso_epoch_s("2026-07-08T09:30:00.000Z"), true))
+        );
+        // A worktree with no lane tasks carries none of the derived fields.
+        let b = rows.iter().find(|r| r.name == "wt-b").unwrap();
+        assert_eq!((b.running_elapsed, b.next_name.as_deref(), b.last.as_ref()), (None, None, None));
+    }
+
+    #[test]
+    fn worktree_next_name_falls_back_to_clipped_prompt() {
+        // No definition → the head-of-lane name is the prompt clipped to 16.
+        let mut queued = task_on(TaskStatus::Queued, "01Q00000000000000000000001", "platform", Some("wt-a"));
+        queued.definition = None;
+        queued.prompt = "rewrite the whole scheduler from scratch".into();
+        let mut s = snap(vec![queued], vec![]);
+        s.worktrees = platform_worktrees();
+        let rows = worktree_rows(&s, "platform");
+        let a = rows.iter().find(|r| r.name == "wt-a").unwrap();
+        assert_eq!(a.next_name.as_deref(), Some(&*clip("rewrite the whole scheduler from scratch", NEXT_NAME_CAP)));
+        assert_eq!(a.next_name.as_deref().map(|s| s.chars().count()), Some(NEXT_NAME_CAP));
+        assert!(!a.next_is_def); // prompt fallback → not a def name
+    }
+
+    #[test]
+    fn worktree_last_task_name_is_not_preclipped() {
+        // The last-finished cell is the pane's FILL column: the render clips to
+        // the row's actual width, so the derived name must NOT be pre-clipped to
+        // NEXT_NAME_CAP (a 16-char pre-clip left the wide fill rendering blank).
+        let long = "Continue from the approved design. The spec is committed at docs";
+        let mut done = task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-a"));
+        done.definition = None;
+        done.prompt = long.into();
+        let mut s = snap(vec![done], vec![]);
+        s.worktrees = platform_worktrees();
+        let rows = worktree_rows(&s, "platform");
+        let a = rows.iter().find(|r| r.name == "wt-a").unwrap();
+        let (glyph, name, _, is_def) = a.last.as_ref().unwrap();
+        assert_eq!(*glyph, '✗');
+        assert_eq!(name, long, "full prompt summary reaches the fill column");
+        assert!(name.chars().count() > NEXT_NAME_CAP);
+        assert!(!is_def);
+    }
+
+    #[test]
+    fn worktree_row_passes_through_git_enrichment() {
+        let mut s = snap(vec![], vec![]);
+        let mut wts = platform_worktrees();
+        let list = wts.get_mut("platform").unwrap();
+        list[0].dirty = Some(true);
+        list[0].last_commit_epoch = Some(1_752_000_000);
+        list[0].last_commit_author = Some("koshea".into());
+        s.worktrees = wts;
+        let rows = worktree_rows(&s, "platform");
+        let a = rows.iter().find(|r| r.name == "wt-a").unwrap();
+        assert_eq!(
+            (a.dirty, a.last_commit_epoch, a.last_commit_author.as_deref()),
+            (Some(true), Some(1_752_000_000), Some("koshea"))
+        );
+        let b = rows.iter().find(|r| r.name == "wt-b").unwrap();
+        assert_eq!((b.dirty, b.last_commit_epoch, b.last_commit_author.as_deref()), (None, None, None));
+    }
+
+    #[test]
+    fn wt_col_layout_degrades_columns_from_the_right() {
+        // One fully-loaded row: every optional column populated + main session.
+        // Fixed widths: dirty=1, last-min=12, author=AUTHOR_W(14), commit=8,
+        // live=8; anchor = `● ⌂ ± name` = 2+2+2+9 = 15. Full reserved =
+        // anchor(15) + queued(2+30) + author(2+14) + commit(2+8) + last-min(2+12)
+        // + live(2+8) = 97.
+        let row = WorktreeRow {
+            name: "feature-x".into(), // 9 cells
+            raw_name: "feature-x".into(),
+            state: WtState::Busy,
+            has_main_session: true,
+            queued: 2,
+            running_elapsed: Some(now() - 192),     // "⏱ 3m12s"
+            next_name: Some("pr-review".into()),
+            next_is_def: false,
+            last: Some(('✓', "pr-ready".into(), now() - 7200, true)), // "✓ pr-ready 2h ago" = 17
+            dirty: Some(true),                       // ± = 1
+            last_commit_author: Some("koshea".into()), // author column fixed AUTHOR_W
+            last_commit_epoch: Some(now() - 3 * 86_400), // commit-age fixed COMMIT_AGE_W
+            ..Default::default()
+        };
+        let rows = [row];
+        // (dirty, live, queued, last, author, commit) presence tuple.
+        let present = |a: usize| {
+            let l = wt_col_layout(&rows, a);
+            assert!(l.has_chain, "⛓ is exempt from degradation");
+            (l.dirty_w > 0, l.elapsed_w > 0, l.queued_w > 0, l.last_w > 0, l.author_w > 0, l.commit_age_w > 0)
+        };
+        // Wide: everything shown, name at full width. All reserved widths sum to
+        // 97; at 120 the last-task FILL absorbs the slack.
+        assert_eq!(present(97), (true, true, true, true, true, true));
+        assert_eq!(wt_col_layout(&rows, 120).name_w, 9);
+        assert_eq!(wt_col_layout(&rows, 120).last_w, 35, "last-task fill absorbs the slack");
+        assert_eq!(wt_col_layout(&rows, 120).queued_w, 30, "queued is a fixed slot");
+        // Drop in ladder order: commit → author → queued → dirty → last →
+        // live. The last-task fill outlives queued/dirty (it is the summary-
+        // equivalent), the live timer is the last optional to go, and only after
+        // everything drops does the name column shrink.
+        assert_eq!(present(96), (true, true, true, true, true, false)); // commit dropped (< 97)
+        assert_eq!(present(86), (true, true, true, true, false, false)); // author dropped (< 87)
+        assert_eq!(present(70), (true, true, false, true, false, false)); // queued dropped (< 71)
+        assert_eq!(present(38), (false, true, false, true, false, false)); // dirty dropped (< 39)
+        assert_eq!(present(36), (false, true, false, false, false, false)); // last dropped (< 37)
+        // Only ⏱ + `● ⌂ name` remain; the timer is the last optional to go.
+        assert_eq!(present(22), (false, false, false, false, false, false)); // live dropped (< 23)
+        assert_eq!(wt_col_layout(&rows, 22).name_w, 9);
+        // Below that, the name column shrinks (anchor `● ⌂ name` = 4 + name_w).
+        assert_eq!(wt_col_layout(&rows, 10).name_w, 6);
+        assert!(wt_col_layout(&rows, 10).has_chain);
+    }
+
+    #[test]
+    fn fixed_column_widths_fit_representative_labels() {
+        // Each fixed reserved width must hold its realistic max label under `cw`.
+        // Timer: a 2-digit-hour elapsed ("⏱ 99h59m").
+        let two_digit_hour = elapsed_label(0, 99 * 3600 + 59 * 60);
+        assert_eq!(two_digit_hour, "⏱ 99h59m");
+        assert!(cw(&two_digit_hour) <= TIMER_W);
+        assert!(cw(&two_digit_hour) <= QUEUE_LIVE_W);
+        // Relative-age buckets, including the widest ("just now").
+        for (c, n) in [(100u64, 100u64), (0, 300), (0, 3600), (0, 172_800)] {
+            let label = relative_age_label(c, n);
+            assert!(cw(&label) <= AGE_W, "age {label:?} fits AGE_W");
+            assert!(cw(&label) <= COMMIT_AGE_W, "age {label:?} fits COMMIT_AGE_W");
+        }
+        assert_eq!(relative_age_label(100, 100), "just now");
+        // Queue live position text.
+        assert!(cw("#9 in lane") <= QUEUE_LIVE_W);
+        // A representative author name fits AUTHOR_W; a longer name clips in the
+        // renderer (pad_clip), so the column width itself is the invariant.
+        let author_row = WorktreeRow { last_commit_author: Some("koshea".into()), ..Default::default() };
+        assert!(cw(&wt_author_text(&author_row).unwrap()) <= AUTHOR_W);
+        // Absolute timestamp.
+        assert!(cw(&absolute_local_label(now(), 0)) <= TIMESTAMP_W);
+    }
+
+    #[test]
+    fn queue_col_layout_stable_when_a_row_gains_a_timer() {
+        // Two row sets identical except one row goes finished (empty detail) →
+        // running (detail = "⏱ 5m03s"). The live/age/timestamp columns are FIXED
+        // reserved widths (never data-sized), so the layout is byte-identical.
+        let finished = |detail: &str, running: bool, glyph: char| QueueRow {
+            task_id: "t".into(),
+            glyph,
+            running,
+            main_session: false,
+            worktree: "feature".into(),
+            def_name: Some("squash-merge".into()),
+            summary: "implement the widget cache".into(),
+            detail: detail.into(),
+            created_epoch_s: 0,
+            archived: false,
+            status: if running { TaskStatus::Running } else { TaskStatus::Done },
+            priority: "normal".into(),
+            finished_epoch_s: None,
+        };
+        let before = vec![finished("", false, '✓'), qrow("main", None, "flaky migration", false)];
+        let after = vec![finished("⏱ 5m03s", true, '▶'), qrow("main", None, "flaky migration", false)];
+        assert_eq!(queue_col_layout(&before, 100, 0), queue_col_layout(&after, 100, 0));
+    }
+
+    #[test]
+    fn wt_col_layout_stable_when_a_row_gains_a_timer_or_queued() {
+        let base = WorktreeRow {
+            name: "feature".into(),
+            raw_name: "feature".into(),
+            state: WtState::Free,
+            ..Default::default()
+        };
+        // Pair 1: one row gains a running timer. The live column is always a
+        // candidate (fixed TIMER_W), so the layout is unchanged.
+        let with_timer = WorktreeRow { running_elapsed: Some(now() - 100), ..base.clone() };
+        assert_eq!(
+            wt_col_layout(std::slice::from_ref(&base), 120),
+            wt_col_layout(std::slice::from_ref(&with_timer), 120)
+        );
+        // Pair 2: the queued slot is pane-gated (reserved while ANY visible row
+        // has a queued task — always reserving its fixed WT_QUEUED_W burned 30
+        // blank cells the fill should stretch into). So: with one row already
+        // queued, ANOTHER row gaining a queued task changes nothing.
+        let other_queued = WorktreeRow {
+            name: "other".into(),
+            raw_name: "other".into(),
+            queued: 1,
+            next_name: Some("pr-review".into()),
+            next_is_def: true,
+            ..base.clone()
+        };
+        let base_gains_queued = WorktreeRow {
+            queued: 2,
+            next_name: Some("squash-merge".into()),
+            next_is_def: true,
+            ..base.clone()
+        };
+        assert_eq!(
+            wt_col_layout(&[base.clone(), other_queued.clone()], 120),
+            wt_col_layout(&[base_gains_queued, other_queued], 120)
+        );
+        // Pair 3: one row gains its FIRST finished task. The last-task cell is
+        // the always-reserved FILL, so the layout is byte-identical too.
+        let with_last = WorktreeRow {
+            last: Some(('✓', "pr-ready".into(), now() - 7200, true)),
+            ..base.clone()
+        };
+        assert_eq!(
+            wt_col_layout(std::slice::from_ref(&base), 120),
+            wt_col_layout(&[with_last], 120)
+        );
+    }
+
+    #[test]
+    fn cron_human_tier_table() {
+        let cases = [
+            // daily, with and without a nonzero minute
+            ("30 13 * * *", Some("Everyday 1:30pm")),
+            ("0 9 * * *", Some("Everyday 9am")),
+            ("0 0 * * *", Some("Everyday 12am")),
+            ("0 12 * * *", Some("Everyday 12pm")),
+            // sub-hourly / hourly / multi-hour frequencies
+            ("*/15 * * * *", Some("Every 15m")),
+            ("0 * * * *", Some("Hourly")),
+            ("0 */2 * * *", Some("Every 2h")),
+            // weekday selectors
+            ("30 13 * * 1", Some("Mon 1:30pm")),
+            ("0 9 * * 0", Some("Sun 9am")),
+            ("0 9 * * 7", Some("Sun 9am")), // 7 is also Sunday
+            ("30 13 * * 1-5", Some("Weekdays 1:30pm")),
+            ("0 9 * * 0,6", Some("Weekends 9am")),
+            ("0 9 * * 6,0", Some("Weekends 9am")),
+            // monthly (day-of-month) with ordinal
+            ("0 9 1 * *", Some("Monthly 1st 9am")),
+            ("30 8 22 * *", Some("Monthly 22nd 8:30am")),
+            ("0 0 3 * *", Some("Monthly 3rd 12am")),
+        ];
+        for (expr, want) in cases {
+            assert_eq!(cron_human(expr).as_deref(), want, "cron {expr:?}");
+        }
+    }
+
+    #[test]
+    fn cron_human_valid_shape_falls_back_to_raw() {
+        // A well-formed 5-field cron we don't confidently phrase (specific dom +
+        // month + dow) is shown verbatim rather than dropped.
+        assert_eq!(cron_human("15 10 5 6 2").as_deref(), Some("15 10 5 6 2"));
+        // Every-minute is valid but unphrased → raw.
+        assert_eq!(cron_human("* * * * *").as_deref(), Some("* * * * *"));
+        // Extra internal whitespace collapses in parsing but the raw fallback
+        // preserves the trimmed original text.
+        assert_eq!(cron_human("  15 10 5 6 2  ").as_deref(), Some("15 10 5 6 2"));
+    }
+
+    #[test]
+    fn cron_human_garbage_returns_none() {
+        for expr in ["", "   ", "not a cron", "@daily", "* * *", "30 13 * * * *", "a b c d e"] {
+            assert_eq!(cron_human(expr), None, "garbage {expr:?}");
+        }
+    }
+
+    #[test]
+    fn def_col_layout_sizes_and_caps_schedule_column() {
+        let defs = vec![
+            DefinitionSummary {
+                name: "pr-review".into(),
+                cron: Some("30 13 * * *".into()), // "Everyday 1:30pm" == 15 cells
+                has_discovery: true,
+                ..Default::default()
+            },
+            DefinitionSummary {
+                name: "lint".into(),
+                cron: Some("0 9 * * *".into()), // "Everyday 9am" == 12 cells
+                ..Default::default()
+            },
+            DefinitionSummary { name: "deploy".into(), ..Default::default() }, // no cron
+        ];
+        assert_eq!(def_col_layout(&defs, 120).sched_w, 15); // widest humanized text
+
+        // A raw-cron fallback longer than SCHED_CAP is clamped to the cap.
+        let long = vec![DefinitionSummary {
+            name: "x".into(),
+            cron: Some("15 10 5 6 2".into()), // unphrased → 11-char raw... still ≤ cap
+            ..Default::default()
+        }];
+        assert_eq!(def_col_layout(&long, 120).sched_w, 11);
+        let huge = vec![DefinitionSummary {
+            name: "x".into(),
+            cron: Some("1,2,3,4,5,6,7,8 10 5 6 2".into()), // long raw fallback
+            ..Default::default()
+        }];
+        assert_eq!(def_col_layout(&huge, 120).sched_w, SCHED_CAP);
+    }
+
+    #[test]
+    fn def_col_layout_description_fills_then_degrades() {
+        // name="pr-review"(9), args="(pr)"(4), cron→"Everyday 1:30pm"(15),
+        // description present. Schedule footprint = ⏰(2)+space(1)+15 = 18.
+        let defs = vec![
+            DefinitionSummary {
+                name: "pr-review".into(),
+                args: vec![ArgSpec { name: "pr".into(), ..Default::default() }],
+                cron: Some("30 13 * * *".into()),
+                has_discovery: true,
+                description: Some("Review an open PR end to end.".into()),
+                ..Default::default()
+            },
+            DefinitionSummary { name: "lint".into(), ..Default::default() },
+        ];
+        // Wide: name(9), args(4), schedule(18), desc is the FILL remainder.
+        // used_wo_desc = 9 + (2+4) + (2+18) = 35; desc = 120 - 35 - 2 = 83.
+        let wide = def_col_layout(&defs, 120);
+        assert_eq!((wide.name_w, wide.args_w, wide.sched_w), (9, 4, 15));
+        assert_eq!(wide.desc_w, 83, "description is the fill remainder");
+        // Tighter: the desc fill shrinks toward 0 first (name/args/schedule kept).
+        let mid = def_col_layout(&defs, 40);
+        assert_eq!((mid.name_w, mid.args_w, mid.sched_w), (9, 4, 15));
+        assert_eq!(mid.desc_w, 3, "fill absorbs only what's left: 40 - 35 - 2");
+        // Narrow: desc has already hit 0; now args drops (still can't fit).
+        // used_wo_desc without args = 9 + (2+18) = 29.
+        let narrow = def_col_layout(&defs, 30);
+        assert_eq!(narrow.desc_w, 0);
+        assert_eq!(narrow.args_w, 0, "args dropped after the fill");
+        assert_eq!(narrow.name_w, 9, "name still fits (29 <= 30)");
+        // Very narrow: name shrinks last (29 > 20 → shrink by 9 → name_w 0... but
+        // schedule stays). 9 - (29 - 20) = 0.
+        let tiny = def_col_layout(&defs, 20);
+        assert_eq!((tiny.args_w, tiny.desc_w), (0, 0));
+        assert_eq!(tiny.name_w, 0, "name shrinks last; schedule is kept");
+        assert_eq!(tiny.sched_w, 15, "schedule is the trailing kept column");
+        // No description anywhere → no fill; schedule keeps its today-position.
+        let no_desc = vec![DefinitionSummary {
+            name: "lint".into(),
+            cron: Some("0 9 * * *".into()),
+            ..Default::default()
+        }];
+        assert_eq!(def_col_layout(&no_desc, 120).desc_w, 0);
     }
 }

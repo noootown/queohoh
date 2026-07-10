@@ -33,7 +33,10 @@ async function setup(opts?: {
 	// definition fixture
 	const defDir = join(workspace, "platform", "tasks", "greet");
 	mkdirSync(defDir, { recursive: true });
-	writeFileSync(join(defDir, "config.yaml"), "args: [name]\ndedup: none\n");
+	writeFileSync(
+		join(defDir, "config.yaml"),
+		'description: Greet someone by name.\nargs: [name]\ndedup: none\ncron: "*/15 * * * *"\n',
+	);
 	writeFileSync(join(defDir, "prompt.md"), "Say hi to {{name}}.\n");
 
 	const store = new QueueStore(join(base, "state"));
@@ -238,6 +241,8 @@ describe("ApiServer", () => {
 			scope: string;
 			args: { name: string }[];
 			hasDiscovery: boolean;
+			cron: string | null;
+			description: string | null;
 		}[];
 		expect(defs).toEqual([
 			{
@@ -246,6 +251,8 @@ describe("ApiServer", () => {
 				scope: "project",
 				args: [{ name: "name" }],
 				hasDiscovery: false,
+				cron: "*/15 * * * *",
+				description: "Greet someone by name.",
 			},
 		]);
 	});

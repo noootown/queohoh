@@ -53,6 +53,7 @@ async fn main() -> io::Result<()> {
     let mut terminal: Terminal<CrosstermBackend<Stdout>> =
         Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut app = qoo_tui::app::App::new(runs, sock);
+    app.load_layout(); // per-project pane layout from <state_dir>/tui-layout.json
     let size = terminal.size()?;
     app.size = (size.width, size.height);
 

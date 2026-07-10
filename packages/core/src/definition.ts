@@ -31,10 +31,12 @@ const ArgEntrySchema = z.union([z.string().min(1), ArgSpecSchema]);
 
 const DefinitionConfigSchema = z
 	.object({
+		description: z.string().min(1).optional(),
 		discovery: z
 			.object({ command: z.string().min(1), item_key: z.string().min(1) })
 			.strict()
 			.optional(),
+		cron: z.string().min(1).optional(),
 		args: z.array(ArgEntrySchema).default([]),
 		dedup: z.enum(["skip_seen", "retry_errored", "none"]).default("skip_seen"),
 		worktree: z.string().default("temp"),
@@ -49,7 +51,9 @@ const DefinitionConfigSchema = z
 export interface TaskDefinition {
 	name: string;
 	repo: string;
+	description: string | null;
 	discovery: { command: string; itemKey: string } | null;
+	cron: string | null;
 	args: ArgSpec[];
 	dedup: "skip_seen" | "retry_errored" | "none";
 	worktree: string;
@@ -115,12 +119,14 @@ export function loadDefinition(
 	return {
 		name: taskName,
 		repo: repoName,
+		description: config.description ?? null,
 		discovery: config.discovery
 			? {
 					command: config.discovery.command,
 					itemKey: config.discovery.item_key,
 				}
 			: null,
+		cron: config.cron ?? null,
 		args: normalizeArgs(config.args),
 		dedup: config.dedup,
 		worktree: config.worktree,

@@ -11,6 +11,7 @@ const sample: TaskInstance = {
 	target: { repo: "platform", ref: "pr:1423", worktree: null },
 	priority: "normal",
 	created: "2026-07-08T10:12:00.000Z",
+	finishedAt: null,
 	source: "mcp",
 	ephemeralWorktree: false,
 	error: null,
@@ -103,6 +104,24 @@ describe("resume_session_id and model fields", () => {
 			"c77252c9-11d1-4e68-ab81-f099af529091",
 		);
 		expect(reparsed.model).toBe("claude-fable-5");
+	});
+});
+
+describe("finished_at field", () => {
+	it("defaults to null when absent (legacy task files)", () => {
+		const legacy = serializeTaskFile(sample).replace(/^finished_at: .*\n/m, "");
+		expect(legacy).not.toContain("finished_at:");
+		expect(parseTaskFile(legacy).finishedAt).toBeNull();
+	});
+
+	it("round-trips when set", () => {
+		const withFinish = {
+			...sample,
+			status: "done" as const,
+			finishedAt: "2026-07-08T10:15:30.000Z",
+		};
+		const reparsed = parseTaskFile(serializeTaskFile(withFinish));
+		expect(reparsed.finishedAt).toBe("2026-07-08T10:15:30.000Z");
 	});
 });
 

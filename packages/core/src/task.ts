@@ -35,6 +35,10 @@ const TaskMetaSchema = z
 			.strict(),
 		priority: PrioritySchema.default("normal"),
 		created: z.string().min(1),
+		// Completion timestamp (ISO, like `created`), stamped when the task
+		// transitions to a terminal status (done/failed). Absent on legacy task
+		// files that predate the field → null (additive; old rows must not break).
+		finished_at: z.string().nullable().default(null),
 		source: TaskSourceSchema,
 		ephemeral_worktree: z.boolean().default(false),
 		error: z.string().nullable().default(null),
@@ -53,6 +57,7 @@ export interface TaskInstance {
 	target: { repo: string; ref: string; worktree: string | null };
 	priority: Priority;
 	created: string;
+	finishedAt: string | null;
 	source: TaskSource;
 	ephemeralWorktree: boolean;
 	error: string | null;
@@ -74,6 +79,7 @@ export function parseTaskFile(content: string): TaskInstance {
 		target: m.target,
 		priority: m.priority,
 		created: m.created,
+		finishedAt: m.finished_at,
 		source: m.source,
 		ephemeralWorktree: m.ephemeral_worktree,
 		error: m.error,
@@ -94,6 +100,7 @@ export function serializeTaskFile(task: TaskInstance): string {
 		target: task.target,
 		priority: task.priority,
 		created: task.created,
+		finished_at: task.finishedAt,
 		source: task.source,
 		ephemeral_worktree: task.ephemeralWorktree,
 		error: task.error,
