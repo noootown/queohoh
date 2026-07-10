@@ -1,0 +1,28 @@
+---
+source: crates/qoo-tui/tests/def_pick_snapshot.rs
+expression: term.backend()
+---
+"                                        daemon unreachable — retrying… running 0"
+"╭─────────────────────────╮╭DETAIL─────────────────────────────────────────────╮"
+"│QUEUE                    ││(nothing selected)                                 │"
+"│queue empty — [a] on a wo││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│   ╭ Run task definition — :platform.wt-a ────────────────────────────────╮   │"
+"│   │ autotest ⏰                                                          │   │" Hidden by multi-width symbols: [(16, " ")]
+"│   │ squash-merge (source, target=main) (g)                               │   │"
+"╰───│ ↑/↓ move · enter run · q/esc close                                   │   │"
+"╭───╰──────────────────────────────────────────────────────────────────────╯   │"
+"│TASKS                    ││                                                   │"
+"│no task definitions      ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯│                                                   │"
+"╭─────────────────────────╮│                                                   │"
+"│WORKTREES                ││                                                   │"
+"│no worktrees             ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
+"[c] new run · [a] actions · [enter] detail · [↑↓] move · [/] filter · [?] help ·"

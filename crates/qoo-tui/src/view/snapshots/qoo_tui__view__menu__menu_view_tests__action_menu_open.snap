@@ -1,0 +1,15 @@
+---
+source: crates/qoo-tui/src/view/menu.rs
+assertion_line: 204
+expression: s
+---
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+    ╭ do the thing ────────────────────────────────────╮    
+    │ Rerun                                            │    
+    │ Skip — cannot skip a running task                │    
+    │ ↑/↓ move · enter run · esc close                 │    
+    ╰──────────────────────────────────────────────────╯

@@ -1,0 +1,28 @@
+---
+source: crates/qoo-tui/tests/args_form_snapshot.rs
+expression: term.backend()
+---
+"                                        daemon unreachable — retrying… running 0"
+"╭─────────────────────────╮╭DETAIL─────────────────────────────────────────────╮"
+"│QUEUE                    ││(nothing selected)                                 │"
+"│queue empty — [a] on a wo││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│   ╭ pr-ready args ───────────────────────────────────────────────────────╮   │"
+"│   │ pr>     █                          PR number                         │   │"
+"│   │ mode>   ‹ready›                    ready | create                    │   │"
+"│   │ source> wt-a                                                         │   │"
+"╰───│ tab/↓ next · ←/→ cycle · enter run · esc cancel                      │   │"
+"╭───│ [ Run ]  [ Cancel ]                                                  │   │"
+"│TAS╰──────────────────────────────────────────────────────────────────────╯   │"
+"│no task definitions      ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯│                                                   │"
+"╭─────────────────────────╮│                                                   │"
+"│WORKTREES                ││                                                   │"
+"│no worktrees             ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
+"[c] new run · [a] actions · [enter] detail · [↑↓] move · [/] filter · [?] help ·"

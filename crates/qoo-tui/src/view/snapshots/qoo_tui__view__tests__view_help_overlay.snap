@@ -1,0 +1,28 @@
+---
+source: crates/qoo-tui/src/view/mod.rs
+expression: terminal.backend()
+---
+" 1:acme                                                            ● running 1/3"
+"╭─────────────────────────╮╭DETAIL─────────────────────────────────────────────╮"
+"│QUEUE                    ││ 1:transcript  2:report  3:prompt                  │"
+"│⠯ ⛓ acme:feature implemen││(no transcript yet)                                │"
+"│○ acme:╭ keymap ──────────────────────────────────────────────────────╮       │"
+"│✗ acme:│ Tab / Shift+Tab cycle focus between panes (incl. detail)     │       │"
+"│✓ acme:│ 1–9             switch project tab                           │       │"
+"│       │ [ / ]           previous / next project tab                  │       │"
+"│       │ { / }           previous / next detail sub-tab               │       │"
+"│       │ j/k · arrows    move cursor (detail: scroll)                 │       │"
+"│       │ J/K · shift+↑↓  extend selection                             │       │"
+"│       │ Enter / a       action menu for selection                    │       │"
+"╰───────│ c               create (queue: adhoc task · worktrees: worktr│       │"
+"╭───────│ /               filter focused pane                          │       │"
+"│TASKS  │ esc             clear range → clear filter → close overlay   │       │"
+"│no task│ g / G           top / bottom (detail scroll or list jump)    │       │"
+"│       │ ?               this help                                    │       │"
+"╰───────│ q               quit                                         │       │"
+"╭───────│ any key to close                                             │       │"
+"│WORKTRE╰──────────────────────────────────────────────────────────────╯       │"
+"│● feature ◆ [1]          ││                                                   │"
+"│● hotfix                 ││                                                   │"
+"╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
+"[c] new run · [a] actions · [enter] detail · [↑↓] move · [/] filter · [?] help ·"

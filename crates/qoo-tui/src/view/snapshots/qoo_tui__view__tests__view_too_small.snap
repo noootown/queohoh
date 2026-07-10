@@ -1,0 +1,15 @@
+---
+source: crates/qoo-tui/src/view/mod.rs
+assertion_line: 194
+expression: terminal.backend()
+---
+"terminal too small (60x15 minimum)      "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "

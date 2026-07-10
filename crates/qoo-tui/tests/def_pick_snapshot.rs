@@ -1,0 +1,39 @@
+use qoo_tui::app::{App, Mode};
+use qoo_tui::ipc::types::{ArgSpec, DefinitionSummary};
+use ratatui::{Terminal, backend::TestBackend};
+
+#[test]
+fn def_pick_popup_snapshot() {
+    let mut app = App::new("/tmp/runs".into(), "/tmp/d.sock".into());
+    app.size = (80, 24);
+    app.mode = Mode::DefPick {
+        defs: vec![
+            DefinitionSummary {
+                repo: "platform".into(),
+                name: "autotest".into(),
+                scope: "project".into(),
+                args: vec![],
+                has_discovery: true,
+            },
+            DefinitionSummary {
+                repo: "platform".into(),
+                name: "squash-merge".into(),
+                scope: "global".into(),
+                args: vec![
+                    ArgSpec { name: "source".into(), default: None, options: None, description: None },
+                    ArgSpec { name: "target".into(), default: Some("main".into()), options: None, description: None },
+                ],
+                has_discovery: false,
+            },
+        ],
+        index: 1,
+        worktree: Some("platform.wt-a".into()),
+        branch: Some("jus-1-x".into()),
+    };
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    term.draw(|f| {
+        qoo_tui::view::render(&app, f);
+    })
+    .unwrap();
+    insta::assert_snapshot!(term.backend());
+}

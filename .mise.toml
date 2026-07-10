@@ -57,7 +57,15 @@ description = "Print daemon state JSON via the unix socket"
 run = "node packages/daemon/dist/cli.js status"
 
 [tasks.tui]
-description = "Launch the Ink TUI cockpit (rebuilds first, self-heals the daemon)"
+description = "Launch the qoo-tui cockpit (ratatui; builds the release binary, self-heals the daemon)"
+depends = ["daemon:ensure"]
+run = [
+	"$HOME/.cargo/bin/cargo build --release -p qoo-tui",
+	"./target/release/qoo-tui",
+]
+
+[tasks."tui:ink"]
+description = "Launch the legacy Ink TUI (fallback during the ratatui bake; rebuilds first, self-heals the daemon)"
 depends = ["build", "daemon:ensure"]
 run = "node packages/tui/dist/cli.js"
 
@@ -86,3 +94,16 @@ run = [
 	"launchctl bootout gui/$(id -u)/com.queohoh.daemon || true",
 	"node packages/daemon/dist/cli.js launchd:uninstall",
 ]
+
+# --- rust tui (parallel to the Ink TUI until parity) ---
+
+[tasks."tui:rs"]
+description = "Build and launch the Rust ratatui TUI (release)"
+run = [
+	"$HOME/.cargo/bin/cargo build --release -p qoo-tui",
+	"./target/release/qoo-tui",
+]
+
+[tasks."tui:rs:dev"]
+description = "Run the Rust ratatui TUI unoptimized (fast rebuild loop)"
+run = "$HOME/.cargo/bin/cargo run -p qoo-tui"

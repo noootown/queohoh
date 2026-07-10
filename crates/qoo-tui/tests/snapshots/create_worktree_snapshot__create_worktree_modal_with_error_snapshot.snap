@@ -1,0 +1,28 @@
+---
+source: crates/qoo-tui/tests/create_worktree_snapshot.rs
+expression: term.backend()
+---
+" 1:platform                             daemon unreachable — retrying… running 0"
+"╭─────────────────────────╮╭DETAIL─────────────────────────────────────────────╮"
+"│QUEUE                    ││(nothing selected)                                 │"
+"│queue empty — [a] on a wo││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│   ╭ Create worktree — platform ──────────────────────────────────────────╮   │"
+"│   │ branch> bad name█                                                    │   │"
+"│   │ no whitespace allowed                                                │   │"
+"╰───│ enter submit · esc cancel                                            │   │"
+"╭───╰──────────────────────────────────────────────────────────────────────╯   │"
+"│TASKS                    ││                                                   │"
+"│no task definitions      ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯│                                                   │"
+"╭─────────────────────────╮│                                                   │"
+"│WORKTREES                ││                                                   │"
+"│no worktrees             ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
+"[c] new run · [a] actions · [enter] detail · [↑↓] move · [/] filter · [?] help ·"
