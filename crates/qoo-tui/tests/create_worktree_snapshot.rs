@@ -8,7 +8,7 @@ fn create_worktree_modal_with_error_snapshot() {
     app.size = (80, 24);
     // One project so `active_repo()` yields "platform" for the modal title.
     app.snapshot = Some(StateSnapshot {
-        projects: vec![Project { name: "platform".into() }],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
         ..Default::default()
     });
     let input = tui_input::Input::new("bad name".into());

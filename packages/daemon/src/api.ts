@@ -3,6 +3,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { basename, join } from "node:path";
 import type {
 	ArgSpec,
+	ChainStepInput,
 	GlobalConfig,
 	MainSessionStore,
 	QueueStore,
@@ -13,15 +14,18 @@ import type {
 	WorktreeInfo,
 } from "@queohoh/core";
 import {
+	buildItemFromArgs,
 	DEFAULT_MODEL_ALIASES,
 	defaultExec,
 	effectiveModelTable,
 	globalWorkspaceDir,
 	instantiateDefinition,
 	listDefinitions,
+	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectVars,
 	projectWorkspaceDir,
+	render,
 	resolveDefinition,
 	resolveModel,
 	SessionModeSchema,
@@ -36,7 +40,14 @@ export interface StateSnapshot {
 	sessions: SessionEntry[];
 	running: string[];
 	maxConcurrent: number;
-	projects: { name: string }[];
+	/**
+	 * `githubId` is the project's optional author identity from its vars.yaml
+	 * `github_id` key (see loadProjectGithubId). The TUI matches it against each
+	 * worktree's lastCommitAuthorEmail/lastCommitAuthor to sort "my" worktrees
+	 * first. Optional/additive — a project without the setting omits the field,
+	 * and old TUIs ignore it.
+	 */
+	projects: { name: string; githubId?: string }[];
 	worktrees: Record<string, WorktreeInfo[]>;
 	mainSessions: Record<string, string>;
 	/**
@@ -93,7 +104,12 @@ export class ApiServer {
 			sessions: this.deps.registry.list(),
 			running: this.deps.engine.runningTaskIds(),
 			maxConcurrent: this.deps.config.maxConcurrentTasks,
-			projects: this.deps.config.projects.map((p) => ({ name: p.name })),
+			projects: this.deps.config.projects.map((p) => ({
+				name: p.name,
+				githubId: loadProjectGithubId(
+					projectWorkspaceDir(this.deps.config, p.name),
+				),
+			})),
 			worktrees: this.deps.engine.worktreesByRepo(),
 			mainSessions: this.deps.mainSessions.all(),
 			buildId: this.buildId,
@@ -255,6 +271,95 @@ export class ApiServer {
 				deps.onMutation();
 				return task;
 			}
+			case "enqueue_chain": {
+				const rawSteps = Array.isArray(params.steps) ? params.steps : [];
+				if (rawSteps.length === 0) {
+					throw new Error("enqueue_chain requires at least one step");
+				}
+				const priority =
+					(params.priority as "low" | "normal" | "high") ?? "normal";
+				const model =
+					typeof params.model === "string" && params.model.length > 0
+						? params.model
+						: undefined;
+				const resumeSessionId =
+					typeof params.resume_session_id === "string" &&
+					params.resume_session_id.length > 0
+						? params.resume_session_id
+						: undefined;
+				const worktree =
+					typeof params.worktree === "string" && params.worktree.length > 0
+						? params.worktree
+						: undefined;
+				let repo = typeof params.repo === "string" ? params.repo : "";
+				let ref = worktree
+					? `worktree:${worktree}`
+					: String(params.ref ?? "temp");
+				if (typeof params.cwd === "string" && params.cwd.length > 0) {
+					const resolved = await deps.engine.resolveCwd(params.cwd);
+					if (resolved === null) {
+						throw new Error(
+							unregisteredCwdMessage(
+								params.cwd,
+								await deps.engine.gitToplevel(params.cwd),
+							),
+						);
+					}
+					repo = resolved.repo;
+					ref = `worktree:${resolved.worktree}`;
+				}
+				if (repo.length === 0) {
+					throw new Error("enqueue_chain requires repo or cwd");
+				}
+				const project = deps.config.projects.find((p) => p.name === repo);
+				if (!project) throw new Error(`unknown repo: ${repo}`);
+				const projectDir = projectWorkspaceDir(deps.config, repo);
+				// Builtin vars sit below explicit config vars, mirroring runDefinition;
+				// the exec-time worktree pass fills `{{worktree}}` etc. later.
+				const globalVars = {
+					project: repo,
+					repo_path: project.path,
+					...deps.config.vars,
+				};
+				const repoVars = loadProjectVars(projectDir);
+				const steps: ChainStepInput[] = rawSteps.map((raw, i) => {
+					const s = (raw ?? {}) as {
+						definition?: unknown;
+						args?: unknown;
+						prompt?: unknown;
+					};
+					if (typeof s.definition === "string" && s.definition.length > 0) {
+						const def = resolveDefinition(deps.config, repo, s.definition);
+						const values = Array.isArray(s.args) ? s.args.map(String) : [];
+						const item = buildItemFromArgs(def, values);
+						return {
+							prompt: render(def.prompt, globalVars, repoVars, item),
+							definition: `${repo}/${def.name}`,
+							item,
+							// Chain-level model applies to prompt steps; a definition step's
+							// own model still wins at spawn (worker precedence), matching
+							// run_task_definition. Priority is the chain's (shared), applied
+							// uniformly by createChain so members schedule together.
+							model,
+						};
+					}
+					if (typeof s.prompt === "string" && s.prompt.length > 0) {
+						return { prompt: s.prompt, model };
+					}
+					throw new Error(
+						`chain step ${i}: must have either 'definition' or 'prompt'`,
+					);
+				});
+				const created = deps.store.createChain(steps, {
+					repo,
+					ref,
+					source: params.source === "mcp" ? "mcp" : "tui",
+					priority,
+					resumeSessionId,
+				});
+				deps.onMutation();
+				return created;
+			}
 			case "definitions": {
 				type Summary = {
 					repo: string;
@@ -344,6 +449,20 @@ export class ApiServer {
 						? params.resume_session_id
 						: undefined;
 				let refOverride = worktree ? `worktree:${worktree}` : undefined;
+				// `ref` pins the run's target when no worktree param is given. It beats
+				// the definition's own `worktree:` setting — notably a `worktree: auto`
+				// def, which would otherwise extract a branch from a PR/ticket URL in
+				// the args even when that URL is reference material, not the
+				// destination. Ignored for a location-critical `worktree: repo` def
+				// (same as the worktree param), and beaten by cwd below.
+				if (
+					refOverride === undefined &&
+					def.worktree !== "repo" &&
+					typeof params.ref === "string" &&
+					params.ref.length > 0
+				) {
+					refOverride = String(params.ref);
+				}
 				if (typeof params.cwd === "string" && params.cwd.length > 0) {
 					const resolved = await deps.engine.resolveCwd(params.cwd);
 					if (resolved === null) {
@@ -419,12 +538,24 @@ export class ApiServer {
 			}
 			case "skip": {
 				const task = this.mustGet(String(params.id));
-				if (!["failed", "needs-input", "done"].includes(task.status)) {
-					throw new Error(`cannot skip task in status ${task.status}`);
+				// Two roles for `skip`, by status:
+				//  - a LIVE task (queued / needs-input) → user cancel: mark it
+				//    `cancelled` (terminal, stays visible, distinct from `failed`).
+				//  - an already-TERMINAL task → dismiss: archive it out of the queue.
+				if (task.status === "queued" || task.status === "needs-input") {
+					const updated = deps.store.update(task.id, {
+						status: "cancelled",
+						error: "cancelled by user",
+					});
+					deps.onMutation();
+					return updated;
 				}
-				deps.store.archive(task.id);
-				deps.onMutation();
-				return true;
+				if (["failed", "done", "skipped", "cancelled"].includes(task.status)) {
+					deps.store.archive(task.id);
+					deps.onMutation();
+					return true;
+				}
+				throw new Error(`cannot skip task in status ${task.status}`);
 			}
 			case "stop": {
 				const task = this.mustGet(String(params.id));
@@ -432,7 +563,8 @@ export class ApiServer {
 					throw new Error(`cannot stop task in status ${task.status}`);
 				}
 				// No onMutation: the status change follows later, when the killed
-				// worker settles and the store flips the task to failed.
+				// worker settles and the store flips the task to `cancelled` (the
+				// engine recorded the Stop so the kill reads as a user cancel).
 				deps.engine.stopTask(task.id);
 				return true;
 			}

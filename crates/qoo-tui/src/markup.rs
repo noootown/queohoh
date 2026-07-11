@@ -23,6 +23,14 @@ pub enum LineCtx {
     /// this width across all rows), so [`style_config_line`] can color the key
     /// column distinctly from the value without re-parsing a separator.
     Config { key_col: usize },
+    /// A queue-style task row in the worktree detail's lane-task list. The line
+    /// text is the task's display NAME (def name or prompt summary); the ctx
+    /// carries the pieces the styler needs to render a `glyph name … age` row
+    /// like the queue pane: `glyph` (status, colored by `glyph_style`), `is_def`
+    /// (mauve name vs fg summary), the right-pinned relative `age`, and whether
+    /// this is the detail row cursor (`selected` → the whole row inverts with the
+    /// palette selection style). See [`style_lane_task_line`].
+    LaneTask { glyph: char, is_def: bool, age: String, selected: bool },
 }
 
 /// One cheap pass over the full transcript classifying each line. A line whose
@@ -133,9 +141,11 @@ pub fn wrap_lines(lines: &[String], ctxs: &[LineCtx], width: usize) -> Vec<Displ
     let width = width.max(1);
     let mut out = Vec::with_capacity(lines.len());
     for (line, ctx) in lines.iter().zip(ctxs.iter()) {
-        // Fence delimiters and already-fitting/empty lines pass through as one
-        // segment. `str_width("") == 0 <= width` folds the empty case in here.
-        if matches!(ctx, LineCtx::Fence { .. }) || str_width(line) <= width {
+        // Fence delimiters, lane-task rows (self-truncating in the styler), and
+        // already-fitting/empty lines pass through as one segment. `str_width("")
+        // == 0 <= width` folds the empty case in here.
+        if matches!(ctx, LineCtx::Fence { .. } | LineCtx::LaneTask { .. }) || str_width(line) <= width
+        {
             out.push(DisplayLine { text: line.clone(), ctx: ctx.clone(), is_continuation: false });
             continue;
         }
@@ -144,7 +154,16 @@ pub fn wrap_lines(lines: &[String], ctxs: &[LineCtx], width: usize) -> Vec<Displ
             _ => word_wrap(line, width),
         };
         for (i, text) in pieces.into_iter().enumerate() {
-            out.push(DisplayLine { text, ctx: ctx.clone(), is_continuation: i > 0 });
+            // A wrapped `key   value` row only has a key on its FIRST segment; the
+            // continuation is pure value (word-wrap drops the alignment padding
+            // too), so it must NOT re-color its first `key_col` chars as a key —
+            // `key_col: 0` means "value column starts at 0". Every other ctx keeps
+            // its styling across the wrap (fenced syntax, plain text).
+            let seg_ctx = match ctx {
+                LineCtx::Config { .. } if i > 0 => LineCtx::Config { key_col: 0 },
+                other => other.clone(),
+            };
+            out.push(DisplayLine { text, ctx: seg_ctx, is_continuation: i > 0 });
         }
     }
     out
@@ -249,7 +268,55 @@ pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette)
         LineCtx::Fence { lang } => fence_rule(lang.as_deref(), width, p),
         LineCtx::Fenced { lang } => apply_jinja(style_fenced(line, lang, p), p),
         LineCtx::Config { key_col } => style_config_line(line, *key_col, p),
+        LineCtx::LaneTask { glyph, is_def, age, selected } => {
+            style_lane_task_line(line, *glyph, *is_def, age, *selected, width, p)
+        }
     }
+}
+
+/// Style a queue-style lane-task row (see [`LineCtx::LaneTask`]): a status glyph
+/// (colored by [`crate::view::theme::glyph_style`]), the task NAME (`line`) in
+/// mauve for a definition or fg for a prompt summary, and the relative `age`
+/// right-pinned in `info`. The name is clipped so the glyph + name + age always
+/// fit `width` (the age is never pushed off-screen). When `selected` the whole
+/// row inverts with the palette selection style — the detail row cursor. Every
+/// char lands in exactly one contiguous span so the cell-column selection patch
+/// keeps working. `width == 0` yields an empty line.
+fn style_lane_task_line(
+    name: &str,
+    glyph: char,
+    is_def: bool,
+    age: &str,
+    selected: bool,
+    width: u16,
+    p: &Palette,
+) -> Line<'static> {
+    let width = width as usize;
+    if width == 0 {
+        return Line::from(String::new());
+    }
+    let name_style = Style::default().fg(if is_def { p.mauve } else { p.fg });
+    let age_w = str_width(age);
+    // After the 2-cell `glyph ` prefix, reserve the age column + a 1-cell gap; the
+    // name fills whatever remains (clipped/padded to that exact width).
+    let avail = width.saturating_sub(2);
+    let name_col = avail.saturating_sub(age_w + 1);
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled(glyph.to_string(), crate::view::theme::glyph_style(glyph, p)),
+        Span::raw(" "),
+    ];
+    if name_col > 0 {
+        spans.push(Span::styled(crate::selectors::pad_clip(name, name_col), name_style));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(age.to_string(), Style::default().fg(p.info)));
+    if selected {
+        let sel = p.selection();
+        for span in spans.iter_mut() {
+            span.style = span.style.patch(sel);
+        }
+    }
+    Line::from(spans)
 }
 
 /// Style a `key   value` config row: the key column (chars `[0, key_col)`,
@@ -262,6 +329,11 @@ pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette)
 /// the downstream cell-column selection patch keeps working.
 fn style_config_line(line: &str, key_col: usize, p: &Palette) -> Line<'static> {
     let key_style = Style::default().fg(p.accent);
+    // `key_col == 0` is a wrapped continuation (no key column) — style it wholly
+    // as value so a wrapped path/value never mis-colors its start as a key.
+    if key_col == 0 {
+        return Line::from(style_config_value(line, p));
+    }
     let chars: Vec<char> = line.chars().collect();
     if chars.len() <= key_col {
         return Line::from(Span::styled(line.to_string(), key_style));
@@ -1439,6 +1511,42 @@ mod tests {
                 ("claude-opus-4-8".into(), fg.add_modifier(Modifier::BOLD)),
             ]
         );
+    }
+
+    #[test]
+    fn config_continuation_key_col_zero_is_all_value() {
+        // `key_col == 0` marks a wrapped continuation (no key column): the whole
+        // segment styles as value, never re-coloring its start in the key accent.
+        // Regression for the worktree info `path` row rendering `/Users…` blue.
+        let p = Palette::default();
+        let fg = Style::default().fg(p.fg);
+        assert_eq!(
+            config("/Users/noootown/Downloads", 0, &p),
+            vec![("/Users/noootown/Downloads".into(), fg)]
+        );
+    }
+
+    #[test]
+    fn wrapped_config_value_keys_only_the_first_segment() {
+        // End-to-end: a `path   <long value>` row wrapped narrow keeps the accent
+        // key column on the FIRST segment only; every continuation is pure value
+        // (no accent-colored prefix). Reproduces the worktree `path` bug — a short
+        // value (branch) never wraps, so only long values (paths) were affected.
+        let p = Palette::default();
+        let lines = vec!["path     /Users/noootown/Downloads/agent247/queohoh".to_string()];
+        let ctxs = vec![LineCtx::Config { key_col: 9 }];
+        let display = wrap_lines(&lines, &ctxs, 20);
+        assert!(display.len() > 1, "the long path value wraps into continuations");
+        let first = parts(&style_transcript_line(&display[0].text, &display[0].ctx, 20, &p));
+        assert_eq!(first[0].1, accent(&p), "first segment keeps the accent key column");
+        for seg in &display[1..] {
+            let styled = parts(&style_transcript_line(&seg.text, &seg.ctx, 20, &p));
+            assert!(
+                styled.iter().all(|(_, st)| *st != accent(&p)),
+                "continuation {:?} must not re-color any span as a key",
+                seg.text
+            );
+        }
     }
 
     #[test]

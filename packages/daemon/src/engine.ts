@@ -26,12 +26,22 @@ import {
 	schedule,
 } from "@queohoh/core";
 
-/** Per-worktree git facts merged onto WorktreeInfo. Each field null = unknown. */
+/** Per-worktree git/PR facts merged onto WorktreeInfo. Each field null = unknown. */
 interface GitEnrichment {
 	dirty: boolean | null;
 	lastCommitEpoch: number | null;
 	lastCommitAuthor: string | null;
+	lastCommitAuthorEmail: string | null;
+	lastCommitHash: string | null;
+	/** Open PR number for this worktree's branch (via `gh pr list`). null =
+	 * unknown / no open PR / gh unavailable. */
+	prNumber: number | null;
 }
+
+/** The git-commit subset of GitEnrichment — everything computeGitEnrichment
+ * derives from a single worktree path. prNumber is layered on separately (it's
+ * a per-repo fact, fetched once per sweep, not per worktree). */
+type GitCommitFacts = Omit<GitEnrichment, "prNumber">;
 
 /** Serve last-known enrichment for a worktree this long before re-shelling git. */
 const GIT_ENRICH_TTL_MS = 60_000;
@@ -56,6 +66,10 @@ export class Engine {
 	// worker never reported a pid (spawn failed) or that started under a previous
 	// daemon process — stopTask throws in that case.
 	private childPids = new Map<string, number>();
+	// Task ids the user explicitly Stopped, so the worker settles their kill as
+	// `cancelled` rather than `failed`. Populated by stopTask, cleared when the
+	// run settles (startWorker's finally-then).
+	private cancelledTaskIds = new Set<string>();
 	private ticking = false;
 	private worktreeCache = new Map<string, WorktreeInfo[]>(); // repo name -> worktrees
 	// Git enrichment, keyed by worktree PATH, refreshed off the hot pass() path.
@@ -215,10 +229,15 @@ export class Engine {
 			}
 		}
 
-		// Auto-archive old done tasks.
+		// Auto-archive old terminal tasks. `cancelled` is archived like `done`
+		// because it's a deliberate, resolved outcome; `failed`/`skipped` are left
+		// visible (they usually want attention or explain a stalled chain).
 		const cutoff = Date.now() - deps.config.archiveAfterDays * 86_400_000;
 		for (const t of deps.store.list()) {
-			if (t.status === "done" && Date.parse(t.created) < cutoff) {
+			if (
+				(t.status === "done" || t.status === "cancelled") &&
+				Date.parse(t.created) < cutoff
+			) {
 				deps.store.archive(t.id);
 			}
 		}
@@ -231,6 +250,12 @@ export class Engine {
 			maxConcurrent: deps.config.maxConcurrentTasks,
 		});
 
+		// Chain members whose predecessor did not succeed: mark terminal `skipped`
+		// so they never run (stop-on-failure inside a chain). Not resource-limited.
+		for (const { task, reason } of decision.skip) {
+			deps.store.update(task.id, { status: "skipped", error: reason });
+		}
+		if (decision.skip.length > 0) deps.onChange?.();
 		for (const task of decision.resolve) {
 			await this.resolveTask(task);
 		}
@@ -281,7 +306,13 @@ export class Engine {
 		const now = Date.now();
 		let changed = false;
 		const live = new Set<string>();
-		for (const [, list] of this.worktreeCache) {
+		for (const [repo, list] of this.worktreeCache) {
+			// Branch→PR-number map for this repo, fetched at most ONCE per sweep and
+			// only when at least one worktree here is actually being refreshed (all
+			// within TTL → no gh call at all). Lazy so a repo served entirely from
+			// cache costs nothing. `undefined` = not yet fetched this sweep.
+			let prMap: Map<string, number> | null | undefined;
+			const repoPath = this.repoPath(repo);
 			for (const wt of list) {
 				live.add(wt.path);
 				if (
@@ -289,14 +320,22 @@ export class Engine {
 					GIT_ENRICH_TTL_MS
 				)
 					continue; // serve last-known within TTL
-				const e = await this.computeGitEnrichment(wt.path);
+				if (prMap === undefined) {
+					prMap = repoPath === null ? null : await this.ghPrMap(repoPath);
+				}
+				const facts = await this.computeGitEnrichment(wt.path);
+				const prNumber = prMap?.get(wt.branch) ?? null;
+				const e: GitEnrichment = { ...facts, prNumber };
 				this.gitEnrichFetchedAt.set(wt.path, Date.now());
 				const prev = this.gitEnrichCache.get(wt.path);
 				if (
 					!prev ||
 					prev.dirty !== e.dirty ||
 					prev.lastCommitEpoch !== e.lastCommitEpoch ||
-					prev.lastCommitAuthor !== e.lastCommitAuthor
+					prev.lastCommitAuthor !== e.lastCommitAuthor ||
+					prev.lastCommitAuthorEmail !== e.lastCommitAuthorEmail ||
+					prev.lastCommitHash !== e.lastCommitHash ||
+					prev.prNumber !== e.prNumber
 				) {
 					changed = true;
 				}
@@ -313,11 +352,21 @@ export class Engine {
 		if (changed) this.deps.onChange?.();
 	}
 
-	private async computeGitEnrichment(path: string): Promise<GitEnrichment> {
+	private async computeGitEnrichment(path: string): Promise<GitCommitFacts> {
 		const dirty = await this.gitDirty(path);
-		const { epoch: lastCommitEpoch, author: lastCommitAuthor } =
-			await this.gitLastCommit(path);
-		return { dirty, lastCommitEpoch, lastCommitAuthor };
+		const {
+			epoch: lastCommitEpoch,
+			author: lastCommitAuthor,
+			email: lastCommitAuthorEmail,
+			hash: lastCommitHash,
+		} = await this.gitLastCommit(path);
+		return {
+			dirty,
+			lastCommitEpoch,
+			lastCommitAuthor,
+			lastCommitAuthorEmail,
+			lastCommitHash,
+		};
 	}
 
 	/** True when the working tree has uncommitted changes; null on failure. */
@@ -336,29 +385,87 @@ export class Engine {
 	}
 
 	/**
-	 * HEAD's commit epoch SECONDS + author name in ONE `git log` call:
-	 * `--format=%ct%x09%an` prints "<epoch>\t<author>". Either field is null on
-	 * failure or when unparseable/empty.
+	 * HEAD's commit epoch SECONDS + author name + author email + short hash in
+	 * ONE `git log` call: `--format=%ct%x09%an%x09%ae%x09%h` prints
+	 * "<epoch>\t<author>\t<email>\t<hash>". Fields map positionally; any that is
+	 * absent (a shorter line, e.g. the old 3-field format before %h was appended)
+	 * or empty/unparseable yields null. Positional parse assumes the author name
+	 * carries no tab (git author names don't in practice) — the trade for being
+	 * able to append trailing fields without ambiguity.
 	 */
-	private async gitLastCommit(
-		path: string,
-	): Promise<{ epoch: number | null; author: string | null }> {
+	private async gitLastCommit(path: string): Promise<{
+		epoch: number | null;
+		author: string | null;
+		email: string | null;
+		hash: string | null;
+	}> {
+		const none = { epoch: null, author: null, email: null, hash: null };
 		try {
 			const { stdout, exitCode } = await this.deps.exec(
 				"git",
-				["-C", path, "log", "-1", "--format=%ct%x09%an"],
+				["-C", path, "log", "-1", "--format=%ct%x09%an%x09%ae%x09%h"],
 				{ cwd: path },
 			);
-			if (exitCode !== 0) return { epoch: null, author: null };
-			const [epochRaw, ...authorParts] = stdout.trim().split("\t");
-			const n = Number.parseInt(epochRaw ?? "", 10);
-			const author = authorParts.join("\t").trim();
+			if (exitCode !== 0) return none;
+			const parts = stdout.trim().split("\t");
+			const n = Number.parseInt(parts[0] ?? "", 10);
+			const author = (parts[1] ?? "").trim();
+			const email = (parts[2] ?? "").trim();
+			const hash = (parts[3] ?? "").trim();
 			return {
 				epoch: Number.isFinite(n) ? n : null,
 				author: author.length > 0 ? author : null,
+				email: email.length > 0 ? email : null,
+				hash: hash.length > 0 ? hash : null,
 			};
 		} catch {
-			return { epoch: null, author: null };
+			return none;
+		}
+	}
+
+	/**
+	 * Open PRs for a repo as a branch→number map, via ONE `gh pr list` call at
+	 * the repo root. Any failure — gh missing, unauthenticated, non-zero exit,
+	 * unparseable JSON — is treated as "no data" and returns null (never throws).
+	 * Logged at most once per call at debug so a gh-less machine doesn't spam.
+	 */
+	private async ghPrMap(repoPath: string): Promise<Map<string, number> | null> {
+		try {
+			const { stdout, exitCode } = await this.deps.exec(
+				"gh",
+				[
+					"pr",
+					"list",
+					"--state",
+					"open",
+					"--json",
+					"number,headRefName",
+					"--limit",
+					"200",
+				],
+				{ cwd: repoPath },
+			);
+			if (exitCode !== 0) {
+				console.debug?.("gh pr list: non-zero exit; skipping PR enrichment");
+				return null;
+			}
+			const rows: unknown = JSON.parse(stdout);
+			if (!Array.isArray(rows)) return null;
+			const map = new Map<string, number>();
+			for (const row of rows) {
+				if (row === null || typeof row !== "object") continue;
+				const { headRefName, number } = row as {
+					headRefName?: unknown;
+					number?: unknown;
+				};
+				if (typeof headRefName === "string" && typeof number === "number") {
+					map.set(headRefName, number);
+				}
+			}
+			return map;
+		} catch {
+			console.debug?.("gh pr list: unavailable; skipping PR enrichment");
+			return null;
 		}
 	}
 
@@ -385,6 +492,10 @@ export class Engine {
 					ephemeralWorktree: resolution.ephemeral,
 				});
 				this.worktreeCache.delete(task.target.repo); // stale after spawn
+				// A chain resolves its worktree ONCE, at the head: stamp it onto the
+				// tail members so they land on the same lane and never re-resolve
+				// (which for a `temp` chain would spawn N worktrees).
+				this.stampChainWorktree(task, resolution.worktree);
 			} else {
 				deps.store.update(task.id, {
 					status: "needs-input",
@@ -398,6 +509,29 @@ export class Engine {
 			});
 		}
 		deps.onChange?.();
+	}
+
+	/**
+	 * When a chain HEAD resolves, stamp its resolved worktree onto every other
+	 * member of the chain (they all share the one lane): pin the ref to
+	 * `worktree:<name>` and clear the ephemeral flag (the head owns any temp
+	 * worktree's lifecycle, not the tail). No-op for a non-head or a standalone
+	 * task. Idempotent — only stamps members still unresolved.
+	 */
+	private stampChainWorktree(head: TaskInstance, worktree: string): void {
+		if (head.chainId == null || head.chainSeq !== 0) return;
+		for (const t of this.deps.store.list()) {
+			if (
+				t.chainId === head.chainId &&
+				t.id !== head.id &&
+				t.target.worktree === null
+			) {
+				this.deps.store.update(t.id, {
+					target: { ...t.target, ref: `worktree:${worktree}`, worktree },
+					ephemeralWorktree: false,
+				});
+			}
+		}
 	}
 
 	private startWorker(task: TaskInstance): void {
@@ -447,6 +581,7 @@ export class Engine {
 			},
 			repoVars,
 			onSpawned: (id, pid) => this.childPids.set(id, pid),
+			isCancelled: (id) => this.cancelledTaskIds.has(id),
 			modelTable,
 			loadDef: (definition) => {
 				const [repo, ...nameParts] = definition.split("/");
@@ -480,6 +615,7 @@ export class Engine {
 			.then(() => {
 				this.running.delete(task.id);
 				this.childPids.delete(task.id);
+				this.cancelledTaskIds.delete(task.id);
 				deps.registry.unregisterWorker(task.id);
 				deps.onChange?.();
 			});
@@ -490,15 +626,17 @@ export class Engine {
 	/**
 	 * Stop a running task by killing its claude child's process group, mirroring
 	 * runner's timeout path: SIGTERM the group (fallback to a direct kill), then
-	 * an unref'd 5s SIGKILL escalation. The signal surfaces as the run's failure
-	 * reason ("stopped (SIGTERM)"). Throws when no pid is tracked for the id — the
-	 * task started under a previous daemon process, or its spawn never reported.
+	 * an unref'd 5s SIGKILL escalation. Records the id as user-cancelled first, so
+	 * the worker settles the resulting kill signal as `cancelled` (not `failed`).
+	 * Throws when no pid is tracked for the id — the task started under a previous
+	 * daemon process, or its spawn never reported.
 	 */
 	stopTask(taskId: string): void {
 		const pid = this.childPids.get(taskId);
 		if (pid === undefined) {
 			throw new Error(`no running child tracked for task: ${taskId}`);
 		}
+		this.cancelledTaskIds.add(taskId);
 		try {
 			process.kill(-pid, "SIGTERM");
 		} catch {

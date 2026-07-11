@@ -65,6 +65,10 @@ pub enum Cmd {
     FetchSettings,
     ReadRunFiles { task_id: String, tail_lines: usize, delay_ms: u64 },
     OpenTmux { path: String },
+    /// Resume a task's Claude session in a NEW tmux pane rooted at its worktree:
+    /// `tmux split-window -c <path> 'claude --resume <session_id>'`. Fired by the
+    /// queue "Resume" action; gated on being inside tmux + a known session/path.
+    TmuxResume { path: String, session_id: String },
     /// Write-through of the per-project pane layout. Fire-and-forget off the UI
     /// thread; a failed write is silently tolerated (layout is a convenience).
     SaveLayout { path: PathBuf, json: String },
@@ -331,6 +335,29 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                         "tmux: {}",
                         String::from_utf8_lossy(&out.stderr).trim()
                     )),
+                    Err(e) => Some(format!("tmux: {e}")),
+                };
+                if status.is_some() {
+                    let _ = tx.send(Event::ActionResult { status, invalidate_defs_for: None });
+                }
+            });
+        }
+        Cmd::TmuxResume { path, session_id } => {
+            tokio::spawn(async move {
+                // A new pane split from the current window, rooted at the
+                // worktree, running `claude --resume <session>` as its command.
+                let result = tokio::process::Command::new("tmux")
+                    .args([
+                        "split-window",
+                        "-c",
+                        &path,
+                        &format!("claude --resume {session_id}"),
+                    ])
+                    .output()
+                    .await;
+                let status = match result {
+                    Ok(out) if out.status.success() => None,
+                    Ok(out) => Some(format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim())),
                     Err(e) => Some(format!("tmux: {e}")),
                 };
                 if status.is_some() {

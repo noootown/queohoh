@@ -29,6 +29,22 @@ optional `<workspace>/<project>/vars.yaml` supplies per-project template vars.
 For the config above, `platform`'s definitions live in
 `~/workspace/queohoh/platform/tasks/<name>/`.
 
+`vars.yaml` also holds two reserved keys that are read as settings rather than
+exposed as `{{var}}` placeholders:
+
+- `models:` — per-project model-alias overrides (see the model-aliases docs).
+- `github_id:` — your author identity, e.g. `github_id: noootown`. The TUI uses
+  it to sort your own worktrees first. A worktree counts as **yours** when
+  `github_id` is a case-insensitive **substring of the last-commit author
+  email**, OR a case-insensitive **substring of the author name**. So pick
+  a value that appears in the email or name of the commits you author — e.g. the
+  login embedded in a GitHub noreply email
+  (`12345+noootown@users.noreply.github.com` → `noootown`), or a distinctive
+  token of your name/email if you commit as `Ian Chiu <noootown@gmail.com>`
+  (here `noootown` matches the email, `Ian` or `Chiu` matches the name; your
+  work GitHub login would match neither). Optional and parsed leniently — an
+  absent, empty, or non-string value simply disables the "mine-first" sort.
+
 ### Builtin vars
 
 Prompts and `pre_run`/`post_run` hooks can reference these `{{var}}`

@@ -19,20 +19,19 @@ use ratatui::widgets::{
 use crate::action_menu::{filter_items, ActionItem};
 use crate::hit::{HitMap, HitTarget};
 use crate::ipc::types::{DefinitionSummary, TaskDefinition};
-use crate::markup::{wrap_lines, LineCtx};
+use crate::markup::{fence_states, style_transcript_line, wrap_lines, LineCtx};
 use crate::selectors::{arg_summary, filter_rows, pad_clip};
-use crate::view::theme::{GLYPH_CURSOR, GLYPH_DISCOVERY, MARKER_GLOBAL, Palette};
+use crate::view::theme::{GLYPH_CURSOR, GLYPH_DISCOVERY, MARKER_GLOBAL, Palette, RULE_CHAR};
 
-const MENU_HINT: &str = " type to filter · ↑/↓ move · enter run · ctrl+d/u scroll · esc close ";
+const MENU_HINT: &str = " type to filter · ↑/↓ move · enter run · esc close ";
 
-/// Render-feedback for the preview scroll: the key handler (ctrl+d/u, wheel)
-/// clamps `preview_scroll` against `max_scroll` and steps by `half_page`, both
-/// measured from the last draw (same freshness argument as `detail_max_scroll`:
-/// every state change redraws before the next event).
+/// Render-feedback for the preview scroll: the wheel handler clamps
+/// `preview_scroll` against `max_scroll`, measured from the last draw (same
+/// freshness argument as `detail_max_scroll`: every state change redraws
+/// before the next event).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PreviewMetrics {
     pub max_scroll: usize,
-    pub half_page: usize,
 }
 
 /// The picker's interactive state slice (out of `Mode::ActionMenu`/`DefPick`):
@@ -236,16 +235,19 @@ fn wrap_styled(lines: &[(String, Style)], width: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// Render the right preview panel: pre-wrapped styled `content`, scrolled by
-/// `preview_scroll` (clamped), with a scrollbar when the wrapped content
-/// overflows. Registers the `MenuPreview` wheel target over the interior.
-/// Returns the metrics the key handler needs to clamp the next scroll. Shared
-/// with the run form's prompt panel.
-pub(crate) fn render_preview(
+/// Core of the right preview panel: the two-pass wrap / scroll-clamp / scrollbar
+/// / metrics machinery, parameterized on a `wrap` closure that produces the
+/// styled display lines for a given text width. Registers the `MenuPreview`
+/// wheel target over the interior and returns the scroll metrics the key handler
+/// needs. The two passes (same chicken-and-egg fold as detail's
+/// `wrap_for_viewport`) exist because whether the scrollbar column is reserved
+/// depends on the wrapped count, and the wrap width depends on that reservation —
+/// so `wrap` is called once at full width and, on overflow, again one narrower.
+fn render_preview_wrapped(
     frame: &mut ratatui::Frame,
     hit: &mut HitMap,
     layout: &PickerLayout,
-    content: &[(String, Style)],
+    wrap: &dyn Fn(usize) -> Vec<Line<'static>>,
     preview_scroll: usize,
 ) -> PreviewMetrics {
     let inner = layout.right_inner;
@@ -253,13 +255,11 @@ pub(crate) fn render_preview(
         return PreviewMetrics::default();
     }
     hit.push(inner, HitTarget::MenuPreview);
-    // Two-pass wrap (same chicken-and-egg fold as detail's wrap_for_viewport):
-    // whether the scrollbar column is reserved depends on the wrapped count.
-    let mut wrapped = wrap_styled(content, inner.width as usize);
+    let mut wrapped = wrap(inner.width as usize);
     let h = inner.height as usize;
     let overflow = wrapped.len() > h;
     let text_w = if overflow && inner.width > 1 {
-        wrapped = wrap_styled(content, (inner.width - 1) as usize);
+        wrapped = wrap((inner.width - 1) as usize);
         inner.width - 1
     } else {
         inner.width
@@ -279,13 +279,76 @@ pub(crate) fn render_preview(
             &mut state,
         );
     }
-    PreviewMetrics { max_scroll, half_page: (h / 2).max(1) }
+    PreviewMetrics { max_scroll }
 }
 
-/// Big lazyvim-style action menu. Left panel = search prompt + FILTERED rows
-/// (label only; disabled dim, selected row a full-width inverse bar); right
-/// panel = the selected item's wrapped description plus a warn
-/// "disabled — {reason}" line when the selected row is disabled.
+/// Render the right preview panel from plain pre-styled `content` (one style per
+/// source line, wrapped via [`wrap_styled`]). Shared with the menu description
+/// panel and the run form / def-pick loading placeholders.
+pub(crate) fn render_preview(
+    frame: &mut ratatui::Frame,
+    hit: &mut HitMap,
+    layout: &PickerLayout,
+    content: &[(String, Style)],
+    preview_scroll: usize,
+) -> PreviewMetrics {
+    render_preview_wrapped(frame, hit, layout, &|w| wrap_styled(content, w), preview_scroll)
+}
+
+/// Render the right preview panel with a plain styled `prefix` (e.g. a
+/// description + a "prompt" heading) followed by `markup` rendered through the
+/// SAME markdown pipeline as the DETAIL pane's prompt tab — `fence_states` →
+/// `wrap_lines` → `style_transcript_line`, so headings, code fences, inline
+/// code / bold / URLs and `{{jinja}}` all style identically. Fence state spans
+/// the whole body, so it is computed once outside the width closure (it never
+/// depends on wrap width). Used by the def-pick and run-form prompt panels.
+pub(crate) fn render_preview_markup(
+    frame: &mut ratatui::Frame,
+    hit: &mut HitMap,
+    layout: &PickerLayout,
+    prefix: &[(String, Style)],
+    markup: &str,
+    preview_scroll: usize,
+) -> PreviewMetrics {
+    let p = Palette::default();
+    let lines: Vec<String> = markup.split('\n').map(str::to_string).collect();
+    let ctxs = fence_states(&lines);
+    render_preview_wrapped(
+        frame,
+        hit,
+        layout,
+        &|w| {
+            // The plain prefix first, then the markdown body wrapped to the same
+            // width; an empty wrapped segment renders as one blank line (mirrors
+            // the detail pane's `Line::from(" ")` for empty segments).
+            let mut out = wrap_styled(prefix, w);
+            for seg in wrap_lines(&lines, &ctxs, w) {
+                out.push(if seg.text.is_empty() {
+                    Line::from(" ")
+                } else {
+                    style_transcript_line(&seg.text, &seg.ctx, w as u16, &p)
+                });
+            }
+            out
+        },
+        preview_scroll,
+    )
+}
+
+/// Compact centered action menu — a SINGLE bordered popup sized to its content,
+/// NOT the big two-panel picker (that shell stays for `render_def_pick` /
+/// `render_run_form`, which genuinely use the preview panel; an action menu of a
+/// few items in it was almost all empty space). Top border = the target label;
+/// then the search prompt row (type-to-filter + right-aligned `{filtered}/{total}`
+/// count); the FILTERED item rows (disabled dim, selected row a full-width inverse
+/// bar, windowed with a scrollbar if they overflow); and — under a thin rule,
+/// pinned to the bottom — the SELECTED item's wrapped dim description plus a warn
+/// `disabled — {reason}` line when applicable. Key hint sits in the bottom border.
+/// Registers `Modal` over the body + one `MenuItem(i)` per visible row. There is
+/// NO preview panel: no `MenuPreview` target and `preview_scroll` is inert, so it
+/// returns `PreviewMetrics::default()`. The wheel over the popup falls to the
+/// `MenuItem`/`Modal` arm of `App::menu_wheel`, moving the selection like it does
+/// over the picker rows. Bulk-range menus flow through here too (also short).
 pub fn render_menu(
     frame: &mut ratatui::Frame,
     hit: &mut HitMap,
@@ -294,53 +357,163 @@ pub fn render_menu(
     state: PickerState,
 ) -> PreviewMetrics {
     let p = Palette::default();
-    let PickerState { index, query, preview_scroll } = state;
+    let PickerState { index, query, .. } = state; // preview_scroll inert (no preview)
     let filtered = filter_items(items, query);
     let selected = filtered.get(index).and_then(|&i| items.get(i));
-    let layout = render_picker_chrome(
-        frame,
-        hit,
-        title,
-        selected.map(|it| it.label.as_str()),
-        query,
-        filtered.len(),
-        items.len(),
+    let area = frame.area();
+
+    // Width: content-driven (longest label / the title), clamped to [44, 72] and
+    // the frame. The description wraps to whatever inner width results.
+    let label_w = filtered.iter().map(|&i| items[i].label.chars().count()).max().unwrap_or(0);
+    let content_w = label_w.max(title.chars().count()).max(28);
+    let width = ((content_w + 6) as u16).clamp(44, 72).min(area.width.max(1));
+    let inner_w = width.saturating_sub(2).max(1) as usize; // inside the border
+
+    // Description block (dim, wrapped) under a thin rule, plus the warn disabled
+    // line — only when a row is selected and there is something to show.
+    let mut desc: Vec<Line<'static>> = Vec::new();
+    if let Some(it) = selected {
+        let mut body: Vec<Line<'static>> = Vec::new();
+        if !it.description.is_empty() {
+            body.extend(wrap_styled(&[(it.description.clone(), p.dim_style())], inner_w));
+        }
+        if let Some(reason) = &it.disabled {
+            body.extend(wrap_styled(
+                &[(format!("disabled — {reason}"), Style::default().fg(p.warn))],
+                inner_w,
+            ));
+        }
+        if !body.is_empty() {
+            desc.push(Line::from(Span::styled(
+                RULE_CHAR.to_string().repeat(inner_w),
+                Style::default().fg(p.border),
+            )));
+            desc.extend(body);
+        }
+    }
+
+    // Height: borders(2) + search(1) + item rows + description block, clamped to
+    // the frame. `.max(1)` on the row count reserves a line for the "no matches"
+    // placeholder.
+    let want = 2 + 1 + filtered.len().max(1) + desc.len();
+    let height = (want as u16).min(area.height.max(1));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect { x, y, width, height };
+
+    frame.render_widget(Clear, rect);
+    hit.push(rect, HitTarget::Modal); // popup body opaque to clicks
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::from(Span::styled(MENU_HINT, p.dim_style())))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.accent));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.width == 0 || inner.height == 0 {
+        return PreviewMetrics::default();
+    }
+
+    // Search prompt on the interior's first line: accent `> `, the query, a block
+    // cursor, then a right-aligned dim `{filtered}/{total}` count.
+    let mut spans = vec![
+        Span::styled("> ", Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(query.to_string(), Style::default().fg(p.fg)),
+        Span::styled(GLYPH_CURSOR.to_string(), Style::default().fg(p.accent)),
+    ];
+    let used = 3 + query.chars().count(); // "> " + query + cursor
+    let count = format!("{}/{}", filtered.len(), items.len());
+    let pad = (inner.width as usize).saturating_sub(used + count.chars().count());
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(count, p.dim_style()));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
     );
-    render_picker_rows(
-        frame,
-        hit,
-        &layout,
-        filtered.len(),
-        index,
-        |pos| format!(" {}", items[filtered[pos]].label),
-        |pos| {
+
+    // The description block is pinned to the BOTTOM of the interior; the rows fill
+    // whatever remains between the search prompt and it (windowed + scrollbar on
+    // overflow so both the prompt and description always stay visible).
+    let desc_h = (desc.len() as u16).min(inner.height.saturating_sub(1));
+    let rows_area = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: inner.height.saturating_sub(1 + desc_h),
+    };
+    if filtered.is_empty() {
+        if rows_area.height > 0 {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(" no matches", p.dim_style()))),
+                Rect { x: rows_area.x, y: rows_area.y, width: rows_area.width, height: 1 },
+            );
+        }
+    } else if rows_area.height > 0 {
+        let visible = rows_area.height as usize;
+        let overflow = filtered.len() > visible;
+        let row_w = if overflow { rows_area.width.saturating_sub(1) } else { rows_area.width };
+        let start = window_start(index, filtered.len(), visible);
+        for row in 0..rows_area.height {
+            let pos = start + row as usize;
+            if pos >= filtered.len() {
+                break;
+            }
             let it = &items[filtered[pos]];
-            if it.disabled.is_some() {
+            let style = if it.disabled.is_some() {
                 p.dim_style()
             } else if pos == index {
                 p.selection()
             } else {
                 Style::default().fg(p.fg)
-            }
-        },
-    );
-    let mut content: Vec<(String, Style)> = Vec::new();
-    if let Some(it) = selected {
-        content.push((it.description.clone(), Style::default().fg(p.fg)));
-        if let Some(reason) = &it.disabled {
-            content.push((String::new(), Style::default()));
-            content.push((format!("disabled — {reason}"), Style::default().fg(p.warn)));
+            };
+            let row_rect = Rect { x: rows_area.x, y: rows_area.y + row, width: row_w, height: 1 };
+            hit.push(row_rect, HitTarget::MenuItem(pos));
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    pad_clip(&format!(" {}", it.label), row_w as usize),
+                    style,
+                ))),
+                row_rect,
+            );
+        }
+        if overflow {
+            let mut state =
+                ScrollbarState::new(filtered.len().saturating_sub(visible)).position(start);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                rows_area,
+                &mut state,
+            );
         }
     }
-    render_preview(frame, hit, &layout, &content, preview_scroll)
+
+    // Description block, pinned flush to the bottom interior row.
+    if desc_h > 0 {
+        let desc_area = Rect {
+            x: inner.x,
+            y: inner.y + inner.height - desc_h,
+            width: inner.width,
+            height: desc_h,
+        };
+        frame.render_widget(Paragraph::new(Text::from(desc)), desc_area);
+    }
+    PreviewMetrics::default()
 }
 
 /// Big lazyvim-style task menu / def picker. Left panel = search prompt +
 /// FILTERED def rows (name + arg summary + `⏰` discovery glyph + `(g)` global
 /// marker; selected row a full-width inverse bar); right panel = the
 /// highlighted def's description (dim "no description" when unset), a blank
-/// line, a bold "prompt" heading, then the full definition's prompt (dim
-/// "loading prompt…" until `full` arrives), scrollable via ctrl+d/u and wheel.
+/// line, a bold "prompt" heading, then the full definition's prompt —
+/// markdown-styled like the DETAIL pane's prompt tab (dim "loading prompt…"
+/// until `full` arrives), scrollable via the mouse wheel.
 pub fn render_def_pick(
     frame: &mut ratatui::Frame,
     hit: &mut HitMap,
@@ -386,26 +559,29 @@ pub fn render_def_pick(
         },
         |pos| if pos == index { p.selection() } else { Style::default().fg(p.fg) },
     );
-    let mut content: Vec<(String, Style)> = Vec::new();
+    // The description + blank + bold "prompt" heading are the plain PREFIX; the
+    // def's prompt below it is markdown-styled (matching the DETAIL pane). Until
+    // `full` arrives the prompt is a plain "loading" placeholder in the prefix.
+    let mut prefix: Vec<(String, Style)> = Vec::new();
+    let mut prompt: Option<&str> = None;
     if let Some(def) = selected {
         match &def.description {
             Some(desc) if !desc.is_empty() => {
-                content.push((desc.clone(), Style::default().fg(p.fg)))
+                prefix.push((desc.clone(), Style::default().fg(p.fg)))
             }
-            _ => content.push(("no description".into(), p.dim_style())),
+            _ => prefix.push(("no description".into(), p.dim_style())),
         }
-        content.push((String::new(), Style::default()));
-        content.push(("prompt".into(), Style::default().fg(p.fg).add_modifier(Modifier::BOLD)));
+        prefix.push((String::new(), Style::default()));
+        prefix.push(("prompt".into(), Style::default().fg(p.fg).add_modifier(Modifier::BOLD)));
         match full {
-            Some(td) => {
-                for l in td.prompt.lines() {
-                    content.push((l.to_string(), Style::default().fg(p.fg)));
-                }
-            }
-            None => content.push(("loading prompt…".into(), p.dim_style())),
+            Some(td) => prompt = Some(td.prompt.as_str()),
+            None => prefix.push(("loading prompt…".into(), p.dim_style())),
         }
     }
-    render_preview(frame, hit, &layout, &content, preview_scroll)
+    match prompt {
+        Some(md) => render_preview_markup(frame, hit, &layout, &prefix, md, preview_scroll),
+        None => render_preview(frame, hit, &layout, &prefix, preview_scroll),
+    }
 }
 
 /// Destructive-confirm popup for `Remove worktree`. Warns that removal discards
@@ -466,17 +642,21 @@ mod menu_view_tests {
 
     fn items() -> Vec<ActionItem> {
         vec![
+            // Synthetic two-row fixture for the picker WIDGET (an enabled row + a
+            // disabled row with a reason). The `action` payload is never inspected
+            // here — only label/disabled/description render — so any surviving
+            // variant stands in.
             ActionItem {
                 label: "Rerun".into(),
                 disabled: None,
                 description: "Re-queue this task and run it again.".into(),
-                action: MenuAction::Rerun { id: "t1".into() },
+                action: MenuAction::Resume { path: String::new(), session_id: String::new() },
             },
             ActionItem {
                 label: "Skip".into(),
                 disabled: Some("cannot skip a running task".into()),
                 description: "Mark this task as skipped; it will not run.".into(),
-                action: MenuAction::Skip { id: "t1".into() },
+                action: MenuAction::Resume { path: String::new(), session_id: String::new() },
             },
         ]
     }
@@ -504,15 +684,15 @@ mod menu_view_tests {
     }
 
     #[test]
-    fn disabled_row_shows_reason_in_preview_panel() {
-        // Row labels render in the left panel (no inline "— reason" anymore);
-        // the disabled reason for the *selected* row surfaces in the preview.
-        // Wide terminal so the warn line fits the preview without wrapping.
+    fn disabled_row_shows_reason_in_description() {
+        // Row labels render in the item rows (no inline "— reason"); the disabled
+        // reason for the *selected* row surfaces in the description block under
+        // the rule. Wide terminal so the warn line fits without wrapping.
         let (s, _hit) = draw(120, 20, 1); // select the disabled "Skip" row
         assert!(s.contains("Rerun"));
         assert!(s.contains("Skip"));
         assert!(s.contains("disabled — cannot skip a running task"));
-        // The label column no longer carries the inline reason.
+        // The label row no longer carries the inline reason.
         assert!(!s.contains("Skip — cannot skip a running task"));
     }
 
@@ -522,19 +702,22 @@ mod menu_view_tests {
         assert!(s.contains('>')); // search prompt prefix
         assert!(s.contains('█')); // cursor block
         assert!(s.contains("2/2")); // right-aligned match count
-        // The hint lives in the left panel's bottom border; the full text needs a
-        // wide terminal (the border clips it gracefully on narrow ones).
+        // The hint lives in the popup's bottom border; the full text needs a
+        // wide-enough popup (the border clips it gracefully otherwise).
         let (w, _hit) = draw(200, 30, 0);
         assert!(w.contains("type to filter"));
-        assert!(w.contains("ctrl+d/u scroll"));
+        assert!(w.contains("enter run"));
+        assert!(!w.contains("ctrl+d/u"), "paging hint removed with the binding");
     }
 
     #[test]
-    fn selected_row_title_appears_on_preview_panel_border() {
-        // The right panel's border carries the selected item's label.
+    fn menu_title_and_selected_label_render() {
+        // The popup's top border carries the menu title; the selected item's
+        // label sits in its row and its description in the block below.
         let (s, _hit) = draw(80, 20, 0);
-        assert!(s.contains(" do the thing "), "left panel titled with the menu title");
-        assert!(s.contains(" Rerun "), "right panel titled with the selected label");
+        assert!(s.contains(" do the thing "), "popup titled with the menu title");
+        assert!(s.contains(" Rerun "), "selected item's label renders in its row");
+        assert!(s.contains("Re-queue this task"), "selected item's description renders");
     }
 
     #[test]
@@ -560,19 +743,20 @@ mod menu_view_tests {
     }
 
     #[test]
-    fn no_matches_shows_placeholder_and_untitled_preview() {
+    fn no_matches_shows_placeholder() {
         let (s, _hit) = draw_q(80, 20, 0, "zzz");
         assert!(s.contains("no matches"));
         assert!(s.contains("0/2"));
-        assert!(!s.contains(" Rerun "), "no selection → right panel untitled");
+        // No selection → no rows and no description block.
+        assert!(!s.contains(" Rerun "), "filtered-out label must not render");
     }
 
     #[test]
-    fn hit_targets_cover_rows_both_modals_and_preview() {
+    fn hit_targets_cover_rows_and_modal_no_preview() {
         let (_s, hit) = draw(80, 20, 0);
-        // A click inside resolves to a MenuItem; both panels are covered by
-        // Modal targets and the preview interior by MenuPreview, so clicks and
-        // wheel events never leak through to the panes beneath.
+        // The popup body is a Modal (clicks don't leak) and each visible row is a
+        // MenuItem. The compact menu has NO preview panel, so — unlike the
+        // def-pick/run-form pickers — it registers no MenuPreview.
         let (mut saw_item0, mut saw_modal, mut saw_preview) = (false, false, false);
         for y in 0..20 {
             for x in 0..80 {
@@ -585,8 +769,8 @@ mod menu_view_tests {
             }
         }
         assert!(saw_item0, "expected a MenuItem(0) hit region");
-        assert!(saw_modal, "expected Modal panel regions");
-        assert!(saw_preview, "expected a MenuPreview region over the right panel");
+        assert!(saw_modal, "expected a Modal body region");
+        assert!(!saw_preview, "compact menu registers no MenuPreview");
     }
 
     /// Many items so the filtered list overflows the left panel rows.
@@ -596,7 +780,7 @@ mod menu_view_tests {
                 label: format!("Action {i:02}"),
                 disabled: None,
                 description: format!("Description for action {i:02}."),
-                action: MenuAction::Rerun { id: format!("t{i}") },
+                action: MenuAction::Resume { path: String::new(), session_id: String::new() },
             })
             .collect()
     }
@@ -620,7 +804,8 @@ mod menu_view_tests {
             }
             s
         };
-        // 80x20 → picker 64x16, left inner ≈ 12 rows visible. 40 rows overflow.
+        // 80x20 → compact popup height clamped to the frame; 40 rows overflow the
+        // available row band, so a scrollbar renders.
         assert!(draw_n(40).contains('█') || draw_n(40).contains('▐') || draw_n(40).contains('║'));
         // Few rows: no scrollbar glyph beyond the search cursor is asserted here —
         // instead assert the windowed top row is the first item in both cases.
@@ -629,23 +814,17 @@ mod menu_view_tests {
     }
 
     #[test]
-    fn preview_scrolls_and_reports_metrics() {
-        // A 30-line description overflows the ~13-line preview: scrolling hides
-        // the first lines and the metrics expose a real scroll range.
-        let long: String =
-            (0..30).map(|i| format!("marker-{i:02}")).collect::<Vec<_>>().join("\n");
-        let items = vec![ActionItem {
-            label: "Long".into(),
-            disabled: None,
-            description: long,
-            action: MenuAction::Rerun { id: "t".into() },
-        }];
+    fn description_renders_and_preview_scroll_is_inert() {
+        // The compact menu has no scrollable preview: the selected row's
+        // description renders under a thin rule, the reported metrics are the
+        // default (max_scroll 0), and `preview_scroll` does nothing — the wheel
+        // moves the selection instead (handled in `App::menu_wheel`).
         let draw_scrolled = |scroll: usize| {
             let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
             let mut hit = HitMap::default();
-            let mut metrics = PreviewMetrics::default();
+            let mut metrics = PreviewMetrics { max_scroll: 999 };
             term.draw(|f| {
-                metrics = render_menu(f, &mut hit, "t", &items, PickerState { index: 0, query: "", preview_scroll: scroll });
+                metrics = render_menu(f, &mut hit, "do the thing", &items(), PickerState { index: 0, query: "", preview_scroll: scroll });
             })
             .unwrap();
             let buf = term.backend().buffer().clone();
@@ -659,16 +838,49 @@ mod menu_view_tests {
             (s, metrics)
         };
         let (s0, m0) = draw_scrolled(0);
-        assert!(s0.contains("marker-00"));
-        assert!(m0.max_scroll > 0, "30 lines overflow the preview: {m0:?}");
-        assert!(m0.half_page >= 1);
-        let (s5, m5) = draw_scrolled(5);
-        assert!(!s5.contains("marker-00"), "scrolled preview hides the first line");
-        assert!(s5.contains("marker-05"), "scrolled preview starts at the offset");
-        assert_eq!(m0.max_scroll, m5.max_scroll);
-        // A scroll past the end clamps to max_scroll (last page still rendered).
-        let (s_over, _) = draw_scrolled(m0.max_scroll + 50);
-        assert!(s_over.contains("marker-29"), "clamped to the last page");
+        assert!(s0.contains("Re-queue this task"), "selected row's description renders");
+        assert_eq!(m0, PreviewMetrics::default(), "no scrollable preview → default metrics");
+        // A nonzero preview_scroll paints an identical buffer (it is inert).
+        let (s5, _) = draw_scrolled(5);
+        assert_eq!(s0, s5, "preview_scroll must not change the compact popup");
+    }
+
+    #[test]
+    fn def_pick_prompt_renders_markdown_styled() {
+        use crate::ipc::types::{DefinitionSummary, TaskDefinition};
+        let defs = vec![DefinitionSummary { name: "build".into(), ..Default::default() }];
+        // A `## heading` + a fenced code block: the markdown pipeline turns the
+        // fence into a labeled rule (── bash ──), never the literal ``` delimiter.
+        let full = TaskDefinition {
+            name: "build".into(),
+            prompt: "## Heading\n\n```bash\necho hi\n```".into(),
+            ..Default::default()
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut hit = HitMap::default();
+        term.draw(|f| {
+            render_def_pick(
+                f,
+                &mut hit,
+                "tasks",
+                &defs,
+                Some(&full),
+                PickerState { index: 0, query: "", preview_scroll: 0 },
+            );
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut s = String::new();
+        for y in 0..24 {
+            for x in 0..100 {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        assert!(s.contains("──"), "fenced code block styled as a rule: {s}");
+        assert!(s.contains("bash"), "fence carries its language label");
+        assert!(!s.contains("```"), "raw fence delimiters replaced by the rule");
+        assert!(s.contains("prompt"), "the bold prompt-heading prefix still renders");
     }
 
     #[test]

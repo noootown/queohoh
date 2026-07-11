@@ -10,14 +10,35 @@ pub enum ButtonKind {
 
 /// A clickable action chip on a list pane's top border. Clicking one behaves
 /// exactly like pressing its hotkey with that pane focused. `Create` ≡ `c`,
-/// `Tasks` ≡ `t`, `Actions` ≡ `a`, `Collapse` ≡ `z` (labeled collapse/expand
-/// by expanded/collapsed state).
+/// `Tasks` ≡ `t`, `Actions` ≡ `a`, `Run` ≡ `r` (TASKS runs the highlighted def;
+/// QUEUE re-queues the selected task), `Cancel` ≡ `x` (QUEUE only — skip/stop
+/// the selected task), `Collapse` ≡ `z` (labeled collapse/expand by
+/// expanded/collapsed state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneButton {
     Create,
     Tasks,
     Actions,
+    Run,
+    Cancel,
     Collapse,
+}
+
+/// The title-bar chip set for a pane, in scope order (row-scoped verbs first,
+/// then pane-scoped). SINGLE SOURCE OF TRUTH shared by the renderer
+/// ([`crate::view::panes`], which draws these chips and picks the group boundary
+/// for the `·` divider) and the keymap ([`crate::keymap::list_mode_action`],
+/// which gates a pane-action key on the focused pane actually showing that
+/// chip). Detail is display-only and has no chips. Adding/removing a chip here
+/// automatically retunes the key gating — the two never drift.
+pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
+    use PaneButton::*;
+    match pane {
+        PaneId::Queue => &[Run, Cancel, Actions, Create, Collapse],
+        PaneId::Tasks => &[Run, Collapse],
+        PaneId::Worktrees => &[Tasks, Actions, Create, Collapse],
+        PaneId::Detail => &[],
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

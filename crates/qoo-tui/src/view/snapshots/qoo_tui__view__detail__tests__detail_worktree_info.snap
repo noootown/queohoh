@@ -1,0 +1,28 @@
+---
+source: crates/qoo-tui/src/view/detail.rs
+expression: terminal.backend()
+---
+" 1:acme                                                            ● running 1/3"
+"╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
+"│                         ││ 1:info                                            │"
+"│ 🔍 [/] filter           ││path     /repos/acme.feature                       │" Hidden by multi-width symbols: [(3, " ")]
+"│      Workt…  Prompt     ││branch   feature/JB-1200-cache                     │"
+"│ ⠯ ⌂  featu…  implement… ││commit   a1b2c3d                                   │"
+"│ ○    featu…  write doc… ││author   Ian Chiu                                  │"
+"│ ──────── finished ───── ││updated  3d ago (07/06 07:05)                      │"
+"│ ✗    main    flaky mig… ││pr       #42                                       │"
+"│ ●    main    earlier c… ││                                                   │"
+"│                         ││▶ squash-merge                             just now│"
+"│                         ││○ write docs for the cache                 just now│"
+"╰─────────────────────────╯│                                                   │"
+"╭⚡TASKS──────── [r] · [z]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ no task definitions     ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯│                                                   │"
+"╭🌲 WORKTREES───── [t] [a]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ 2 ⌂ feature  ⏱ 0s       ││                                                   │"
+"│ ●   hotfix              ││                                                   │"
+"╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
+"[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "

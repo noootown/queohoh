@@ -32,6 +32,10 @@ export interface WorkerDeps {
 	// Reports the spawned claude child's pid so the engine can track it for a
 	// Stop action. Fires once per run, right after spawn.
 	onSpawned?: (taskId: string, pid: number) => void;
+	// True when the engine has recorded a user Stop for this task, so a kill
+	// signal settles as `cancelled` (user-intentional) rather than `failed`. A
+	// signal WITHOUT this flag (e.g. an external/OOM kill) still means failed.
+	isCancelled?: (taskId: string) => boolean;
 }
 
 const EMPTY_RESULT: RunResult = {
@@ -129,7 +133,7 @@ export async function runTask(
 	);
 	deps.runStore.writeWorkerPid(taskId, process.pid);
 
-	let outcome: "done" | "failed" = "done";
+	let outcome: "done" | "failed" | "cancelled" = "done";
 	let reason: string | null = null;
 	let result: RunResult = EMPTY_RESULT;
 
@@ -187,8 +191,16 @@ export async function runTask(
 			outcome = "failed";
 			reason = "timed out";
 		} else if (result.signal !== null) {
-			outcome = "failed";
-			reason = `stopped (${result.signal})`;
+			// A kill signal (timeout already handled above). If the engine recorded
+			// a user Stop for this task, it's a deliberate cancel — not a failure;
+			// any other signal (external/OOM kill) is still a genuine failure.
+			if (deps.isCancelled?.(taskId)) {
+				outcome = "cancelled";
+				reason = "stopped by user";
+			} else {
+				outcome = "failed";
+				reason = `stopped (${result.signal})`;
+			}
 		} else if (result.exitCode !== 0) {
 			outcome = "failed";
 			reason = `exit code ${result.exitCode}`;
@@ -227,6 +239,8 @@ export async function runTask(
 	deps.runStore.finishRun(taskId, { result, outcome, reason }, deps.redact);
 	return deps.store.update(taskId, {
 		status: outcome,
-		error: outcome === "failed" ? reason : null,
+		// `done` clears the error; failed AND cancelled carry their reason (the
+		// detail pane shows "stopped by user" for a cancel).
+		error: outcome === "done" ? null : reason,
 	});
 }

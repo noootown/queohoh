@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DaemonPort, McpCaller } from "../mcp-tools.js";
 import {
+	mcpEnqueueChain,
 	mcpEnqueueTask,
 	mcpListTaskDefinitions,
 	mcpListTasks,
@@ -88,6 +89,62 @@ describe("mcpEnqueueTask", () => {
 	});
 });
 
+describe("mcpEnqueueChain", () => {
+	it("calls enqueue_chain with steps + shared params and source mcp", async () => {
+		const { caller, calls, closedCount } = fakeCaller(() => [
+			{ id: "01H", chainSeq: 0 },
+			{ id: "01T", chainSeq: 1 },
+		]);
+		const result = await mcpEnqueueChain(caller, {
+			steps: [
+				{ definition: "autofix", args: ["flaky test"] },
+				{ prompt: "pr-ready full" },
+			],
+			cwd: "/wt/repo.fix-x",
+			priority: "high",
+			resume_session_id: "sess-1",
+			model: "claude-fable-5",
+		});
+		expect(calls).toEqual([
+			{
+				method: "enqueue_chain",
+				params: {
+					steps: [
+						{ definition: "autofix", args: ["flaky test"] },
+						{ prompt: "pr-ready full" },
+					],
+					repo: undefined,
+					cwd: "/wt/repo.fix-x",
+					ref: undefined,
+					worktree: undefined,
+					priority: "high",
+					resume_session_id: "sess-1",
+					model: "claude-fable-5",
+					source: "mcp",
+				},
+			},
+		]);
+		expect(result.isError).toBeUndefined();
+		expect(JSON.parse(result.content[0]?.text ?? "")).toHaveLength(2);
+		expect(closedCount()).toBe(1);
+	});
+
+	it("maps failures to isError and still closes", async () => {
+		const { caller, closedCount } = fakeCaller(() => {
+			throw new Error(
+				"chain step 1: must have either 'definition' or 'prompt'",
+			);
+		});
+		const result = await mcpEnqueueChain(caller, {
+			steps: [{ prompt: "a" }],
+			repo: "platform",
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("must have either");
+		expect(closedCount()).toBe(1);
+	});
+});
+
 describe("mcpListTasks", () => {
 	it("returns tasks and running from state", async () => {
 		const { caller } = fakeCaller(() => ({
@@ -136,6 +193,8 @@ describe("mcpRunTaskDefinition", () => {
 					args: ["257"],
 					source: "mcp",
 					cwd: undefined,
+					worktree: undefined,
+					ref: undefined,
 					resume_session_id: undefined,
 				},
 			},
@@ -143,12 +202,14 @@ describe("mcpRunTaskDefinition", () => {
 		expect(JSON.parse(result.content[0]?.text ?? "")).toEqual([{ id: "01B" }]);
 	});
 
-	it("passes cwd and resume_session_id through", async () => {
+	it("passes cwd, worktree, ref and resume_session_id through", async () => {
 		const { caller, calls } = fakeCaller(() => [{ id: "01C" }]);
 		await mcpRunTaskDefinition(caller, {
 			repo: "platform",
 			name: "pr-ready",
 			cwd: "/wt/repo.fix-x",
+			worktree: "repo.feat-a",
+			ref: "temp",
 			resume_session_id: "sess-2",
 		});
 		expect(calls[0]?.params).toEqual({
@@ -157,6 +218,8 @@ describe("mcpRunTaskDefinition", () => {
 			args: [],
 			source: "mcp",
 			cwd: "/wt/repo.fix-x",
+			worktree: "repo.feat-a",
+			ref: "temp",
 			resume_session_id: "sess-2",
 		});
 	});

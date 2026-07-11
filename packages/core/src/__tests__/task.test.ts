@@ -19,6 +19,8 @@ const sample: TaskInstance = {
 	resumeSessionId: null,
 	model: null,
 	prompt: "Reply to review comments on PR #1423.\n",
+	chainId: null,
+	chainSeq: null,
 };
 
 describe("task file", () => {
@@ -62,6 +64,15 @@ describe("task file", () => {
 			"session: warm",
 		);
 		expect(() => parseTaskFile(bad)).toThrow();
+	});
+
+	it("round-trips the cancelled status", () => {
+		const cancelled: TaskInstance = {
+			...sample,
+			status: "cancelled",
+			error: "cancelled by user",
+		};
+		expect(parseTaskFile(serializeTaskFile(cancelled))).toEqual(cancelled);
 	});
 
 	it("rejects an invalid status", () => {
@@ -122,6 +133,37 @@ describe("finished_at field", () => {
 		};
 		const reparsed = parseTaskFile(serializeTaskFile(withFinish));
 		expect(reparsed.finishedAt).toBe("2026-07-08T10:15:30.000Z");
+	});
+});
+
+describe("chain_id and chain_seq fields", () => {
+	it("default to null when absent (legacy task files)", () => {
+		const legacy = serializeTaskFile(sample)
+			.replace(/^chain_id: .*\n/m, "")
+			.replace(/^chain_seq: .*\n/m, "");
+		expect(legacy).not.toContain("chain_id:");
+		const task = parseTaskFile(legacy);
+		expect(task.chainId).toBeNull();
+		expect(task.chainSeq).toBeNull();
+	});
+
+	it("round-trips when set (a chain member)", () => {
+		const member: TaskInstance = {
+			...sample,
+			chainId: "01CHAIN000000000000000000A",
+			chainSeq: 2,
+		};
+		const reparsed = parseTaskFile(serializeTaskFile(member));
+		expect(reparsed.chainId).toBe("01CHAIN000000000000000000A");
+		expect(reparsed.chainSeq).toBe(2);
+	});
+
+	it("rejects a negative chain_seq", () => {
+		const bad = serializeTaskFile({ ...sample, chainSeq: 0 }).replace(
+			"chain_seq: 0",
+			"chain_seq: -1",
+		);
+		expect(() => parseTaskFile(bad)).toThrow();
 	});
 });
 

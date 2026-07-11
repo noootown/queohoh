@@ -7,6 +7,14 @@ export const TaskStatusSchema = z.enum([
 	"running",
 	"done",
 	"failed",
+	// Terminal: a chain member whose predecessor did not succeed. The scheduler
+	// never runs it; the engine stamps this status with a reason. Unknown to old
+	// TUIs, which tolerate it via serde's `#[serde(other)]` → Unknown fallback.
+	"skipped",
+	// Terminal: a user cancelled the task (skip RPC on a queued/needs-input task,
+	// or stop RPC on a running one). Distinct from `failed` so a deliberate cancel
+	// doesn't read as a genuine failure. Same old-TUI tolerance as `skipped`.
+	"cancelled",
 ]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
@@ -45,6 +53,11 @@ const TaskMetaSchema = z
 		session: SessionModeSchema.default("fresh"),
 		resume_session_id: z.string().nullable().default(null),
 		model: z.string().nullable().default(null),
+		// Task-chain linkage (additive; absent on legacy files → null). Members of
+		// one chain share `chain_id`; `chain_seq` is the 0-based position (head =
+		// 0). A non-chain task has both null.
+		chain_id: z.string().nullable().default(null),
+		chain_seq: z.number().int().nonnegative().nullable().default(null),
 	})
 	.strict();
 
@@ -65,6 +78,11 @@ export interface TaskInstance {
 	resumeSessionId: string | null;
 	model: string | null;
 	prompt: string;
+	/** Chain id shared by all members of a task chain; null for a standalone
+	 * task. Optional so pre-chain callers and test literals need not set it. */
+	chainId?: string | null;
+	/** 0-based position within the chain (head = 0); null for a standalone task. */
+	chainSeq?: number | null;
 }
 
 export function parseTaskFile(content: string): TaskInstance {
@@ -87,6 +105,8 @@ export function parseTaskFile(content: string): TaskInstance {
 		resumeSessionId: m.resume_session_id,
 		model: m.model,
 		prompt: body,
+		chainId: m.chain_id,
+		chainSeq: m.chain_seq,
 	};
 }
 
@@ -107,6 +127,8 @@ export function serializeTaskFile(task: TaskInstance): string {
 		session: task.session,
 		resume_session_id: task.resumeSessionId,
 		model: task.model,
+		chain_id: task.chainId ?? null,
+		chain_seq: task.chainSeq ?? null,
 	};
 	return stringifyFrontmatter(meta, task.prompt);
 }

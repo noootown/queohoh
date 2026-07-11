@@ -20,6 +20,15 @@ export interface WorktreeInfo {
 	lastCommitEpoch?: number | null;
 	/** Author name of the last commit (git log -1 --format=%an). null = unknown. */
 	lastCommitAuthor?: string | null;
+	/** Author email of the last commit (git log -1 --format=%ae). null = unknown.
+	 * The TUI matches this against the project's githubId (GitHub noreply emails
+	 * embed the login) to sort "my" worktrees first. */
+	lastCommitAuthorEmail?: string | null;
+	/** Short hash of the last commit (git log -1 --format=%h). null = unknown. */
+	lastCommitHash?: string | null;
+	/** Open PR number for this worktree's branch (via `gh pr list`). null =
+	 * unknown / no open PR / gh unavailable. */
+	prNumber?: number | null;
 }
 
 export interface ResolverIO {

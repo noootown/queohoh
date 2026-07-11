@@ -139,6 +139,7 @@ pub fn fixture_snapshot() -> StateSnapshot {
         max_concurrent: Some(3),
         projects: vec![Project {
             name: "acme".to_string(),
+            github_id: None,
         }],
         worktrees,
         main_sessions,

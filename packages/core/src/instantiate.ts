@@ -9,6 +9,43 @@ import { render } from "./template.js";
 
 export type Trigger = { mode: "discover" } | { mode: "args"; values: string[] };
 
+/**
+ * Reduce positional arg values to the definition's item map. Values are
+ * positional and may be shorter than the declared args: trailing args fill from
+ * their defaults, a missing value with no default is an error, and any value
+ * outside a declared `options` set is rejected. Shared by instantiateDefinition
+ * (args mode) and the daemon's chain builder (a `{definition, args}` step).
+ */
+export function buildItemFromArgs(
+	def: TaskDefinition,
+	values: string[],
+): Record<string, string> {
+	if (values.length > def.args.length) {
+		const names = def.args.map((a) => a.name).join(", ");
+		throw new Error(
+			`too many args: expected at most ${def.args.length} (${names}), got ${values.length}`,
+		);
+	}
+	const item: Record<string, string> = {};
+	def.args.forEach((spec, i) => {
+		let value: string;
+		if (i < values.length) {
+			value = String(values[i]);
+		} else if (spec.default !== undefined) {
+			value = spec.default;
+		} else {
+			throw new Error(`missing required arg: ${spec.name}`);
+		}
+		if (spec.options && !spec.options.includes(value)) {
+			throw new Error(
+				`arg ${spec.name}: "${value}" not in options (${spec.options.join(", ")})`,
+			);
+		}
+		item[spec.name] = value;
+	});
+	return item;
+}
+
 export interface InstantiateDeps {
 	store: QueueStore;
 	exec: Exec;
@@ -40,34 +77,7 @@ export async function instantiateDefinition(
 			{ cwd: deps.cwd },
 		);
 	} else {
-		const { values } = trigger;
-		if (values.length > def.args.length) {
-			const names = def.args.map((a) => a.name).join(", ");
-			throw new Error(
-				`too many args: expected at most ${def.args.length} (${names}), got ${values.length}`,
-			);
-		}
-		const item: Record<string, string> = {};
-		// Values are positional and may be shorter than args: the trailing args
-		// fill from their defaults. A missing value with no default is an error,
-		// and any value outside a declared `options` set is rejected.
-		def.args.forEach((spec, i) => {
-			let value: string;
-			if (i < values.length) {
-				value = String(values[i]);
-			} else if (spec.default !== undefined) {
-				value = spec.default;
-			} else {
-				throw new Error(`missing required arg: ${spec.name}`);
-			}
-			if (spec.options && !spec.options.includes(value)) {
-				throw new Error(
-					`arg ${spec.name}: "${value}" not in options (${spec.options.join(", ")})`,
-				);
-			}
-			item[spec.name] = value;
-		});
-		items = [item];
+		items = [buildItemFromArgs(def, trigger.values)];
 	}
 
 	const definition = `${def.repo}/${def.name}`;

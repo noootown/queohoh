@@ -187,15 +187,17 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
             let state =
                 menu::PickerState { index: *index, query, preview_scroll: *preview_scroll };
             let m = menu::render_menu(frame, &mut hits, title, items, state);
-            // Render-feedback for ctrl+d/u + wheel clamping (see the App fields).
+            // Render-feedback for wheel clamping (see the App fields).
             app.menu_preview_max_scroll.set(m.max_scroll);
-            app.menu_preview_page.set(m.half_page);
         }
         crate::app::Mode::ConfirmRemove { worktree, branch, .. } => {
             menu::render_confirm_remove(frame, &mut hits, worktree, branch);
         }
         crate::app::Mode::ConfirmBulkRemove { names, .. } => {
             modal::render_confirm_bulk_remove(frame, &mut hits, names);
+        }
+        crate::app::Mode::ConfirmCancel { calls, summary } => {
+            modal::render_confirm_cancel(frame, &mut hits, calls.len(), summary);
         }
         crate::app::Mode::AddTask { worktree, session, input } => {
             let repo = app.active_repo().unwrap_or_default();
@@ -212,16 +214,6 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
                 &mut hits,
                 &format!("New task — {sess} session — {target}"),
                 "prompt",
-                input,
-            );
-        }
-        crate::app::Mode::WorktreeInput { task_id, input } => {
-            let last6: String = task_id.chars().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
-            modal::render_input_modal(
-                frame,
-                &mut hits,
-                &format!("Assign worktree — task {last6}"),
-                "worktree",
                 input,
             );
         }
@@ -245,18 +237,16 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
             let state =
                 menu::PickerState { index: *index, query, preview_scroll: *preview_scroll };
             let m = menu::render_def_pick(frame, &mut hits, &title, defs, full, state);
-            // Render-feedback for ctrl+d/u + wheel clamping (see the App fields).
+            // Render-feedback for wheel clamping (see the App fields).
             app.menu_preview_max_scroll.set(m.max_scroll);
-            app.menu_preview_page.set(m.half_page);
         }
         crate::app::Mode::DefArgs { form } => {
             // Resolve the def's full prompt for the right panel (keyed "repo/name",
             // same source as the DefPick preview); `None` until the fetch lands.
             let full = app.full_defs.get(&format!("{}/{}", form.repo, form.def_name));
             let m = args_form::render_run_form(frame, &mut hits, &p, form, full);
-            // Render-feedback for ctrl+d/u + wheel clamping (see the App fields).
+            // Render-feedback for wheel clamping (see the App fields).
             app.menu_preview_max_scroll.set(m.max_scroll);
-            app.menu_preview_page.set(m.half_page);
         }
         crate::app::Mode::CreateWorktree { input, error } => {
             let repo = app.active_repo().unwrap_or_default();
@@ -309,6 +299,40 @@ mod tests {
     fn snapshot_default_80x24() {
         let (terminal, _hits) = render_at(&fixture_app(), 80, 24);
         insta::assert_snapshot!("view_default_80x24", terminal.backend());
+    }
+
+    #[test]
+    fn snapshot_all_status_glyphs() {
+        // One queue task per status pins the glyph set AND their WIDTHS: queued ○,
+        // needs-input ‼, done ●, failed ✗, cancelled ⊘, skipped ⊝ (running uses
+        // the throbber). A glyph that renders double-width would surface in a
+        // "Hidden by multi-width symbols" annotation and break column alignment —
+        // this snapshot is the width check for the new `‼`/`⊘`/`⊝`/`●` glyphs.
+        use crate::ipc::types::{Project, StateSnapshot, TaskInstance, TaskStatus};
+        let mk = |id: &str, status: TaskStatus, created: &str| {
+            let mut t = TaskInstance::default();
+            t.id = id.into();
+            t.status = status;
+            t.target.repo = "acme".into();
+            t.prompt = format!("{id} task");
+            t.created = created.into();
+            t
+        };
+        let mut app = fixture_app();
+        app.snapshot = Some(StateSnapshot {
+            tasks: vec![
+                mk("que", TaskStatus::Queued, "2026-07-09T12:01:00.000Z"),
+                mk("ipt", TaskStatus::NeedsInput, "2026-07-09T12:02:00.000Z"),
+                mk("don", TaskStatus::Done, "2026-07-09T11:00:00.000Z"),
+                mk("fai", TaskStatus::Failed, "2026-07-09T11:01:00.000Z"),
+                mk("can", TaskStatus::Cancelled, "2026-07-09T11:02:00.000Z"),
+                mk("skp", TaskStatus::Skipped, "2026-07-09T11:03:00.000Z"),
+            ],
+            projects: vec![Project { name: "acme".into(), github_id: None }],
+            ..Default::default()
+        });
+        let (terminal, _hits) = render_at(&app, 100, 24);
+        insta::assert_snapshot!("view_all_status_glyphs", terminal.backend());
     }
 
     #[test]

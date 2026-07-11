@@ -40,6 +40,12 @@ pub struct StateSnapshot {
 #[serde(rename_all = "camelCase", default)]
 pub struct Project {
     pub name: String,
+    /// The project's optional author identity (its `vars.yaml` `github_id:` key,
+    /// e.g. `noootown`). `None` on an old daemon that omits it (via the container
+    /// `default`), or when the project has no `github_id` configured. The
+    /// WORKTREES pane matches it against each worktree's last-commit author
+    /// email/name to sort "my" worktrees first; absent → that tier is a no-op.
+    pub github_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -50,6 +56,13 @@ pub enum TaskStatus {
     Running,
     Done,
     Failed,
+    /// User-cancelled via the queue `x` action (skip on a queued/needs-input task,
+    /// stop on a running one) — the daemon lands `cancelled`, distinct from a
+    /// `failed` run. Rendered with its own glyph, never the red ✗.
+    Cancelled,
+    /// Skipped by a chain (an earlier step failed, so this one never ran). Wire
+    /// value `skipped`; rendered dim, distinct from `cancelled`.
+    Skipped,
     #[default]
     #[serde(other)]
     Unknown,
@@ -111,9 +124,21 @@ pub struct WorktreeInfo {
     pub dirty: Option<bool>,
     /// unix epoch SECONDS of the last commit,
     pub last_commit_epoch: Option<u64>,
-    /// and the author name of the last commit. A stale daemon may still send the
+    /// the author name of the last commit. A stale daemon may still send the
     /// retired `ahead`/`behind` fields — serde ignores them (no deny_unknown).
     pub last_commit_author: Option<String>,
+    /// and the author EMAIL of the last commit (git `%ae`; `None`/null when
+    /// unknown or on an old daemon). Paired with `last_commit_author` for the
+    /// WORKTREES "mine-first" sort — the project's `github_id` is matched as a
+    /// case-insensitive substring of either.
+    pub last_commit_author_email: Option<String>,
+    /// Short hash of the last commit (git `%h`; `None`/null when unknown or on an
+    /// old daemon). Shown in the worktree detail info tab.
+    pub last_commit_hash: Option<String>,
+    /// Open PR number for this worktree's branch (`None`/null when there is no
+    /// open PR, `gh` is unavailable, or on an old daemon). Shown as `#<n>` in the
+    /// worktree detail info tab.
+    pub pr_number: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -257,9 +282,10 @@ mod tests {
           }],
           "running": ["01TASKAAA000000000000000000"],
           "maxConcurrent": 3,
-          "projects": [{"name": "platform"}, {"name": "web"}],
+          "projects": [{"name": "platform", "githubId": "noootown"}, {"name": "web"}],
           "worktrees": {"platform": [{"name": "platform.feat-a", "path": "/wt/platform.feat-a", "branch": "feat-a",
-            "dirty": true, "lastCommitEpoch": 1751970000, "lastCommitAuthor": "Kevin O'Shea"}]},
+            "dirty": true, "lastCommitEpoch": 1751970000, "lastCommitAuthor": "Kevin O'Shea",
+            "lastCommitAuthorEmail": "kevin@justicebid.com"}]},
           "mainSessions": {"platform:platform.feat-a": "sess-main"},
           "buildId": "1751970000000"
         }"#
@@ -287,11 +313,18 @@ mod tests {
         assert_eq!(s.sessions[0].kind, "interactive");
         assert_eq!(s.sessions[0].pid, Some(4242));
         assert_eq!(s.max_concurrent, Some(3));
-        assert_eq!(s.projects, vec![Project { name: "platform".into() }, Project { name: "web".into() }]);
+        assert_eq!(
+            s.projects,
+            vec![
+                Project { name: "platform".into(), github_id: Some("noootown".into()) },
+                Project { name: "web".into(), github_id: None },
+            ]
+        );
         let wt = &s.worktrees["platform"][0];
         assert_eq!(wt.branch, "feat-a");
         assert_eq!(wt.dirty, Some(true));
         assert_eq!(wt.last_commit_epoch, Some(1_751_970_000));
+        assert_eq!(wt.last_commit_author_email.as_deref(), Some("kevin@justicebid.com"));
         assert_eq!(wt.last_commit_author.as_deref(), Some("Kevin O'Shea"));
         assert_eq!(s.main_sessions["platform:platform.feat-a"], "sess-main");
         assert_eq!(s.build_id.as_deref(), Some("1751970000000"));

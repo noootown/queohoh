@@ -6,16 +6,20 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use crate::hit::{HitMap, HitTarget};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 16] = [
+const HELP_ROWS: [(&str, &str); 20] = [
     ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
     ("1–9 / 0", "switch project tab (0 = 10th)"),
     ("ctrl+s then n/p", "next / previous project tab"),
-    ("ctrl+x / ctrl+z", "next / previous detail sub-tab"),
-    ("j/k · arrows", "move cursor"),
-    ("J/K · shift+↑↓", "extend selection"),
-    ("Enter / a", "tasks: run def · queue/worktrees: action menu"),
+    ("arrows", "move list cursor (shift: extend selection)"),
+    ("j / k", "detail: move lane-task row · else scroll"),
+    ("h / l", "detail: previous / next sub-tab"),
+    ("ctrl+x / ctrl+z", "detail sub-tab (alias of l / h)"),
+    ("enter", "open selected lane task (worktrees)"),
+    ("a", "action menu (queue: resume · worktrees)"),
+    ("r", "run: tasks run def · queue re-queues selected"),
+    ("x", "queue: cancel selected (skip queued · stop running)"),
     ("c", "create (queue: adhoc task · worktrees: worktree)"),
-    ("t", "task menu — run a task definition"),
+    ("t", "task menu (worktrees)"),
     ("z", "collapse / expand focused list pane"),
     ("/", "filter focused pane"),
     ("esc", "clear range → clear filter → close overlay"),
@@ -27,8 +31,9 @@ const HELP_ROWS: [(&str, &str); 16] = [
 
 /// Glyph legend shown under the keymap (the WORKTREES columns especially are
 /// dense with markers; this is their one written explanation).
-const LEGEND_ROWS: [(&str, &str); 6] = [
-    ("✓ ✗ ○ ?", "task done / failed / queued / needs input"),
+const LEGEND_ROWS: [(&str, &str); 7] = [
+    ("● ✗ ⊘ ⊝", "task done / failed / cancelled / skipped"),
+    ("○ ‼ ▶", "queued / needs-input / running"),
     ("● / N", "worktree: green dot idle · yellow N = running + queued tasks"),
     ("⏱", "elapsed time of the running task on that lane"),
     ("⌂", "lane has a main session (tasks can resume it)"),
@@ -71,7 +76,7 @@ pub fn render(frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap, p: &Pal
     )));
     for (glyphs, what) in LEGEND_ROWS.iter() {
         lines.push(Line::from(vec![
-            Span::styled(format!(" {glyphs:<16}"), Style::default().fg(p.info)),
+            Span::styled(format!(" {glyphs:<16}"), Style::default().fg(p.meta)),
             Span::styled((*what).to_string(), Style::default().fg(p.fg)),
         ]));
     }

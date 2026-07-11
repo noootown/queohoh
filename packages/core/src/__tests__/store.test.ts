@@ -108,6 +108,20 @@ describe("QueueStore", () => {
 		expect(failed.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
 	});
 
+	it("stamps finishedAt for the cancelled and skipped terminal statuses too", () => {
+		const store = freshStore();
+		const cancelled = store.update(
+			store.create({ prompt: "a", repo: "r", ref: "temp", source: "tui" }).id,
+			{ status: "cancelled", error: "cancelled by user" },
+		);
+		expect(cancelled.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+		const skipped = store.update(
+			store.create({ prompt: "b", repo: "r", ref: "temp", source: "tui" }).id,
+			{ status: "skipped", error: "skipped: chain predecessor failed" },
+		);
+		expect(skipped.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+	});
+
 	it("keeps finishedAt stable across a re-set of the same terminal status", () => {
 		const store = freshStore();
 		const t = store.create({
@@ -208,6 +222,59 @@ describe("QueueStore", () => {
 		});
 		expect(t.resumeSessionId).toBeNull();
 		expect(t.model).toBeNull();
+	});
+
+	it("createChain links members with a shared chainId, ascending chainSeq, one head", () => {
+		const store = freshStore();
+		const members = store.createChain(
+			[
+				{ prompt: "autofix\n", definition: "platform/autofix" },
+				{ prompt: "pr-ready full\n" },
+			],
+			{
+				repo: "platform",
+				ref: "temp",
+				source: "mcp",
+				priority: "high",
+				resumeSessionId: "sess-1",
+			},
+		);
+		expect(members).toHaveLength(2);
+		const [head, tail] = members;
+		// Shared chain id, ascending 0-based seq.
+		expect(head?.chainId).toBeTruthy();
+		expect(head?.chainId).toBe(tail?.chainId);
+		expect(head?.chainSeq).toBe(0);
+		expect(tail?.chainSeq).toBe(1);
+		// Same target + priority; both start queued, unresolved.
+		expect(members.map((m) => m.target)).toEqual([
+			{ repo: "platform", ref: "temp", worktree: null },
+			{ repo: "platform", ref: "temp", worktree: null },
+		]);
+		expect(members.every((m) => m.status === "queued")).toBe(true);
+		expect(members.every((m) => m.priority === "high")).toBe(true);
+		// resume applies to the head only; the tail is always fresh.
+		expect(head?.resumeSessionId).toBe("sess-1");
+		expect(tail?.resumeSessionId).toBeNull();
+		// Step fields carried through; ids ascend in creation order.
+		expect(head?.definition).toBe("platform/autofix");
+		expect(tail?.definition).toBeNull();
+		const ids = members.map((m) => m.id);
+		expect(ids).toEqual([...ids].sort());
+		// Persisted and reloadable with the chain fields intact.
+		expect(store.get(tail?.id ?? "")?.chainSeq).toBe(1);
+	});
+
+	it("create leaves chainId and chainSeq null for a standalone task", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		expect(t.chainId).toBeNull();
+		expect(t.chainSeq).toBeNull();
 	});
 
 	it("skips unparseable files and reports them", () => {

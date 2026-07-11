@@ -1,0 +1,449 @@
+//! Top-level event dispatch for `App`.
+//!
+//! `update` is the single entry point the event loop calls; `update_event`
+//! fans an [`Event`] out to the mode-specific key/mouse handlers and snapshot
+//! wiring. Split out of `app/mod.rs` verbatim (no behavior change).
+
+use super::*;
+
+impl App {
+    pub fn update(&mut self, event: Event) -> Update {
+        let up = self.update_event(event);
+        // After any event, realign the live layout fields to the active project.
+        // A tab switch or the first snapshot changes the active project; this is
+        // the single place the stash-old / load-new swap happens. The event that
+        // moves the active project (snapshot, tab switch) is already `dirty`, so
+        // the swap needs no extra redraw signal of its own.
+        self.reconcile_active_layout();
+        up
+    }
+
+    fn update_event(&mut self, event: Event) -> Update {
+        match event {
+            Event::Snapshot(snapshot) => {
+                self.snapshot = Some(snapshot);
+                self.connected = true;
+                let mut cmds = Vec::new();
+                // A fresh snapshot can change (or first-establish) the selected
+                // run — debounce a tail read for it.
+                self.schedule_run_read(&mut cmds, 120);
+                // Daemon self-heal: compare the reported build to disk and act
+                // (Defer/RestartNow status + a Cmd::Heal on restart-now).
+                cmds.extend(self.heal_on_snapshot());
+                Update { dirty: true, cmds }
+            }
+            Event::RunFiles { task_id, files } => {
+                let mut cmds = Vec::new();
+                // Stale-read discard: the selection moved while the read was in
+                // flight.
+                let Some((sel_id, running)) = self.selected_run_task() else {
+                    return Update { dirty: false, cmds };
+                };
+                if task_id != sel_id {
+                    return Update { dirty: false, cmds };
+                }
+                // Poll loop via events: while the selected task runs, each read
+                // result arms the next 1s read — no timer state in App.
+                if running {
+                    cmds.push(Cmd::ReadRunFiles {
+                        task_id: sel_id.clone(),
+                        tail_lines: self.tail_lines(),
+                        delay_ms: 1000,
+                    });
+                }
+                // Identical-content skip: quiet poll → 0 renders.
+                let identical = self
+                    .run_files
+                    .as_ref()
+                    .map(|(id, f)| *id == task_id && *f == files)
+                    .unwrap_or(false);
+                if identical {
+                    return Update { dirty: false, cmds };
+                }
+                self.run_files = Some((task_id, files));
+                Update { dirty: true, cmds }
+            }
+            Event::Disconnected => {
+                // The retry loop re-sends this every ~2s while the daemon is
+                // down; only the transition repaints (zero idle renders).
+                let was_connected = self.connected;
+                self.connected = false;
+                Update { dirty: was_connected, cmds: vec![] }
+            }
+            Event::Resize => Update { dirty: true, cmds: vec![] },
+            Event::Tick => {
+                self.now_epoch_s = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                // Zero idle renders: the elapsed-label repaint only matters while
+                // the active project has a running task. The main loop also gates
+                // the Tick arm on `wants_tick`; this is the defensive second layer.
+                Update { dirty: self.wants_tick(), cmds: vec![] }
+            }
+            // These overlay modes swallow keys (checked before generic list
+            // handling). Guards include the Press filter so key-release events
+            // fall through to the generic arm's no-op.
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ActionMenu { .. }) =>
+            {
+                self.action_menu_key(&k)
+            }
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ConfirmRemove { .. }) =>
+            {
+                use crossterm::event::KeyCode::*;
+                match k.code {
+                    Char('y') => {
+                        let (repo, worktree) =
+                            if let Mode::ConfirmRemove { repo, worktree, .. } = &self.mode {
+                                (repo.clone(), worktree.clone())
+                            } else {
+                                unreachable!()
+                            };
+                        self.mode = Mode::List;
+                        let cmd = self.dispatch_rpc(
+                            "remove worktree",
+                            "removeWorktree",
+                            serde_json::json!({ "repo": repo, "name": worktree }),
+                            RpcOpts::default(),
+                        );
+                        Update { dirty: true, cmds: vec![cmd] }
+                    }
+                    Char('n') | Char('q') | Esc => {
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    _ => Update { dirty: false, cmds: vec![] },
+                }
+            }
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press
+                    && matches!(self.mode, Mode::ConfirmBulkRemove { .. }) =>
+            {
+                use crossterm::event::KeyCode::*;
+                match k.code {
+                    Char('y') => {
+                        let (repo, names) =
+                            if let Mode::ConfirmBulkRemove { repo, names } = &self.mode {
+                                (repo.clone(), names.clone())
+                            } else {
+                                unreachable!()
+                            };
+                        self.clear_range(ListPane::Worktrees);
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![Cmd::RpcSeq {
+                            verb: "removed".into(),
+                            calls: names
+                                .into_iter()
+                                .map(|name| RpcCall {
+                                    method: "removeWorktree".into(),
+                                    params: serde_json::json!({ "repo": repo, "name": name }),
+                                })
+                                .collect(),
+                            invalidate_defs_for: None,
+                        }] }
+                    }
+                    Char('n') | Char('q') | Esc => {
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    _ => Update { dirty: false, cmds: vec![] },
+                }
+            }
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ConfirmCancel { .. }) =>
+            {
+                use crossterm::event::KeyCode::*;
+                match k.code {
+                    // Default focus is confirm: Enter (and y) fire the frozen
+                    // skip/stop calls in one `RpcSeq` (verb "cancelled").
+                    Enter | Char('y') => {
+                        let calls = if let Mode::ConfirmCancel { calls, .. } = &self.mode {
+                            calls.clone()
+                        } else {
+                            unreachable!()
+                        };
+                        self.clear_range(ListPane::Queue);
+                        self.mode = Mode::List;
+                        Update {
+                            dirty: true,
+                            cmds: vec![Cmd::RpcSeq {
+                                verb: "cancelled".into(),
+                                calls,
+                                invalidate_defs_for: None,
+                            }],
+                        }
+                    }
+                    Char('n') | Char('q') | Esc => {
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    _ => Update { dirty: false, cmds: vec![] },
+                }
+            }
+            // Text-input modals. Enter dispatches + closes, Esc cancels, every
+            // other Press forwards to `tui_input`. Mouse never reaches here — the
+            // `Event::Mouse` arm intercepts all mouse events before these fire.
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::AddTask { .. }) =>
+            {
+                use crossterm::event::KeyCode::*;
+                match k.code {
+                    Enter => {
+                        let (prompt, sess, worktree) =
+                            if let Mode::AddTask { worktree, session, input } = &self.mode {
+                                let sess = match session {
+                                    SessionMode::Fresh => "fresh",
+                                    SessionMode::Main => "main",
+                                };
+                                (input.value().to_string(), sess, worktree.clone())
+                            } else {
+                                unreachable!()
+                            };
+                        let repo = match self.active_repo() {
+                            Some(r) => r,
+                            None => {
+                                self.mode = Mode::List;
+                                return Update { dirty: true, cmds: vec![] };
+                            }
+                        };
+                        let mut params =
+                            serde_json::json!({ "prompt": prompt, "repo": repo, "session": sess });
+                        if let Some(w) = worktree {
+                            params["worktree"] = serde_json::Value::String(w);
+                        }
+                        self.mode = Mode::List;
+                        let cmd =
+                            self.dispatch_rpc("enqueue task", "enqueue", params, RpcOpts::default());
+                        Update { dirty: true, cmds: vec![cmd] }
+                    }
+                    Esc => {
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    _ => {
+                        if let Mode::AddTask { input, .. } = &mut self.mode {
+                            input.handle_event(&crossterm::event::Event::Key(k));
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                }
+            }
+            // Def-pick popup owns keys while open (checked before generic list
+            // handling); key-release falls through to the generic no-op.
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::DefPick { .. }) =>
+            {
+                self.def_pick_key(&k)
+            }
+            // Args form owns keys while open (checked before generic list
+            // handling); key-release falls through to the generic no-op.
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::DefArgs { .. }) =>
+            {
+                self.def_args_key(&k)
+            }
+            // Create-worktree modal owns keys while open (checked before generic
+            // list handling); key-release falls through to the generic no-op.
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press
+                    && matches!(self.mode, Mode::CreateWorktree { .. }) =>
+            {
+                self.create_worktree_key(&k)
+            }
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    return Update { dirty: false, cmds: vec![] };
+                }
+                match &self.mode {
+                    Mode::Help | Mode::Settings => {
+                        // Any key closes the help / settings overlay.
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: Vec::new() }
+                    }
+                    Mode::Search { pane } => {
+                        let pane = *pane;
+                        let mut dirty = true;
+                        // Keystrokes that reset the cursor to 0 (printable,
+                        // backspace), Enter-apply, and Esc-clear all change the
+                        // effective selection, so they must schedule the debounced
+                        // run-file read like every other selection path.
+                        let mut cmds = Vec::new();
+                        match key.code {
+                            KeyCode::Enter => {
+                                self.mode = Mode::List; // apply
+                                self.schedule_run_read(&mut cmds, 120);
+                            }
+                            KeyCode::Esc => {
+                                self.ui().search[pane as usize].clear();
+                                self.ui().selections[pane as usize] =
+                                    Selection { cursor: 0, anchor: None };
+                                self.mode = Mode::List;
+                                self.schedule_run_read(&mut cmds, 120);
+                            }
+                            KeyCode::Backspace => {
+                                self.ui().search[pane as usize].pop();
+                                self.ui().selections[pane as usize] =
+                                    Selection { cursor: 0, anchor: None };
+                                self.schedule_run_read(&mut cmds, 120);
+                            }
+                            KeyCode::Char(c)
+                                if !key.modifiers.contains(
+                                    crossterm::event::KeyModifiers::CONTROL,
+                                ) =>
+                            {
+                                self.ui().search[pane as usize].push(c);
+                                self.ui().selections[pane as usize] =
+                                    Selection { cursor: 0, anchor: None };
+                                self.schedule_run_read(&mut cmds, 120);
+                            }
+                            _ => dirty = false,
+                        }
+                        Update { dirty, cmds }
+                    }
+                    Mode::List => {
+                        // Status line clears on ANY list-mode keypress (even unbound keys).
+                        let had_status = self.status_line.take().is_some();
+                        // tmux-style prefix: when armed, this key is consumed —
+                        // `n`/`p` cycle project tabs (wrapping), anything else just
+                        // disarms and is swallowed. Disarming always repaints (the
+                        // footer indicator turns off).
+                        if self.prefix_armed {
+                            self.prefix_armed = false;
+                            let action = match key.code {
+                                KeyCode::Char('n') => crate::keymap::AppAction::CycleTab(1),
+                                KeyCode::Char('p') => crate::keymap::AppAction::CycleTab(-1),
+                                _ => crate::keymap::AppAction::None,
+                            };
+                            let up = self.apply_action(action);
+                            return Update { dirty: true, cmds: up.cmds };
+                        }
+                        // Arm the prefix on ctrl+s. Consumed here so it never
+                        // reaches the keymap; the next key resolves it above.
+                        if matches!(key.code, KeyCode::Char('s'))
+                            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                        {
+                            self.prefix_armed = true;
+                            return Update { dirty: true, cmds: Vec::new() };
+                        }
+                        let action = crate::keymap::list_mode_action(&key, self.ui().focus);
+                        let mut up = self.apply_action(action);
+                        up.dirty = up.dirty || had_status;
+                        up
+                    }
+                    // ActionMenu/ConfirmRemove only reach here on key-release
+                    // (their Press events are handled by the guarded arms above).
+                    _ => Update { dirty: false, cmds: vec![] },
+                }
+            }
+            // Bracketed paste. The run form's free-text field takes the payload
+            // verbatim (newlines preserved — this is the "paste your bug report"
+            // flow). The single-line prompt/worktree/branch inputs take it with
+            // control chars (newlines/tabs) collapsed to spaces so a multiline
+            // paste can't smuggle a newline into a one-line field. Every other
+            // mode ignores paste (List has no text target).
+            Event::Paste(s) => match &mut self.mode {
+                Mode::DefArgs { form } => {
+                    let inserted = form.insert_str(&s);
+                    Update { dirty: inserted, cmds: vec![] }
+                }
+                Mode::AddTask { input, .. } | Mode::CreateWorktree { input, .. } => {
+                    let flat: String =
+                        s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+                    for c in flat.chars() {
+                        input.handle_event(&crossterm::event::Event::Key(
+                            crossterm::event::KeyEvent::new(
+                                KeyCode::Char(c),
+                                crossterm::event::KeyModifiers::NONE,
+                            ),
+                        ));
+                    }
+                    // A create-worktree paste clears any prior validation error.
+                    if let Mode::CreateWorktree { error, .. } = &mut self.mode {
+                        *error = None;
+                    }
+                    Update { dirty: !flat.is_empty(), cmds: vec![] }
+                }
+                _ => Update { dirty: false, cmds: vec![] },
+            },
+            Event::Mouse(m) => self.on_mouse(m),
+            Event::ActionResult { status, invalidate_defs_for } => {
+                // Success carries status = None → leave the line untouched (never clobber
+                // a heal/create message with an empty). Failure carries the message.
+                if status.is_some() {
+                    self.status_line = status;
+                }
+                // A self-heal reported its outcome (success emits nothing; failure carries
+                // "daemon busy — restart deferred"). Clear the in-flight flag and mark the
+                // status heal-owned so the next healthy snapshot clears it.
+                if self.healing {
+                    self.healing = false;
+                    self.heal_status_shown = true;
+                }
+                let mut cmds = Vec::new();
+                if let Some(repo) = invalidate_defs_for {
+                    // A run may change dedup state, so drop the cached defs and re-fetch
+                    // eagerly (ports App.tsx `invalidateDefs` + the lazy re-fetch effect).
+                    // Mark in flight so the event loop's `reconcile_defs` dedups against
+                    // this eager re-fetch instead of emitting a duplicate.
+                    self.defs_by_project.remove(&repo);
+                    self.defs_inflight.insert(repo.clone());
+                    // Full definitions may be stale for the same reason; dropping
+                    // them (and their poison markers) lets `reconcile_full_def`
+                    // lazily refetch whichever one the detail pane shows next.
+                    let prefix = format!("{repo}/");
+                    self.full_defs.retain(|k, _| !k.starts_with(&prefix));
+                    self.full_defs_inflight.retain(|k| !k.starts_with(&prefix));
+                    cmds.push(Cmd::FetchDefinitions { repo });
+                }
+                Update { dirty: true, cmds }
+            }
+            Event::Definitions { repo, defs } => {
+                // Cache the repo's summaries and clear its in-flight flag so the
+                // next `reconcile_defs` sees it cached (ports the TS effect that
+                // stores the fetch result and re-enables re-fetch after invalidation).
+                // The daemon's `definitions` call returns entries for EVERY project
+                // (a global def appears once per project) — keep only this repo's
+                // (ports App.tsx `all.filter((d) => d.repo === activeName)`).
+                let defs: Vec<DefinitionSummary> =
+                    defs.into_iter().filter(|d| d.repo == repo).collect();
+                self.defs_by_project.insert(repo.clone(), defs);
+                self.defs_inflight.remove(&repo);
+                Update { dirty: true, cmds: vec![] }
+            }
+            Event::Settings { payload } => {
+                // Store the fetch outcome (payload may be None = failed/unsupported
+                // → cached as Some(None) so the overlay stops "loading" and never
+                // re-fetches). Repaints so an open overlay swaps from the loading
+                // line to the table.
+                self.settings = Some(payload);
+                Update { dirty: true, cmds: vec![] }
+            }
+            Event::SelectionExpired { epoch } => {
+                // Post-copy fade. Only the CURRENT selection generation may be
+                // cleared — a stale timer racing a newer selection is a no-op.
+                let clear = epoch == self.selection_epoch && self.detail_selection.is_some();
+                if clear {
+                    self.detail_selection = None;
+                }
+                Update { dirty: clear, cmds: vec![] }
+            }
+            Event::Definition { repo, name, def } => {
+                // Full-definition reply for the detail pane. Success fills the
+                // cache (and clears the in-flight marker); failure LEAVES the
+                // marker as a poison so the per-event `reconcile_full_def` doesn't
+                // refetch-loop against a broken daemon — invalidation clears it.
+                let key = format!("{repo}/{name}");
+                match def {
+                    Some(d) => {
+                        self.full_defs.insert(key.clone(), d);
+                        self.full_defs_inflight.remove(&key);
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    None => Update { dirty: false, cmds: vec![] },
+                }
+            }
+        }
+    }
+}

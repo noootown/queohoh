@@ -5,6 +5,7 @@ import { z } from "zod";
 import { ApiClient } from "./client.js";
 import type { McpCaller, ToolResult } from "./mcp-tools.js";
 import {
+	mcpEnqueueChain,
 	mcpEnqueueTask,
 	mcpListTaskDefinitions,
 	mcpListTasks,
@@ -73,6 +74,70 @@ export function createMcpServer(caller: McpCaller): McpServer {
 	);
 
 	server.tool(
+		"enqueue_chain",
+		"Enqueue an ORDERED CHAIN of tasks that run one after another in a single shared worktree — use for a multi-step request like 'do A, then B'. Each step is either a task definition ({definition, args?}) or an ad-hoc prompt ({prompt}). The chain resolves its worktree ONCE (the first step's ref); later steps land on the same worktree and never spawn their own. A step runs only if the previous one SUCCEEDED — if a step fails, needs input, or is stopped, the rest are marked 'skipped'. resume_session_id (if given) applies to the first step only; later steps are always fresh. Shares repo/cwd/ref/worktree/priority/model with enqueue_task. Returns the created tasks (head-first) as JSON.",
+		{
+			steps: z
+				.array(
+					z.object({
+						definition: z
+							.string()
+							.optional()
+							.describe(
+								"Definition name in the repo (mutually exclusive with prompt)",
+							),
+						args: z
+							.array(z.string())
+							.optional()
+							.describe("Positional args for the definition"),
+						prompt: z
+							.string()
+							.optional()
+							.describe("Ad-hoc prompt (mutually exclusive with definition)"),
+					}),
+				)
+				.min(1)
+				.describe(
+					"Ordered steps; each needs exactly one of definition | prompt",
+				),
+			repo: z
+				.string()
+				.optional()
+				.describe("Registered project name; omit when cwd is given"),
+			cwd: z
+				.string()
+				.optional()
+				.describe(
+					"Absolute path inside the target worktree; resolves repo + worktree",
+				),
+			ref: z
+				.string()
+				.optional()
+				.describe(
+					"Target ref for the whole chain: pr:<N> | ticket:<ID> | worktree:<name> | temp (default: temp)",
+				),
+			worktree: z
+				.string()
+				.optional()
+				.describe(
+					"Existing worktree name to pin the chain to (shorthand for ref worktree:<name>)",
+				),
+			priority: z.enum(["low", "normal", "high"]).optional(),
+			resume_session_id: z
+				.string()
+				.optional()
+				.describe("Claude session id to resume for the FIRST step only"),
+			model: z
+				.string()
+				.optional()
+				.describe(
+					"Model for prompt steps (definition steps use their own model)",
+				),
+		},
+		async (args) => toCallResult(mcpEnqueueChain(caller, args)),
+	);
+
+	server.tool(
 		"list_tasks",
 		"List the current queohoh queue: all live tasks plus which task ids are actively running. Returns JSON.",
 		{},
@@ -88,7 +153,7 @@ export function createMcpServer(caller: McpCaller): McpServer {
 
 	server.tool(
 		"run_task_definition",
-		"Trigger a task definition. With args, instantiates directly (e.g. pr-review 257). Without args, runs the definition's discovery command which may take a while — if the call times out, the tasks may still be created: verify with list_tasks instead of retrying. Returns created tasks as JSON.",
+		"Trigger a task definition. With args, instantiates directly (e.g. pr-review 257). Without args, runs the definition's discovery command which may take a while — if the call times out, the tasks may still be created: verify with list_tasks instead of retrying. Target precedence is cwd > worktree > ref > the definition's own worktree: setting; pass ref to pin the target (e.g. ref 'temp') and override a 'worktree: auto' definition that would otherwise target a PR/ticket URL found in the args. Returns created tasks as JSON.",
 		{
 			repo: z.string().describe("Registered project name"),
 			name: z.string().describe("Definition name (e.g. 'pr-review')"),
@@ -100,7 +165,19 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.string()
 				.optional()
 				.describe(
-					"Absolute path inside the target worktree; overrides the definition's worktree",
+					"Absolute path inside the target worktree; overrides the definition's worktree and beats worktree/ref",
+				),
+			worktree: z
+				.string()
+				.optional()
+				.describe(
+					"Existing worktree name to run in (shorthand for ref worktree:<name>); beats ref, beaten by cwd. Ignored for a 'worktree: repo' def.",
+				),
+			ref: z
+				.string()
+				.optional()
+				.describe(
+					"Target ref: pr:<N> | ticket:<ID> | worktree:<name> | temp. Overrides the definition's worktree: setting (e.g. pin 'temp' over a worktree: auto def). Ignored for a location-critical 'worktree: repo' def; beaten by worktree and cwd.",
 				),
 			resume_session_id: z
 				.string()

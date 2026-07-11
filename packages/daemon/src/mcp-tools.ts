@@ -62,6 +62,34 @@ export function mcpEnqueueTask(
 	);
 }
 
+export function mcpEnqueueChain(
+	caller: McpCaller,
+	args: {
+		steps: { definition?: string; args?: string[]; prompt?: string }[];
+		repo?: string;
+		cwd?: string;
+		ref?: string;
+		worktree?: string;
+		priority?: "low" | "normal" | "high";
+		resume_session_id?: string;
+		model?: string;
+	},
+): Promise<ToolResult> {
+	return withPort(caller, (port) =>
+		port.call("enqueue_chain", {
+			steps: args.steps,
+			repo: args.repo,
+			cwd: args.cwd,
+			ref: args.ref,
+			worktree: args.worktree,
+			priority: args.priority,
+			resume_session_id: args.resume_session_id,
+			model: args.model,
+			source: "mcp",
+		}),
+	);
+}
+
 export function mcpListTasks(caller: McpCaller): Promise<ToolResult> {
 	return withPort(caller, async (port) => {
 		const state = (await port.call("state")) as {
@@ -83,6 +111,8 @@ export function mcpRunTaskDefinition(
 		name: string;
 		args?: string[];
 		cwd?: string;
+		worktree?: string;
+		ref?: string;
 		resume_session_id?: string;
 	},
 ): Promise<ToolResult> {
@@ -93,6 +123,8 @@ export function mcpRunTaskDefinition(
 			args: args.args ?? [],
 			source: "mcp",
 			cwd: args.cwd,
+			worktree: args.worktree,
+			ref: args.ref,
 			resume_session_id: args.resume_session_id,
 		}),
 	);

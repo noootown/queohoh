@@ -131,6 +131,38 @@ describe("runTask", () => {
 		expect((await runTask(t.id, deps)).error).toBe("stopped (SIGTERM)");
 	});
 
+	it("signal WITH isCancelled → cancelled 'stopped by user' (a user Stop, not a failure)", async () => {
+		const { deps, store } = makeDeps({
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 143,
+				signal: "SIGTERM",
+			}),
+			isCancelled: () => true,
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("cancelled");
+		expect(result.error).toBe("stopped by user");
+	});
+
+	it("signal WITHOUT isCancelled → failed (external/OOM kill stays a failure)", async () => {
+		const { deps, store } = makeDeps({
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 137,
+				signal: "SIGKILL",
+			}),
+			isCancelled: () => false,
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("failed");
+		expect(result.error).toBe("stopped (SIGKILL)");
+	});
+
 	it("reports the spawned child pid via onSpawned", async () => {
 		const seen: Array<{ id: string; pid: number }> = [];
 		const { deps, store } = makeDeps({

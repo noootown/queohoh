@@ -139,6 +139,30 @@ describe("ApiServer", () => {
 		expect(state.maxConcurrent).toBe(3);
 	});
 
+	it("omits githubId when the project has no vars.yaml setting", async () => {
+		const { client } = await setup();
+		const state = (await client.call("state")) as {
+			projects: { name: string; githubId?: string }[];
+		};
+		// Additive/optional: absent setting → undefined → dropped from the JSON
+		// frame, so old TUIs see the same shape they always did.
+		expect(state.projects).toEqual([{ name: "platform" }]);
+	});
+
+	it("exposes githubId from the project's vars.yaml github_id in the snapshot", async () => {
+		const { client, workspace } = await setup();
+		writeFileSync(
+			join(workspace, "platform", "vars.yaml"),
+			"github_id: noootown\n",
+		);
+		const state = (await client.call("state")) as {
+			projects: { name: string; githubId?: string }[];
+		};
+		expect(state.projects).toEqual([
+			{ name: "platform", githubId: "noootown" },
+		]);
+	});
+
 	it("enqueue creates an adhoc task and reports state", async () => {
 		const { client } = await setup();
 		const task = (await client.call("enqueue", {
@@ -148,6 +172,133 @@ describe("ApiServer", () => {
 		expect(task.target.ref).toBe("temp");
 		const state = (await client.call("state")) as { tasks: { id: string }[] };
 		expect(state.tasks.map((t) => t.id)).toContain(task.id);
+	});
+
+	it("enqueue_chain creates linked tasks sharing one target", async () => {
+		const { client } = await setup();
+		const created = (await client.call("enqueue_chain", {
+			repo: "platform",
+			ref: "temp",
+			priority: "high",
+			steps: [
+				{ definition: "greet", args: ["Ada"] },
+				{ prompt: "then celebrate\n" },
+			],
+		})) as {
+			id: string;
+			chainId: string;
+			chainSeq: number;
+			definition: string | null;
+			prompt: string;
+			priority: string;
+			target: { repo: string; ref: string; worktree: string | null };
+		}[];
+		expect(created).toHaveLength(2);
+		const [head, tail] = created;
+		// Linked: shared chainId, ascending seq, one head.
+		expect(head?.chainId).toBeTruthy();
+		expect(head?.chainId).toBe(tail?.chainId);
+		expect(head?.chainSeq).toBe(0);
+		expect(tail?.chainSeq).toBe(1);
+		// Definition step rendered its prompt; prompt step passed through verbatim.
+		expect(head?.definition).toBe("platform/greet");
+		expect(head?.prompt).toBe("Say hi to Ada.\n");
+		expect(tail?.definition).toBeNull();
+		expect(tail?.prompt).toBe("then celebrate\n");
+		// Shared unresolved target + chain priority applied to both.
+		expect(head?.target).toEqual({
+			repo: "platform",
+			ref: "temp",
+			worktree: null,
+		});
+		expect(tail?.target).toEqual({
+			repo: "platform",
+			ref: "temp",
+			worktree: null,
+		});
+		expect(head?.priority).toBe("high");
+		expect(tail?.priority).toBe("high");
+	});
+
+	it("enqueue_chain rejects a step lacking both definition and prompt", async () => {
+		const { client } = await setup();
+		await expect(
+			client.call("enqueue_chain", { repo: "platform", steps: [{}] }),
+		).rejects.toThrow(/must have either/);
+	});
+
+	it("enqueue_chain rejects an empty steps list", async () => {
+		const { client } = await setup();
+		await expect(
+			client.call("enqueue_chain", { repo: "platform", steps: [] }),
+		).rejects.toThrow(/at least one step/);
+	});
+
+	// A `worktree: auto` def extracts the first PR/ticket URL from its arg values
+	// and targets that branch. `ref` must be able to override that when the URL is
+	// reference material, not the destination.
+	function writeAutoDef(workspace: string): void {
+		const dir = join(workspace, "platform", "tasks", "autofix");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "config.yaml"),
+			"args: [situation]\ndedup: none\nworktree: auto\n",
+		);
+		writeFileSync(join(dir, "prompt.md"), "Fix: {{situation}}\n");
+	}
+
+	it("run_task_definition: ref overrides a worktree:auto def's URL extraction", async () => {
+		const { client, workspace } = await setup();
+		writeAutoDef(workspace);
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "autofix",
+			args: ["see https://github.com/o/r/pull/42 for context"],
+			ref: "temp",
+		})) as { target: { ref: string } }[];
+		expect(created[0]?.target.ref).toBe("temp");
+	});
+
+	it("run_task_definition: without ref, a worktree:auto def extracts the URL target", async () => {
+		const { client, workspace } = await setup();
+		writeAutoDef(workspace);
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "autofix",
+			args: ["see https://github.com/o/r/pull/42 for context"],
+		})) as { target: { ref: string } }[];
+		expect(created[0]?.target.ref).toBe("pr:42");
+	});
+
+	it("run_task_definition: worktree param beats ref (precedence cwd > worktree > ref)", async () => {
+		const { client, workspace } = await setup();
+		writeAutoDef(workspace);
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "autofix",
+			args: ["anything"],
+			worktree: "feat-a",
+			ref: "temp",
+		})) as { target: { ref: string } }[];
+		expect(created[0]?.target.ref).toBe("worktree:feat-a");
+	});
+
+	it("enqueue_chain: a worktree:auto definition step inherits the chain ref, not its URL", async () => {
+		const { client, workspace } = await setup();
+		writeAutoDef(workspace);
+		const created = (await client.call("enqueue_chain", {
+			repo: "platform",
+			ref: "temp",
+			steps: [
+				{
+					definition: "autofix",
+					args: ["see https://github.com/o/r/pull/42 for context"],
+				},
+				{ prompt: "then pr-ready\n" },
+			],
+		})) as { target: { ref: string } }[];
+		// Both members land on the chain's shared target, not pr:42.
+		expect(created.map((t) => t.target.ref)).toEqual(["temp", "temp"]);
 	});
 
 	it("state snapshot exposes mainSessions (empty by default, filled after set)", async () => {
@@ -541,6 +692,55 @@ describe("ApiServer", () => {
 		};
 		expect(retried.status).toBe("queued");
 		store.update(t.id, { status: "failed", error: "boom again" });
+		await client.call("skip", { id: t.id });
+		expect(store.list()).toEqual([]);
+	});
+
+	it("skip CANCELS a queued task (status cancelled, stays visible), not failed/archived", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		const updated = (await client.call("skip", { id: t.id })) as {
+			status: string;
+			error: string | null;
+			finishedAt: string | null;
+		};
+		expect(updated.status).toBe("cancelled");
+		expect(updated.error).toBe("cancelled by user");
+		expect(updated.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+		// Not archived — it remains in the live list as a cancelled row.
+		expect(store.list().map((x) => x.id)).toEqual([t.id]);
+	});
+
+	it("skip cancels a needs-input task too", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:gone",
+			source: "tui",
+		});
+		store.update(t.id, { status: "needs-input", error: "not found" });
+		const updated = (await client.call("skip", { id: t.id })) as {
+			status: string;
+		};
+		expect(updated.status).toBe("cancelled");
+		expect(store.get(t.id)?.status).toBe("cancelled");
+	});
+
+	it("skip archives an already-cancelled task (dismiss its terminal row)", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "cancelled", error: "cancelled by user" });
 		await client.call("skip", { id: t.id });
 		expect(store.list()).toEqual([]);
 	});

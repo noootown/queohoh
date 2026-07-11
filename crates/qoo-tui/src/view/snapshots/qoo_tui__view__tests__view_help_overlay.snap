@@ -6,23 +6,23 @@ expression: terminal.backend()
 "╭📋 QUEU│ Tab / Shift+Tab cycle focus: queue → tasks → worktrees       │───────╮" Hidden by multi-width symbols: [(2, " ")]
 "│       │ 1–9 / 0         switch project tab (0 = 10th)                │       │"
 "│ 🔍 [/]│ ctrl+s then n/p next / previous project tab                  │       │" Hidden by multi-width symbols: [(3, " ")]
-"│       │ ctrl+x / ctrl+z next / previous detail sub-tab               │       │"
-"│ ⠯ ⌂  f│ j/k · arrows    move cursor                                  │       │"
-"│ ○    f│ J/K · shift+↑↓  extend selection                             │       │"
-"│ ──────│ Enter / a       tasks: run def · queue/worktrees: action menu│       │"
-"│ ✗    m│ c               create (queue: adhoc task · worktrees: worktr│       │"
-"│ ✓    m│ t               task menu — run a task definition            │       │"
-"│       │ z               collapse / expand focused list pane          │       │"
-"│       │ /               filter focused pane                          │       │"
-"╰───────│ esc             clear range → clear filter → close overlay   │       │"
-"╭⚡ TASK│ g/G · Home/End  top / bottom (Home/End: detail pane)         │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ s               settings — model table                       │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no tas│ ?               this help                                    │       │"
-"│       │ q               quit                                         │       │"
-"╰───────│                                                              │       │"
-"╭🌲 WORK│ legend                                                       │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ ✓ ✗ ○ ?         task done / failed / queued / needs input    │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ 2 ⌂ fe│ ● / N           worktree: green dot idle · yellow N = running│       │"
-"│ ●   ho│ ⏱               elapsed time of the running task on that lane│       │"
-"╰───────│ ⌂               lane has a main session (tasks can resume it)│───────╯"
+"│      W│ arrows          move list cursor (shift: extend selection)   │       │"
+"│ ⠯ ⌂  f│ j / k           detail: move lane-task row · else scroll     │       │"
+"│ ○    f│ h / l           detail: previous / next sub-tab              │       │"
+"│ ──────│ ctrl+x / ctrl+z detail sub-tab (alias of l / h)              │       │"
+"│ ✗    m│ enter           open selected lane task (worktrees)          │       │"
+"│ ●    m│ a               action menu (queue: resume · worktrees)      │       │"
+"│       │ r               run: tasks run def · queue re-queues selected│       │"
+"│       │ x               queue: cancel selected (skip queued · stop ru│       │"
+"╰───────│ c               create (queue: adhoc task · worktrees: worktr│       │"
+"╭⚡TASKS│ t               task menu (worktrees)                        │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ z               collapse / expand focused list pane          │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no tas│ /               filter focused pane                          │       │"
+"│       │ esc             clear range → clear filter → close overlay   │       │"
+"╰───────│ g/G · Home/End  top / bottom (Home/End: detail pane)         │       │"
+"╭🌲 WORK│ s               settings — model table                       │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ ?               this help                                    │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ 2 ⌂ fe│ q               quit                                         │       │"
+"│ ●   ho│                                                              │       │"
+"╰───────│ legend                                                       │───────╯"
 "[1-9/0 ·╰──────────────────────────────────────────────────────────────╯        "

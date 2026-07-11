@@ -101,6 +101,48 @@ pub fn render_input_modal(
 /// the frame; registers the popup body as a `Modal` hit target (y confirms via
 /// the app's key branch). Built directly rather than via `modal_frame` because
 /// the warning is wider than that helper's clamped interior on small screens.
+/// Confirm dialog for the queue `x` cancel action. `count` is the number of
+/// tasks that will be cancelled; `summary` is the one-line description
+/// (`cancel 1 queued task` / `cancel 3 tasks (1 running will be stopped)`).
+/// Default focus is confirm — Enter (or y) fires; n/esc cancel.
+pub fn render_confirm_cancel(
+    frame: &mut ratatui::Frame,
+    hit: &mut HitMap,
+    count: usize,
+    summary: &str,
+) {
+    let p = Palette::default();
+    let hint = " enter/y confirm · n/esc dismiss";
+    // Width to the widest line (summary or hint), plus the border ring.
+    let inner_w = summary.chars().count().max(hint.chars().count());
+    let area = frame.area();
+    let width = (inner_w as u16 + 2).min(area.width);
+    let height = 4u16.min(area.height); // summary + hint + border ring
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let rect = Rect { x, y, width, height };
+
+    frame.render_widget(Clear, rect);
+    hit.push(rect, HitTarget::Modal);
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" Cancel {count} task{} ", if count == 1 { "" } else { "s" }),
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.warn));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let lines = vec![
+        Line::from(Span::styled(summary.to_string(), Style::default().fg(p.fg))),
+        Line::from(Span::styled(hint, p.dim_style())),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 pub fn render_confirm_bulk_remove(frame: &mut ratatui::Frame, hit: &mut HitMap, names: &[String]) {
     let p = Palette::default();
     let normal = Style::default().fg(p.fg);

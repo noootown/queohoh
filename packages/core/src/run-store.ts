@@ -72,7 +72,7 @@ export class RunStore {
 		taskId: string,
 		data: {
 			result: RunResult;
-			outcome: "done" | "failed";
+			outcome: "done" | "failed" | "cancelled";
 			reason: string | null;
 		},
 		redact: Redactor,

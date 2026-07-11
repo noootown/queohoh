@@ -29,6 +29,29 @@ export interface NewTaskInput {
 	model?: string;
 }
 
+/** One step of a task chain. `definition` steps carry a rendered prompt plus the
+ * `repo/name` and item for display; `prompt` steps carry only the prompt. Model
+ * is stored as the raw alias/id (the worker resolves it; a definition step's own
+ * model still wins at spawn time). */
+export interface ChainStepInput {
+	prompt: string;
+	definition?: string;
+	item?: Record<string, string>;
+	itemKey?: string;
+	model?: string;
+	priority?: Priority;
+}
+
+/** Target + provenance shared by every member of a chain. `resumeSessionId`
+ * applies to the head only (steps 2+ are always fresh). */
+export interface ChainSharedInput {
+	repo: string;
+	ref: string;
+	source: TaskSource;
+	priority?: Priority;
+	resumeSessionId?: string;
+}
+
 export class QueueStore {
 	readonly stateDir: string;
 	readonly tasksDir: string;
@@ -67,9 +90,52 @@ export class QueueStore {
 			resumeSessionId: input.resumeSessionId ?? null,
 			model: input.model ?? null,
 			prompt: input.prompt,
+			chainId: null,
+			chainSeq: null,
 		};
 		this.write(task);
 		return task;
+	}
+
+	/**
+	 * Create an ordered chain of linked tasks in one shot. Every member shares
+	 * `chainId` and the target (`repo`/`ref`, worktree unresolved); `chainSeq` is
+	 * the 0-based position. All start `queued`; the scheduler runs them in order,
+	 * gating each on its predecessor succeeding (see scheduler.ts). Monotonic
+	 * ulids keep member ids ascending in creation order. Returns the members
+	 * head-first.
+	 */
+	createChain(
+		steps: ChainStepInput[],
+		shared: ChainSharedInput,
+	): TaskInstance[] {
+		const chainId = this.ulid();
+		const now = new Date().toISOString();
+		return steps.map((step, i) => {
+			const task: TaskInstance = {
+				id: this.ulid(),
+				status: "queued",
+				definition: step.definition ?? null,
+				item: step.item ?? null,
+				itemKey: step.itemKey ?? null,
+				target: { repo: shared.repo, ref: shared.ref, worktree: null },
+				priority: step.priority ?? shared.priority ?? "normal",
+				created: now,
+				finishedAt: null,
+				source: shared.source,
+				ephemeralWorktree: false,
+				error: null,
+				session: "fresh",
+				// Resume applies to the head only; later steps are always fresh.
+				resumeSessionId: i === 0 ? (shared.resumeSessionId ?? null) : null,
+				model: step.model ?? null,
+				prompt: step.prompt,
+				chainId,
+				chainSeq: i,
+			};
+			this.write(task);
+			return task;
+		});
 	}
 
 	list(): TaskInstance[] {
@@ -100,15 +166,20 @@ export class QueueStore {
 		if (!current) throw new Error(`task not found: ${id}`);
 		const next: TaskInstance = { ...current, ...patch, id };
 		// Stamp/clear the completion timestamp on a status transition (unless the
-		// caller set finishedAt explicitly): terminal (done/failed) stamps now,
-		// keeping an existing stamp so a re-set of the same terminal status is
-		// idempotent; any non-terminal status clears it (a re-run un-finishes the
-		// task). A patch that doesn't touch status leaves finishedAt untouched.
+		// caller set finishedAt explicitly): a terminal status (done/failed/
+		// cancelled/skipped) stamps now, keeping an existing stamp so a re-set of
+		// the same terminal status is idempotent; any non-terminal status clears it
+		// (a re-run un-finishes the task). A patch that doesn't touch status leaves
+		// finishedAt untouched.
 		if (patch.status !== undefined && !("finishedAt" in patch)) {
-			next.finishedAt =
-				patch.status === "done" || patch.status === "failed"
-					? (current.finishedAt ?? new Date().toISOString())
-					: null;
+			const terminal =
+				patch.status === "done" ||
+				patch.status === "failed" ||
+				patch.status === "cancelled" ||
+				patch.status === "skipped";
+			next.finishedAt = terminal
+				? (current.finishedAt ?? new Date().toISOString())
+				: null;
 		}
 		this.write(next);
 		return next;

@@ -352,7 +352,8 @@ describe("Engine.worktreesByRepo", () => {
 		await engine.tick();
 		await engine.refreshGitEnrichment();
 		// With the default all-zero-exit / empty-stdout exec stub: status "" → not
-		// dirty; log "" → epoch parseInt(NaN) → null and empty author → null.
+		// dirty; log "" → epoch parseInt(NaN) → null, empty author/hash → null; and
+		// `gh pr list` "" → JSON.parse throws → prNumber null (failure-tolerant).
 		expect(engine.worktreesByRepo()).toEqual({
 			platform: [
 				{
@@ -362,6 +363,9 @@ describe("Engine.worktreesByRepo", () => {
 					dirty: false,
 					lastCommitEpoch: null,
 					lastCommitAuthor: null,
+					lastCommitAuthorEmail: null,
+					lastCommitHash: null,
+					prNumber: null,
 				},
 			],
 		});
@@ -404,27 +408,33 @@ describe("Engine.refreshWorktreeCache failure handling", () => {
 });
 
 describe("Engine git enrichment", () => {
-	// Route git subcommands by their args[2] (the subcommand after `-C <path>`).
+	// Route git subcommands by their args[2] (the subcommand after `-C <path>`),
+	// and `gh` calls by the "gh" key. A handler may throw to simulate a missing
+	// binary (spawn rejection); the throw propagates as a rejected exec promise.
 	function gitExec(
 		handlers: Partial<
 			Record<string, () => { stdout: string; exitCode: number }>
 		>,
 		onCall?: (sub: string) => void,
 	): Exec {
-		return async (_command, args) => {
-			// args = ["-C", path, <subcommand>, ...rest]
-			const sub = args[2] ?? "";
-			onCall?.(sub);
-			const h = handlers[sub];
+		return async (command, args) => {
+			// git: args = ["-C", path, <subcommand>, ...rest]; gh: command === "gh".
+			const key = command === "gh" ? "gh" : (args[2] ?? "");
+			onCall?.(key);
+			const h = handlers[key];
 			return h ? h() : { stdout: "", exitCode: 0 };
 		};
 	}
 
-	it("populates dirty, lastCommitEpoch and lastCommitAuthor from git output", async () => {
+	it("populates dirty, epoch, author, email and hash from the 4-field git output", async () => {
 		const exec = gitExec({
 			status: () => ({ stdout: " M src/a.ts\n", exitCode: 0 }),
-			// one call: "<epoch>\t<author>"
-			log: () => ({ stdout: "1700000000\tKevin O'Shea\n", exitCode: 0 }),
+			// one call: "<epoch>\t<author>\t<email>\t<hash>"
+			log: () => ({
+				stdout:
+					"1700000000\tKevin O'Shea\t12345+koshea@users.noreply.github.com\t9f3ac1d\n",
+				exitCode: 0,
+			}),
 		});
 		const { engine } = setup({ exec });
 		await engine.tick();
@@ -434,6 +444,63 @@ describe("Engine git enrichment", () => {
 			dirty: true,
 			lastCommitEpoch: 1700000000,
 			lastCommitAuthor: "Kevin O'Shea",
+			lastCommitAuthorEmail: "12345+koshea@users.noreply.github.com",
+			lastCommitHash: "9f3ac1d",
+		});
+	});
+
+	it("nulls the hash (and email) when git returns the old 3-field line", async () => {
+		const exec = gitExec({
+			status: () => ({ stdout: "", exitCode: 0 }),
+			// Back-compat: the pre-%h "<epoch>\t<author>\t<email>" line still parses;
+			// the absent trailing hash field yields null, others intact.
+			log: () => ({
+				stdout: "1700000000\tAda Lovelace\tada@example.com\n",
+				exitCode: 0,
+			}),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		const wt = engine.worktreesByRepo().platform?.[0];
+		expect(wt).toMatchObject({
+			lastCommitEpoch: 1700000000,
+			lastCommitAuthor: "Ada Lovelace",
+			lastCommitAuthorEmail: "ada@example.com",
+			lastCommitHash: null,
+		});
+	});
+
+	it("nulls the email when the log line predates the %ae field (2-field output)", async () => {
+		const exec = gitExec({
+			status: () => ({ stdout: "", exitCode: 0 }),
+			// Back-compat: a 2-field "<epoch>\t<author>" line still parses; email null.
+			log: () => ({ stdout: "1700000000\tAda Lovelace\n", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		const wt = engine.worktreesByRepo().platform?.[0];
+		expect(wt).toMatchObject({
+			lastCommitEpoch: 1700000000,
+			lastCommitAuthor: "Ada Lovelace",
+			lastCommitAuthorEmail: null,
+		});
+	});
+
+	it("nulls the email when the log line carries epoch and author but an empty email", async () => {
+		const exec = gitExec({
+			status: () => ({ stdout: "", exitCode: 0 }),
+			log: () => ({ stdout: "1700000000\tGrace Hopper\t\n", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		const wt = engine.worktreesByRepo().platform?.[0];
+		expect(wt).toMatchObject({
+			lastCommitEpoch: 1700000000,
+			lastCommitAuthor: "Grace Hopper",
+			lastCommitAuthorEmail: null,
 		});
 	});
 
@@ -488,6 +555,149 @@ describe("Engine git enrichment", () => {
 		expect(counts.status).toBe(statusAfterFirst);
 		expect(counts.log).toBe(logAfterFirst);
 	});
+
+	it("stamps prNumber when an open PR matches the worktree branch", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			gh: () => ({
+				stdout: JSON.stringify([
+					{ number: 99, headRefName: "other" },
+					{ number: 42, headRefName: "JUS-1" },
+				]),
+				exitCode: 0,
+			}),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			prNumber: 42,
+		});
+	});
+
+	it("leaves prNumber null when no open PR matches the branch", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			gh: () => ({
+				stdout: JSON.stringify([{ number: 99, headRefName: "some-other" }]),
+				exitCode: 0,
+			}),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			prNumber: null,
+		});
+	});
+
+	it("treats a missing gh binary as no data (prNumber null, no throw)", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			gh: () => {
+				throw new Error("spawn gh ENOENT");
+			},
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			prNumber: null,
+			lastCommitHash: "abc123", // git still enriched
+		});
+	});
+
+	it("treats a gh error (non-zero exit, e.g. unauthenticated) as no data", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			gh: () => ({ stdout: "gh: not logged in\n", exitCode: 1 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			prNumber: null,
+		});
+	});
+
+	it("shells gh at most once per repo per sweep, not once per worktree", async () => {
+		const counts: Record<string, number> = {};
+		const exec = gitExec(
+			{
+				log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+				gh: () => ({
+					stdout: JSON.stringify([{ number: 5, headRefName: "JUS-1" }]),
+					exitCode: 0,
+				}),
+			},
+			(key) => {
+				counts[key] = (counts[key] ?? 0) + 1;
+			},
+		);
+		const { engine, base } = setup({
+			exec,
+			resolverIO: {
+				listWorktrees: async () => [
+					{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+					{ name: "JUS-2", path: join(base, "wt-jus2"), branch: "JUS-2" },
+				],
+			},
+		});
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		// Two worktrees, one repo → exactly one gh call; git log ran per worktree.
+		expect(counts.gh).toBe(1);
+		expect(counts.log).toBe(2);
+		// The matching branch got the PR; the other stayed null.
+		const list = engine.worktreesByRepo().platform ?? [];
+		expect(list.find((w) => w.branch === "JUS-1")?.prNumber).toBe(5);
+		expect(list.find((w) => w.branch === "JUS-2")?.prNumber).toBeNull();
+	});
+});
+
+describe("Engine task chains", () => {
+	it("resolves a temp chain's worktree exactly ONCE and stamps it onto the tail", async () => {
+		let spawns = 0;
+		const { engine, store } = setup({
+			resolverIO: {
+				listWorktrees: async () => [],
+				spawnWorktree: async (_r, name) => {
+					spawns += 1;
+					return { name, path: `/wt/${name}`, branch: name };
+				},
+			},
+		});
+		const [head, tail] = store.createChain(
+			[{ prompt: "step one\n" }, { prompt: "step two\n" }],
+			{ repo: "platform", ref: "temp", source: "mcp" },
+		);
+		await engine.tick(); // resolve pass: head spawns once, tail is stamped
+
+		expect(spawns).toBe(1); // NOT two — the tail never re-resolves temp
+		const h = store.get(head?.id ?? "");
+		const t = store.get(tail?.id ?? "");
+		expect(h?.target.worktree).toBeTruthy();
+		// Tail lands on the head's lane, ref pinned, ownership left with the head.
+		expect(t?.target.worktree).toBe(h?.target.worktree);
+		expect(t?.target.ref).toBe(`worktree:${h?.target.worktree}`);
+		expect(t?.ephemeralWorktree).toBe(false);
+		// Tail is still queued (gated on the head completing), not running/spawned.
+		expect(t?.status).toBe("queued");
+	});
+
+	it("marks the tail skipped once the head has failed", async () => {
+		const { engine, store } = setup();
+		const [head, tail] = store.createChain(
+			[{ prompt: "one\n" }, { prompt: "two\n" }],
+			{ repo: "platform", ref: "worktree:JUS-1", source: "mcp" },
+		);
+		// Simulate the head having failed (e.g. stopped or errored).
+		store.update(head?.id ?? "", { status: "failed", error: "boom" });
+		await engine.tick();
+		const t = store.get(tail?.id ?? "");
+		expect(t?.status).toBe("skipped");
+		expect(t?.error).toContain("chain predecessor");
+	});
 });
 
 describe("Engine.laneOfCwd", () => {
@@ -507,7 +717,7 @@ describe("Engine.stopTask", () => {
 		expect(() => engine.stopTask("nope")).toThrow(/no running child tracked/);
 	});
 
-	it("kills a running task's child, failing it with the signal reason", async () => {
+	it("kills a running task's child and marks it CANCELLED (user stop), not failed", async () => {
 		const { spawn } = await import("node:child_process");
 		let markSpawned: () => void = () => {};
 		const spawned = new Promise<void>((r) => {
@@ -539,7 +749,10 @@ describe("Engine.stopTask", () => {
 		engine.stopTask(task.id);
 		await engine.drain();
 		const t = store.list()[0];
-		expect(t?.status).toBe("failed");
-		expect(t?.error).toBe("stopped (SIGTERM)");
+		// A signal from a user Stop settles as cancelled (distinct from failed),
+		// with the reason preserved in the error field for the detail view.
+		expect(t?.status).toBe("cancelled");
+		expect(t?.error).toBe("stopped by user");
+		expect(t?.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
 	}, 15_000);
 });

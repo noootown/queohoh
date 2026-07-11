@@ -66,13 +66,14 @@ fn body_lines(settings: &Option<Option<SettingsPayload>>, p: &Palette) -> Vec<Li
             rows.into_iter()
                 .map(|(left, right)| {
                     if left.starts_with(ALIAS_INDENT) {
-                        // Alias row: alias in `fg`, resolved id in `info`.
+                        // Alias row: alias in `fg`, resolved id in `meta`
+                        // (info/teal is reserved for timestamps).
                         Line::from(vec![
                             Span::styled(
                                 format!(" {left:<alias_w$}  "),
                                 Style::default().fg(p.fg),
                             ),
-                            Span::styled(right, Style::default().fg(p.info)),
+                            Span::styled(right, Style::default().fg(p.meta)),
                         ])
                     } else {
                         // Section header: bold label, dim provenance path trailing.

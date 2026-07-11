@@ -16,7 +16,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear};
 
 use crate::hit::{ButtonKind, HitMap, HitTarget};
 use crate::ipc::types::{ArgSpec, TaskDefinition};
-use crate::view::menu::{picker_layout, render_preview, PreviewMetrics};
+use crate::view::menu::{picker_layout, render_preview, render_preview_markup, PreviewMetrics};
 use crate::view::theme::Palette;
 
 /// Per-arg form state. `values` are the positional submission values (a
@@ -418,8 +418,9 @@ const RUN_FORM_HINT: &str =
     " tab/↑↓ move · ←/→ enum · shift/alt+enter newline · enter run · esc cancel ";
 
 /// Render the run form: the full two-panel picker shell with the arg inputs on
-/// the left and the definition's prompt (scrollable) on the right. `full` is the
-/// cached `TaskDefinition` for the prompt (`None` → a "loading" placeholder).
+/// the left and the definition's prompt (scrollable, markdown-styled like the
+/// DETAIL pane) on the right. `full` is the cached `TaskDefinition` for the
+/// prompt (`None` → a "loading" placeholder).
 /// Registers both panels as `Modal`, one `FormField(i)` per editable row, the
 /// `Button` targets, the right panel's `MenuPreview` (wheel scroll), and — when
 /// open — the dropdown popup last (topmost). Returns the preview scroll metrics.
@@ -454,17 +455,18 @@ pub fn render_run_form(
     let dropdown_anchor = render_fields(frame, hit, p, form, layout.left_inner);
     render_buttons(frame, hit, p, layout.left_inner);
 
-    // Right panel: the def's full prompt (or a placeholder until it arrives).
-    let mut content: Vec<(String, Style)> = Vec::new();
-    match full {
-        Some(td) => {
-            for l in td.prompt.lines() {
-                content.push((l.to_string(), Style::default().fg(p.fg)));
-            }
-        }
-        None => content.push(("(loading definition…)".into(), p.dim_style())),
-    }
-    let metrics = render_preview(frame, hit, &layout, &content, form.preview_scroll);
+    // Right panel: the def's full prompt, markdown-styled exactly like the DETAIL
+    // pane's prompt tab (or a plain placeholder until the definition arrives).
+    let metrics = match full {
+        Some(td) => render_preview_markup(frame, hit, &layout, &[], &td.prompt, form.preview_scroll),
+        None => render_preview(
+            frame,
+            hit,
+            &layout,
+            &[("(loading definition…)".to_string(), p.dim_style())],
+            form.preview_scroll,
+        ),
+    };
 
     // Dropdown popup last so it is topmost (Clear + `DropdownItem` clicks win).
     if let Some(anchor_y) = dropdown_anchor {
@@ -882,6 +884,45 @@ mod tests {
         form.focus_field(1);
         assert_eq!(form.focus, 1);
         assert_eq!(form.cursor, 4); // end of "main"
+    }
+
+    #[test]
+    fn run_form_prompt_renders_markdown_styled() {
+        use crate::ipc::types::TaskDefinition;
+        use ratatui::{Terminal, backend::TestBackend};
+        let form = ArgsForm::new(
+            "platform".into(),
+            "build".into(),
+            vec![arg("pr")],
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        // A fenced code block in the prompt renders through the DETAIL markdown
+        // pipeline: a labeled rule (── bash ──), never the raw ``` delimiter.
+        let full = TaskDefinition {
+            name: "build".into(),
+            prompt: "intro line\n\n```bash\necho hi\n```".into(),
+            ..Default::default()
+        };
+        let p = Palette::default();
+        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut hit = HitMap::default();
+        term.draw(|f| {
+            render_run_form(f, &mut hit, &p, &form, Some(&full));
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut s = String::new();
+        for y in 0..24 {
+            for x in 0..100 {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        assert!(s.contains("──"), "fenced code block styled as a rule: {s}");
+        assert!(s.contains("bash"), "fence carries its language label");
+        assert!(!s.contains("```"), "raw fence delimiters replaced by the rule");
     }
 
     #[test]

@@ -6,6 +6,7 @@ import type { GlobalConfig } from "../config.js";
 import {
 	globalWorkspaceDir,
 	loadGlobalConfig,
+	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectVars,
 	projectWorkspaceDir,
@@ -170,6 +171,49 @@ describe("loadProjectVars", () => {
 			"ticket: JUS-1\nmodels:\n  sonnet: claude-sonnet-4-6\n",
 		);
 		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+	});
+
+	it("skips the reserved github_id key instead of exposing it as a var", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"ticket: JUS-1\ngithub_id: noootown\n",
+		);
+		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+	});
+});
+
+describe("loadProjectGithubId", () => {
+	it("reads a string github_id from vars.yaml", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"ticket: JUS-1\ngithub_id: noootown\n",
+		);
+		expect(loadProjectGithubId(dir)).toBe("noootown");
+	});
+
+	it("returns undefined for absent file, absent key, empty string, or non-string", () => {
+		const absent = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
+		expect(loadProjectGithubId(absent)).toBeUndefined();
+
+		const noKey = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		expect(loadProjectGithubId(noKey)).toBeUndefined();
+
+		const blank = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
+		writeFileSync(join(blank, "vars.yaml"), "github_id: ''\n");
+		expect(loadProjectGithubId(blank)).toBeUndefined();
+
+		const numeric = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
+		writeFileSync(join(numeric, "vars.yaml"), "github_id: 12345\n");
+		expect(loadProjectGithubId(numeric)).toBeUndefined();
+	});
+
+	it("returns undefined (never throws) for a non-mapping vars.yaml", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
+		writeFileSync(join(dir, "vars.yaml"), "[not, a, map]\n");
+		expect(loadProjectGithubId(dir)).toBeUndefined();
 	});
 });
 

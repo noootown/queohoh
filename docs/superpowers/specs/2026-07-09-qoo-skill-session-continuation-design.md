@@ -55,10 +55,13 @@ Installed globally via the existing symlink (`ln -s .../skills/qoo
    time, tell the user and include a prompt line instructing the run to
    handle/commit them.
 6. **Report, one line:** what was queued, target `repo:worktree`, which
-   session it resumes, which model, plus: "starts once this session goes
-   idle (~5 min heartbeat) or you close the tab; watch it in the TUI."
-   The existing interactive-lane heartbeat blocking is the guard that
-   prevents forking a session the user is still typing into.
+   session it resumes, which model, plus: "queued on `repo:worktree`; watch
+   it in the TUI." Note: interactive/main sessions no longer hold their
+   lane, so a continuation run is not deferred until the session goes idle —
+   it starts as soon as the scheduler has a free slot and no worker is
+   already running on that lane. Avoiding a fork of a session the user is
+   still typing into is now the caller's responsibility (queue the
+   continuation when you're done in the tab), not a scheduler guard.
 
 ## Architecture
 

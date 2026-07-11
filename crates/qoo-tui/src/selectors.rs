@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::app::Selection;
@@ -73,10 +74,16 @@ pub struct WorktreeRow {
     /// whether the name is a def name — colors it mauve vs a prompt fg).
     pub last: Option<(char, String, u64, bool)>,
     /// git enrichment passthrough from the daemon (all `None` on an old daemon):
-    /// uncommitted changes, last-commit epoch, last-commit author name.
+    /// uncommitted changes, last-commit epoch, last-commit author name + email.
+    /// The author name/email feed the WORKTREES "mine-first" sort.
     pub dirty: Option<bool>,
     pub last_commit_epoch: Option<u64>,
     pub last_commit_author: Option<String>,
+    pub last_commit_author_email: Option<String>,
+    /// short hash + open PR number passthrough from the daemon (all `None` on an
+    /// old daemon); surfaced in the worktree detail info tab.
+    pub last_commit_hash: Option<String>,
+    pub pr_number: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,13 +117,18 @@ pub fn build_tabs(snapshot: &StateSnapshot) -> Vec<TabInfo> {
     tabs
 }
 
+// Status glyphs MUST match the `GLYPH_*` consts in `view::theme` char-for-char —
+// `theme::glyph_style` colors a row by matching this char. (Kept as literals to
+// avoid a data-layer → view dependency; a test asserts the two stay in sync.)
 fn status_glyph(status: TaskStatus) -> char {
     match status {
         TaskStatus::Running => '▶',
         TaskStatus::Queued => '○',
-        TaskStatus::NeedsInput => '?',
-        TaskStatus::Done => '✓',
+        TaskStatus::NeedsInput => '‼',
+        TaskStatus::Done => '●',
         TaskStatus::Failed => '✗',
+        TaskStatus::Cancelled => '⊘',
+        TaskStatus::Skipped => '⊝',
         TaskStatus::Unknown => '·', // no TS counterpart (old-daemon statuses only)
     }
 }
@@ -149,12 +161,19 @@ fn priority_rank(priority: &str) -> u8 {
 }
 
 /// Whether a queue row belongs to the FINISHED section: any terminal/unknown
-/// status, or an archived row (archived rows are always finished).
+/// status, or an archived row (archived rows are always finished). Cancelled and
+/// Skipped are terminal — the daemon stamps `finishedAt` for both, so they sort
+/// by completion in the finished section like Done/Failed (NOT in ACTIVE, which
+/// is why they must be listed here explicitly and not fall through to `false`).
 pub fn queue_row_finished(row: &QueueRow) -> bool {
     row.archived
         || matches!(
             row.status,
-            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Unknown
+            TaskStatus::Done
+                | TaskStatus::Failed
+                | TaskStatus::Cancelled
+                | TaskStatus::Skipped
+                | TaskStatus::Unknown
         )
 }
 
@@ -173,7 +192,8 @@ pub fn queue_divider_after(rows: &[QueueRow]) -> Option<usize> {
 
 /// Comparator ordering the queue rows into two sections. ACTIVE
 /// (running/needs-input/queued) sorts first — by status, then priority, then id
-/// (ULID, stable). FINISHED (done/failed/unknown + the archived tail) sorts after
+/// (ULID, stable). FINISHED (done/failed/cancelled/skipped/unknown + the archived
+/// tail) sorts after
 /// — by completion timestamp DESCENDING (most recently finished first); a row
 /// without `finished_epoch_s` falls back to its id, newest first.
 fn queue_sort(a: &QueueRow, b: &QueueRow) -> std::cmp::Ordering {
@@ -198,7 +218,8 @@ fn queue_sort(a: &QueueRow, b: &QueueRow) -> std::cmp::Ordering {
 pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> Vec<QueueRow> {
     // Live rows plus the last 10 archived rows (dimmed by the view via
     // `archived: true`), then sorted into an ACTIVE section (running/needs-input/
-    // queued) followed by a FINISHED section (done/failed/unknown + archived).
+    // queued) followed by a FINISHED section (done/failed/cancelled/skipped/
+    // unknown + archived).
     // The per-lane queue position (`#N in lane`) is computed in snapshot order
     // (creation order) BEFORE the display sort so it reflects execution order,
     // not the re-sorted display position.
@@ -358,25 +379,61 @@ fn last_finished_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<(char, 
         })
 }
 
-/// Recency epoch of the lane's most recent FINISHED task (newest by id across the
-/// live + archived lists): its `finishedAt` when present, else its creation epoch.
-/// Drives the WORKTREES "last activity" ordering tier. `None` when the lane has no
-/// finished task.
-fn last_finished_epoch_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<u64> {
-    snapshot
-        .tasks
-        .iter()
-        .chain(snapshot.archived_recent.iter())
-        .filter(|t| {
-            task_lane(t).as_deref() == Some(lane)
-                && !matches!(t.status, TaskStatus::Running | TaskStatus::Queued)
-        })
-        .max_by(|a, b| a.id.cmp(&b.id))
-        .map(|t| {
-            t.finished_at
-                .as_deref()
-                .map(parse_iso_epoch_s)
-                .unwrap_or_else(|| parse_iso_epoch_s(&t.created))
+/// Display tuple for one lane task in the worktree detail's task list:
+/// `(status glyph, name, name-is-def, creation epoch)`. Mirrors
+/// [`last_finished_on_lane`]'s tuple but for a task of any status — the detail
+/// pane lists every task on the lane, not just the last finished one.
+pub(crate) fn lane_task_display(task: &TaskInstance) -> (char, String, bool, u64) {
+    let (name, is_def) = lane_task_display_name(task, usize::MAX);
+    (status_glyph(task.status), name, is_def, parse_iso_epoch_s(&task.created))
+}
+
+/// ACTIVE-vs-finished ordering rank for the worktree detail task list: running
+/// first, then needs-input, then queued, then everything finished. Finished
+/// tasks then sort newest-first at the call site (by id, descending).
+pub(crate) fn lane_task_order_rank(status: TaskStatus) -> u8 {
+    status_active_rank(status)
+}
+
+/// Whether a worktree row is "mine": the active project's `github_id`
+/// (case-insensitive) is a SUBSTRING of the last-commit author email OR the
+/// author name. `None`/empty `github_id` → always `false` (the mine-first sort
+/// tier becomes a no-op). Substring on both fields per docs/setup.md (its example
+/// `Ian Chiu <noootown@gmail.com>` matches `noootown` in the email and `Ian`/
+/// `Chiu` in the name).
+fn worktree_is_mine(row: &WorktreeRow, github_id: Option<&str>) -> bool {
+    let Some(id) = github_id.filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    let id = id.to_lowercase();
+    let contains = |field: &Option<String>| {
+        field.as_deref().is_some_and(|v| v.to_lowercase().contains(&id))
+    };
+    contains(&row.last_commit_author_email) || contains(&row.last_commit_author)
+}
+
+/// The lane's most recent task-activity epoch: the later of the RUNNING task's
+/// created epoch (`running_elapsed`) and the last FINISHED task's creation epoch
+/// (the `last` tuple's epoch). `0` when the lane has had no task activity.
+fn worktree_last_run_epoch(row: &WorktreeRow) -> u64 {
+    let running = row.running_elapsed.unwrap_or(0);
+    let finished = row.last.as_ref().map(|(_, _, epoch, _)| *epoch).unwrap_or(0);
+    running.max(finished)
+}
+
+/// Three-level WORKTREES row ordering: (1) MINE first, (2) LAST-RUN time
+/// descending (newest task activity), (3) LAST-COMMIT descending. Equal keys keep
+/// their input order — the caller must use a STABLE sort. Pure over the row (+ the
+/// project's `github_id`) so the ordering is unit-testable in isolation. Session
+/// rows never pass through this comparator (they are appended after the sort).
+fn cmp_worktree_rows(a: &WorktreeRow, b: &WorktreeRow, github_id: Option<&str>) -> Ordering {
+    worktree_is_mine(b, github_id)
+        .cmp(&worktree_is_mine(a, github_id)) // mine (true) sorts first
+        .then_with(|| worktree_last_run_epoch(b).cmp(&worktree_last_run_epoch(a))) // newest run first
+        .then_with(|| {
+            b.last_commit_epoch
+                .unwrap_or(0)
+                .cmp(&a.last_commit_epoch.unwrap_or(0)) // newest commit first
         })
 }
 
@@ -393,9 +450,9 @@ fn lane_task_display_name(task: &TaskInstance, cap: usize) -> (String, bool) {
 
 /// Clip width for the head-of-lane (`next:`) task name in the worktree pane —
 /// its column is a fixed 30-cell slot, so the name is trimmed to keep the
-/// `N queued · next:` lead visible. The last-finished cell is deliberately NOT
+/// `next:` lead visible. The last-finished cell is deliberately NOT
 /// pre-clipped (it is the pane's FILL column; the render clips to the row).
-pub const NEXT_NAME_CAP: usize = 16;
+pub const NEXT_NAME_CAP: usize = 24;
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -404,13 +461,18 @@ fn basename(path: &str) -> &str {
 pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow> {
     let empty: Vec<crate::ipc::types::WorktreeInfo> = Vec::new();
     let worktrees = snapshot.worktrees.get(project).unwrap_or(&empty);
-    // Build each real-worktree row paired with its last-finished recency epoch
-    // (the sort key that isn't already on the row).
-    let mut keyed: Vec<(WorktreeRow, Option<u64>)> = worktrees
+    // The active project's optional author identity, matched against each row's
+    // last-commit author for the mine-first tier (absent → that tier no-ops).
+    let github_id = snapshot
+        .projects
+        .iter()
+        .find(|p| p.name == project)
+        .and_then(|p| p.github_id.as_deref());
+    let mut rows: Vec<WorktreeRow> = worktrees
         .iter()
         .map(|wt| {
             let lane = lane_key(project, &wt.name);
-            let row = WorktreeRow {
+            WorktreeRow {
                 name: strip_repo_prefix(&wt.name, project).to_string(),
                 raw_name: wt.name.clone(),
                 path: wt.path.clone(),
@@ -428,34 +490,18 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 dirty: wt.dirty,
                 last_commit_epoch: wt.last_commit_epoch,
                 last_commit_author: wt.last_commit_author.clone(),
-            };
-            let last_finished = last_finished_epoch_on_lane(snapshot, &lane);
-            (row, last_finished)
+                last_commit_author_email: wt.last_commit_author_email.clone(),
+                last_commit_hash: wt.last_commit_hash.clone(),
+                pr_number: wt.pr_number,
+            }
         })
         .collect();
 
-    // Order by recency of activity, descending: busy lanes (a running task) first
-    // — newest start first; then by last-finished recency; then by last-commit
-    // age; then name as the final tiebreak. Session rows (below) keep their
-    // append-at-end placement.
-    keyed.sort_by(|(a, la), (b, lb)| {
-        let busy = |r: &WorktreeRow| r.running_elapsed.is_some();
-        busy(b)
-            .cmp(&busy(a)) // busy (true) sorts first
-            .then_with(|| {
-                b.running_elapsed
-                    .unwrap_or(0)
-                    .cmp(&a.running_elapsed.unwrap_or(0)) // newest start first
-            })
-            .then_with(|| lb.unwrap_or(0).cmp(&la.unwrap_or(0))) // last finished, newest first
-            .then_with(|| {
-                b.last_commit_epoch
-                    .unwrap_or(0)
-                    .cmp(&a.last_commit_epoch.unwrap_or(0)) // newest commit first
-            })
-            .then_with(|| a.name.cmp(&b.name)) // name ascending
-    });
-    let mut rows: Vec<WorktreeRow> = keyed.into_iter().map(|(r, _)| r).collect();
+    // Three-level order (see `cmp_worktree_rows`): mine first, then most-recent
+    // task activity, then most-recent commit. `sort_by` is STABLE, so equal-key
+    // rows keep their daemon-emitted order (the tiebreak). Session rows (below)
+    // keep their append-at-end placement — they never enter this ordering.
+    rows.sort_by(|a, b| cmp_worktree_rows(a, b, github_id));
 
     // One "You" row per interactive session whose cwd is inside a project
     // worktree (exact path or path + "/" prefix — never a sibling).
@@ -614,6 +660,30 @@ pub fn pane_title(base: &str, sel: &Selection) -> String {
     } else {
         base.to_string()
     }
+}
+
+/// The QUEUE pane's title-bar summary: outstanding work at a glance —
+/// `N queued · N running` (counts over the pane's rows, so an active filter
+/// summarizes what is shown).
+pub fn queue_pane_summary(rows: &[QueueRow]) -> String {
+    let queued = rows.iter().filter(|r| r.status == TaskStatus::Queued).count();
+    let running = rows.iter().filter(|r| r.running).count();
+    format!("{queued} queued · {running} running")
+}
+
+/// The TASKS pane's title-bar summary: the definition count — `N tasks`.
+pub fn tasks_pane_summary(defs: &[DefinitionSummary]) -> String {
+    let n = defs.len();
+    if n == 1 { "1 task".to_string() } else { format!("{n} tasks") }
+}
+
+/// The WORKTREES pane's title-bar summary: `N busy · N total`. Busy = a task is
+/// running on the lane; total counts real worktrees only (session rows are not
+/// worktrees).
+pub fn wt_pane_summary(rows: &[WorktreeRow]) -> String {
+    let busy = rows.iter().filter(|r| r.running_elapsed.is_some()).count();
+    let total = rows.iter().filter(|r| !r.is_session).count();
+    format!("{busy} busy · {total} total")
 }
 
 /// Indices of rows whose text matches the filter (case-insensitive substring;
@@ -980,13 +1050,14 @@ pub const COMMIT_AGE_W: usize = 8;
 /// Shared QUEUE live slot: `⏱ 99h59m` (8) or `#N in lane` (`#9 in lane` = 10);
 /// `#10 in lane` and beyond clip.
 pub const QUEUE_LIVE_W: usize = 10;
-/// Fill floor for the worktrees `queued · next` column: the minimum width that
+/// Fill floor for the worktrees `next:` column: the minimum width that
 /// keeps it "present" (below this the ladder drops it before dirty/live). It is
 /// a flex column — this is only its minimum, not a reserved fixed width.
-/// Fixed reserved width of the worktrees `N queued · next: <name>` column
-/// (always a candidate, blank when nothing is queued — data-independent so a
-/// queued task appearing never shifts columns). Fits "9 queued · next: " plus a
-/// ~13-char name; longer names clip with `…`.
+/// Fixed reserved width of the worktrees `next: <name>` column (always a
+/// candidate, blank when nothing is queued — data-independent so a queued task
+/// appearing never shifts columns). The queued count is NOT shown here — the
+/// leading indicator digit already carries it. Fits "next: " plus a ~24-char
+/// name; longer names clip with `…`.
 const WT_QUEUED_W: usize = 30;
 /// Floor of the worktrees last-task FILL column (the pane's flex column — it
 /// absorbs remaining width like the queue pane's summary, per user request).
@@ -1082,42 +1153,31 @@ pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> Q
     QueueColLayout { has_chain, worktree_w, def_w, summary_w, show_timestamp, age_w, live_w }
 }
 
-/// Resolved column widths for the TASKS pane: `name | args | description | model
-/// | ⏰ schedule`. `name_w`/`args_w`/`model_w` are content-capped columns; `desc_w`
-/// is the FILL (the remainder, like the queue pane's summary — prose gets the
-/// slack), 0 when no visible def has a description or the pane is too narrow to
-/// spare any. `model_w` is a fixed metadata column right before the schedule
-/// chip, pane-gated (reserved only while some visible def carries a model, blank
-/// on a def without one so the schedule never slides), mirroring the WORKTREES
-/// pane's fixed author/commit-age columns clustered after its FILL. The schedule
-/// stays the trailing capped column (`sched_w` sizes the humanized cron text; the
-/// `⏰ ` prefix is reserved separately). Narrow-pane drop order: the desc FILL
-/// shrinks to 0 first, then the model column drops, then args drops, then
-/// `name_w` shrinks last; the schedule column is always kept. A width of 0 means
-/// that column is omitted.
+/// Resolved column widths for the TASKS pane: `name | model | description |
+/// ⏰ schedule`. `name_w`/`model_w` are content-capped columns; `desc_w` is the
+/// FILL (the remainder, like the queue pane's summary — prose gets the slack),
+/// 0 when no visible def has a description or the pane is too narrow to spare
+/// any. `model_w` sits right after the name (user request: the model matters
+/// more than anything else on the row), pane-gated (reserved only while some
+/// visible def carries a model, blank on a def without one so the columns never
+/// slide). The args column was dropped from the row entirely (user request —
+/// args still show in the def picker rows and the detail config tab). The
+/// schedule stays the trailing capped column (`sched_w` sizes the humanized
+/// cron text; the `⏰ ` prefix is reserved separately). Narrow-pane drop order:
+/// the desc FILL shrinks to 0 first, then the model column drops, then `name_w`
+/// shrinks last; the schedule column is always kept. A width of 0 means that
+/// column is omitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DefColLayout {
     pub name_w: usize,
-    pub args_w: usize,
     pub desc_w: usize,
     pub model_w: usize,
     pub sched_w: usize,
 }
-
-pub const ARGS_CAP: usize = 40;
 /// Reserved cells for the `⏰` schedule icon (double-width emoji). The layout is
 /// otherwise char-based; over-reserving the icon by a cell keeps the trailing
 /// schedule text from clipping when the desc FILL right-pins it.
 pub const SCHED_ICON_W: usize = 2;
-
-/// The `(pr, mode=ready, …)` args cell text for a def ("" when it has none).
-pub fn def_args_text(def: &DefinitionSummary) -> String {
-    if def.args.is_empty() {
-        String::new()
-    } else {
-        format!("({})", arg_summary(&def.args))
-    }
-}
 
 /// The description cell text for a def ("" when it has none). Prose, rendered in
 /// plain fg and filling the remaining pane width (truncated with `…` when tight).
@@ -1138,12 +1198,6 @@ pub fn def_model_text(def: &DefinitionSummary) -> String {
 
 pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout {
     let name_w0 = capped_max(rows.iter().map(|d| d.name.as_str()), NAME_CAP);
-    let args_w0 = rows
-        .iter()
-        .map(|d| cw(&def_args_text(d)))
-        .max()
-        .unwrap_or(0)
-        .min(ARGS_CAP);
     let sched_w = rows
         .iter()
         .filter_map(|d| d.cron.as_deref().and_then(cron_human))
@@ -1170,47 +1224,33 @@ pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout 
     // pane-wide when no visible def carries a model — e.g. an old daemon).
     let model_w0 = rows.iter().map(|d| cw(&def_model_text(d))).max().unwrap_or(0).min(MODEL_CAP);
 
-    // Cells used by the fixed (non-fill) columns for a given name/args/model width.
-    let used_wo_desc = |name_w: usize, args_w: usize, model_w: usize| -> usize {
+    // Cells used by the fixed (non-fill) columns for a given name/model width.
+    let used_wo_desc = |name_w: usize, model_w: usize| -> usize {
         name_w
-            + if args_w > 0 { COL_GAP + args_w } else { 0 }
             + if model_w > 0 { COL_GAP + model_w } else { 0 }
             + if sched_col > 0 { COL_GAP + sched_col } else { 0 }
     };
-    // Reclaim when even the fixed columns overflow: drop model, then args, then
-    // shrink name. (The desc fill has already implicitly shrunk to 0 — it is only
-    // ever the leftover remainder below.)
+    // Reclaim when even the fixed columns overflow: drop model, then shrink
+    // name. (The desc fill has already implicitly shrunk to 0 — it is only ever
+    // the leftover remainder below.)
     let mut model_w = model_w0;
-    let mut args_w = args_w0;
-    if used_wo_desc(name_w0, args_w, model_w) > avail {
+    if used_wo_desc(name_w0, model_w) > avail {
         model_w = 0;
     }
-    if used_wo_desc(name_w0, args_w, model_w) > avail {
-        args_w = 0;
-    }
     let mut name_w = name_w0;
-    let u = used_wo_desc(name_w, args_w, model_w);
+    let u = used_wo_desc(name_w, model_w);
     if u > avail {
         name_w = name_w.saturating_sub(u - avail);
     }
-    // Description is the FILL: the remainder after name/args/model/schedule and
-    // its leading gutter. Zero when absent or when nothing is left to give it.
+    // Description is the FILL: the remainder after name/model/schedule and its
+    // leading gutter. Zero when absent or when nothing is left to give it.
     let desc_w = if has_desc {
-        avail.saturating_sub(used_wo_desc(name_w, args_w, model_w) + COL_GAP)
+        avail.saturating_sub(used_wo_desc(name_w, model_w) + COL_GAP)
     } else {
         0
     };
 
-    DefColLayout { name_w, args_w, desc_w, model_w, sched_w }
-}
-
-/// The `N queued · next: <name>` cell text for a row with `queued > 0` (the
-/// `· next:` tail is dropped when the head-of-lane task has no resolvable name).
-pub fn wt_queued_text(row: &WorktreeRow) -> String {
-    match &row.next_name {
-        Some(name) => format!("{} queued · next: {name}", row.queued),
-        None => format!("{} queued", row.queued),
-    }
+    DefColLayout { name_w, desc_w, model_w, sched_w }
 }
 
 /// The last-commit author cell text, or None when the daemon didn't supply it
@@ -1227,7 +1267,7 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 ///   `● ⌂ ± name` (anchor; the ⌂ main-session and `±` dirty markers are
 ///   single-cell front slots after the dot, per user request),
 ///   last-finished (FILL), last-commit author (fixed `AUTHOR_W`),
-///   last-commit age (fixed `COMMIT_AGE_W`), `N queued · next` (fixed
+///   last-commit age (fixed `COMMIT_AGE_W`), `next: <name>` (fixed
 ///   `WT_QUEUED_W`), live `⏱` (fixed `TIMER_W`, right-pinned by the fill).
 ///   The author sits right before the commit-age so the pair reads
 ///   `koshea  3d ago` = who · when.
@@ -1439,7 +1479,7 @@ mod tests {
     }
 
     fn projects(names: &[&str]) -> Vec<Project> {
-        names.iter().map(|n| Project { name: n.to_string() }).collect()
+        names.iter().map(|n| Project { name: n.to_string(), github_id: None }).collect()
     }
 
     /// NOW from the TS suites: Date.parse("2026-07-08T10:03:12.000Z")
@@ -1552,7 +1592,7 @@ mod tests {
         assert!(rows[0].running && !rows[1].running);
         assert_eq!(
             rows.iter().map(|r| r.glyph).collect::<Vec<_>>(),
-            vec!['▶', '○', '○', '✓', '✗']
+            vec!['▶', '○', '○', '●', '✗']
         );
     }
 
@@ -1560,8 +1600,8 @@ mod tests {
     fn queue_rows_needs_input_has_no_detail_text() {
         let ni = task_on(TaskStatus::NeedsInput, "t1", "platform", Some("wt-a"));
         let rows = queue_rows(&snap(vec![ni], vec![]), "platform", now());
-        assert_eq!(rows[0].detail, ""); // the ? glyph carries the state
-        assert_eq!(rows[0].glyph, '?');
+        assert_eq!(rows[0].detail, ""); // the ‼ glyph carries the state
+        assert_eq!(rows[0].glyph, '‼');
     }
 
     #[test]
@@ -1736,6 +1776,35 @@ mod tests {
         );
         assert!(!queue_row_finished(&rows[1]) && queue_row_finished(&rows[2]));
         assert_eq!(queue_divider_after(&rows), Some(1));
+    }
+
+    #[test]
+    fn queue_cancelled_and_skipped_join_the_finished_section() {
+        // Regression: cancelled/skipped are TERMINAL — they belong BELOW the
+        // divider, not in the ACTIVE section (the bug: they fell through
+        // `queue_row_finished` to `false`). With one active row present, the
+        // divider sits after it and both terminal rows sort into FINISHED by
+        // completion desc (cancelled 12:00 before skipped 11:00).
+        let rows = queue_rows(
+            &snap(
+                vec![
+                    qtask(TaskStatus::Running, "01RUN", "normal", None),
+                    qtask(TaskStatus::Cancelled, "01CAN", "normal", Some("2026-07-09T12:00:00.000Z")),
+                    qtask(TaskStatus::Skipped, "01SKP", "normal", Some("2026-07-09T11:00:00.000Z")),
+                ],
+                vec![],
+            ),
+            "platform",
+            now(),
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["01RUN", "01CAN", "01SKP"]
+        );
+        assert!(!queue_row_finished(&rows[0]), "running stays active");
+        assert!(queue_row_finished(&rows[1]), "cancelled is finished");
+        assert!(queue_row_finished(&rows[2]), "skipped is finished");
+        assert_eq!(queue_divider_after(&rows), Some(0));
     }
 
     #[test]
@@ -1926,15 +1995,20 @@ mod tests {
 
     #[test]
     fn worktree_rows_order_by_activity_recency_tiers() {
-        // Four lanes exercising each tier: two busy (newest start first), one with
-        // a recent finished task, one with only a recent commit. Session rows are
-        // appended after and never enter this ordering.
+        // Four lanes exercising the last-run tier: two running (newest START
+        // first — running_elapsed is the running task's created epoch), one with a
+        // finished task (its CREATION epoch), one with only a recent commit
+        // (last-run 0 → commit fallback keeps it last). No github_id here, so the
+        // mine tier is a no-op. Session rows are appended after and never enter
+        // this ordering.
         let mut running_old = task_on(TaskStatus::Running, "01R_OLD", "platform", Some("wt-a"));
         running_old.created = "2026-07-09T12:00:00.000Z".into();
         let mut running_new = task_on(TaskStatus::Running, "01R_NEW", "platform", Some("wt-b"));
         running_new.created = "2026-07-09T12:05:00.000Z".into();
+        // The new sort keys last-run off the finished task's CREATION epoch (the
+        // `last` tuple), not `finished_at`; set created explicitly.
         let mut finished = task_on(TaskStatus::Done, "01DONE", "platform", Some("wt-c"));
-        finished.finished_at = Some("2026-07-09T11:00:00.000Z".into());
+        finished.created = "2026-07-09T11:00:00.000Z".into();
 
         let mut s = snap(vec![running_old, running_new, finished], vec![]);
         s.worktrees = HashMap::from([(
@@ -1958,6 +2032,134 @@ mod tests {
         );
         // The session row is still last, after every real worktree.
         assert!(rows.last().unwrap().is_session);
+    }
+
+    /// A bare worktree row for the pure sort-key tests (only the fields the
+    /// comparator reads matter; the rest default).
+    fn wtrow(name: &str) -> WorktreeRow {
+        WorktreeRow { name: name.into(), raw_name: name.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn worktree_is_mine_email_and_name_substring_case_insensitive() {
+        // Match on EMAIL substring, case-insensitive (the GitHub noreply form).
+        let mut by_email = wtrow("a");
+        by_email.last_commit_author_email =
+            Some("12345+NOOOTOWN@users.noreply.github.com".into());
+        assert!(worktree_is_mine(&by_email, Some("noootown")));
+
+        // Match on author NAME substring (email absent), case-insensitive.
+        let mut by_name = wtrow("b");
+        by_name.last_commit_author = Some("Ian Chiu".into());
+        assert!(worktree_is_mine(&by_name, Some("ian")));
+        assert!(worktree_is_mine(&by_name, Some("chiu")));
+
+        // No substring match anywhere → not mine.
+        assert!(!worktree_is_mine(&by_email, Some("someoneelse")));
+
+        // No github_id, or an empty one, disables the tier entirely (no-op).
+        assert!(!worktree_is_mine(&by_email, None));
+        assert!(!worktree_is_mine(&by_email, Some("")));
+    }
+
+    #[test]
+    fn worktree_last_run_epoch_takes_max_of_running_and_finished() {
+        let mut both = wtrow("a");
+        both.running_elapsed = Some(100);
+        both.last = Some(('✓', "t".into(), 50, false));
+        assert_eq!(worktree_last_run_epoch(&both), 100); // running newer
+
+        let mut fin_newer = wtrow("b");
+        fin_newer.running_elapsed = Some(30);
+        fin_newer.last = Some(('✓', "t".into(), 80, false));
+        assert_eq!(worktree_last_run_epoch(&fin_newer), 80); // finished newer
+
+        let mut fin_only = wtrow("c");
+        fin_only.last = Some(('✓', "t".into(), 50, false));
+        assert_eq!(worktree_last_run_epoch(&fin_only), 50); // no running task
+
+        assert_eq!(worktree_last_run_epoch(&wtrow("d")), 0); // no activity
+    }
+
+    #[test]
+    fn cmp_worktree_rows_mine_first_beats_fresher_non_mine() {
+        // A mine row with STALE activity still outranks a non-mine row with the
+        // freshest possible activity — the mine tier dominates.
+        let mut mine = wtrow("mine");
+        mine.last_commit_author_email = Some("me@example.com".into());
+        mine.running_elapsed = Some(10);
+        let mut other = wtrow("other");
+        other.running_elapsed = Some(9_999);
+        assert_eq!(cmp_worktree_rows(&mine, &other, Some("me")), Ordering::Less);
+        assert_eq!(cmp_worktree_rows(&other, &mine, Some("me")), Ordering::Greater);
+        // Without a github_id the mine tier is inert, so freshness decides.
+        assert_eq!(cmp_worktree_rows(&mine, &other, None), Ordering::Greater);
+    }
+
+    #[test]
+    fn cmp_worktree_rows_running_outranks_finished_only_then_commit_fallback() {
+        // Tier 2: a running lane (last-run 100) beats a finished-only lane (50).
+        let mut running = wtrow("run");
+        running.running_elapsed = Some(100);
+        let mut finished = wtrow("fin");
+        finished.last = Some(('✓', "t".into(), 50, false));
+        assert_eq!(cmp_worktree_rows(&running, &finished, None), Ordering::Less);
+
+        // Tier 3: two idle lanes (last-run 0) fall to last-commit desc.
+        let mut newer_commit = wtrow("newer");
+        newer_commit.last_commit_epoch = Some(200);
+        let mut older_commit = wtrow("older");
+        older_commit.last_commit_epoch = Some(100);
+        assert_eq!(cmp_worktree_rows(&newer_commit, &older_commit, None), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_worktree_rows_stable_tiebreak_keeps_input_order() {
+        // Rows tied on every key compare Equal, so a STABLE sort preserves their
+        // original order (the documented tiebreak).
+        let a = wtrow("a");
+        let b = wtrow("b");
+        assert_eq!(cmp_worktree_rows(&a, &b, None), Ordering::Equal);
+        let mut rows = vec![wtrow("first"), wtrow("second"), wtrow("third")];
+        rows.sort_by(|x, y| cmp_worktree_rows(x, y, None));
+        assert_eq!(
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["first", "second", "third"],
+        );
+    }
+
+    #[test]
+    fn worktree_rows_sorts_mine_first_end_to_end() {
+        // End-to-end through worktree_rows: the project's github_id is read from
+        // the snapshot and both mine rows (email- and name-matched) precede the
+        // fresher non-mine row; mine rows keep their input order (stable).
+        let mut s = snap(vec![], vec![]);
+        s.projects = vec![Project { name: "platform".into(), github_id: Some("noootown".into()) }];
+        s.worktrees = HashMap::from([(
+            "platform".to_string(),
+            vec![
+                {
+                    let mut w = wt("fresh", "/wt/fresh", "f"); // not mine, fresh commit
+                    w.last_commit_epoch = Some(9_000);
+                    w.last_commit_author_email = Some("someone@else.com".into());
+                    w
+                },
+                {
+                    let mut w = wt("mine-email", "/wt/mine-email", "m1"); // mine by email
+                    w.last_commit_author_email =
+                        Some("12345+NOOOTOWN@users.noreply.github.com".into());
+                    w
+                },
+                {
+                    let mut w = wt("mine-name", "/wt/mine-name", "m2"); // mine by name
+                    w.last_commit_author = Some("noootown dev".into());
+                    w
+                },
+            ],
+        )]);
+        let names: Vec<String> =
+            worktree_rows(&s, "platform").into_iter().map(|r| r.name).collect();
+        assert_eq!(names, vec!["mine-email", "mine-name", "fresh"]);
     }
 
     #[test]
@@ -2022,11 +2224,12 @@ mod tests {
             ],
         )]);
         let rows = worktree_rows(&s, "platform");
-        // Idle worktrees (no tasks, no git enrichment) tie on every ordering tier
-        // and fall to the name-ascending tiebreak → dedup-dependabot-run, platform.
+        // Idle worktrees (no tasks, no git enrichment) tie on every ordering tier,
+        // so the STABLE sort keeps their daemon-emitted input order: platform,
+        // then dedup-dependabot-run (as inserted above).
         assert_eq!(
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-            vec!["dedup-dependabot-run", "platform"]
+            vec!["platform", "dedup-dependabot-run"]
         );
         // raw_name retains the full `<repo>.` prefix for daemon dispatch.
         let dedup = rows.iter().find(|r| r.name == "dedup-dependabot-run").unwrap();
@@ -2404,7 +2607,8 @@ mod tests {
 
     #[test]
     fn worktree_next_name_falls_back_to_clipped_prompt() {
-        // No definition → the head-of-lane name is the prompt clipped to 16.
+        // No definition → the head-of-lane name is the prompt clipped to
+        // NEXT_NAME_CAP.
         let mut queued = task_on(TaskStatus::Queued, "01Q00000000000000000000001", "platform", Some("wt-a"));
         queued.definition = None;
         queued.prompt = "rewrite the whole scheduler from scratch".into();
@@ -2690,12 +2894,11 @@ mod tests {
 
     #[test]
     fn def_col_layout_description_fills_then_degrades() {
-        // name="pr-review"(9), args="(pr)"(4), cron→"Everyday 1:30pm"(15),
-        // description present. Schedule footprint = ⏰(2)+space(1)+15 = 18.
+        // name="pr-review"(9), cron→"Everyday 1:30pm"(15), description present.
+        // Schedule footprint = ⏰(2)+space(1)+15 = 18.
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
-                args: vec![ArgSpec { name: "pr".into(), ..Default::default() }],
                 cron: Some("30 13 * * *".into()),
                 has_discovery: true,
                 description: Some("Review an open PR end to end.".into()),
@@ -2703,25 +2906,19 @@ mod tests {
             },
             DefinitionSummary { name: "lint".into(), ..Default::default() },
         ];
-        // Wide: name(9), args(4), schedule(18), desc is the FILL remainder.
-        // used_wo_desc = 9 + (2+4) + (2+18) = 35; desc = 120 - 35 - 2 = 83.
+        // Wide: name(9), schedule(18), desc is the FILL remainder.
+        // used_wo_desc = 9 + (2+18) = 29; desc = 120 - 29 - 2 = 89.
         let wide = def_col_layout(&defs, 120);
-        assert_eq!((wide.name_w, wide.args_w, wide.sched_w), (9, 4, 15));
-        assert_eq!(wide.desc_w, 83, "description is the fill remainder");
-        // Tighter: the desc fill shrinks toward 0 first (name/args/schedule kept).
+        assert_eq!((wide.name_w, wide.sched_w), (9, 15));
+        assert_eq!(wide.desc_w, 89, "description is the fill remainder");
+        // Tighter: the desc fill shrinks toward 0 first (name/schedule kept).
         let mid = def_col_layout(&defs, 40);
-        assert_eq!((mid.name_w, mid.args_w, mid.sched_w), (9, 4, 15));
-        assert_eq!(mid.desc_w, 3, "fill absorbs only what's left: 40 - 35 - 2");
-        // Narrow: desc has already hit 0; now args drops (still can't fit).
-        // used_wo_desc without args = 9 + (2+18) = 29.
-        let narrow = def_col_layout(&defs, 30);
-        assert_eq!(narrow.desc_w, 0);
-        assert_eq!(narrow.args_w, 0, "args dropped after the fill");
-        assert_eq!(narrow.name_w, 9, "name still fits (29 <= 30)");
+        assert_eq!((mid.name_w, mid.sched_w), (9, 15));
+        assert_eq!(mid.desc_w, 9, "fill absorbs only what's left: 40 - 29 - 2");
         // Very narrow: name shrinks last (29 > 20 → shrink by 9 → name_w 0... but
         // schedule stays). 9 - (29 - 20) = 0.
         let tiny = def_col_layout(&defs, 20);
-        assert_eq!((tiny.args_w, tiny.desc_w), (0, 0));
+        assert_eq!(tiny.desc_w, 0);
         assert_eq!(tiny.name_w, 0, "name shrinks last; schedule is kept");
         assert_eq!(tiny.sched_w, 15, "schedule is the trailing kept column");
         // No description anywhere → no fill; schedule keeps its today-position.
@@ -2747,13 +2944,12 @@ mod tests {
     }
 
     #[test]
-    fn def_col_layout_model_sizes_and_degrades_before_args() {
-        // name="pr-review"(9), args="(pr)"(4), model "claude-fable-5"→"fable-5"(7),
+    fn def_col_layout_model_sizes_and_degrades_before_name() {
+        // name="pr-review"(9), model "claude-fable-5"→"fable-5"(7),
         // cron→"Everyday 1:30pm"(15), description present. Schedule footprint = 18.
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
-                args: vec![ArgSpec { name: "pr".into(), ..Default::default() }],
                 model: Some("claude-fable-5".into()),
                 cron: Some("30 13 * * *".into()),
                 has_discovery: true,
@@ -2763,19 +2959,18 @@ mod tests {
             DefinitionSummary { name: "lint".into(), model: Some("sonnet".into()), ..Default::default() },
         ];
         // Wide: model sized to the widest cell (7), desc is the fill remainder.
-        // used_wo_desc = 9 + (2+4) + (2+7) + (2+18) = 44; desc = 120 - 44 - 2 = 74.
+        // used_wo_desc = 9 + (2+7) + (2+18) = 38; desc = 120 - 38 - 2 = 80.
         let wide = def_col_layout(&defs, 120);
-        assert_eq!((wide.name_w, wide.args_w, wide.model_w, wide.sched_w), (9, 4, 7, 15));
-        assert_eq!(wide.desc_w, 74, "description is the fill remainder after the model column");
-        // Tighter: the model column drops before args (args still fits).
-        // used_wo_desc without model = 9 + (2+4) + (2+18) = 35.
+        assert_eq!((wide.name_w, wide.model_w, wide.sched_w), (9, 7, 15));
+        assert_eq!(wide.desc_w, 80, "description is the fill remainder after the model column");
+        // Tighter: name+model+schedule (38) still fit in 40; the fill takes the rest.
         let mid = def_col_layout(&defs, 40);
-        assert_eq!(mid.model_w, 0, "model drops first once the fill is exhausted");
-        assert_eq!(mid.args_w, 4, "args kept after the model column drops");
-        assert_eq!(mid.desc_w, 3, "fill absorbs only what's left: 40 - 35 - 2");
-        // Narrower: model gone, now args drops too. used_wo_desc(name only) = 29.
+        assert_eq!(mid.model_w, 7, "model kept while the fixed columns fit");
+        assert_eq!(mid.desc_w, 0, "fill exhausted: 40 - 38 - 2");
+        // Narrower: the model column drops (before the name shrinks).
+        // used_wo_desc without model = 9 + (2+18) = 29.
         let narrow = def_col_layout(&defs, 30);
-        assert_eq!((narrow.model_w, narrow.args_w, narrow.desc_w), (0, 0, 0));
+        assert_eq!((narrow.model_w, narrow.desc_w), (0, 0));
         assert_eq!(narrow.name_w, 9, "name still fits; schedule kept");
         // No model anywhere → the model column is omitted pane-wide even when wide.
         let no_model = vec![DefinitionSummary { name: "lint".into(), ..Default::default() }];

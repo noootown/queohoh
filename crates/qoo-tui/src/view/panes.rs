@@ -7,7 +7,7 @@ use ratatui::widgets::{
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::app::{App, ListPane, PaneId, Selection};
-use crate::hit::{HitMap, HitTarget, PaneButton};
+use crate::hit::{HitMap, HitTarget, PaneButton, pane_buttons};
 use crate::ipc::types::DefinitionSummary;
 use crate::selectors::{
     COLLAPSED_H, DefColLayout, QueueColLayout, QueueRow, WorktreeRow, WtColLayout,
@@ -16,19 +16,35 @@ use crate::selectors::{
     wt_author_text, wt_col_layout,
 };
 use crate::view::theme::{
-    BTN_LABEL_ACTIONS, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND, BTN_LABEL_TASKS,
+    BTN_LABEL_ACTIONS, BTN_LABEL_CANCEL, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
+    BTN_LABEL_RUN, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DISCOVERY, GLYPH_DOT, GLYPH_MAIN_SESSION, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
 
-/// Title-bar buttons per pane, in left-to-right order. Narrow panes drop them
-/// from the right (collapse first), so the create/actions chips survive longest;
-/// collapse always keeps its `z` key binding.
-const QUEUE_BUTTONS: &[PaneButton] = &[PaneButton::Create, PaneButton::Actions, PaneButton::Collapse];
-const TASKS_BUTTONS: &[PaneButton] = &[PaneButton::Actions, PaneButton::Collapse];
-const WORKTREE_BUTTONS: &[PaneButton] =
-    &[PaneButton::Create, PaneButton::Tasks, PaneButton::Actions, PaneButton::Collapse];
+// The per-pane chip SETS (and their order) are the single source of truth in
+// [`crate::hit::pane_buttons`], shared with the keymap so key gating tracks the
+// visible chips. Here we only carry the render-time SCOPE boundary: the first
+// `*_ROW_SCOPED` entries of a pane's set are the row-scoped verbs (they act on
+// the highlighted row), the rest are pane-scoped (create / collapse). A `·`
+// divider is drawn between the two groups. Narrow panes drop chips from the
+// RIGHT (collapse first), so the row-scoped verbs survive longest; the divider
+// shows only while chips from BOTH groups remain (see [`build_header`]);
+// collapse always keeps its `z` key. These MUST stay in step with the ordering
+// of the corresponding `pane_buttons` arm.
+const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x] cancel [a]ctions · [c]reate [z]
+const TASKS_ROW_SCOPED: usize = 1; // [r]un · [z]
+const WORKTREE_ROW_SCOPED: usize = 2; // [t]asks [a]ctions · [c]reate [z]
+
+/// Scope divider drawn between the row-scoped and pane-scoped chip groups (the
+/// TUI's `·` separator convention). It REPLACES the normal single-space gap
+/// before the first pane-scoped chip, so it costs [`GROUP_SEP_EXTRA`] extra
+/// cells over that gap — folded into every width/fit computation so alignment
+/// and hit rects stay exact.
+const GROUP_SEP: &str = " · ";
+const GROUP_SEP_EXTRA: usize = 2; // GROUP_SEP is 3 cells; the gap it replaces is 1
+
 use crate::view::{Computed, selection_range, window_start};
 
 /// The bold pane title, accent-colored when focused. Shared by the border-title
@@ -69,6 +85,8 @@ fn button_chip(b: PaneButton, collapsed: bool, labeled: bool, p: &Palette) -> (V
         PaneButton::Create => ('c', BTN_LABEL_CREATE),
         PaneButton::Tasks => ('t', BTN_LABEL_TASKS),
         PaneButton::Actions => ('a', BTN_LABEL_ACTIONS),
+        PaneButton::Run => ('r', BTN_LABEL_RUN),
+        PaneButton::Cancel => ('x', BTN_LABEL_CANCEL),
         PaneButton::Collapse => {
             ('z', if collapsed { BTN_LABEL_EXPAND } else { BTN_LABEL_COLLAPSE })
         }
@@ -95,15 +113,20 @@ fn button_chip(b: PaneButton, collapsed: bool, labeled: bool, p: &Palette) -> (V
 /// Stage 2 (labels don't all fit): fall back to the compact strip and drop whole
 /// chips from the RIGHT (last chip — the collapse toggle, which keeps its `z`
 /// key — goes first) until the strip fits. Each chip costs a leading separator
-/// space plus its cell width. Returns `(labeled, kept)`.
+/// space plus its cell width; when the kept run spans BOTH scope groups (i.e.
+/// keeps more than `group1` chips) the wider `·` scope divider replaces one of
+/// those gaps, adding `sep_extra` cells. Returns `(labeled, kept)`.
 fn fit_chip_strip(
     title_w: usize,
     avail: usize,
     labeled_widths: &[usize],
     compact_widths: &[usize],
+    group1: usize,
+    sep_extra: usize,
 ) -> (bool, usize) {
     let strip = |widths: &[usize], kept: usize| -> usize {
-        widths[..kept].iter().map(|w| 1 + w).sum()
+        let base: usize = widths[..kept].iter().map(|w| 1 + w).sum();
+        base + if kept > group1 { sep_extra } else { 0 }
     };
     if title_w + strip(labeled_widths, labeled_widths.len()) <= avail {
         return (true, labeled_widths.len());
@@ -116,24 +139,37 @@ fn fit_chip_strip(
 }
 
 /// Build a pane's top-border header: the (already decorated) title at the left,
+/// an optional meta-colored summary right after it (`· N queued · N running`),
 /// then its action-button chips pushed to the RIGHT END of the top border (just
 /// before the corner), with a run of border characters filling the gap between.
-/// Chips drop from the right until the title + strip fits between the corners
-/// (each chip costs a leading space + its cell width); when even zero chips fit
-/// the title is left to be clipped by `Block::title`. Returns the border `title`
-/// Line to draw and the absolute hit rects for the surviving chips at their
-/// right-aligned coordinates. All widths are cell widths (`Span::width`).
+/// The chips are two scope groups (`buttons[..row_scoped]` = row-scoped verbs,
+/// the rest pane-scoped); a `·` divider sits between them, drawn only while chips
+/// from BOTH groups survive. The summary is the FIRST thing dropped for width: it
+/// renders only when the full chip strip (labeled or compact) survives alongside
+/// it — a pane narrow enough to shed chips never shows it. After that, chips drop
+/// from the right until the title + strip fits between the corners (each chip
+/// costs a leading space + its cell width, the group boundary a wider `·`); when
+/// even zero chips fit the title is left to be clipped by `Block::title`. Returns
+/// the border `title` Line to draw and the absolute hit rects for the surviving
+/// chips at their right-aligned coordinates. All widths are cell widths
+/// (`Span::width`).
+#[allow(clippy::too_many_arguments)]
 fn build_header(
     area: Rect,
     title: &str,
+    summary: Option<&str>,
     focused: bool,
     buttons: &[PaneButton],
+    row_scoped: usize,
     collapsed: bool,
     p: &Palette,
 ) -> (Line<'static>, Vec<(Rect, PaneButton)>) {
     let x0 = area.x + 1;
     let avail = area.width.saturating_sub(2) as usize; // cells between the corners
     let title_span = title_span(title, focused, p);
+    let summary_span = summary
+        .map(|s| Span::styled(format!(" · {s}"), Style::default().fg(p.meta)));
+    let summary_w = summary_span.as_ref().map_or(0, Span::width);
     let title_w = title_span.width();
 
     // Two-stage degradation: build both the labeled and the compact chip sets,
@@ -156,31 +192,58 @@ fn build_header(
         .collect();
     let labeled_w: Vec<usize> = labeled.iter().map(|(_, w)| *w).collect();
     let compact_w: Vec<usize> = compact.iter().map(|(_, w)| *w).collect();
-    let (use_labeled, kept) = fit_chip_strip(title_w, avail, &labeled_w, &compact_w);
-    let chips = if use_labeled { labeled } else { compact };
-    let strip_cost = |kept: usize| -> usize {
-        chips[..kept].iter().map(|(_, w)| 1 + w).sum()
+    // Fit with the summary counted as part of the title; it survives only while
+    // the FULL chip strip does too — the moment chips would drop, the summary is
+    // shed first and the fit re-runs on the bare title.
+    let (use_labeled, kept) =
+        fit_chip_strip(title_w + summary_w, avail, &labeled_w, &compact_w, row_scoped, GROUP_SEP_EXTRA);
+    let (show_summary, use_labeled, kept) = if kept == buttons.len() && summary_w > 0 {
+        (true, use_labeled, kept)
+    } else {
+        let (ul, k) = fit_chip_strip(title_w, avail, &labeled_w, &compact_w, row_scoped, GROUP_SEP_EXTRA);
+        (false, ul, k)
     };
+    let head_w = title_w + if show_summary { summary_w } else { 0 };
+    let chips = if use_labeled { labeled } else { compact };
+    // The scope divider shows only when the kept run crosses the group boundary
+    // (chips from both groups survive); it then replaces one inter-chip gap.
+    let show_separator = kept > row_scoped;
+    let strip_cost = |kept: usize| -> usize {
+        let base: usize = chips[..kept].iter().map(|(_, w)| 1 + w).sum();
+        base + if kept > row_scoped { GROUP_SEP_EXTRA } else { 0 }
+    };
+
+    let mut spans = vec![title_span];
+    if let Some(s) = summary_span.filter(|_| show_summary) {
+        spans.push(s);
+    }
 
     // No chips fit: leave the border to draw itself and let Block clip the title.
     if kept == 0 {
-        return (Line::from(vec![title_span]), Vec::new());
+        return (Line::from(spans), Vec::new());
     }
 
     let strip_w = strip_cost(kept);
-    // Border-character run between the title and the right-aligned chip strip.
-    let filler_w = avail.saturating_sub(title_w + strip_w);
-    let mut spans = vec![title_span];
+    // Border-character run between the head (title + summary) and the
+    // right-aligned chip strip.
+    let filler_w = avail.saturating_sub(head_w + strip_w);
     if filler_w > 0 {
         spans.push(Span::styled("─".repeat(filler_w), p.border_style(focused)));
     }
-    // Chips begin at the first cell after title + filler; the strip ends flush
+    // Chips begin at the first cell after head + filler; the strip ends flush
     // against the corner at x0 + avail.
-    let mut x = x0.saturating_add((title_w + filler_w) as u16);
+    let mut x = x0.saturating_add((head_w + filler_w) as u16);
     let mut rects = Vec::new();
-    for (&b, (chip, w)) in buttons.iter().zip(chips).take(kept) {
-        spans.push(Span::raw(" ")); // separator
-        x = x.saturating_add(1);
+    for (i, (&b, (chip, w))) in buttons.iter().zip(chips).take(kept).enumerate() {
+        if i == row_scoped && show_separator {
+            // Scope boundary: the `·` divider (dim, chrome punctuation) replaces
+            // this chip's normal 1-cell leading gap.
+            spans.push(Span::styled(GROUP_SEP.to_string(), p.dim_style()));
+            x = x.saturating_add(GROUP_SEP.chars().count() as u16);
+        } else {
+            spans.push(Span::raw(" ")); // separator
+            x = x.saturating_add(1);
+        }
         rects.push((Rect { x, y: area.y, width: w as u16, height: 1 }, b));
         spans.extend(chip);
         x = x.saturating_add(w as u16);
@@ -190,20 +253,21 @@ fn build_header(
 
 /// An expanded list pane's vertical layout plan: a blank spacer row above the
 /// search-hint row (gap under the title border), the hint row itself (always
-/// present, one row), an optional blank spacer below the hint (simulated "line
-/// height"), then the data rows. Both spacers are inert — no hit target, not
+/// present, one row), an optional row below the hint hosting the COLUMN
+/// HEADERS, then the data rows. Both extra rows are inert — no hit target, not
 /// selectable — they only shift the data rows (and every geometry derived from
 /// `rows_area`) down. `inner_height` is the pane's inner (inside-border) row
-/// count. Degradation prioritizes the gap under the title:
+/// count. Degradation prioritizes the header row (it carries information; the
+/// top gap is cosmetic):
 ///
-/// - `inner_height ≥ 6`: both spacers (hint + 2 spacers + ≥3 data rows).
-/// - `inner_height == 5`: TOP spacer only (hint + top spacer + 3 data rows).
-/// - `inner_height < 5`: no spacers (density preserved).
+/// - `inner_height ≥ 6`: both rows (hint + gap + headers + ≥3 data rows).
+/// - `inner_height == 5`: header row only (hint + headers + 3 data rows).
+/// - `inner_height < 5`: neither (density preserved).
 ///
 /// Returns `(top_spacer, bottom_spacer, data_capacity)`.
 fn pane_vplan(inner_height: u16) -> (bool, bool, u16) {
-    let top_spacer = inner_height >= 5;
-    let bottom_spacer = inner_height >= 6;
+    let top_spacer = inner_height >= 6;
+    let bottom_spacer = inner_height >= 5;
     let data_capacity = inner_height
         .saturating_sub(1) // hint row
         .saturating_sub(top_spacer as u16)
@@ -236,6 +300,7 @@ fn render_collapsed_pane(
     frame: &mut ratatui::Frame,
     area: Rect,
     title: &str,
+    summary: &str,
     focused: bool,
     pane: PaneId,
     buttons: &[PaneButton],
@@ -248,7 +313,7 @@ fn render_collapsed_pane(
     // return with the pane).
     let _ = buttons;
     let (mut header, rects) =
-        build_header(area, title, focused, &[PaneButton::Collapse], true, p);
+        build_header(area, title, Some(summary), focused, &[PaneButton::Collapse], 1, true, p);
     if dimmed {
         patch_line(&mut header, p.dim_style());
     }
@@ -269,8 +334,8 @@ fn search_hint_line(query: &str, searching: bool, p: &Palette) -> Line<'static> 
     // 🔍 is double-width but it is the first column, so nothing after it shifts.
     let mut spans = vec![Span::raw(format!("{GLYPH_SEARCH} "))];
     if searching {
-        spans.push(Span::styled(format!("/{query}"), Style::default().fg(p.info)));
-        spans.push(Span::styled(GLYPH_CURSOR.to_string(), Style::default().fg(p.info)));
+        spans.push(Span::styled(format!("/{query}"), Style::default().fg(p.meta)));
+        spans.push(Span::styled(GLYPH_CURSOR.to_string(), Style::default().fg(p.meta)));
     } else if query.is_empty() {
         spans.push(Span::styled(
             "[/]".to_string(),
@@ -278,7 +343,7 @@ fn search_hint_line(query: &str, searching: bool, p: &Palette) -> Line<'static> 
         ));
         spans.push(Span::styled(format!(" {SEARCH_HINT_IDLE}"), Style::default().fg(p.fg)));
     } else {
-        spans.push(Span::styled(format!("/{query}"), Style::default().fg(p.info)));
+        spans.push(Span::styled(format!("/{query}"), Style::default().fg(p.meta)));
     }
     Line::from(spans)
 }
@@ -301,7 +366,7 @@ fn queue_line(
     if layout.has_chain {
         spans.push(Span::raw(" "));
         if row.main_session {
-            spans.push(Span::styled(GLYPH_MAIN_SESSION.to_string(), Style::default().fg(p.info)));
+            spans.push(Span::styled(GLYPH_MAIN_SESSION.to_string(), Style::default().fg(p.meta)));
         } else {
             spans.push(Span::raw(" "));
         }
@@ -348,6 +413,86 @@ fn queue_line(
     Line::from(spans)
 }
 
+/// One padded header label over a column: the leading gutter + the label
+/// clipped/padded to the column width, in the pane's de-emphasis dim (headers
+/// are chrome, not data).
+fn header_col(spans: &mut Vec<Span<'static>>, label: &str, w: usize, p: &Palette) {
+    spans.push(Span::raw(" ".repeat(crate::selectors::COL_GAP)));
+    spans.push(Span::styled(pad_clip(label, w), p.dim_style()));
+}
+
+/// QUEUE column-header row, mirroring `queue_line`'s span structure cell for
+/// cell so every label sits over its column.
+fn queue_header(layout: &QueueColLayout, p: &Palette) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")]; // status-glyph slot
+    if layout.has_chain {
+        spans.push(Span::raw("  ")); // separator + ⌂ slot
+    }
+    if layout.worktree_w > 0 {
+        header_col(&mut spans, "Worktree", layout.worktree_w, p);
+    }
+    if layout.def_w > 0 {
+        header_col(&mut spans, "Task", layout.def_w, p);
+    }
+    header_col(&mut spans, "Prompt", layout.summary_w, p);
+    if layout.show_timestamp {
+        header_col(&mut spans, "Created", crate::selectors::TIMESTAMP_W, p);
+    }
+    if layout.age_w > 0 {
+        header_col(&mut spans, "Age", layout.age_w, p);
+    }
+    if layout.live_w > 0 {
+        header_col(&mut spans, "Live", layout.live_w, p);
+    }
+    Line::from(spans)
+}
+
+/// TASKS column-header row (`Name | Model | Description | Cron`), mirroring
+/// `def_line`'s span structure.
+fn def_header(layout: &DefColLayout, p: &Palette) -> Line<'static> {
+    let mut spans = vec![Span::styled(pad_clip("Name", layout.name_w), p.dim_style())];
+    if layout.model_w > 0 {
+        header_col(&mut spans, "Model", layout.model_w, p);
+    }
+    if layout.desc_w > 0 {
+        header_col(&mut spans, "Description", layout.desc_w, p);
+    }
+    if layout.sched_w > 0 {
+        // The schedule column's footprint is the ⏰ icon + a space + the text.
+        header_col(&mut spans, "Cron", crate::selectors::SCHED_ICON_W + 1 + layout.sched_w, p);
+    }
+    Line::from(spans)
+}
+
+/// WORKTREES column-header row, mirroring `worktree_line`'s span structure
+/// (the lead indicator and ⌂/± marker slots stay blank).
+fn wt_header(layout: &WtColLayout, p: &Palette) -> Line<'static> {
+    let mut spans = vec![Span::raw("  ")]; // lead indicator + separator
+    if layout.has_chain {
+        spans.push(Span::raw("  ")); // ⌂ slot + separator
+    }
+    if layout.dirty_w > 0 {
+        spans.push(Span::raw("  ")); // ± slot + separator
+    }
+    spans.push(Span::styled(pad_clip("Name", layout.name_w), p.dim_style()));
+    if layout.last_w > 0 {
+        header_col(&mut spans, "Last Task", layout.last_w, p);
+    }
+    if layout.author_w > 0 {
+        header_col(&mut spans, "Author", layout.author_w, p);
+    }
+    if layout.commit_age_w > 0 {
+        header_col(&mut spans, "Commit", layout.commit_age_w, p);
+    }
+    if layout.queued_w > 0 {
+        header_col(&mut spans, "Next", layout.queued_w, p);
+    }
+    if layout.elapsed_w > 0 {
+        header_col(&mut spans, "Live", layout.elapsed_w, p);
+    }
+    Line::from(spans)
+}
+
 fn worktree_line(
     row: &WorktreeRow,
     layout: &WtColLayout,
@@ -371,7 +516,9 @@ fn worktree_line(
     // was unreadable per user feedback); the de-emphasis dim is only for archived/
     // empty rows via `patch_line`. A column present in the layout but empty on this
     // row renders as blank padding so the fields stay aligned down the pane.
+    // `info` (teal) is timestamps only; other metadata reads in `meta`.
     let info = Style::default().fg(p.info);
+    let meta = Style::default().fg(p.meta);
     let warn = Style::default().fg(p.warn);
     let mauve = Style::default().fg(p.mauve);
     let fg = Style::default().fg(p.fg);
@@ -382,7 +529,7 @@ fn worktree_line(
     let mut spans = vec![lead, Span::raw(" ")];
     if layout.has_chain {
         if row.has_main_session {
-            spans.push(Span::styled(GLYPH_MAIN_SESSION.to_string(), info));
+            spans.push(Span::styled(GLYPH_MAIN_SESSION.to_string(), meta));
         } else {
             spans.push(Span::raw(" "));
         }
@@ -438,27 +585,25 @@ fn worktree_line(
             None => spans.push(Span::raw(pad_clip("", layout.commit_age_w))),
         }
     }
-    // `N queued · next: <name>` FILL column: the `N queued · next:` lead in info
-    // (the queued-count text), the def/prompt name mauve (def) or fg (prompt).
-    // Blank-padded when the row has no queued task — the fill still reserves the
-    // slack so the trailing live timer stays right-pinned.
+    // `next: <name>` FILL column: the `next:` lead in meta, the def/prompt name
+    // mauve (def) or fg (prompt). The queued COUNT is deliberately absent — the
+    // leading indicator digit already carries it (user request). Blank-padded
+    // when the row has no named queued task — the fill still reserves the slack
+    // so the trailing live timer stays right-pinned.
     if layout.queued_w > 0 {
         spans.push(Span::raw(gap.clone()));
         match (row.queued, &row.next_name) {
-            (0, _) => spans.push(Span::raw(pad_clip("", layout.queued_w))),
-            (n, Some(name)) => {
-                let lead = format!("{n} queued · next: ");
+            (0, _) | (_, None) => spans.push(Span::raw(pad_clip("", layout.queued_w))),
+            (_, Some(name)) => {
+                let lead = "next: ";
                 let name_budget = layout.queued_w.saturating_sub(lead.chars().count());
                 let shown = crate::selectors::clip(name, name_budget);
-                spans.push(Span::styled(lead.clone(), info));
+                spans.push(Span::styled(lead, meta));
                 spans.push(Span::styled(shown.clone(), if row.next_is_def { mauve } else { fg }));
                 let used = lead.chars().count() + shown.chars().count();
                 if used < layout.queued_w {
                     spans.push(Span::raw(" ".repeat(layout.queued_w - used)));
                 }
-            }
-            (n, None) => {
-                spans.push(Span::styled(pad_clip(&format!("{n} queued"), layout.queued_w), info))
             }
         }
     }
@@ -480,14 +625,16 @@ fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line
     // Task/definition names read in mauve — the single semantic color for a def
     // name across QUEUE, TASKS, and the WORKTREES next/last cells.
     let mut spans = vec![Span::styled(pad_clip(&def.name, layout.name_w), Style::default().fg(p.mauve))];
-    // Args column: padded to the widest visible args cell so the schedule column
-    // never slides left when a def has no args. Teal — informational columns get
-    // real colors, not grey.
-    if layout.args_w > 0 {
+    // Model column: the def's model (`claude-` prefix stripped), right after the
+    // name (user request — the model matters more than anything else on the
+    // row). Padded to the reserved width so a def without a model leaves it
+    // blank and the columns never slide; omitted entirely when no visible def
+    // carries a model.
+    if layout.model_w > 0 {
         spans.push(Span::raw(gap.clone()));
         spans.push(Span::styled(
-            pad_clip(&crate::selectors::def_args_text(def), layout.args_w),
-            Style::default().fg(p.info),
+            pad_clip(&crate::selectors::def_model_text(def), layout.model_w),
+            Style::default().fg(p.meta),
         ));
     }
     // Description FILL column: prose in plain fg (like the queue summary), padded
@@ -498,17 +645,6 @@ fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line
         spans.push(Span::styled(
             pad_clip(&crate::selectors::def_desc_text(def), layout.desc_w),
             Style::default().fg(p.fg),
-        ));
-    }
-    // Model column: the def's model (`claude-` prefix stripped), a fixed metadata cell
-    // right before the schedule chip. Teal/info like args. Padded to the reserved
-    // width so a def without a model leaves it blank and the schedule stays
-    // pinned; omitted entirely when no visible def carries a model.
-    if layout.model_w > 0 {
-        spans.push(Span::raw(gap.clone()));
-        spans.push(Span::styled(
-            pad_clip(&crate::selectors::def_model_text(def), layout.model_w),
-            Style::default().fg(p.info),
         ));
     }
     // Schedule column: the ⏰ icon plus the humanized cron when the def has one;
@@ -629,6 +765,7 @@ fn render_list_pane<T, C>(
     hits: &mut HitMap,
     p: &Palette,
     title_base: &str,
+    summary: &str,
     search: &str,
     searching: bool,
     focused: bool,
@@ -639,11 +776,18 @@ fn render_list_pane<T, C>(
     empty_msg: &str,
     now_epoch_s: u64,
     buttons: &[PaneButton],
+    // Boundary in `buttons` between the row-scoped and pane-scoped groups (see
+    // the `*_ROW_SCOPED` consts); threaded to `build_header` for the `·` divider.
+    row_scoped: usize,
     btn_hits: &mut Vec<(Rect, PaneId, PaneButton)>,
     // Per-frame column widths derived from the VISIBLE rows + available width, so
     // fields line up across what is actually on screen (recomputed each frame).
     ctx_of: impl Fn(&[T], usize) -> C,
     line_of: impl Fn(&T, &C, &Palette) -> Line<'static>,
+    // Column-header row for the resolved layout, drawn into the bottom-spacer
+    // slot under the search hint (skipped on short panes that dropped the
+    // spacer, and on empty panes that have no layout).
+    header_of: impl Fn(&C, &Palette) -> Line<'static>,
     dim_of: impl Fn(&T) -> bool,
     running_of: impl Fn(&T) -> bool,
     dimmed: bool,
@@ -652,7 +796,8 @@ fn render_list_pane<T, C>(
     divider_after: Option<usize>,
 ) {
     let title = pane_title(title_base, sel);
-    let (mut header, rects) = build_header(area, &title, focused, buttons, false, p);
+    let (mut header, rects) =
+        build_header(area, &title, Some(summary), focused, buttons, row_scoped, false, p);
     if dimmed {
         patch_line(&mut header, p.dim_style());
     }
@@ -736,6 +881,15 @@ fn render_list_pane<T, C>(
         _ => &[],
     };
     let ctx = ctx_of(ctx_rows, rows_area.width as usize);
+
+    // Column headers live in the bottom-spacer row (between the hint and the
+    // data rows). Inert — no hit target — and already dim, so the spotlight
+    // patch is a no-op on top.
+    if bottom_spacer {
+        let header_rect =
+            Rect { x: inner.x, y: hint_rect.y.saturating_add(1), width: inner.width, height: 1 };
+        frame.render_widget(Paragraph::new(header_of(&ctx, p)), header_rect);
+    }
 
     let mut lines: Vec<Line> = Vec::with_capacity(visible);
     for vd in 0..visible {
@@ -828,15 +982,24 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     // A collapsed pane draws only its title bar; an expanded pane draws the full
     // list. Selection/search are threaded to both so the collapsed title keeps
     // its "· N selected" / "/filter" decorations.
+    // Title-bar summaries: at-a-glance counts pinned next to each pane title
+    // (queued/running for QUEUE, def count for TASKS, busy/total for
+    // WORKTREES). Computed from the pane's rows, so an active filter
+    // summarizes what is shown.
+    let queue_summary = crate::selectors::queue_pane_summary(&c.queue);
+    let tasks_summary = crate::selectors::tasks_pane_summary(&c.defs);
+    let wt_summary = crate::selectors::wt_pane_summary(&c.worktrees);
+
     if collapsed[ListPane::Queue.idx()] {
         let title = pane_title(TITLE_QUEUE, &c.queue_sel);
         render_collapsed_pane(
             frame,
             regions[0],
             &title,
+            &queue_summary,
             matches!(c.ui.focus, PaneId::Queue),
             PaneId::Queue,
-            QUEUE_BUTTONS,
+            pane_buttons(PaneId::Queue),
             &mut btn_hits,
             p,
             spotlight && !c.searching[0],
@@ -848,6 +1011,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             hits,
             p,
             TITLE_QUEUE,
+            &queue_summary,
             &c.ui.search[0],
             c.searching[0],
             matches!(c.ui.focus, PaneId::Queue),
@@ -857,10 +1021,12 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &c.queue,
             "queue empty — [a] on a worktree to add a task",
             app.now_epoch_s,
-            QUEUE_BUTTONS,
+            pane_buttons(PaneId::Queue),
+            QUEUE_ROW_SCOPED,
             &mut btn_hits,
             |rows, avail| queue_col_layout(rows, avail, app.now_epoch_s),
             |row, layout, p| queue_line(row, layout, p, app.now_epoch_s, tz_offset),
+            queue_header,
             |row| row.archived,
             |row| row.running,
             spotlight && !c.searching[0],
@@ -874,9 +1040,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             frame,
             regions[1],
             &title,
+            &tasks_summary,
             matches!(c.ui.focus, PaneId::Tasks),
             PaneId::Tasks,
-            TASKS_BUTTONS,
+            pane_buttons(PaneId::Tasks),
             &mut btn_hits,
             p,
             spotlight && !c.searching[1],
@@ -888,6 +1055,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             hits,
             p,
             TITLE_TASKS,
+            &tasks_summary,
             &c.ui.search[1],
             c.searching[1],
             matches!(c.ui.focus, PaneId::Tasks),
@@ -897,10 +1065,12 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &c.defs,
             "no task definitions",
             app.now_epoch_s,
-            TASKS_BUTTONS,
+            pane_buttons(PaneId::Tasks),
+            TASKS_ROW_SCOPED,
             &mut btn_hits,
             def_col_layout,
             def_line,
+            def_header,
             |_| false,
             |_| false,
             spotlight && !c.searching[1],
@@ -913,9 +1083,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             frame,
             regions[2],
             &title,
+            &wt_summary,
             matches!(c.ui.focus, PaneId::Worktrees),
             PaneId::Worktrees,
-            WORKTREE_BUTTONS,
+            pane_buttons(PaneId::Worktrees),
             &mut btn_hits,
             p,
             spotlight && !c.searching[2],
@@ -927,6 +1098,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             hits,
             p,
             TITLE_WORKTREES,
+            &wt_summary,
             &c.ui.search[2],
             c.searching[2],
             matches!(c.ui.focus, PaneId::Worktrees),
@@ -936,10 +1108,12 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &c.worktrees,
             "no worktrees",
             app.now_epoch_s,
-            WORKTREE_BUTTONS,
+            pane_buttons(PaneId::Worktrees),
+            WORKTREE_ROW_SCOPED,
             &mut btn_hits,
             wt_col_layout,
             |row, layout, p| worktree_line(row, layout, p, app.now_epoch_s),
+            wt_header,
             |_| false,
             |_| false,
             spotlight && !c.searching[2],
@@ -979,17 +1153,20 @@ mod tests {
     #[test]
     fn build_header_keeps_all_buttons_right_aligned_against_the_corner() {
         let p = Palette::default();
-        // width 30 → avail 28: the labeled strip (32) can't fit alongside the
-        // title, so all three compact chips survive right-aligned.
+        // width 30 → avail 28: the labeled strip can't fit alongside the title,
+        // so all three compact chips survive right-aligned, in scope order
+        // (row-scoped [a]ctions first, then [c]reate [z]).
         let area = Rect { x: 0, y: 0, width: 30, height: 8 };
-        let (_line, rects) = build_header(area, "Q", false, QUEUE_BUTTONS, false, &p);
+        let (_line, rects) =
+            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, &p);
         assert_eq!(rects.len(), 3);
-        // avail=28, title "Q"=1, each compact chip=3 cells, strip=3*(1+3)=12,
-        // filler=28-1-12=15. Chips start at x0(1)+title(1)+filler(15)=17; first
-        // chip after its separator sits at x=18 with width 3.
-        assert_eq!(rects[0].0.x, 18);
+        // avail=28, title "Q"=1, each compact chip=3 cells, base strip=3*(1+3)=12,
+        // plus the ` · ` divider (+2, both groups shown) = 14. filler=28-1-14=13.
+        // Chips start at x0(1)+title(1)+filler(13)=15; the first (actions) sits one
+        // separator space in, at x=16 with width 3.
+        assert_eq!(rects[0].0.x, 16);
         assert_eq!(rects[0].0.width, 3);
-        assert_eq!(rects[0].1, PaneButton::Create);
+        assert_eq!(rects[0].1, PaneButton::Actions);
         assert_eq!(rects[2].1, PaneButton::Collapse);
         // The last chip ends flush against the right corner (x0 + avail = 29).
         let last = rects[2].0;
@@ -999,21 +1176,25 @@ mod tests {
     #[test]
     fn build_header_uses_labeled_chips_when_wide() {
         let p = Palette::default();
-        // width 60 → avail 58 ≥ title(1) + labeled strip(32): the labeled form
-        // fits, so chips carry their label words at full width.
+        // width 60 → avail 58 ≥ title(1) + labeled strip + divider: the labeled
+        // form fits, so chips carry their label words at full width, in scope
+        // order (row-scoped [a]ctions first, then [c]reate [z]).
         let area = Rect { x: 0, y: 0, width: 60, height: 8 };
-        let (line, rects) = build_header(area, "Q", false, QUEUE_BUTTONS, false, &p);
+        let (line, rects) =
+            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, &p);
         assert_eq!(rects.len(), 3);
-        // Labeled widths — `[c]reate`/`[a]ctions` merge the key into the word
-        // (create 3+5=8, actions 3+6=9); collapse keeps the spaced
+        // Labeled widths — `[a]ctions`/`[c]reate` merge the key into the word
+        // (actions 3+6=9, create 3+5=8); collapse keeps the spaced
         // `[z] collapse` form (3+1+8=12).
-        assert_eq!(rects[0].0.width, 8);
-        assert_eq!(rects[1].0.width, 9);
+        assert_eq!(rects[0].0.width, 9);
+        assert_eq!(rects[1].0.width, 8);
         assert_eq!(rects[2].0.width, 12);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
-        assert!(text.contains("[c]reate"));
         assert!(text.contains("[a]ctions"));
+        assert!(text.contains("[c]reate"));
         assert!(text.contains("[z] collapse"));
+        // The `·` scope divider sits between the two groups.
+        assert!(text.contains('·'), "group divider renders: {text}");
         // Still right-aligned flush against the corner.
         let last = rects[2].0;
         assert_eq!(last.x + last.width, area.x + 1 + 58);
@@ -1023,28 +1204,48 @@ mod tests {
     fn build_header_worktrees_includes_tasks_chip() {
         let p = Palette::default();
         // Wide enough for the labeled form: the worktrees strip carries all four
-        // chips with the Tasks chip second (create · tasks · actions · collapse).
+        // chips in scope order — row-scoped [t]asks [a]ctions, then the `·`
+        // divider, then pane-scoped [c]reate [z].
         let area = Rect { x: 0, y: 0, width: 80, height: 8 };
-        let (line, rects) = build_header(area, "WORKTREES", false, WORKTREE_BUTTONS, false, &p);
+        let (line, rects) =
+            build_header(area, "WORKTREES", None, false, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, &p);
         assert_eq!(rects.len(), 4);
-        assert_eq!(rects[1].1, PaneButton::Tasks);
+        assert_eq!(rects[0].1, PaneButton::Tasks);
+        assert_eq!(rects[1].1, PaneButton::Actions);
+        assert_eq!(rects[2].1, PaneButton::Create);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[t]asks"), "labeled tasks chip renders: {text}");
     }
 
     #[test]
     fn fit_chip_strip_drops_labels_before_dropping_chips() {
-        // Three chips: labeled widths [13,14,15], compact widths [6,6,6].
+        // Three chips: labeled widths [13,14,15], compact widths [6,6,6]. Boundary
+        // at 3 (== chip count) so the divider condition (kept > group1) never
+        // fires — this pins the label/chip degradation in isolation.
         let labeled = [13usize, 14, 15];
         let compact = [6usize, 6, 6];
         // Wide: labeled strip 45 + title 1 = 46 ≤ 58 → labeled, all kept.
-        assert_eq!(fit_chip_strip(1, 58, &labeled, &compact), (true, 3));
+        assert_eq!(fit_chip_strip(1, 58, &labeled, &compact, 3, 2), (true, 3));
         // Narrower: labeled doesn't fit but all compact chips do → compact, 3.
-        assert_eq!(fit_chip_strip(1, 38, &labeled, &compact), (false, 3));
+        assert_eq!(fit_chip_strip(1, 38, &labeled, &compact, 3, 2), (false, 3));
         // Narrow: compact chips drop from the right (collapse first).
-        assert_eq!(fit_chip_strip(1, 15, &labeled, &compact), (false, 2));
-        assert_eq!(fit_chip_strip(1, 8, &labeled, &compact), (false, 1));
-        assert_eq!(fit_chip_strip(1, 6, &labeled, &compact), (false, 0));
+        assert_eq!(fit_chip_strip(1, 15, &labeled, &compact, 3, 2), (false, 2));
+        assert_eq!(fit_chip_strip(1, 8, &labeled, &compact, 3, 2), (false, 1));
+        assert_eq!(fit_chip_strip(1, 6, &labeled, &compact, 3, 2), (false, 0));
+    }
+
+    #[test]
+    fn fit_chip_strip_accounts_for_group_separator() {
+        // Compact widths [6,6,6], labeled forced never to fit, boundary after 1
+        // (row-scoped group of one). The `·` divider adds `sep_extra` cells the
+        // moment the kept run crosses into the second group, so it can force an
+        // extra drop compared with a boundary that never divides.
+        let labeled = [20usize, 20, 20];
+        let compact = [6usize, 6, 6];
+        // avail 15, boundary 1: kept=2 costs (1+6)+(1+6)+2 = 16 > 15 → drop to 1.
+        assert_eq!(fit_chip_strip(0, 15, &labeled, &compact, 1, 2), (false, 1));
+        // Same width, boundary 3 (no divider ever): kept=2 costs 14 ≤ 15 → 2.
+        assert_eq!(fit_chip_strip(0, 15, &labeled, &compact, 3, 2), (false, 2));
     }
 
     #[test]
@@ -1053,8 +1254,9 @@ mod tests {
         assert_eq!(pane_vplan(1), (false, false, 0)); // hint only, no data
         assert_eq!(pane_vplan(3), (false, false, 2)); // hint + 2 data rows
         assert_eq!(pane_vplan(4), (false, false, 3)); // hint + 3 data rows
-        // At 5: TOP spacer only (gap under the title wins), ≥3 data rows.
-        assert_eq!(pane_vplan(5), (true, false, 3)); // top + hint + 3 data rows
+        // At 5: BOTTOM spacer only (the HEADER row wins over the cosmetic top
+        // gap), ≥3 data rows.
+        assert_eq!(pane_vplan(5), (false, true, 3)); // hint + headers + 3 data rows
         // From 6 up: both spacers, still ≥3 data rows.
         assert_eq!(pane_vplan(6), (true, true, 3)); // top + hint + bottom + 3 data
         assert_eq!(pane_vplan(10), (true, true, 7));
@@ -1063,13 +1265,15 @@ mod tests {
     #[test]
     fn build_header_drops_buttons_from_the_right_when_narrow() {
         let p = Palette::default();
-        // avail = width-2 = 8. Labeled can't fit → compact. Each compact chip
-        // costs 7 (sep+6); title "Q" = 1. 1+7=8 ≤ 8 (one fits), 1+14=15 > 8 (two
-        // don't) → only the leftmost stays.
+        // avail = width-2 = 8. Labeled can't fit → compact. At kept=1 there is no
+        // divider (single group shown): title "Q"(1) + chip(1+3)=4 → 5 ≤ 8. At
+        // kept=2 both groups show, so + the divider: 1 + (1+3)+(1+3) + 2 = 11 > 8.
+        // Only the leftmost (row-scoped [a]ctions) stays.
         let area = Rect { x: 0, y: 0, width: 10, height: 8 };
-        let (_line, rects) = build_header(area, "Q", false, QUEUE_BUTTONS, false, &p);
-        assert_eq!(rects.len(), 1, "only the leftmost (create) button survives");
-        assert_eq!(rects[0].1, PaneButton::Create);
+        let (_line, rects) =
+            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, &p);
+        assert_eq!(rects.len(), 1, "only the leftmost (actions) button survives");
+        assert_eq!(rects[0].1, PaneButton::Actions);
     }
 
     #[test]
@@ -1077,7 +1281,8 @@ mod tests {
         let p = Palette::default();
         // Title alone overflows the 6-cell interior → no buttons; title truncates.
         let area = Rect { x: 0, y: 0, width: 8, height: 8 };
-        let (_line, rects) = build_header(area, "WORKTREES", false, WORKTREE_BUTTONS, false, &p);
+        let (_line, rects) =
+            build_header(area, "WORKTREES", None, false, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, &p);
         assert!(rects.is_empty());
     }
 
@@ -1085,8 +1290,10 @@ mod tests {
     fn build_header_collapse_label_flips_with_state() {
         let p = Palette::default();
         let area = Rect { x: 0, y: 0, width: 40, height: 8 };
-        let (expanded, _) = build_header(area, "Q", false, QUEUE_BUTTONS, false, &p);
-        let (collapsed, _) = build_header(area, "Q", false, QUEUE_BUTTONS, true, &p);
+        let (expanded, _) =
+            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, &p);
+        let (collapsed, _) =
+            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, true, &p);
         let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text(&expanded).contains(BTN_LABEL_COLLAPSE));
         assert!(text(&collapsed).contains(BTN_LABEL_EXPAND));

@@ -2,6 +2,7 @@ export type { GlobalConfig } from "./config.js";
 export {
 	globalWorkspaceDir,
 	loadGlobalConfig,
+	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectVars,
 	projectWorkspaceDir,
@@ -20,7 +21,7 @@ export { parseDuration } from "./duration.js";
 export { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
 export { execHook } from "./hooks.js";
 export type { InstantiateDeps, Trigger } from "./instantiate.js";
-export { instantiateDefinition } from "./instantiate.js";
+export { buildItemFromArgs, instantiateDefinition } from "./instantiate.js";
 export type { MainSessionEntry } from "./main-sessions.js";
 export { MainSessionStore } from "./main-sessions.js";
 export {
@@ -52,7 +53,11 @@ export { schedule } from "./scheduler.js";
 export type { SessionEntry } from "./sessions.js";
 export { buildLiveState, SessionRegistry } from "./sessions.js";
 export { qooTempName, slugify } from "./slug.js";
-export type { NewTaskInput } from "./store.js";
+export type {
+	ChainSharedInput,
+	ChainStepInput,
+	NewTaskInput,
+} from "./store.js";
 export { QueueStore } from "./store.js";
 export type {
 	Priority,

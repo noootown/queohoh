@@ -124,6 +124,7 @@ export function loadProjectVars(projectDir: string): Record<string, string> {
 	const vars: Record<string, string> = {};
 	for (const [key, value] of Object.entries(raw)) {
 		if (key === "models") continue; // reserved: read by loadProjectModels
+		if (key === "github_id") continue; // reserved: read by loadProjectGithubId
 		if (value !== null && typeof value === "object") {
 			throw new Error(`non-scalar var: ${key}`);
 		}
@@ -149,4 +150,19 @@ export function loadProjectModels(projectDir: string): Record<string, string> {
 		if (typeof id === "string" && id.length > 0) out[alias] = id;
 	}
 	return out;
+}
+
+/** The project's optional `github_id` from vars.yaml — the author identity used
+ * by the TUI to sort the operator's own worktrees first. Tolerant like
+ * loadProjectModels: absent file, absent key, a non-string, or an empty string
+ * all yield undefined and it never throws, so a bad value only disables the
+ * "mine-first" sort rather than wedging config loading. */
+export function loadProjectGithubId(projectDir: string): string | undefined {
+	const path = join(projectDir, "vars.yaml");
+	if (!existsSync(path)) return undefined;
+	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+		return undefined;
+	const value = (raw as Record<string, unknown>).github_id;
+	return typeof value === "string" && value.length > 0 ? value : undefined;
 }

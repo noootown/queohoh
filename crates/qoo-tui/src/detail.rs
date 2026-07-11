@@ -101,7 +101,7 @@ pub fn derive_context(
                 return DetailContext::Empty;
             };
             let lane = lane_key(project, &row.raw_name);
-            let lane_tasks: Vec<TaskInstance> = snapshot
+            let mut lane_tasks: Vec<TaskInstance> = snapshot
                 .tasks
                 .iter()
                 .chain(snapshot.archived_recent.iter())
@@ -114,6 +114,19 @@ pub fn derive_context(
                 })
                 .cloned()
                 .collect();
+            // Display order: running, then needs-input, then queued, then
+            // everything finished — finished newest-first (ids are ULID-like, so
+            // a descending id sort is newest-first). Active tiers keep ascending
+            // id (stable, oldest-first) within their rank.
+            lane_tasks.sort_by(|a, b| {
+                let (ra, rb) = (
+                    crate::selectors::lane_task_order_rank(a.status),
+                    crate::selectors::lane_task_order_rank(b.status),
+                );
+                ra.cmp(&rb).then_with(|| {
+                    if ra >= 3 { b.id.cmp(&a.id) } else { a.id.cmp(&b.id) }
+                })
+            });
             DetailContext::Worktree { row: row.clone(), lane_tasks }
         }
     }

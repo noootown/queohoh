@@ -12,24 +12,11 @@ use crate::detail::{
     DetailContext, bottom_anchored, clamp_sub_tab, derive_context, sub_tab_names, window_lines,
 };
 use crate::hit::{HitMap, HitTarget};
-use crate::ipc::types::{TaskDefinition, TaskStatus};
+use crate::ipc::types::TaskDefinition;
 use crate::markup::{DisplayLine, LineCtx, fence_states, style_transcript_line, wrap_lines};
-use crate::selectors::{WtState, arg_summary, prompt_summary};
+use crate::selectors::arg_summary;
 use crate::view::Computed;
-use crate::view::theme::{
-    GLYPH_DONE, GLYPH_FAILED, GLYPH_NEEDS_INPUT, GLYPH_QUEUED, GLYPH_RUNNING, Palette,
-    TITLE_DETAIL,
-};
-
-fn status_glyph(s: &TaskStatus) -> char {
-    match s {
-        TaskStatus::Running => GLYPH_RUNNING,
-        TaskStatus::Queued => GLYPH_QUEUED,
-        TaskStatus::NeedsInput => GLYPH_NEEDS_INPUT,
-        TaskStatus::Done => GLYPH_DONE,
-        TaskStatus::Failed | TaskStatus::Unknown => GLYPH_FAILED,
-    }
-}
+use crate::view::theme::{Palette, TITLE_DETAIL};
 
 /// Blank-cell placeholder shown for an absent value (dimmed by the styler).
 const EM_DASH: &str = "—";
@@ -74,70 +61,122 @@ fn config_rows(def: &TaskDefinition) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Aligned config lines plus the char column where the value begins (keys are
-/// left-padded to a common width + [`CONFIG_KEY_GAP`]). Returned together so the
-/// renderer can tag every line with a matching [`LineCtx::Config`] for per-span
-/// key/value styling.
-fn config_view(def: &TaskDefinition) -> (Vec<String>, usize) {
-    let rows = config_rows(def);
+/// Aligned `key   value` lines plus the char column where the value begins (keys
+/// are left-padded to a common width + [`CONFIG_KEY_GAP`]). Returned together so
+/// the renderer can tag every line with a matching [`LineCtx::Config`] for
+/// per-span key/value styling. Shared by the definition config sub-tab and the
+/// worktree detail info block.
+fn align_kv(rows: &[(&str, String)]) -> (Vec<String>, usize) {
     let key_col =
         rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) + CONFIG_KEY_GAP;
     let lines = rows.iter().map(|(k, v)| format!("{k:<key_col$}{v}")).collect();
     (lines, key_col)
 }
 
-/// Content lines + placeholder for the given context/sub-tab. `def` is the
-/// resolved full definition (None while loading), `run_files` the current run's
-/// (report, transcript_tail).
+/// Aligned config lines + the value column (see [`align_kv`]).
+fn config_view(def: &TaskDefinition) -> (Vec<String>, usize) {
+    align_kv(&config_rows(def))
+}
+
+/// `(key, value)` rows for the worktree detail info block: identity (path,
+/// branch) plus the daemon's git enrichment (short commit hash, author name,
+/// last-commit age with absolute local time, open PR number). Absent values show
+/// the dim `—` placeholder. `state` is deliberately dropped — the WORKTREES pane
+/// already conveys it via its status glyph.
+fn worktree_rows(
+    row: &crate::selectors::WorktreeRow,
+    now_epoch_s: u64,
+    tz_offset_s: i32,
+) -> Vec<(&'static str, String)> {
+    let or_dash = |s: Option<String>| s.filter(|v| !v.is_empty()).unwrap_or_else(|| EM_DASH.to_string());
+    let updated = match row.last_commit_epoch {
+        Some(e) => format!(
+            "{} ({})",
+            crate::selectors::relative_age_label(e, now_epoch_s),
+            crate::selectors::absolute_local_label(e, tz_offset_s),
+        ),
+        None => EM_DASH.to_string(),
+    };
+    vec![
+        ("path", row.path.clone()),
+        ("branch", if row.branch.is_empty() { EM_DASH.to_string() } else { row.branch.clone() }),
+        ("commit", or_dash(row.last_commit_hash.clone())),
+        ("author", or_dash(row.last_commit_author.clone())),
+        ("updated", updated),
+        ("pr", row.pr_number.map(|n| format!("#{n}")).unwrap_or_else(|| EM_DASH.to_string())),
+    ]
+}
+
+/// Content lines, their per-line [`LineCtx`], and a placeholder for the given
+/// context/sub-tab. `def` is the resolved full definition (None while loading),
+/// `run_files` the current run's (report, transcript_tail). `detail_row` is the
+/// worktree lane-task row cursor; `now_epoch_s`/`tz_offset_s` drive the info
+/// block's `updated` age + absolute local time. The ctx vector is parallel to
+/// the lines so the renderer styles each line under exactly the right rules —
+/// markdown fences for run/prompt views, aligned key/value for config + the
+/// worktree info block, and queue-style rows for the lane-task list.
 pub(crate) fn content_for(
     ctx: &DetailContext,
     sub_tab: usize,
     def: Option<&TaskDefinition>,
     run_files: Option<&crate::runfiles::RunFiles>,
-) -> (Vec<String>, &'static str) {
+    detail_row: usize,
+    now_epoch_s: u64,
+    tz_offset_s: i32,
+) -> (Vec<String>, Vec<LineCtx>, &'static str) {
+    // Helper: plain lines flow through the markdown fence machinery.
+    let fenced = |lines: Vec<String>, ph| {
+        let ctxs = fence_states(&lines);
+        (lines, ctxs, ph)
+    };
     match ctx {
         DetailContext::Run { task } => match sub_tab {
-            1 => (run_files.map(|f| f.report.clone()).unwrap_or_default(), "(no report yet)"),
-            2 => (task.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
-            _ => (
+            1 => fenced(run_files.map(|f| f.report.clone()).unwrap_or_default(), "(no report yet)"),
+            2 => fenced(task.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
+            _ => fenced(
                 run_files.map(|f| f.transcript_tail.clone()).unwrap_or_default(),
                 "(no transcript yet)",
             ),
         },
         DetailContext::Definition { .. } => match def {
-            None => (Vec::new(), "(loading definition…)"),
-            Some(d) if sub_tab == 1 => (config_view(d).0, ""),
-            Some(d) => (d.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
+            None => (Vec::new(), Vec::new(), "(loading definition…)"),
+            Some(d) if sub_tab == 1 => {
+                let (lines, key_col) = config_view(d);
+                let ctxs = vec![LineCtx::Config { key_col }; lines.len()];
+                (lines, ctxs, "")
+            }
+            Some(d) => fenced(d.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
         },
         DetailContext::Worktree { row, lane_tasks } => {
-            let mut lines = vec![
-                format!("path: {}", row.path),
-                format!(
-                    "branch: {}",
-                    if row.branch.is_empty() { "—".to_string() } else { row.branch.clone() }
-                ),
-                format!(
-                    "state: {}",
-                    match row.state {
-                        WtState::Free => "free",
-                        WtState::Busy => "busy",
-                        WtState::You => "you",
-                        WtState::Failed => "failed",
-                    }
-                ),
-                String::new(),
-                "tasks on this lane:".to_string(),
-            ];
+            // Info block: aligned key/value rows styled like the config tab.
+            let (mut lines, key_col) = align_kv(&worktree_rows(row, now_epoch_s, tz_offset_s));
+            let mut ctxs: Vec<LineCtx> = vec![LineCtx::Config { key_col }; lines.len()];
+            // Blank separator, then the lane-task list.
+            lines.push(String::new());
+            ctxs.push(LineCtx::Text);
             if lane_tasks.is_empty() {
                 lines.push("(none)".to_string());
+                ctxs.push(LineCtx::Text);
             } else {
-                for t in lane_tasks {
-                    lines.push(format!("{} {}", status_glyph(&t.status), prompt_summary(&t.prompt)));
+                // The row cursor always renders selected-style; clamp it so a
+                // shrunk list still shows a highlighted row (design choice: the
+                // detail pane has no separate focus concept, so the cursor row is
+                // always visibly selected in the worktree view).
+                let sel = detail_row.min(lane_tasks.len() - 1);
+                for (i, t) in lane_tasks.iter().enumerate() {
+                    let (glyph, name, is_def, epoch) = crate::selectors::lane_task_display(t);
+                    lines.push(name);
+                    ctxs.push(LineCtx::LaneTask {
+                        glyph,
+                        is_def,
+                        age: crate::selectors::relative_age_label(epoch, now_epoch_s),
+                        selected: i == sel,
+                    });
                 }
             }
-            (lines, "")
+            (lines, ctxs, "")
         }
-        DetailContext::Empty => (Vec::new(), "(nothing selected)"),
+        DetailContext::Empty => (Vec::new(), Vec::new(), "(nothing selected)"),
     }
 }
 
@@ -331,7 +370,18 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         _ => None,
     };
 
-    let (lines, placeholder) = content_for(&ctx, sub_tab, def.as_ref(), run_files);
+    // Timezone offset for the worktree info block's absolute `updated` stamp —
+    // same source the queue pane's timestamps use.
+    let tz_offset = chrono::Local::now().offset().local_minus_utc();
+    let (lines, ctxs, placeholder) = content_for(
+        &ctx,
+        sub_tab,
+        def.as_ref(),
+        run_files,
+        c.ui.detail_row,
+        app.now_epoch_s,
+        tz_offset,
+    );
     if lines.is_empty() {
         app.detail_max_scroll.set(0);
         app.detail_wrapped_len.set(0);
@@ -340,18 +390,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     }
     let bottom = bottom_anchored(kind, sub_tab);
     let height = content_area.height as usize;
-    // The definition config sub-tab styles each `key   value` row via a dedicated
-    // Config ctx (key column vs value); every other view flows through the
-    // markdown fence machinery. Fence state is stateful over the WHOLE transcript,
-    // so precompute it once — a window into the middle of a code block must still
-    // style as code, and each wrapped segment carries its line's ctx.
-    let is_config = matches!(ctx, DetailContext::Definition { .. }) && sub_tab == 1 && def.is_some();
-    let ctxs = if is_config {
-        let key_col = config_view(def.as_ref().expect("is_config implies Some")).1;
-        vec![LineCtx::Config { key_col }; lines.len()]
-    } else {
-        fence_states(&lines)
-    };
+    // `content_for` returns each line's `LineCtx` (markdown-fence state for
+    // run/prompt views, aligned key/value for config + the worktree info block,
+    // queue-style rows for the lane-task list), so styling below just dispatches
+    // per segment — fence state is already resolved over the WHOLE content.
     // Wrap logical lines into display lines FIRST, so every consumer (scroll
     // ceiling, windowing, scrollbar) counts on-screen lines, not logical ones.
     let (display, has_scrollbar, text_width) =
@@ -454,7 +496,7 @@ mod tests {
         let mut app = fixture_app();
         app.run_files = Some((
             "01RUN".to_string(),
-            RunFiles { transcript_tail: transcript, report: vec![] },
+            RunFiles { transcript_tail: transcript, report: vec![], ..Default::default() },
         ));
         let mut ui = TabUiState::default();
         ui.focus = PaneId::Detail;
@@ -580,6 +622,47 @@ mod tests {
             hits.iter().any(|(_, t)| *t == HitTarget::SubTab(1)),
             "config sub-tab chip is clickable"
         );
+    }
+
+    /// Detail pane over a WORKTREES selection: the info block (path/branch/
+    /// commit/author/updated/pr as aligned key/value rows, no `state`) followed by
+    /// the lane's tasks as queue-style rows — running first (mauve def name), then
+    /// queued (fg prompt summary), each with a right-pinned relative age. The
+    /// first row renders selected-style (the default detail row cursor).
+    fn detail_worktree_app() -> App {
+        let mut app = fixture_app();
+        let now = app.now_epoch_s;
+        if let Some(w) = app
+            .snapshot
+            .as_mut()
+            .and_then(|snap| snap.worktrees.get_mut("acme"))
+            .and_then(|wts| wts.iter_mut().find(|w| w.name == "acme.feature"))
+        {
+            w.last_commit_hash = Some("a1b2c3d".to_string());
+            w.last_commit_author = Some("Ian Chiu".to_string());
+            w.last_commit_epoch = Some(now - 3 * 86_400);
+            w.pr_number = Some(42);
+        }
+        let mut ui = TabUiState::default();
+        ui.focus = PaneId::Detail;
+        ui.last_list_pane = ListPane::Worktrees;
+        // acme.feature sorts first (it has live task activity), so cursor 0 selects
+        // it; its lane carries the running + queued fixture tasks.
+        ui.selections[ListPane::Worktrees as usize].cursor = 0;
+        app.ui_by_tab.insert("acme".to_string(), ui);
+        app
+    }
+
+    #[test]
+    fn snapshot_detail_worktree_info() {
+        let (terminal, _hits) = render_at(&detail_worktree_app(), 80, 24);
+        let body = terminal.backend().to_string();
+        // Info block keys present; `state` is gone; git facts surfaced.
+        assert!(body.contains("commit"), "commit row present");
+        assert!(body.contains("a1b2c3d"), "short hash shown");
+        assert!(body.contains("#42"), "PR number shown");
+        assert!(!body.contains("state"), "state row dropped");
+        insta::assert_snapshot!("detail_worktree_info", terminal.backend());
     }
 
     #[test]
