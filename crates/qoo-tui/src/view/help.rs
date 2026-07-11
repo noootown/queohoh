@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use crate::hit::{HitMap, HitTarget};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 14] = [
+const HELP_ROWS: [(&str, &str); 15] = [
     ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
     ("1–9 / 0", "switch project tab (0 = 10th)"),
     ("ctrl+s then n/p", "next / previous project tab"),
@@ -15,6 +15,7 @@ const HELP_ROWS: [(&str, &str); 14] = [
     ("J/K · shift+↑↓", "extend selection"),
     ("Enter / a", "action menu (or double-click a row)"),
     ("c", "create (queue: adhoc task · worktrees: worktree)"),
+    ("t", "task menu — run a task definition"),
     ("z", "collapse / expand focused list pane"),
     ("/", "filter focused pane"),
     ("esc", "clear range → clear filter → close overlay"),

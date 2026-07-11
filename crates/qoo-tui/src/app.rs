@@ -95,8 +95,7 @@ pub enum SessionMode {
     Main,
 }
 
-/// Subset of the contract `Mode` — later tasks add ConfirmBulkRemove (16),
-/// DefPick (18), DefArgs (19), CreateWorktree (21). Variants are only ever
+/// Subset of the contract `Mode`. Variants are only ever
 /// added. `PartialEq` is intentionally not derived: `AddTask`/`WorktreeInput`
 /// carry a `tui_input::Input`, which is not `PartialEq`; nothing compares
 /// `Mode` by value (tests use `matches!`).
@@ -109,9 +108,19 @@ pub enum Mode {
     Search { pane: ListPane },
     /// Full-screen keymap overlay; any key returns to `List`.
     Help,
-    /// Single-target action menu over the last-focused list pane's selection.
-    /// `index` is the highlighted row; disabled rows are skipped on Enter.
-    ActionMenu { title: String, items: Vec<crate::action_menu::ActionItem>, index: usize },
+    /// Single-target (or bulk) action menu over the last-focused list pane's
+    /// selection. Lazyvim-style picker: `query` filters `items` by label (empty
+    /// = all), `index` is the highlighted row WITHIN the filtered view (reset to
+    /// 0 on every query change), and `preview_scroll` is the right (description)
+    /// panel's first visible wrapped line (reset to 0 whenever the query or the
+    /// highlighted row changes). Disabled rows are inert on Enter/click.
+    ActionMenu {
+        title: String,
+        items: Vec<crate::action_menu::ActionItem>,
+        index: usize,
+        query: String,
+        preview_scroll: usize,
+    },
     /// Destructive-confirm for `Remove worktree…`: y removes, n/q/esc cancel.
     ConfirmRemove { repo: String, worktree: String, branch: String },
     /// Destructive-confirm for a bulk `Remove worktrees…`: y removes each,
@@ -123,15 +132,21 @@ pub enum Mode {
     /// Assign-worktree name input for a needs-input task. Constructed here
     /// (Task 14); its key handling and render land in Task 15.
     WorktreeInput { task_id: String, input: tui_input::Input },
-    /// "Run task definition" picker over a targeted worktree (Task 18). `defs`
-    /// is the repo's summaries in server (alphabetical) order, `index` the
-    /// highlighted row; `worktree`/`branch` are the explicit-target context that
-    /// drives the chosen def's args as FIXED values.
+    /// Task menu / def picker over the active repo (opened by `t`). Lazyvim-style
+    /// picker: `query` filters `defs` by name (empty = all), `index` is the
+    /// highlighted row WITHIN the filtered view (reset to 0 on every query
+    /// change), and `preview_scroll` is the right (prompt) panel's first visible
+    /// wrapped line (reset on query/highlight changes). `defs` is the repo's
+    /// summaries in server (alphabetical) order; `worktree`/`branch` are the
+    /// explicit-target context (from the selected worktree row) that drives the
+    /// chosen def's args as FIXED values.
     DefPick {
         defs: Vec<DefinitionSummary>,
         index: usize,
         worktree: Option<String>,
         branch: Option<String>,
+        query: String,
+        preview_scroll: usize,
     },
     /// Per-arg entry form for a chosen def (Task 18 constructs it; its key
     /// handling + render land in Task 19/20).
@@ -171,6 +186,10 @@ pub struct App {
     /// clears on arrival (Task 18).
     pub defs_inflight: HashSet<String>,
     pub full_defs: HashMap<String, TaskDefinition>, // keyed "repo/name"
+    /// Defs with a `FetchDefinition` in flight — the lazy per-def prompt fetch
+    /// dedup set (keyed "repo/name", same as `full_defs`). `prefetch_full_def`
+    /// inserts before emitting; `Event::Definition` clears on arrival.
+    pub full_defs_inflight: HashSet<String>,
     pub now_epoch_s: u64,
     /// Monotonic millisecond clock stamped by the event loop before every
     /// `update()` (from an `Instant` taken at program start). Read by
@@ -205,6 +224,14 @@ pub struct App {
     /// view each draw; the scrollbar-drag math reads it so its scrollable extent
     /// matches the on-screen wrapped lines instead of recomputing the wrap.
     pub detail_wrapped_len: std::cell::Cell<usize>,
+    /// Render-feedback for the picker preview (ActionMenu/DefPick right panel):
+    /// max scroll offset (wrapped lines − pane height) written by the view each
+    /// draw. Ctrl+d/u and the wheel clamp `preview_scroll` against it. Same
+    /// freshness argument as `detail_max_scroll`.
+    pub menu_preview_max_scroll: std::cell::Cell<usize>,
+    /// Render-feedback twin: half the preview pane's height (the ctrl+d/u page
+    /// step), written by the view each draw.
+    pub menu_preview_page: std::cell::Cell<usize>,
     /// Active left-mouse drag: `Some(kind)` between a `Down` on a draggable
     /// target (scrollbar thumb/track, a pane divider) and the matching `Up`.
     pub drag: Option<DragKind>,
@@ -262,6 +289,7 @@ impl App {
             defs_by_project: HashMap::new(),
             defs_inflight: HashSet::new(),
             full_defs: HashMap::new(),
+            full_defs_inflight: HashSet::new(),
             now_epoch_s: now_epoch_s(),
             now_ms: 0,
             prefix_armed: false,
@@ -270,6 +298,8 @@ impl App {
             hit: HitMap::new(),
             detail_max_scroll: std::cell::Cell::new(0),
             detail_wrapped_len: std::cell::Cell::new(0),
+            menu_preview_max_scroll: std::cell::Cell::new(0),
+            menu_preview_page: std::cell::Cell::new(0),
             drag: None,
             left_cols: None,
             queue_h_override: None,
@@ -515,41 +545,7 @@ impl App {
             Event::Key(k)
                 if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ActionMenu { .. }) =>
             {
-                use crossterm::event::KeyCode::*;
-                match k.code {
-                    Esc | Char('q') => {
-                        self.mode = Mode::List;
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Up | Char('k') => {
-                        if let Mode::ActionMenu { items, index, .. } = &mut self.mode {
-                            // Circular: k on the first item wraps to the last.
-                            *index = index.checked_sub(1).unwrap_or(items.len().saturating_sub(1));
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Down | Char('j') => {
-                        if let Mode::ActionMenu { items, index, .. } = &mut self.mode {
-                            // Circular: j on the last item wraps to the first.
-                            *index = if *index + 1 >= items.len() { 0 } else { *index + 1 };
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Enter => {
-                        // Extract the chosen action before dispatch so the
-                        // `&self.mode` borrow ends first.
-                        let chosen = if let Mode::ActionMenu { items, index, .. } = &self.mode {
-                            items.get(*index).cloned()
-                        } else {
-                            None
-                        };
-                        match chosen {
-                            Some(it) if it.disabled.is_none() => self.execute_menu_action(it.action),
-                            _ => Update { dirty: false, cmds: vec![] }, // disabled row is inert
-                        }
-                    }
-                    _ => Update { dirty: false, cmds: vec![] },
-                }
+                self.action_menu_key(&k)
             }
             Event::Key(k)
                 if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ConfirmRemove { .. }) =>
@@ -699,7 +695,7 @@ impl App {
             Event::Key(k)
                 if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::DefPick { .. }) =>
             {
-                self.def_pick_key(k.code)
+                self.def_pick_key(&k)
             }
             // Args form owns keys while open (checked before generic list
             // handling); key-release falls through to the generic no-op.
@@ -841,8 +837,18 @@ impl App {
                 self.defs_inflight.remove(&repo);
                 Update { dirty: true, cmds: vec![] }
             }
-            // Remaining ingestion arms (Definition detail) land later.
-            _ => Update { dirty: false, cmds: vec![] },
+            Event::Definition { repo, name, def } => {
+                // Full-def prompt arrived (task-menu right pane). Clear the
+                // in-flight flag; cache the def only when present (a fetch error
+                // or missing def yields `None`, leaving the pane on "loading…"
+                // until the next open re-tries).
+                let key = format!("{repo}/{name}");
+                self.full_defs_inflight.remove(&key);
+                if let Some(def) = def {
+                    self.full_defs.insert(key, def);
+                }
+                Update { dirty: true, cmds: vec![] }
+            }
         }
     }
 
@@ -1073,6 +1079,13 @@ impl App {
                 }
                 true
             }
+            A::OpenTaskMenu => {
+                // Opens the def picker over the active repo (with the selected
+                // worktree row's context when the worktrees pane is focused) and
+                // prefetches the first highlighted def's prompt for the right pane.
+                cmds.extend(self.open_task_menu());
+                true
+            }
             A::Create => {
                 match self.active_ui().last_list_pane {
                     ListPane::Queue => {
@@ -1155,7 +1168,7 @@ impl App {
                     .chain(snap.archived_recent.iter())
                     .find(|t| t.id == row.task_id)?;
                 let (title, items) = crate::action_menu::queue_menu(row, task);
-                Some(Mode::ActionMenu { title, items, index: 0 })
+                Some(Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 })
             }
             ListPane::Tasks => {
                 let defs = self.defs_by_project.get(&repo).cloned().unwrap_or_default();
@@ -1163,7 +1176,7 @@ impl App {
                 let cursor = ui.selections[1].cursor.min(vis.len().saturating_sub(1));
                 let def = vis.get(cursor).and_then(|&i| defs.get(i))?;
                 let (title, items) = crate::action_menu::tasks_menu(def);
-                Some(Mode::ActionMenu { title, items, index: 0 })
+                Some(Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 })
             }
             ListPane::Worktrees => {
                 let rows = crate::selectors::worktree_rows(snap, &repo);
@@ -1171,7 +1184,7 @@ impl App {
                 let cursor = ui.selections[2].cursor.min(vis.len().saturating_sub(1));
                 let row = vis.get(cursor).and_then(|&i| rows.get(i))?;
                 let (title, items) = crate::action_menu::worktree_menu(&repo, row, inside_tmux);
-                Some(Mode::ActionMenu { title, items, index: 0 })
+                Some(Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 })
             }
         }
     }
@@ -1256,13 +1269,164 @@ impl App {
                 bulk_menu(BulkSelection::Worktrees { repo: repo.clone(), remove_names, total })
             }
         };
-        Some(Mode::ActionMenu { title, items, index: 0 })
+        Some(Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 })
     }
 
-    /// Perform a chosen (enabled) menu action: an RPC dispatch, a mode transition
-    /// into a follow-up form/confirm, or (M3 stubs) a status line naming the
-    /// replacing task. Always closes the menu first (`Mode::List`), then the
-    /// form/confirm branches re-open the appropriate mode.
+    /// `Mode::ActionMenu` key handling (lazyvim-style picker). Esc closes;
+    /// Up/Ctrl+k/Ctrl+p and Down/Ctrl+j/Ctrl+n move circularly over the FILTERED
+    /// rows; Ctrl+d/Ctrl+u scroll the preview by half its height; Enter executes
+    /// the highlighted enabled row (disabled rows inert); Backspace/printable
+    /// edit the label filter, resetting highlight and preview scroll. `q` is no
+    /// longer a close key — it types into the filter.
+    fn action_menu_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
+        use crossterm::event::{KeyCode::*, KeyModifiers};
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = ev.modifiers.contains(KeyModifiers::ALT);
+        let Mode::ActionMenu { items, index, query, .. } = &self.mode else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        let filtered = crate::action_menu::filter_items(items, query);
+        let flen = filtered.len();
+        let cur = *index;
+        // Extract the highlighted action up front (clone) so the immutable borrow
+        // of `self.mode` ends before any arm mutates it.
+        let chosen = filtered.get(cur).and_then(|&i| items.get(i)).cloned();
+        match ev.code {
+            Esc => {
+                self.mode = Mode::List;
+                Update { dirty: true, cmds: vec![] }
+            }
+            Up => self.action_menu_move(cur, flen, -1),
+            Down => self.action_menu_move(cur, flen, 1),
+            Char('k') | Char('p') if ctrl => self.action_menu_move(cur, flen, -1),
+            Char('j') | Char('n') if ctrl => self.action_menu_move(cur, flen, 1),
+            Char('d') if ctrl => self.menu_preview_page_scroll(1),
+            Char('u') if ctrl => self.menu_preview_page_scroll(-1),
+            Enter => match chosen {
+                Some(it) if it.disabled.is_none() => self.execute_menu_action(it.action),
+                _ => Update { dirty: false, cmds: vec![] }, // disabled / no match: inert
+            },
+            Backspace => {
+                if let Mode::ActionMenu { query, index, preview_scroll, .. } = &mut self.mode {
+                    query.pop();
+                    *index = 0;
+                    *preview_scroll = 0;
+                }
+                Update { dirty: true, cmds: vec![] }
+            }
+            Char(c) if !ctrl && !alt => {
+                if let Mode::ActionMenu { query, index, preview_scroll, .. } = &mut self.mode {
+                    query.push(c);
+                    *index = 0;
+                    *preview_scroll = 0;
+                }
+                Update { dirty: true, cmds: vec![] }
+            }
+            _ => Update { dirty: false, cmds: vec![] },
+        }
+    }
+
+    /// Move the action-menu highlight circularly over the filtered rows (the
+    /// preview scroll resets — it belongs to the outgoing row). `cur` is the
+    /// current filtered index, `flen` the filtered row count.
+    fn action_menu_move(&mut self, cur: usize, flen: usize, dir: i32) -> Update {
+        let next = if flen == 0 {
+            0
+        } else if dir < 0 {
+            cur.checked_sub(1).unwrap_or(flen - 1)
+        } else if cur + 1 >= flen {
+            0
+        } else {
+            cur + 1
+        };
+        if let Mode::ActionMenu { index, preview_scroll, .. } = &mut self.mode {
+            *index = next;
+            *preview_scroll = 0;
+        }
+        Update { dirty: true, cmds: vec![] }
+    }
+
+    /// Current picker preview scroll (0 outside ActionMenu/DefPick).
+    fn menu_preview_scroll_value(&self) -> usize {
+        match &self.mode {
+            Mode::ActionMenu { preview_scroll, .. } | Mode::DefPick { preview_scroll, .. } => {
+                *preview_scroll
+            }
+            _ => 0,
+        }
+    }
+
+    /// Set the picker preview scroll, reporting dirty only on change.
+    fn set_menu_preview_scroll(&mut self, next: usize) -> Update {
+        match &mut self.mode {
+            Mode::ActionMenu { preview_scroll, .. } | Mode::DefPick { preview_scroll, .. } => {
+                let changed = *preview_scroll != next;
+                *preview_scroll = next;
+                Update { dirty: changed, cmds: vec![] }
+            }
+            _ => Update { dirty: false, cmds: vec![] },
+        }
+    }
+
+    /// Ctrl+d/Ctrl+u: scroll the picker preview by half its height (the step and
+    /// the clamp ceiling are render-feedback cells written by the last draw).
+    fn menu_preview_page_scroll(&mut self, dir: i32) -> Update {
+        let step = self.menu_preview_page.get().max(1);
+        let max = self.menu_preview_max_scroll.get();
+        let cur = self.menu_preview_scroll_value();
+        let next = if dir < 0 { cur.saturating_sub(step) } else { (cur + step).min(max) };
+        self.set_menu_preview_scroll(next)
+    }
+
+    /// Mouse wheel while a picker (ActionMenu/DefPick) is open: over the preview
+    /// panel it scrolls the preview one line (clamped); over the left panel
+    /// (rows/Modal) it moves the selection one row (clamped, non-circular —
+    /// wheel jumps across the wrap edge would disorient); anywhere else inert.
+    fn menu_wheel(&mut self, target: Option<HitTarget>, delta: i32) -> Update {
+        match target {
+            Some(HitTarget::MenuPreview) => {
+                let max = self.menu_preview_max_scroll.get();
+                let cur = self.menu_preview_scroll_value();
+                let next = (cur as i64 + delta as i64).clamp(0, max as i64) as usize;
+                self.set_menu_preview_scroll(next)
+            }
+            Some(HitTarget::MenuItem(_)) | Some(HitTarget::Modal) => {
+                let (flen, cur, is_def_pick) = match &self.mode {
+                    Mode::ActionMenu { items, index, query, .. } => {
+                        (crate::action_menu::filter_items(items, query).len(), *index, false)
+                    }
+                    Mode::DefPick { defs, index, query, .. } => (
+                        crate::selectors::filter_rows(defs, query, |d| d.name.clone()).len(),
+                        *index,
+                        true,
+                    ),
+                    _ => return Update { dirty: false, cmds: vec![] },
+                };
+                if flen == 0 {
+                    return Update { dirty: false, cmds: vec![] };
+                }
+                let next = (cur as i64 + delta as i64).clamp(0, flen as i64 - 1) as usize;
+                if next == cur {
+                    return Update { dirty: false, cmds: vec![] };
+                }
+                match &mut self.mode {
+                    Mode::ActionMenu { index, preview_scroll, .. }
+                    | Mode::DefPick { index, preview_scroll, .. } => {
+                        *index = next;
+                        *preview_scroll = 0;
+                    }
+                    _ => unreachable!(),
+                }
+                let cmds = if is_def_pick { self.prefetch_full_def() } else { Vec::new() };
+                Update { dirty: true, cmds }
+            }
+            _ => Update { dirty: false, cmds: vec![] },
+        }
+    }
+
+    /// Perform a chosen (enabled) menu action: an RPC dispatch or a mode
+    /// transition into a follow-up form/confirm. Always closes the menu first
+    /// (`Mode::List`), then the form/confirm branches re-open the appropriate mode.
     fn execute_menu_action(&mut self, action: crate::action_menu::MenuAction) -> Update {
         use crate::action_menu::MenuAction as M;
         self.mode = Mode::List;
@@ -1316,52 +1480,6 @@ impl App {
                 let (args, initial) =
                     crate::worktree_context::ambient_run_args(&def.args, &rows, selected.as_ref());
                 self.open_def_args(repo, name, args, HashMap::new(), initial, None);
-                Update { dirty: true, cmds: vec![] }
-            }
-            // Worktree menu → the definition is not yet chosen; open the picker
-            // for the targeted worktree (its branch drives args as FIXED on Enter).
-            M::RunDef { worktree, branch } => {
-                let repo = match self.active_repo() {
-                    Some(r) => r,
-                    None => return Update { dirty: false, cmds: vec![] },
-                };
-                let defs = self.defs_by_project.get(&repo).cloned().unwrap_or_default();
-                if defs.is_empty() {
-                    self.status_line = Some("no task definitions found".into());
-                    return Update { dirty: true, cmds: vec![] };
-                }
-                self.mode = Mode::DefPick { defs, index: 0, worktree, branch };
-                Update { dirty: true, cmds: vec![] }
-            }
-            M::CreateWorktree => {
-                self.mode = Mode::CreateWorktree {
-                    input: tui_input::Input::default(),
-                    error: None,
-                };
-                Update { dirty: true, cmds: vec![] }
-            }
-            // Squash-merge the selected worktree's branch into a target: look up
-            // the repo's `squash-merge` def and open the args form with `source`
-            // FIXED to the branch (target stays editable). The def's own
-            // `worktree: repo` governs where it runs — no worktree override.
-            M::SquashMerge { branch } => {
-                let repo = match self.active_repo() {
-                    Some(r) => r,
-                    None => return Update { dirty: false, cmds: vec![] },
-                };
-                let def = self
-                    .defs_by_project
-                    .get(&repo)
-                    .and_then(|defs| defs.iter().find(|d| d.name == "squash-merge"))
-                    .cloned();
-                let Some(def) = def else {
-                    self.status_line = Some(
-                        "squash-merge definition not found — copy library/tasks/squash-merge to <workspace>/global/tasks/".into(),
-                    );
-                    return Update { dirty: true, cmds: vec![] };
-                };
-                let fixed = crate::worktree_context::context_arg_values(&branch);
-                self.open_def_args(def.repo, def.name, def.args, fixed, HashMap::new(), None);
                 Update { dirty: true, cmds: vec![] }
             }
             // --- Bulk actions (Task 16). Range cleared before dispatch; the
@@ -1540,39 +1658,134 @@ impl App {
         Some(Cmd::FetchDefinitions { repo })
     }
 
-    /// `Mode::DefPick` key handling: j/k move (clamped), q/esc close, Enter picks
+    /// Open the task menu (`t`): the def picker over the active repo. Bails
+    /// quietly with no repo; sets a status line and stays in `List` when the repo
+    /// has no definitions. When the worktrees pane holds focus and a non-session
+    /// worktree row is selected, that row's raw name (and non-empty branch)
+    /// become the FIXED arg context; otherwise both are `None`. Returns the
+    /// prompt-prefetch commands for the first highlighted def.
+    fn open_task_menu(&mut self) -> Vec<Cmd> {
+        let Some(repo) = self.active_repo() else {
+            return Vec::new();
+        };
+        let defs = self.defs_by_project.get(&repo).cloned().unwrap_or_default();
+        if defs.is_empty() {
+            self.status_line = Some("no task definitions found".into());
+            return Vec::new();
+        }
+        let (worktree, branch) = if self.active_ui().last_list_pane == ListPane::Worktrees {
+            match self.selected_worktree_row() {
+                Some(row) if !row.is_session => {
+                    let branch = if row.branch.is_empty() { None } else { Some(row.branch.clone()) };
+                    (Some(row.raw_name.clone()), branch)
+                }
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        self.mode = Mode::DefPick { defs, index: 0, worktree, branch, query: String::new(), preview_scroll: 0 };
+        self.prefetch_full_def()
+    }
+
+    /// Emit a lazy `definition` (full/prompt) fetch for the currently highlighted
+    /// def-pick row when its prompt is neither cached nor already in flight. Marks
+    /// in-flight before returning so repeat calls (rapid navigation) dedup. No-op
+    /// when the mode is not `DefPick` or the filter matches nothing.
+    fn prefetch_full_def(&mut self) -> Vec<Cmd> {
+        let (repo, name) = {
+            let Mode::DefPick { defs, index, query, .. } = &self.mode else {
+                return Vec::new();
+            };
+            let filtered = crate::selectors::filter_rows(defs, query, |d| d.name.clone());
+            let Some(def) = filtered.get(*index).and_then(|&i| defs.get(i)) else {
+                return Vec::new();
+            };
+            (def.repo.clone(), def.name.clone())
+        };
+        let key = format!("{repo}/{name}");
+        if self.full_defs.contains_key(&key) || self.full_defs_inflight.contains(&key) {
+            return Vec::new();
+        }
+        self.full_defs_inflight.insert(key);
+        vec![Cmd::FetchDefinition { repo, name }]
+    }
+
+    /// `Mode::DefPick` key handling (lazyvim-style). Esc closes; Up/Ctrl+k/Ctrl+p
+    /// and Down/Ctrl+j/Ctrl+n move circularly over the FILTERED defs; Enter picks
     /// the highlighted def (zero-arg dispatch or open the args form with the
-    /// targeted worktree's branch as FIXED context).
-    fn def_pick_key(&mut self, key: KeyCode) -> Update {
-        use crossterm::event::KeyCode::*;
-        let Mode::DefPick { defs, index, .. } = &self.mode else {
+    /// targeted worktree's branch as FIXED context); Backspace/printable edit the
+    /// name filter, resetting the highlight to the first match. `q` is no longer a
+    /// close key — it types into the filter. Navigation and filter edits prefetch
+    /// the newly-highlighted def's prompt for the right pane.
+    fn def_pick_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
+        use crossterm::event::{KeyCode::*, KeyModifiers};
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = ev.modifiers.contains(KeyModifiers::ALT);
+        let Mode::DefPick { defs, index, query, .. } = &self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
-        let (len, index) = (defs.len(), *index);
-        match key {
-            Esc | Char('q') => {
+        let filtered = crate::selectors::filter_rows(defs, query, |d| d.name.clone());
+        let flen = filtered.len();
+        let cur = *index;
+        let actual = filtered.get(cur).copied();
+        match ev.code {
+            Esc => {
                 self.mode = Mode::List;
                 Update { dirty: true, cmds: vec![] }
             }
-            Up | Char('k') => {
-                // Circular: k on the first item wraps to the last.
-                let i = index.checked_sub(1).unwrap_or(len.saturating_sub(1));
-                if let Mode::DefPick { index, .. } = &mut self.mode {
-                    *index = i;
+            Up => self.def_pick_move(cur, flen, -1),
+            Down => self.def_pick_move(cur, flen, 1),
+            Char('k') | Char('p') if ctrl => self.def_pick_move(cur, flen, -1),
+            Char('j') | Char('n') if ctrl => self.def_pick_move(cur, flen, 1),
+            Char('d') if ctrl => self.menu_preview_page_scroll(1),
+            Char('u') if ctrl => self.menu_preview_page_scroll(-1),
+            Enter => match actual {
+                Some(a) => self.def_pick_activate(a),
+                None => Update { dirty: false, cmds: vec![] },
+            },
+            Backspace => {
+                if let Mode::DefPick { query, index, preview_scroll, .. } = &mut self.mode {
+                    query.pop();
+                    *index = 0;
+                    *preview_scroll = 0;
                 }
-                Update { dirty: true, cmds: vec![] }
+                let cmds = self.prefetch_full_def();
+                Update { dirty: true, cmds }
             }
-            Down | Char('j') => {
-                // Circular: j on the last item wraps to the first.
-                let i = if index + 1 >= len { 0 } else { index + 1 };
-                if let Mode::DefPick { index, .. } = &mut self.mode {
-                    *index = i;
+            Char(c) if !ctrl && !alt => {
+                if let Mode::DefPick { query, index, preview_scroll, .. } = &mut self.mode {
+                    query.push(c);
+                    *index = 0;
+                    *preview_scroll = 0;
                 }
-                Update { dirty: true, cmds: vec![] }
+                let cmds = self.prefetch_full_def();
+                Update { dirty: true, cmds }
             }
-            Enter => self.def_pick_activate(index),
             _ => Update { dirty: false, cmds: vec![] },
         }
+    }
+
+    /// Move the def-pick highlight circularly over the filtered defs (the
+    /// preview scroll resets — it belongs to the outgoing def), then prefetch
+    /// the newly-highlighted def's prompt. `cur` is the current filtered index,
+    /// `flen` the filtered def count.
+    fn def_pick_move(&mut self, cur: usize, flen: usize, dir: i32) -> Update {
+        let next = if flen == 0 {
+            0
+        } else if dir < 0 {
+            cur.checked_sub(1).unwrap_or(flen - 1)
+        } else if cur + 1 >= flen {
+            0
+        } else {
+            cur + 1
+        };
+        if let Mode::DefPick { index, preview_scroll, .. } = &mut self.mode {
+            *index = next;
+            *preview_scroll = 0;
+        }
+        let cmds = self.prefetch_full_def();
+        Update { dirty: true, cmds }
     }
 
     /// Activate the def at `index` in the open picker: zero-arg defs dispatch
@@ -1608,8 +1821,22 @@ impl App {
     /// closes the popup.
     fn route_def_pick_click(&mut self, target: Option<HitTarget>) -> Update {
         match target {
-            Some(HitTarget::MenuItem(i)) => self.def_pick_activate(i),
-            Some(HitTarget::Modal) => Update { dirty: false, cmds: vec![] },
+            Some(HitTarget::MenuItem(i)) => {
+                // `i` is a FILTERED display index; resolve it to the underlying
+                // def index through the same filter before activating.
+                let actual = if let Mode::DefPick { defs, query, .. } = &self.mode {
+                    crate::selectors::filter_rows(defs, query, |d| d.name.clone()).get(i).copied()
+                } else {
+                    None
+                };
+                match actual {
+                    Some(a) => self.def_pick_activate(a),
+                    None => Update { dirty: false, cmds: vec![] },
+                }
+            }
+            Some(HitTarget::Modal) | Some(HitTarget::MenuPreview) => {
+                Update { dirty: false, cmds: vec![] }
+            }
             _ => {
                 self.mode = Mode::List;
                 Update { dirty: true, cmds: vec![] }
@@ -1722,9 +1949,23 @@ impl App {
     fn route_menu_click(&mut self, target: Option<HitTarget>) -> Update {
         match target {
             Some(HitTarget::MenuItem(i)) => {
-                let chosen = if let Mode::ActionMenu { items, index, .. } = &mut self.mode {
-                    *index = i;
-                    items.get(i).cloned()
+                // `i` is a FILTERED display index; resolve it to the underlying
+                // item through the same filter, set the highlight, and execute if
+                // the row is enabled.
+                let chosen = if let Mode::ActionMenu { items, index, query, preview_scroll, .. } =
+                    &mut self.mode
+                {
+                    let filtered = crate::action_menu::filter_items(items, query);
+                    match filtered.get(i).copied() {
+                        Some(actual) => {
+                            if *index != i {
+                                *index = i;
+                                *preview_scroll = 0; // highlight moved → new preview
+                            }
+                            items.get(actual).cloned()
+                        }
+                        None => None,
+                    }
                 } else {
                     None
                 };
@@ -1733,7 +1974,10 @@ impl App {
                     _ => Update { dirty: true, cmds: vec![] }, // disabled row: highlight only
                 }
             }
-            Some(HitTarget::Modal) => Update { dirty: false, cmds: vec![] }, // body click: inert
+            // Panel-body / preview clicks are inert (the wheel scrolls the preview).
+            Some(HitTarget::Modal) | Some(HitTarget::MenuPreview) => {
+                Update { dirty: false, cmds: vec![] }
+            }
             _ => {
                 self.mode = Mode::List; // click outside the popup closes it
                 Update { dirty: true, cmds: vec![] }
@@ -2084,6 +2328,10 @@ impl App {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::Create);
                         }
+                        crate::hit::PaneButton::Tasks => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::OpenTaskMenu);
+                        }
                         crate::hit::PaneButton::Actions => {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::OpenActionMenu);
@@ -2107,6 +2355,15 @@ impl App {
                     cmds.push(self.save_layout_cmd());
                 }
                 false
+            }
+            // An open picker owns the wheel: over the preview panel it scrolls
+            // the preview, over the left panel it moves the selection; it never
+            // reaches the panes beneath the modal.
+            K::ScrollDown | K::ScrollUp
+                if matches!(self.mode, Mode::ActionMenu { .. } | Mode::DefPick { .. }) =>
+            {
+                let delta: i32 = if matches!(m.kind, K::ScrollDown) { 1 } else { -1 };
+                return self.menu_wheel(target, delta);
             }
             K::ScrollDown | K::ScrollUp => {
                 let delta: i32 = if matches!(m.kind, K::ScrollDown) { 1 } else { -1 };
@@ -2753,7 +3010,7 @@ mod tests {
         app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
         match &app.mode {
             // Row 1 is the queued fixture task "write docs for the cache".
-            Mode::ActionMenu { title, items, index } => {
+            Mode::ActionMenu { title, items, index, .. } => {
                 assert_eq!(title, "write docs for the cache");
                 assert_eq!(items.len(), 3);
                 assert_eq!(*index, 0);
@@ -2839,6 +3096,34 @@ mod tests {
         // Focus moved to worktrees first, then `c` opened the create-worktree modal.
         assert_eq!(app.active_ui().last_list_pane, ListPane::Worktrees);
         assert!(matches!(app.mode, Mode::CreateWorktree { .. }));
+    }
+
+    #[test]
+    fn pane_button_tasks_click_focuses_pane_then_opens_task_menu() {
+        let mut app = app_with_hits();
+        app.set_focus(PaneId::Queue);
+        // Seed a def so the click lands in DefPick rather than the empty-defs
+        // status line.
+        app.defs_by_project.insert("acme".into(), vec![{
+            let mut d = crate::ipc::types::DefinitionSummary::default();
+            d.repo = "acme".into();
+            d.name = "autotest".into();
+            d
+        }]);
+        let mut hits = app.hit.clone();
+        hits.push(
+            Rect { x: 20, y: 0, width: 4, height: 1 },
+            HitTarget::PaneButton(PaneId::Worktrees, crate::hit::PaneButton::Tasks),
+        );
+        app.hit = hits;
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 21, 0));
+        // Focus moved to worktrees first, then the task menu opened carrying the
+        // selected worktree row's context.
+        assert_eq!(app.active_ui().last_list_pane, ListPane::Worktrees);
+        match &app.mode {
+            Mode::DefPick { worktree, .. } => assert!(worktree.is_some()),
+            other => panic!("expected DefPick, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3338,6 +3623,13 @@ mod menu_flow_tests {
     fn enter() -> Event {
         Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
     }
+    // Menu navigation moved to arrow keys (letters now type into the filter).
+    fn down() -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+    }
+    fn up() -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+    }
 
     fn app_with(snap: StateSnapshot) -> App {
         let mut a = App::new("/tmp/runs".into(), "/tmp/daemon.sock".into());
@@ -3398,15 +3690,15 @@ mod menu_flow_tests {
     }
 
     #[test]
-    fn queue_menu_j_moves_highlight() {
+    fn queue_menu_arrows_move_highlight() {
         let mut a = app_with(failed_task_snapshot());
         a.update(enter());
-        a.update(key('j'));
+        a.update(down());
         match &a.mode {
             Mode::ActionMenu { index, .. } => assert_eq!(*index, 1),
             _ => panic!(),
         }
-        a.update(key('k'));
+        a.update(up());
         match &a.mode {
             Mode::ActionMenu { index, .. } => assert_eq!(*index, 0),
             _ => panic!(),
@@ -3426,14 +3718,144 @@ mod menu_flow_tests {
     }
 
     #[test]
-    fn queue_menu_esc_and_q_close() {
+    fn queue_menu_esc_closes_but_q_types_into_filter() {
         let mut a = app_with(failed_task_snapshot());
         a.update(enter());
         a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert!(matches!(a.mode, Mode::List));
+        // Reopen: `q` no longer closes — it types into the label filter.
         a.update(enter());
         a.update(key('q'));
+        match &a.mode {
+            Mode::ActionMenu { query, index, .. } => {
+                assert_eq!(query, "q");
+                assert_eq!(*index, 0);
+            }
+            other => panic!("expected the menu to stay open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn queue_menu_typing_filters_then_enter_executes_through_filter() {
+        // Filter the queue menu down to "Skip", then Enter dispatches skip (not
+        // rerun) — proving Enter resolves the FILTERED highlight.
+        let mut a = app_with(failed_task_snapshot());
+        a.update(enter());
+        a.update(key('s'));
+        a.update(key('k')); // "sk" → only "Skip" matches
+        match &a.mode {
+            Mode::ActionMenu { items, index, query, .. } => {
+                assert_eq!(query, "sk");
+                assert_eq!(*index, 0);
+                // Underlying items unchanged; the filter is a view over them.
+                assert_eq!(items.len(), 3);
+            }
+            other => panic!("{other:?}"),
+        }
+        let u = a.update(enter());
         assert!(matches!(a.mode, Mode::List));
+        assert!(
+            u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+                if call.method == "skip" && call.params == serde_json::json!({ "id": "t1" }))),
+            "expected skip dispatched through the filter, got {:?}", u.cmds,
+        );
+    }
+
+    #[test]
+    fn queue_menu_backspace_edits_filter() {
+        let mut a = app_with(failed_task_snapshot());
+        a.update(enter());
+        a.update(key('s'));
+        a.update(key('x')); // "sx" → no matches
+        a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        match &a.mode {
+            Mode::ActionMenu { query, .. } => assert_eq!(query, "s"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn ctrl(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+    fn menu_preview_scroll(a: &App) -> usize {
+        match &a.mode {
+            Mode::ActionMenu { preview_scroll, .. } => *preview_scroll,
+            other => panic!("expected ActionMenu, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn menu_ctrl_d_u_scrolls_preview_clamped() {
+        let mut a = app_with(failed_task_snapshot());
+        a.update(enter()); // open menu
+        // Simulate the last draw's render-feedback metrics (view writes these).
+        a.menu_preview_page.set(5);
+        a.menu_preview_max_scroll.set(7);
+        a.update(ctrl('d'));
+        assert_eq!(menu_preview_scroll(&a), 5);
+        a.update(ctrl('d'));
+        assert_eq!(menu_preview_scroll(&a), 7, "clamped to max_scroll");
+        a.update(ctrl('u'));
+        assert_eq!(menu_preview_scroll(&a), 2);
+        a.update(ctrl('u'));
+        assert_eq!(menu_preview_scroll(&a), 0, "saturates at the top");
+    }
+
+    #[test]
+    fn menu_nav_and_query_edits_reset_preview_scroll() {
+        let mut a = app_with(failed_task_snapshot());
+        a.update(enter());
+        a.menu_preview_page.set(3);
+        a.menu_preview_max_scroll.set(9);
+        a.update(ctrl('d'));
+        assert_eq!(menu_preview_scroll(&a), 3);
+        a.update(down()); // highlight moved → preview belongs to a new row
+        assert_eq!(menu_preview_scroll(&a), 0);
+        a.update(ctrl('d'));
+        a.update(key('s')); // query edit → filtered view changed
+        assert_eq!(menu_preview_scroll(&a), 0);
+        a.update(ctrl('d'));
+        a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        assert_eq!(menu_preview_scroll(&a), 0);
+    }
+
+    #[test]
+    fn menu_wheel_scrolls_preview_and_moves_selection() {
+        use crate::hit::HitTarget;
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        fn wheel(a: &mut App, kind: MouseEventKind, col: u16, row: u16) {
+            a.update(Event::Mouse(MouseEvent { kind, column: col, row, modifiers: KeyModifiers::NONE }));
+        }
+        let mut a = app_with(failed_task_snapshot());
+        a.update(enter());
+        // Synthetic picker hit map: left panel Modal + right preview region.
+        let mut hits = crate::hit::HitMap::new();
+        hits.push(ratatui::layout::Rect { x: 5, y: 5, width: 20, height: 10 }, HitTarget::Modal);
+        hits.push(
+            ratatui::layout::Rect { x: 50, y: 5, width: 20, height: 10 },
+            HitTarget::MenuPreview,
+        );
+        a.hit = hits;
+        a.menu_preview_max_scroll.set(3);
+        wheel(&mut a, MouseEventKind::ScrollDown, 55, 6); // over the preview
+        assert_eq!(menu_preview_scroll(&a), 1);
+        wheel(&mut a, MouseEventKind::ScrollUp, 55, 6);
+        assert_eq!(menu_preview_scroll(&a), 0);
+        // Over the left panel: the wheel moves the selection (clamped) and the
+        // menu stays open.
+        wheel(&mut a, MouseEventKind::ScrollDown, 6, 6);
+        match &a.mode {
+            Mode::ActionMenu { index, preview_scroll, .. } => {
+                assert_eq!(*index, 1);
+                assert_eq!(*preview_scroll, 0);
+            }
+            other => panic!("{other:?}"),
+        }
+        wheel(&mut a, MouseEventKind::ScrollUp, 6, 6);
+        match &a.mode {
+            Mode::ActionMenu { index, .. } => assert_eq!(*index, 0),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -3442,8 +3864,8 @@ mod menu_flow_tests {
         snap.tasks[0].status = TaskStatus::NeedsInput; // enables assign-worktree
         let mut a = app_with(snap);
         a.update(enter());
-        a.update(key('j'));
-        a.update(key('j')); // -> Assign worktree…
+        a.update(down());
+        a.update(down()); // -> Assign worktree
         a.update(enter());
         match &a.mode {
             Mode::WorktreeInput { task_id, .. } => assert_eq!(task_id, "t1"),
@@ -3471,9 +3893,9 @@ mod menu_flow_tests {
         let mut a = app_with(worktree_snapshot());
         focus_worktrees(&mut a);
         a.update(enter());
-        for _ in 0..5 {
-            a.update(key('j'));
-        } // -> Remove worktree… (index 5)
+        for _ in 0..3 {
+            a.update(down());
+        } // -> Remove worktree (index 3 in the trimmed menu)
         a.update(enter());
         match &a.mode {
             Mode::ConfirmRemove { repo, worktree, branch } => {
@@ -3490,8 +3912,8 @@ mod menu_flow_tests {
         let mut a = app_with(worktree_snapshot());
         focus_worktrees(&mut a);
         a.update(enter());
-        for _ in 0..5 {
-            a.update(key('j'));
+        for _ in 0..3 {
+            a.update(down());
         }
         a.update(enter()); // ConfirmRemove
         let u = a.update(key('y'));
@@ -3502,8 +3924,8 @@ mod menu_flow_tests {
 
         // n cancels without a cmd
         a.update(enter());
-        for _ in 0..5 {
-            a.update(key('j'));
+        for _ in 0..3 {
+            a.update(down());
         }
         a.update(enter());
         let u2 = a.update(key('n'));
@@ -4131,7 +4553,7 @@ mod def_pick_tests {
     fn fixture_def_pick_defs(defs: Vec<DefinitionSummary>, worktree: Option<String>, branch: Option<String>) -> App {
         let mut app = App::new("/tmp/runs".into(), "/tmp/daemon.sock".into());
         app.size = (120, 40);
-        app.mode = Mode::DefPick { defs, index: 0, worktree, branch };
+        app.mode = Mode::DefPick { defs, index: 0, worktree, branch, query: String::new(), preview_scroll: 0 };
         app
     }
 
@@ -4228,21 +4650,39 @@ mod def_pick_tests {
         }
     }
 
-    // --- Step 16: RunDef → Mode::DefPick, ordering, empty guard ---
+    // --- task menu (`t`) → Mode::DefPick, ordering, context, empty guard ---
     #[test]
-    fn run_def_opens_def_pick_in_server_order() {
+    fn task_menu_opens_def_pick_in_server_order() {
         let mut app = fixture_app_with_defs("platform", vec![
             dsum("platform", "autotest", "project", vec![]),
             dsum("platform", "squash-merge", "global", vec![arg("source")]),
         ]);
-        let _ = app.execute_menu_action(MenuAction::RunDef {
-            worktree: Some("platform.wt-a".into()),
-            branch: Some("jus-4-x".into()),
-        });
+        app.update(key(KeyCode::Char('t')));
         match &app.mode {
-            Mode::DefPick { defs, index, worktree, branch } => {
+            Mode::DefPick { defs, index, worktree, branch, query, preview_scroll } => {
                 assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["autotest", "squash-merge"]);
                 assert_eq!(*index, 0);
+                // Queue pane focused (default) → no worktree context.
+                assert_eq!(worktree.as_deref(), None);
+                assert_eq!(branch.as_deref(), None);
+                assert!(query.is_empty());
+                assert_eq!(*preview_scroll, 0);
+            }
+            other => panic!("expected DefPick, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_menu_from_worktrees_pane_carries_worktree_and_branch() {
+        let mut app = fixture_app_with_defs_and_worktree(
+            "platform",
+            vec![dsum("platform", "autotest", "project", vec![])],
+            ("wt-a", "jus-4-x"),
+        );
+        app.set_focus(PaneId::Worktrees);
+        app.update(key(KeyCode::Char('t')));
+        match &app.mode {
+            Mode::DefPick { worktree, branch, .. } => {
                 assert_eq!(worktree.as_deref(), Some("platform.wt-a"));
                 assert_eq!(branch.as_deref(), Some("jus-4-x"));
             }
@@ -4251,26 +4691,103 @@ mod def_pick_tests {
     }
 
     #[test]
-    fn run_def_with_no_defs_sets_status_line() {
+    fn task_menu_with_no_defs_sets_status_line() {
         let mut app = fixture_app_with_defs("platform", vec![]);
-        let update = app.execute_menu_action(MenuAction::RunDef { worktree: Some("wt-a".into()), branch: None });
+        let update = app.update(key(KeyCode::Char('t')));
         assert_eq!(app.status_line.as_deref(), Some("no task definitions found"));
         assert!(update.cmds.is_empty());
         assert!(matches!(app.mode, Mode::List));
     }
 
-    // --- Step 21: Mode::DefPick navigation + Enter ---
     #[test]
-    fn def_pick_moves_circularly_and_closes_on_q_esc() {
+    fn task_menu_prefetches_highlighted_def_prompt_once() {
+        let mut app = fixture_app_with_defs("platform", vec![dsum("platform", "autotest", "project", vec![])]);
+        // Opening the menu emits a FetchDefinition for the highlighted def.
+        let u = app.update(key(KeyCode::Char('t')));
+        assert!(
+            u.cmds.iter().any(|c| matches!(c, Cmd::FetchDefinition { repo, name }
+                if repo == "platform" && name == "autotest")),
+            "expected a FetchDefinition, got {:?}", u.cmds,
+        );
+        assert!(app.full_defs_inflight.contains("platform/autotest"));
+        // The reply populates full_defs and clears the in-flight flag.
+        app.update(Event::Definition {
+            repo: "platform".into(),
+            name: "autotest".into(),
+            def: Some(crate::ipc::types::TaskDefinition { prompt: "hi".into(), ..Default::default() }),
+        });
+        assert!(app.full_defs.contains_key("platform/autotest"));
+        assert!(!app.full_defs_inflight.contains("platform/autotest"));
+        // A second highlight of the (now cached) def emits no fetch.
+        let u2 = app.def_pick_move(0, 1, 1);
+        assert!(!u2.cmds.iter().any(|c| matches!(c, Cmd::FetchDefinition { .. })));
+    }
+
+    // --- Mode::DefPick navigation + close ---
+    #[test]
+    fn def_pick_moves_circularly_and_closes_on_esc() {
         let mut app = fixture_def_pick(vec!["a", "b"], Some("platform.wt"), Some("jus-1-x"));
-        app.update(key(KeyCode::Char('j'))); // 0 -> 1
+        app.update(key(KeyCode::Down)); // 0 -> 1
         assert!(matches!(app.mode, Mode::DefPick { index: 1, .. }));
-        app.update(key(KeyCode::Char('j'))); // wraps -> 0
+        app.update(key(KeyCode::Down)); // wraps -> 0
         assert!(matches!(app.mode, Mode::DefPick { index: 0, .. }));
-        app.update(key(KeyCode::Char('k'))); // wraps back -> 1
+        app.update(key(KeyCode::Up)); // wraps back -> 1
         assert!(matches!(app.mode, Mode::DefPick { index: 1, .. }));
-        app.update(key(KeyCode::Char('q')));
+        app.update(key(KeyCode::Esc));
         assert!(matches!(app.mode, Mode::List));
+    }
+
+    #[test]
+    fn def_pick_ctrl_d_scrolls_preview_and_nav_resets() {
+        fn ctrl_key(code: KeyCode) -> Event {
+            Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL))
+        }
+        let mut app = fixture_def_pick(vec!["a", "b"], None, None);
+        app.menu_preview_page.set(4);
+        app.menu_preview_max_scroll.set(6);
+        app.update(ctrl_key(KeyCode::Char('d')));
+        assert!(matches!(app.mode, Mode::DefPick { preview_scroll: 4, .. }));
+        app.update(ctrl_key(KeyCode::Char('d')));
+        assert!(
+            matches!(app.mode, Mode::DefPick { preview_scroll: 6, .. }),
+            "clamped to max_scroll"
+        );
+        app.update(key(KeyCode::Down)); // highlight change resets the preview
+        assert!(matches!(app.mode, Mode::DefPick { preview_scroll: 0, .. }));
+        app.update(ctrl_key(KeyCode::Char('d')));
+        app.update(key(KeyCode::Char('a'))); // query edit resets too
+        assert!(matches!(app.mode, Mode::DefPick { preview_scroll: 0, .. }));
+    }
+
+    #[test]
+    fn def_pick_q_types_into_filter_instead_of_closing() {
+        let mut app = fixture_def_pick(vec!["alpha", "beta"], None, None);
+        app.update(key(KeyCode::Char('q'))); // no longer closes — types 'q'
+        match &app.mode {
+            Mode::DefPick { query, index, .. } => {
+                assert_eq!(query, "q");
+                assert_eq!(*index, 0);
+            }
+            other => panic!("expected DefPick still open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn def_pick_typing_filters_and_enter_activates_match() {
+        // Filter to "beta" then Enter dispatches its zero-arg run.
+        let mut app = fixture_def_pick_defs(
+            vec![dsum("platform", "alpha", "project", vec![]), dsum("platform", "beta", "project", vec![])],
+            None,
+            None,
+        );
+        app.update(key(KeyCode::Char('b'))); // query "b" → only "beta"
+        let u = app.update(key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::List));
+        assert!(
+            u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+                if call.method == "runDefinition" && call.params["name"] == "beta")),
+            "expected runDefinition for beta, got {:?}", u.cmds,
+        );
     }
 
     #[test]
@@ -4469,20 +4986,13 @@ mod def_pick_tests {
 #[cfg(test)]
 mod task21_tests {
     use super::*;
-    use crate::action_menu::MenuAction;
-    use crate::ipc::types::{
-        ArgSpec, DefinitionSummary, Project, StateSnapshot, TaskInstance, TaskStatus, WorktreeInfo,
-    };
+    use crate::ipc::types::{Project, StateSnapshot, TaskInstance, TaskStatus, WorktreeInfo};
     use crate::keymap::AppAction;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::collections::HashMap;
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
-    }
-
-    fn arg(name: &str) -> ArgSpec {
-        ArgSpec { name: name.into(), default: None, options: None, description: None }
     }
 
     fn fixture_app_one_project(name: &str) -> App {
@@ -4493,12 +5003,6 @@ mod task21_tests {
             ..Default::default()
         });
         app.connected = true;
-        app
-    }
-
-    fn fixture_app_with_defs(repo: &str, defs: Vec<DefinitionSummary>) -> App {
-        let mut app = fixture_app_one_project(repo);
-        app.defs_by_project.insert(repo.into(), defs);
         app
     }
 
@@ -4620,47 +5124,6 @@ mod task21_tests {
         assert!(matches!(app.mode, Mode::List));
     }
 
-    // --- squash-merge flow ---
-    #[test]
-    fn squash_merge_opens_def_args_with_source_fixed_to_branch() {
-        let mut app = fixture_app_with_defs(
-            "platform",
-            vec![DefinitionSummary {
-                repo: "platform".into(),
-                name: "squash-merge".into(),
-                scope: "global".into(),
-                args: vec![
-                    arg("source"),
-                    ArgSpec { default: Some("main".into()), ..arg("target") },
-                ],
-                has_discovery: false,
-                cron: None,
-                description: None,
-            }],
-        );
-        let update = app.execute_menu_action(MenuAction::SquashMerge { branch: "wt-a".into() });
-        assert!(update.cmds.is_empty());
-        match &app.mode {
-            Mode::DefArgs { form } => {
-                assert_eq!(form.def_name, "squash-merge");
-                assert_eq!(form.fixed.get("source").map(String::as_str), Some("wt-a"));
-                assert_eq!(form.values[0], "wt-a"); // source fixed
-                assert_eq!(form.values[1], "main"); // target editable default
-                assert_eq!(form.initial_worktree, None); // def's `worktree: repo` governs
-            }
-            other => panic!("expected DefArgs, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn squash_merge_absent_def_sets_status_line() {
-        let mut app = fixture_app_with_defs("platform", vec![]);
-        let update = app.execute_menu_action(MenuAction::SquashMerge { branch: "wt-a".into() });
-        assert!(update.cmds.is_empty());
-        assert!(app.status_line.as_deref().unwrap().contains("squash-merge definition not found"));
-        assert!(matches!(app.mode, Mode::List));
-    }
-
     // --- busy worktree menu eligibility (regression) ---
     #[test]
     fn busy_worktree_remove_menu_row_is_disabled() {
@@ -4675,9 +5138,6 @@ mod task21_tests {
             .find(|it| it.label.starts_with("Remove worktree"))
             .expect("remove row present");
         assert_eq!(remove.disabled.as_deref(), Some("a task is running here"));
-        // squash-merge is likewise disabled while busy.
-        let squash = items.iter().find(|it| it.label.starts_with("Squash merge")).unwrap();
-        assert_eq!(squash.disabled.as_deref(), Some("a task is running here"));
     }
 }
 

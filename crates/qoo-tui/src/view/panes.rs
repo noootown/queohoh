@@ -17,7 +17,8 @@ use crate::selectors::{
 };
 use crate::view::theme::{
     BTN_ACTIONS, BTN_COLLAPSE, BTN_CREATE, BTN_EXPAND, BTN_LABEL_ACTIONS, BTN_LABEL_COLLAPSE,
-    BTN_LABEL_CREATE, BTN_LABEL_EXPAND, FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
+    BTN_LABEL_CREATE, BTN_LABEL_EXPAND, BTN_LABEL_TASKS, BTN_TASKS,
+    FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DISCOVERY, GLYPH_DOT, GLYPH_MAIN_SESSION, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
@@ -28,7 +29,7 @@ use crate::view::theme::{
 const QUEUE_BUTTONS: &[PaneButton] = &[PaneButton::Create, PaneButton::Actions, PaneButton::Collapse];
 const TASKS_BUTTONS: &[PaneButton] = &[PaneButton::Actions, PaneButton::Collapse];
 const WORKTREE_BUTTONS: &[PaneButton] =
-    &[PaneButton::Create, PaneButton::Actions, PaneButton::Collapse];
+    &[PaneButton::Create, PaneButton::Tasks, PaneButton::Actions, PaneButton::Collapse];
 use crate::view::{Computed, selection_range, window_start};
 
 /// The bold pane title, accent-colored when focused. Shared by the border-title
@@ -67,6 +68,7 @@ fn pane_block(title_line: Line<'static>, focused: bool, p: &Palette) -> Block<'s
 fn button_chip(b: PaneButton, collapsed: bool, labeled: bool, p: &Palette) -> (Vec<Span<'static>>, u16) {
     let (icon, key, label) = match b {
         PaneButton::Create => (BTN_CREATE, 'c', BTN_LABEL_CREATE),
+        PaneButton::Tasks => (BTN_TASKS, 't', BTN_LABEL_TASKS),
         PaneButton::Actions => (BTN_ACTIONS, 'a', BTN_LABEL_ACTIONS),
         PaneButton::Collapse => {
             let (icon, label) = if collapsed {
@@ -999,6 +1001,19 @@ mod tests {
         // Still right-aligned flush against the corner.
         let last = rects[2].0;
         assert_eq!(last.x + last.width, area.x + 1 + 58);
+    }
+
+    #[test]
+    fn build_header_worktrees_includes_tasks_chip() {
+        let p = Palette::default();
+        // Wide enough for the labeled form: the worktrees strip carries all four
+        // chips with the Tasks chip second (create · tasks · actions · collapse).
+        let area = Rect { x: 0, y: 0, width: 80, height: 8 };
+        let (line, rects) = build_header(area, "WORKTREES", false, WORKTREE_BUTTONS, false, &p);
+        assert_eq!(rects.len(), 4);
+        assert_eq!(rects[1].1, PaneButton::Tasks);
+        let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
+        assert!(text.contains("[t]asks"), "labeled tasks chip renders: {text}");
     }
 
     #[test]

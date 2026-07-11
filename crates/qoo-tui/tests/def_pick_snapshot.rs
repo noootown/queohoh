@@ -33,6 +33,8 @@ fn def_pick_popup_snapshot() {
         index: 1,
         worktree: Some("platform.wt-a".into()),
         branch: Some("jus-1-x".into()),
+        query: String::new(),
+        preview_scroll: 0,
     };
     let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
     term.draw(|f| {

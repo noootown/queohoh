@@ -179,8 +179,13 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
     // Overlays render last so their rects register topmost in the hit map.
     match &app.mode {
         crate::app::Mode::Help => help::render(frame, area, &mut hits, &p),
-        crate::app::Mode::ActionMenu { title, items, index } => {
-            menu::render_menu(frame, &mut hits, title, items, *index);
+        crate::app::Mode::ActionMenu { title, items, index, query, preview_scroll } => {
+            let state =
+                menu::PickerState { index: *index, query, preview_scroll: *preview_scroll };
+            let m = menu::render_menu(frame, &mut hits, title, items, state);
+            // Render-feedback for ctrl+d/u + wheel clamping (see the App fields).
+            app.menu_preview_max_scroll.set(m.max_scroll);
+            app.menu_preview_page.set(m.half_page);
         }
         crate::app::Mode::ConfirmRemove { worktree, branch, .. } => {
             menu::render_confirm_remove(frame, &mut hits, worktree, branch);
@@ -216,18 +221,29 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
                 input,
             );
         }
-        crate::app::Mode::DefPick { defs, index, worktree, branch } => {
+        crate::app::Mode::DefPick { defs, index, worktree, branch, query, preview_scroll } => {
             let repo = app.active_repo().unwrap_or_default();
             let title = match worktree {
-                Some(wt) => format!(
-                    "Run task definition — {}:{}",
-                    repo,
-                    crate::selectors::strip_repo_prefix(wt, &repo)
-                ),
-                None => format!("Run task definition — {repo}"),
+                Some(wt) => {
+                    format!("Tasks — {}:{}", repo, crate::selectors::strip_repo_prefix(wt, &repo))
+                }
+                None => format!("Tasks — {repo}"),
             };
             let _ = branch;
-            menu::render_def_pick(frame, &mut hits, &title, defs, *index);
+            // Resolve the highlighted (filtered) def's full prompt for the right
+            // pane: filter by name, map the display index to the underlying def,
+            // then look it up in `full_defs` keyed "repo/name".
+            let filtered = crate::selectors::filter_rows(defs, query, |d| d.name.clone());
+            let full = filtered
+                .get(*index)
+                .and_then(|&i| defs.get(i))
+                .and_then(|d| app.full_defs.get(&format!("{}/{}", d.repo, d.name)));
+            let state =
+                menu::PickerState { index: *index, query, preview_scroll: *preview_scroll };
+            let m = menu::render_def_pick(frame, &mut hits, &title, defs, full, state);
+            // Render-feedback for ctrl+d/u + wheel clamping (see the App fields).
+            app.menu_preview_max_scroll.set(m.max_scroll);
+            app.menu_preview_page.set(m.half_page);
         }
         crate::app::Mode::DefArgs { form } => {
             args_form::render_args_form(frame, &mut hits, &p, form);

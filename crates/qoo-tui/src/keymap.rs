@@ -16,6 +16,10 @@ pub enum AppAction {
     CycleTab(i32),
     CycleSubTab(i32),
     OpenActionMenu,
+    /// Open the task menu (`t`): the upgraded def picker over the active repo,
+    /// carrying the selected worktree row's context when the worktrees pane holds
+    /// focus. Routes to `App::open_task_menu`.
+    OpenTaskMenu,
     Create,
     /// Collapse/expand the focused list pane (`z`). `x` is reserved (unbound).
     ToggleCollapse,
@@ -48,6 +52,7 @@ pub fn list_mode_action(key: &KeyEvent, _focus: PaneId) -> AppAction {
         KeyCode::Char('q') => AppAction::Quit,
         KeyCode::Char('?') => AppAction::Help,
         KeyCode::Char('a') => AppAction::OpenActionMenu,
+        KeyCode::Char('t') => AppAction::OpenTaskMenu,
         KeyCode::Char('c') => AppAction::Create,
         // `z` (plain) toggles collapse; `x` is reserved for a future delete
         // action and stays unbound.
@@ -197,10 +202,18 @@ mod tests {
 
     #[test]
     fn unbound_keys_are_none() {
-        // r/s/w/f/m/t moved to the action menu (parity with the Ink keymap tests).
-        // Plain `x` is reserved/unbound (ctrl+x is the sub-tab cycle).
-        for c in ['r', 's', 'w', 'f', 'm', 't', 'x'] {
+        // r/s/w/f/m moved to the action menu (parity with the Ink keymap tests).
+        // `t` now opens the task menu (see `t_opens_task_menu`). Plain `x` is
+        // reserved/unbound (ctrl+x is the sub-tab cycle).
+        for c in ['r', 's', 'w', 'f', 'm', 'x'] {
             assert_eq!(list_mode_action(&k(KeyCode::Char(c)), PaneId::Queue), AppAction::None);
+        }
+    }
+
+    #[test]
+    fn t_opens_task_menu() {
+        for f in LISTS {
+            assert_eq!(list_mode_action(&k(KeyCode::Char('t')), f), AppAction::OpenTaskMenu);
         }
     }
 }

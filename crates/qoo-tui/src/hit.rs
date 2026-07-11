@@ -10,10 +10,12 @@ pub enum ButtonKind {
 
 /// A clickable action chip on a list pane's top border. Clicking one behaves
 /// exactly like pressing its hotkey with that pane focused. `Create` ≡ `c`,
-/// `Actions` ≡ `a`, `Collapse` ≡ `z` (rendered `🔽`/`🔼` by expanded/collapsed).
+/// `Tasks` ≡ `t`, `Actions` ≡ `a`, `Collapse` ≡ `z` (rendered `🔽`/`🔼` by
+/// expanded/collapsed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneButton {
     Create,
+    Tasks,
     Actions,
     Collapse,
 }
@@ -41,6 +43,10 @@ pub enum HitTarget {
     /// collapse toggle used to live there and swallowed divider drags (collapse
     /// ≡ the 🔽 [z] chip or the `z` key).
     PaneButton(PaneId, PaneButton),
+    /// The picker's right (preview) panel interior. Clicks are inert (like
+    /// `Modal`); the mouse wheel over it scrolls the preview instead of moving
+    /// the list selection.
+    MenuPreview,
     Modal,
 }
 

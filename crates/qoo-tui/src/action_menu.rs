@@ -1,16 +1,17 @@
 //! Single-target action menus. Ports `packages/tui/src/action-menu.ts`
 //! `buildActions` — one menu per list pane (queue / tasks / worktrees / session).
 //! The menu shape is stable per context (inapplicable rows are disabled with a
-//! reason, never hidden) so rows never jump as status changes. Bulk menus land
-//! in Task 16; the M3 stub variants (`RunNamedDef`/`RunDef`/`CreateWorktree`/
-//! `SquashMerge`) carry enough context for their replacing task to dispatch.
+//! reason, never hidden) so rows never jump as status changes. Each row also
+//! carries a one-sentence `description` shown in the lazyvim-style right pane.
+//! Bulk menus (Task 16) mirror the same shape with `(<eligible> of <total>)`
+//! counts. The `RunNamedDef` variant carries repo/name so the tasks-pane "Run"
+//! row can dispatch (or open the args form) without re-resolving the def.
 
 use crate::ipc::types::{DefinitionSummary, TaskInstance, TaskStatus};
 use crate::selectors::{QueueRow, WorktreeRow, WtState};
 
 /// What a chosen menu row does. `execute_menu_action` (app.rs) maps each variant
-/// to a mode transition, an RPC dispatch, or (for M3 stubs) a status line naming
-/// the replacing task. Variants are only ever added.
+/// to a mode transition or an RPC dispatch. Variants are only ever added.
 #[derive(Debug, Clone)]
 pub enum MenuAction {
     Rerun { id: String },
@@ -21,16 +22,10 @@ pub enum MenuAction {
     TaskFresh { worktree: Option<String> },
     /// New adhoc task on this worktree, main session → opens `Mode::AddTask`.
     TaskMain { worktree: Option<String> },
-    /// Run a task definition on this worktree (def not yet chosen) — Task 18 picker.
-    RunDef { worktree: Option<String>, branch: Option<String> },
-    /// Run this named definition (repo/name already known) — Task 19 args form.
+    /// Run this named definition (repo/name already known) — tasks-pane "Run".
     RunNamedDef { repo: String, name: String },
     OpenTmux { path: String },
     RemoveWorktree { repo: String, name: String, branch: String },
-    /// Create a new worktree — Task 21.
-    CreateWorktree,
-    /// Squash-merge this worktree's branch into a target — Task 21.
-    SquashMerge { branch: String },
     // --- Bulk actions (Task 16). Targets are frozen at menu-open time: the
     // eligible ids/names are captured here so a snapshot push that reshuffles
     // rows mid-menu can never retarget the dispatch. ---
@@ -45,20 +40,36 @@ pub enum MenuAction {
 }
 
 /// One menu row: display `label`, an optional `disabled` reason (renders dimmed +
-/// inert when `Some`), and the `action` fired on Enter/click.
+/// inert when `Some`), a one-sentence `description` shown in the right pane, and
+/// the `action` fired on Enter/click.
 #[derive(Debug, Clone)]
 pub struct ActionItem {
     pub label: String,
     pub disabled: Option<String>,
+    pub description: String,
     pub action: MenuAction,
 }
 
-fn item(label: &str, applicable: bool, reason: &str, action: MenuAction) -> ActionItem {
+fn item(
+    label: &str,
+    applicable: bool,
+    reason: &str,
+    description: &str,
+    action: MenuAction,
+) -> ActionItem {
     ActionItem {
         label: label.to_string(),
         disabled: if applicable { None } else { Some(reason.to_string()) },
+        description: description.to_string(),
         action,
     }
+}
+
+/// Filtered indices into `items` whose label case-insensitively contains `query`
+/// (empty query matches everything). Mirrors `selectors::filter_rows` so the
+/// action-menu search bar and the pane filters share one matching semantics.
+pub fn filter_items(items: &[ActionItem], query: &str) -> Vec<usize> {
+    crate::selectors::filter_rows(items, query, |it| it.label.clone())
 }
 
 fn status_kebab(s: TaskStatus) -> &'static str {
@@ -72,6 +83,15 @@ fn status_kebab(s: TaskStatus) -> &'static str {
     }
 }
 
+const RERUN_DESC: &str = "Re-queue this task and run it again.";
+const SKIP_DESC: &str = "Mark this task as skipped; it will not run.";
+const ASSIGN_DESC: &str = "Assign a worktree to this needs-input task, then re-queue it.";
+const TASK_FRESH_DESC: &str = "Queue a new adhoc task on this worktree in a fresh session.";
+const TASK_MAIN_DESC: &str = "Queue a new adhoc task that resumes this worktree's main session.";
+const OPEN_TMUX_DESC: &str = "Open this worktree in a new tmux window.";
+const REMOVE_DESC: &str =
+    "Remove this worktree and delete its local branch (asks for confirmation).";
+
 /// Single-target queue menu. Shape is stable per status (disabled rows keep
 /// their slot); archived rows disable everything with reason "archived".
 pub fn queue_menu(row: &QueueRow, full: &TaskInstance) -> (String, Vec<ActionItem>) {
@@ -81,9 +101,9 @@ pub fn queue_menu(row: &QueueRow, full: &TaskInstance) -> (String, Vec<ActionIte
         return (
             title,
             vec![
-                item("Rerun", false, "archived", MenuAction::Rerun { id: id.clone() }),
-                item("Skip", false, "archived", MenuAction::Skip { id: id.clone() }),
-                item("Assign worktree…", false, "archived", MenuAction::AssignWorktree { id }),
+                item("Rerun", false, "archived", RERUN_DESC, MenuAction::Rerun { id: id.clone() }),
+                item("Skip", false, "archived", SKIP_DESC, MenuAction::Skip { id: id.clone() }),
+                item("Assign worktree", false, "archived", ASSIGN_DESC, MenuAction::AssignWorktree { id }),
             ],
         );
     }
@@ -95,21 +115,26 @@ pub fn queue_menu(row: &QueueRow, full: &TaskInstance) -> (String, Vec<ActionIte
     (
         title,
         vec![
-            item("Rerun", rerun_ok, &format!("cannot rerun a {k} task"), MenuAction::Rerun { id: id.clone() }),
-            item("Skip", skip_ok, &format!("cannot skip a {k} task"), MenuAction::Skip { id: id.clone() }),
-            item("Assign worktree…", assign_ok, "only for needs-input tasks", MenuAction::AssignWorktree { id }),
+            item("Rerun", rerun_ok, &format!("cannot rerun a {k} task"), RERUN_DESC, MenuAction::Rerun { id: id.clone() }),
+            item("Skip", skip_ok, &format!("cannot skip a {k} task"), SKIP_DESC, MenuAction::Skip { id: id.clone() }),
+            item("Assign worktree", assign_ok, "only for needs-input tasks", ASSIGN_DESC, MenuAction::AssignWorktree { id }),
         ],
     )
 }
 
-/// Single-target tasks menu: one "Run" row → the named-def run (the args form is
-/// M3, Task 19; the action carries repo/name so that task can dispatch).
+/// Single-target tasks menu: one "Run" row → the named-def run. The row's
+/// description prefers the def's own one-liner, falling back to a generic hint.
 pub fn tasks_menu(def: &DefinitionSummary) -> (String, Vec<ActionItem>) {
+    let description = def
+        .description
+        .clone()
+        .unwrap_or_else(|| "Run this task definition.".into());
     (
         def.name.clone(),
         vec![ActionItem {
             label: "Run".into(),
             disabled: None,
+            description,
             action: MenuAction::RunNamedDef { repo: def.repo.clone(), name: def.name.clone() },
         }],
     )
@@ -125,59 +150,45 @@ pub fn worktree_menu(repo: &str, row: &WorktreeRow, inside_tmux: bool) -> (Strin
                 "Open in tmux window",
                 inside_tmux,
                 "not inside tmux",
+                OPEN_TMUX_DESC,
                 MenuAction::OpenTmux { path: row.path.clone() },
             )],
         );
     }
     let busy = matches!(row.state, WtState::Busy);
-    let has_branch = !row.branch.is_empty();
-    let branch_opt = if has_branch { Some(row.branch.clone()) } else { None };
-    let squash_reason = if busy { "a task is running here" } else { "worktree has no branch" };
     (
         row.name.clone(),
         vec![
             ActionItem {
-                label: "New task (fresh session)…".into(),
+                label: "New task (fresh session)".into(),
                 disabled: None,
+                description: TASK_FRESH_DESC.into(),
                 action: MenuAction::TaskFresh { worktree: Some(row.raw_name.clone()) },
             },
             ActionItem {
-                label: "New task (main session)…".into(),
+                label: "New task (main session)".into(),
                 disabled: None,
+                description: TASK_MAIN_DESC.into(),
                 action: MenuAction::TaskMain { worktree: Some(row.raw_name.clone()) },
-            },
-            ActionItem {
-                label: "Run task definition…".into(),
-                disabled: None,
-                action: MenuAction::RunDef { worktree: Some(row.raw_name.clone()), branch: branch_opt.clone() },
             },
             item(
                 "Open in tmux window",
                 inside_tmux,
                 "not inside tmux",
+                OPEN_TMUX_DESC,
                 MenuAction::OpenTmux { path: row.path.clone() },
             ),
             item(
-                "Squash merge into…",
-                !busy && has_branch,
-                squash_reason,
-                MenuAction::SquashMerge { branch: row.branch.clone() },
-            ),
-            item(
-                "Remove worktree…",
+                "Remove worktree",
                 !busy,
                 "a task is running here",
+                REMOVE_DESC,
                 MenuAction::RemoveWorktree {
                     repo: repo.to_string(),
                     name: row.raw_name.clone(),
                     branch: row.branch.clone(),
                 },
             ),
-            ActionItem {
-                label: "Create worktree…".into(),
-                disabled: None,
-                action: MenuAction::CreateWorktree,
-            },
         ],
     )
 }
@@ -191,13 +202,20 @@ pub enum BulkSelection {
     Worktrees { repo: String, remove_names: Vec<String>, total: usize },
 }
 
-fn bulk_item(verb: &str, eligible: usize, total: usize, action: MenuAction) -> ActionItem {
+fn bulk_item(verb: &str, eligible: usize, total: usize, description: &str, action: MenuAction) -> ActionItem {
     ActionItem {
         label: format!("{verb} ({eligible} of {total})"),
         disabled: if eligible > 0 { None } else { Some("no eligible rows".into()) },
+        description: description.to_string(),
         action,
     }
 }
+
+const BULK_RERUN_DESC: &str = "Re-queue each eligible task in the selection.";
+const BULK_SKIP_DESC: &str = "Skip each eligible task in the selection.";
+const BULK_RUN_DESC: &str = "Run each zero-arg task definition in the selection.";
+const BULK_REMOVE_DESC: &str =
+    "Remove each non-busy worktree in the selection (asks for confirmation).";
 
 /// Build the bulk menu for a pre-resolved selection. Title is `"<total> selected"`;
 /// each row's count is `(<eligible> of <total>)`, disabled with "no eligible rows"
@@ -207,23 +225,56 @@ pub fn bulk_menu(sel: BulkSelection) -> (String, Vec<ActionItem>) {
         BulkSelection::Queue { rerun_ids, skip_ids, total } => (
             format!("{total} selected"),
             vec![
-                bulk_item("Rerun", rerun_ids.len(), total, MenuAction::BulkRerun { ids: rerun_ids }),
-                bulk_item("Skip", skip_ids.len(), total, MenuAction::BulkSkip { ids: skip_ids }),
+                bulk_item("Rerun", rerun_ids.len(), total, BULK_RERUN_DESC, MenuAction::BulkRerun { ids: rerun_ids }),
+                bulk_item("Skip", skip_ids.len(), total, BULK_SKIP_DESC, MenuAction::BulkSkip { ids: skip_ids }),
             ],
         ),
         BulkSelection::Tasks { repo, run_names, total } => (
             format!("{total} selected"),
-            vec![bulk_item("Run", run_names.len(), total, MenuAction::BulkRunDefs { repo, names: run_names })],
+            vec![bulk_item("Run", run_names.len(), total, BULK_RUN_DESC, MenuAction::BulkRunDefs { repo, names: run_names })],
         ),
         BulkSelection::Worktrees { repo, remove_names, total } => (
             format!("{total} selected"),
             vec![bulk_item(
-                "Remove worktrees…",
+                "Remove worktrees",
                 remove_names.len(),
                 total,
+                BULK_REMOVE_DESC,
                 MenuAction::BulkRemove { repo, names: remove_names },
             )],
         ),
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    fn sample() -> Vec<ActionItem> {
+        vec![
+            item("Rerun", true, "", RERUN_DESC, MenuAction::Rerun { id: "t".into() }),
+            item("Skip", true, "", SKIP_DESC, MenuAction::Skip { id: "t".into() }),
+            item("Assign worktree", true, "", ASSIGN_DESC, MenuAction::AssignWorktree { id: "t".into() }),
+        ]
+    }
+
+    #[test]
+    fn empty_query_matches_all() {
+        let items = sample();
+        assert_eq!(filter_items(&items, ""), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_substring() {
+        let items = sample();
+        // "ki" matches only "Skip".
+        assert_eq!(filter_items(&items, "ki"), vec![1]);
+        // Case-insensitive: "ASSIGN" matches "Assign worktree".
+        assert_eq!(filter_items(&items, "ASSIGN"), vec![2]);
+        // "r" matches Rerun and worktree (assign WORKTREE has an 'r').
+        assert_eq!(filter_items(&items, "r"), vec![0, 2]);
+        // No match → empty.
+        assert!(filter_items(&items, "zzz").is_empty());
     }
 }
 
@@ -267,7 +318,7 @@ mod bulk_builder_tests {
     #[test]
     fn bulk_worktrees_remove_only() {
         let (_t, items) = bulk_menu(BulkSelection::Worktrees { repo: "platform".into(), remove_names: vec!["wt-a".into(), "wt-b".into()], total: 4 });
-        assert_eq!(labels(&items), ["Remove worktrees… (2 of 4)"]);
+        assert_eq!(labels(&items), ["Remove worktrees (2 of 4)"]);
         assert!(matches!(&items[0].action, MenuAction::BulkRemove { repo, names } if repo == "platform" && names.len() == 2));
     }
 }
@@ -313,13 +364,13 @@ mod builder_tests {
         // Stable order regardless of status.
         let (title, items) = queue_menu(&qrow(false), &task(TaskStatus::Running));
         assert_eq!(title, "do the thing");
-        assert_eq!(labels(&items), ["Rerun", "Skip", "Assign worktree…"]);
+        assert_eq!(labels(&items), ["Rerun", "Skip", "Assign worktree"]);
         assert!(enabled(&items).is_empty()); // running: nothing enabled
 
         assert_eq!(enabled(&queue_menu(&qrow(false), &task(TaskStatus::Failed)).1), ["Rerun", "Skip"]);
         assert_eq!(
             enabled(&queue_menu(&qrow(false), &task(TaskStatus::NeedsInput)).1),
-            ["Rerun", "Skip", "Assign worktree…"]
+            ["Rerun", "Skip", "Assign worktree"]
         );
         assert_eq!(enabled(&queue_menu(&qrow(false), &task(TaskStatus::Done)).1), ["Skip"]);
         assert!(enabled(&queue_menu(&qrow(false), &task(TaskStatus::Queued)).1).is_empty());
@@ -340,6 +391,13 @@ mod builder_tests {
     }
 
     #[test]
+    fn queue_rows_carry_descriptions() {
+        let (_t, items) = queue_menu(&qrow(false), &task(TaskStatus::NeedsInput));
+        assert_eq!(items[0].description, RERUN_DESC);
+        assert_eq!(items[2].description, ASSIGN_DESC);
+    }
+
+    #[test]
     fn tasks_menu_offers_run() {
         let mut d = DefinitionSummary::default();
         d.repo = "platform".into();
@@ -348,6 +406,18 @@ mod builder_tests {
         assert_eq!(title, "pr-ready");
         assert_eq!(labels(&items), ["Run"]);
         assert!(matches!(items[0].action, MenuAction::RunNamedDef { .. }));
+        // No def description → generic fallback.
+        assert_eq!(items[0].description, "Run this task definition.");
+    }
+
+    #[test]
+    fn tasks_menu_run_uses_def_description_when_present() {
+        let mut d = DefinitionSummary::default();
+        d.repo = "platform".into();
+        d.name = "pr-ready".into();
+        d.description = Some("Flip WIP → ready and assign reviewers.".into());
+        let (_t, items) = tasks_menu(&d);
+        assert_eq!(items[0].description, "Flip WIP → ready and assign reviewers.");
     }
 
     fn wrow(state: WtState, branch: &str, is_session: bool) -> WorktreeRow {
@@ -371,33 +441,29 @@ mod builder_tests {
         assert_eq!(
             labels(&items),
             [
-                "New task (fresh session)…",
-                "New task (main session)…",
-                "Run task definition…",
+                "New task (fresh session)",
+                "New task (main session)",
                 "Open in tmux window",
-                "Squash merge into…",
-                "Remove worktree…",
-                "Create worktree…",
+                "Remove worktree",
             ]
         );
         assert_eq!(enabled(&items), labels(&items));
     }
 
     #[test]
-    fn worktree_menu_busy_disables_remove_and_squash_create_stays() {
+    fn worktree_menu_busy_disables_remove() {
         let (_t, items) = worktree_menu("platform", &wrow(WtState::Busy, "wt-a", false), true);
         let by = |lbl: &str| items.iter().find(|i| i.label == lbl).unwrap();
-        assert_eq!(by("Remove worktree…").disabled.as_deref(), Some("a task is running here"));
-        assert_eq!(by("Squash merge into…").disabled.as_deref(), Some("a task is running here"));
-        assert_eq!(by("Create worktree…").disabled, None);
+        assert_eq!(by("Remove worktree").disabled.as_deref(), Some("a task is running here"));
+        // New-task rows stay enabled while busy.
+        assert_eq!(by("New task (fresh session)").disabled, None);
     }
 
     #[test]
-    fn worktree_menu_branchless_disables_only_squash() {
+    fn worktree_menu_branchless_still_allows_remove() {
+        // With squash-merge gone, a branchless free worktree has every row enabled.
         let (_t, items) = worktree_menu("platform", &wrow(WtState::Free, "", false), true);
-        let by = |lbl: &str| items.iter().find(|i| i.label == lbl).unwrap();
-        assert_eq!(by("Squash merge into…").disabled.as_deref(), Some("worktree has no branch"));
-        assert_eq!(by("Remove worktree…").disabled, None);
+        assert_eq!(enabled(&items).len(), items.len());
     }
 
     #[test]
