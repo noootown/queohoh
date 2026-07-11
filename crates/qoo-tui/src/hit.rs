@@ -10,8 +10,8 @@ pub enum ButtonKind {
 
 /// A clickable action chip on a list pane's top border. Clicking one behaves
 /// exactly like pressing its hotkey with that pane focused. `Create` ≡ `c`,
-/// `Tasks` ≡ `t`, `Actions` ≡ `a`, `Collapse` ≡ `z` (rendered `🔽`/`🔼` by
-/// expanded/collapsed).
+/// `Tasks` ≡ `t`, `Actions` ≡ `a`, `Collapse` ≡ `z` (labeled collapse/expand
+/// by expanded/collapsed state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneButton {
     Create,

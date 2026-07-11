@@ -1,10 +1,9 @@
 ---
 source: crates/qoo-tui/tests/def_pick_snapshot.rs
-assertion_line: 44
 expression: term.backend()
 ---
 "                                        daemon unreachable — retrying… running 0"
-"╭📋 QUEUE─── ➕ [c] ⚙️ [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " "), (29, " ")]
+"╭📋 QUEUE───── [c] [a] [z]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│       ╭ Tasks — :platform.wt-a ──╮╭ squash-merge ────────────────────╮       │"
 "│ 🔍 [/]│> █                    2/2││no description                    │       │" Hidden by multi-width symbols: [(3, " ")]
 "│       │ autotest ⏰              ││                                  │       │" Hidden by multi-width symbols: [(20, " ")]

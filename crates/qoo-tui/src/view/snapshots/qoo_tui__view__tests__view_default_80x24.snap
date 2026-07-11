@@ -3,7 +3,7 @@ source: crates/qoo-tui/src/view/mod.rs
 expression: terminal.backend()
 ---
 " 1:acme                                                            ● running 1/3"
-"╭📋 QUEUE─── ➕ [c] ⚙️ [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " "), (29, " ")]
+"╭📋 QUEUE───── [c] [a] [z]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:transcript  2:report  3:prompt                  │"
 "│ 🔍 [/] filter           ││(no transcript yet)                                │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││                                                   │"
@@ -15,12 +15,12 @@ expression: terminal.backend()
 "│                         ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
-"╭⚡ TASKS─── ⚙️ [a] 🔽 [z]╮│                                                   │" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " ")]
+"╭⚡ TASKS───────── [a] [z]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES────── ➕ [c]╮│                                                   │" Hidden by multi-width symbols: [(2, " "), (21, " ")]
+"╭🌲 WORKTREES─ [c] [t] [a]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│ 2 ⌂ feature  ⏱ 0s       ││                                                   │"
 "│ ●   hotfix              ││                                                   │"

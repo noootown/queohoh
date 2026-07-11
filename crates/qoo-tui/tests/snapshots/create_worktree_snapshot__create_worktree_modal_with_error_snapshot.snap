@@ -3,7 +3,7 @@ source: crates/qoo-tui/tests/create_worktree_snapshot.rs
 expression: term.backend()
 ---
 " 1:platform                             daemon unreachable — retrying… running 0"
-"╭📋 QUEUE─── ➕ [c] ⚙️ [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " "), (29, " ")]
+"╭📋 QUEUE───── [c] [a] [z]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││(nothing selected)                                 │"
 "│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││                                                   │"
@@ -20,7 +20,7 @@ expression: term.backend()
 "│ no task definitions     ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES────── ➕ [c]╮│                                                   │" Hidden by multi-width symbols: [(2, " "), (21, " ")]
+"╭🌲 WORKTREES─ [c] [t] [a]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│ no worktrees            ││                                                   │"
 "│                         ││                                                   │"

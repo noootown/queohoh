@@ -3,7 +3,7 @@ source: crates/qoo-tui/tests/args_form_snapshot.rs
 expression: term.backend()
 ---
 "                                        daemon unreachable — retrying… running 0"
-"╭📋 QUEUE─── ➕ [c] ⚙️ [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " "), (29, " ")]
+"╭📋 QUEUE───── [c] [a] [z]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│       ╭ pr-ready args ───────────╮╭ pr-ready ────────────────────────╮       │"
 "│ 🔍 [/]│ pr  PR number            ││(loading definition…)             │       │" Hidden by multi-width symbols: [(3, " ")]
 "│       │                          ││                                  │       │"

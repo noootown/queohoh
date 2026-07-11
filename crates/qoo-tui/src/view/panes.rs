@@ -16,8 +16,7 @@ use crate::selectors::{
     wt_author_text, wt_col_layout,
 };
 use crate::view::theme::{
-    BTN_ACTIONS, BTN_COLLAPSE, BTN_CREATE, BTN_EXPAND, BTN_LABEL_ACTIONS, BTN_LABEL_COLLAPSE,
-    BTN_LABEL_CREATE, BTN_LABEL_EXPAND, BTN_LABEL_TASKS, BTN_TASKS,
+    BTN_LABEL_ACTIONS, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DISCOVERY, GLYPH_DOT, GLYPH_MAIN_SESSION, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
@@ -57,34 +56,25 @@ fn pane_block(title_line: Line<'static>, focused: bool, p: &Palette) -> Block<'s
 }
 
 /// The chip spans for one title-bar button plus its display width in CELLS.
-/// Labeled form is `{icon} [{key}] {label}` (icon in fg, `[k]` accent+bold, a
-/// space, then the lowercase label word in fg); the compact form drops the ` {label}`
-/// tail, leaving `{icon} [{key}]`. Hotkeys always render in square brackets —
-/// the global convention across chips, hint rows, footer, and help. The icon is
-/// a double-width emoji, so width is measured with `Span::width()` (ratatui's
-/// unicode-width) rather than assumed, so a future glyph or renamed label can't
-/// silently desync the border-fill / right-alignment / hit-rect math. The
-/// collapse chip flips both glyph and label on `collapsed`.
+/// Labeled form is `[{key}] {label}` (`[k]` accent+bold, then the lowercase
+/// label word in fg — fused to `[c]reate` when the key is the label's first
+/// letter); the compact form drops the label, leaving `[{key}]`. Hotkeys always
+/// render in square brackets — the global convention across chips, hint rows,
+/// footer, and help. Width is measured with `Span::width()` (ratatui's
+/// unicode-width) rather than assumed, so a renamed label can't silently desync
+/// the border-fill / right-alignment / hit-rect math. The collapse chip flips
+/// its label on `collapsed`.
 fn button_chip(b: PaneButton, collapsed: bool, labeled: bool, p: &Palette) -> (Vec<Span<'static>>, u16) {
-    let (icon, key, label) = match b {
-        PaneButton::Create => (BTN_CREATE, 'c', BTN_LABEL_CREATE),
-        PaneButton::Tasks => (BTN_TASKS, 't', BTN_LABEL_TASKS),
-        PaneButton::Actions => (BTN_ACTIONS, 'a', BTN_LABEL_ACTIONS),
+    let (key, label) = match b {
+        PaneButton::Create => ('c', BTN_LABEL_CREATE),
+        PaneButton::Tasks => ('t', BTN_LABEL_TASKS),
+        PaneButton::Actions => ('a', BTN_LABEL_ACTIONS),
         PaneButton::Collapse => {
-            let (icon, label) = if collapsed {
-                (BTN_EXPAND, BTN_LABEL_EXPAND)
-            } else {
-                (BTN_COLLAPSE, BTN_LABEL_COLLAPSE)
-            };
-            (icon, 'z', label)
+            ('z', if collapsed { BTN_LABEL_EXPAND } else { BTN_LABEL_COLLAPSE })
         }
     };
     let key_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
-    let mut spans = vec![
-        Span::styled(icon.to_string(), Style::default().fg(p.fg)),
-        Span::raw(" "),
-        Span::styled(format!("[{key}]"), key_style),
-    ];
+    let mut spans = vec![Span::styled(format!("[{key}]"), key_style)];
     if labeled {
         // `[c]reate` / `[a]ctions` when the key is the label's first letter
         // (the footer's `[q]uit` pattern); otherwise `[z] collapse`.
@@ -989,37 +979,37 @@ mod tests {
     #[test]
     fn build_header_keeps_all_buttons_right_aligned_against_the_corner() {
         let p = Palette::default();
-        // width 40 → avail 38: the labeled strip (45) can't fit alongside the
+        // width 30 → avail 28: the labeled strip (32) can't fit alongside the
         // title, so all three compact chips survive right-aligned.
-        let area = Rect { x: 0, y: 0, width: 40, height: 8 };
+        let area = Rect { x: 0, y: 0, width: 30, height: 8 };
         let (_line, rects) = build_header(area, "Q", false, QUEUE_BUTTONS, false, &p);
         assert_eq!(rects.len(), 3);
-        // avail=38, title "Q"=1, each compact chip=6 cells, strip=3*(1+6)=21,
-        // filler=38-1-21=16. Chips start at x0(1)+title(1)+filler(16)=18; first
-        // chip after its separator sits at x=19 with width 6.
-        assert_eq!(rects[0].0.x, 19);
-        assert_eq!(rects[0].0.width, 6);
+        // avail=28, title "Q"=1, each compact chip=3 cells, strip=3*(1+3)=12,
+        // filler=28-1-12=15. Chips start at x0(1)+title(1)+filler(15)=17; first
+        // chip after its separator sits at x=18 with width 3.
+        assert_eq!(rects[0].0.x, 18);
+        assert_eq!(rects[0].0.width, 3);
         assert_eq!(rects[0].1, PaneButton::Create);
         assert_eq!(rects[2].1, PaneButton::Collapse);
-        // The last chip ends flush against the right corner (x0 + avail = 39).
+        // The last chip ends flush against the right corner (x0 + avail = 29).
         let last = rects[2].0;
-        assert_eq!(last.x + last.width, area.x + 1 + 38);
+        assert_eq!(last.x + last.width, area.x + 1 + 28);
     }
 
     #[test]
     fn build_header_uses_labeled_chips_when_wide() {
         let p = Palette::default();
-        // width 60 → avail 58 ≥ title(1) + labeled strip(41): the labeled form
+        // width 60 → avail 58 ≥ title(1) + labeled strip(32): the labeled form
         // fits, so chips carry their label words at full width.
         let area = Rect { x: 0, y: 0, width: 60, height: 8 };
         let (line, rects) = build_header(area, "Q", false, QUEUE_BUTTONS, false, &p);
         assert_eq!(rects.len(), 3);
         // Labeled widths — `[c]reate`/`[a]ctions` merge the key into the word
-        // (create 2+1+3+5=11, actions 2+1+3+6=12); collapse keeps the spaced
-        // `[z] collapse` form (2+1+3+1+8=15).
-        assert_eq!(rects[0].0.width, 11);
-        assert_eq!(rects[1].0.width, 12);
-        assert_eq!(rects[2].0.width, 15);
+        // (create 3+5=8, actions 3+6=9); collapse keeps the spaced
+        // `[z] collapse` form (3+1+8=12).
+        assert_eq!(rects[0].0.width, 8);
+        assert_eq!(rects[1].0.width, 9);
+        assert_eq!(rects[2].0.width, 12);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[c]reate"));
         assert!(text.contains("[a]ctions"));
@@ -1092,13 +1082,13 @@ mod tests {
     }
 
     #[test]
-    fn build_header_collapse_glyph_flips_with_state() {
+    fn build_header_collapse_label_flips_with_state() {
         let p = Palette::default();
         let area = Rect { x: 0, y: 0, width: 40, height: 8 };
         let (expanded, _) = build_header(area, "Q", false, QUEUE_BUTTONS, false, &p);
         let (collapsed, _) = build_header(area, "Q", false, QUEUE_BUTTONS, true, &p);
         let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
-        assert!(text(&expanded).contains(BTN_COLLAPSE));
-        assert!(text(&collapsed).contains(BTN_EXPAND));
+        assert!(text(&expanded).contains(BTN_LABEL_COLLAPSE));
+        assert!(text(&collapsed).contains(BTN_LABEL_EXPAND));
     }
 }

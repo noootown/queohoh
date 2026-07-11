@@ -37,21 +37,6 @@ pub const FENCE_RULE_PREFIX: usize = 8;
 /// narrow pane.
 pub const FENCE_RULE_MIN_TRAIL: usize = 3;
 
-// Title-bar action-button icons. Emoji-presentation glyphs, each DOUBLE-WIDTH
-// (two terminal cells). Callers must measure with `Span::width()` — never char
-// counts — so border filling, right-alignment, and hit rects use cell widths.
-// The gear carries a VS16 selector so it resolves to width-2 emoji presentation.
-// A chip renders `{icon} [{key}] {label}` when there is room, degrading to the
-// compact `{icon} [{key}]` form (labels dropped) on narrow panes.
-pub const BTN_CREATE: &str = "➕";
-/// Task menu (`t`) — same lightning glyph as the TASKS pane title.
-pub const BTN_TASKS: &str = "⚡";
-pub const BTN_ACTIONS: &str = "⚙\u{FE0F}";
-/// Collapse affordance on an expanded pane (🔽 = "hide").
-pub const BTN_COLLAPSE: &str = "🔽";
-/// Expand affordance on a collapsed pane (🔼 = "show").
-pub const BTN_EXPAND: &str = "🔼";
-
 // Chip label words (the lowercase verb after the `(key)`). No inline literals in
 // the component; the collapse chip picks LABEL_COLLAPSE / LABEL_EXPAND by state.
 // A chip renders `[{key}] {label}` when there is room, degrading to the compact
