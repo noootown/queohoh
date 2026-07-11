@@ -368,15 +368,17 @@ fn style_json(line: &str, p: &Palette) -> Line<'static> {
             spans.push(Span::styled(line[i..end].to_string(), mauve));
             i = end;
         } else {
+            // Advance whole chars: a byte-wise step from a multi-byte char's
+            // leading byte would land mid-char and panic on `&line[i..]` below.
             let start = i;
-            i += 1;
+            i += line[i..].chars().next().map_or(1, char::len_utf8);
             while i < n
                 && b[i] != b'"'
                 && b[i] != b'-'
                 && !b[i].is_ascii_digit()
                 && json_literal_at(&line[i..]).is_none()
             {
-                i += 1;
+                i += line[i..].chars().next().map_or(1, char::len_utf8);
             }
             spans.push(Span::styled(line[start..i].to_string(), plain));
         }
@@ -895,6 +897,19 @@ mod tests {
         // "nullable" (unquoted) must not read as null + able.
         let got = json("nullable", &p);
         assert_eq!(got, vec![("nullable".into(), plain())]);
+    }
+
+    #[test]
+    fn json_multibyte_chars_do_not_panic_and_reconstruct() {
+        let p = Palette::default();
+        // Regression: the plain-segment scan stepped byte-wise, so an unquoted
+        // multi-byte char (here `–`) put the cursor mid-char and the
+        // `json_literal_at(&line[i..])` slice panicked on a non-boundary index.
+        for line in ["a– b", "Q1–Q3: 42", "✓ done – \"ok\": true", "–"] {
+            let got = json(line, &p);
+            let joined: String = got.iter().map(|(t, _)| t.as_str()).collect();
+            assert_eq!(joined, line);
+        }
     }
 
     // ---- wrap_lines --------------------------------------------------------

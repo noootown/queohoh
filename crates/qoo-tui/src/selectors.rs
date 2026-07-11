@@ -641,7 +641,15 @@ pub fn arg_summary(args: &[ArgSpec]) -> String {
         .join(", ")
 }
 
-pub fn strip_repo_prefix<'a>(worktree: &'a str, repo: &str) -> &'a str {
+/// Sentinel worktree name for a task targeting the project's primary checkout
+/// (mirror of core's `REPO_SENTINEL`). Never a real worktree — display it as
+/// the bare repo name, matching how the primary checkout appears elsewhere.
+pub const REPO_SENTINEL: &str = "@repo";
+
+pub fn strip_repo_prefix<'a>(worktree: &'a str, repo: &'a str) -> &'a str {
+    if worktree == REPO_SENTINEL {
+        return repo;
+    }
     match worktree.strip_prefix(repo) {
         Some(rest) => match rest.strip_prefix('.') {
             Some(stripped) => stripped,
@@ -1571,6 +1579,15 @@ mod tests {
     }
 
     #[test]
+    fn queue_rows_display_repo_sentinel_as_repo_name() {
+        let live = task_on(TaskStatus::Running, "t1", "platform", Some(REPO_SENTINEL));
+        let archived = task_on(TaskStatus::Done, "t2", "platform", Some(REPO_SENTINEL));
+        let rows = queue_rows(&snap(vec![live], vec![archived]), "platform", now());
+        assert_eq!(rows[0].worktree, "platform");
+        assert_eq!(rows[1].worktree, "platform");
+    }
+
+    #[test]
     fn queue_rows_carry_def_name_and_created_epoch() {
         let mut t = task_on(TaskStatus::Running, "t1", "platform", Some("wt-a"));
         t.definition = Some("squash-merge".into());
@@ -1774,6 +1791,7 @@ mod tests {
         assert_eq!(strip_repo_prefix("platform.dedup-dependabot-run", "platform"), "dedup-dependabot-run");
         assert_eq!(strip_repo_prefix("platform", "platform"), "platform"); // bare repo kept
         assert_eq!(strip_repo_prefix("wt-a", "platform"), "wt-a"); // unprefixed kept
+        assert_eq!(strip_repo_prefix("@repo", "platform"), "platform"); // sentinel → repo name
     }
 
     #[test]
