@@ -15,6 +15,7 @@ import { runTask } from "../worker.js";
 const okResult: RunResult = {
 	exitCode: 0,
 	timedOut: false,
+	signal: null,
 	sessionId: "s",
 	resultText: "did it",
 	stderr: "",
@@ -108,6 +109,41 @@ describe("runTask", () => {
 		const t = enqueue(store);
 		withWorktree(store, t.id);
 		expect((await runTask(t.id, deps)).error).toBe("tree left dirty");
+	});
+
+	it("signal → failed with stopped reason, winning over exit code and a dirty tree", async () => {
+		// A stopped run: killed by SIGTERM, non-zero exit, and it left the tree
+		// dirty. The signal reason must win over both.
+		const dirtyGit: Exec = async (_c, args) =>
+			args.join(" ").includes("status")
+				? { stdout: " M src/x.ts\n", exitCode: 0 }
+				: { stdout: "", exitCode: 0 };
+		const { deps, store } = makeDeps({
+			exec: dirtyGit,
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 143,
+				signal: "SIGTERM",
+			}),
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		expect((await runTask(t.id, deps)).error).toBe("stopped (SIGTERM)");
+	});
+
+	it("reports the spawned child pid via onSpawned", async () => {
+		const seen: Array<{ id: string; pid: number }> = [];
+		const { deps, store } = makeDeps({
+			executeClaude: async (opts) => {
+				opts.onSpawned?.(4242);
+				return okResult;
+			},
+			onSpawned: (id, pid) => seen.push({ id, pid }),
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seen).toEqual([{ id: t.id, pid: 4242 }]);
 	});
 
 	it("definition task uses def model/timeout and runs hooks around claude", async () => {

@@ -71,6 +71,7 @@ async function setup() {
 	const okResult: RunResult = {
 		exitCode: 0,
 		timedOut: false,
+		signal: null,
 		sessionId: null,
 		resultText: "ok",
 		stderr: "",

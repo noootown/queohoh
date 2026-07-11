@@ -4,10 +4,10 @@
 //! reason, never hidden) so rows never jump as status changes. Each row also
 //! carries a one-sentence `description` shown in the lazyvim-style right pane.
 //! Bulk menus (Task 16) mirror the same shape with `(<eligible> of <total>)`
-//! counts. The `RunNamedDef` variant carries repo/name so the tasks-pane "Run"
-//! row can dispatch (or open the args form) without re-resolving the def.
+//! counts. The tasks pane has no single-target menu: Enter on a tasks row runs
+//! the highlighted definition directly (see `App::run_selected_task_def`).
 
-use crate::ipc::types::{DefinitionSummary, TaskInstance, TaskStatus};
+use crate::ipc::types::{TaskInstance, TaskStatus};
 use crate::selectors::{QueueRow, WorktreeRow, WtState};
 
 /// What a chosen menu row does. `execute_menu_action` (app.rs) maps each variant
@@ -16,14 +16,14 @@ use crate::selectors::{QueueRow, WorktreeRow, WtState};
 pub enum MenuAction {
     Rerun { id: String },
     Skip { id: String },
+    /// Stop a running task by killing its claude child (daemon `stop` RPC).
+    Stop { id: String },
     /// Assign a worktree to a needs-input task → opens `Mode::WorktreeInput`.
     AssignWorktree { id: String },
     /// New adhoc task on this worktree, fresh session → opens `Mode::AddTask`.
     TaskFresh { worktree: Option<String> },
     /// New adhoc task on this worktree, main session → opens `Mode::AddTask`.
     TaskMain { worktree: Option<String> },
-    /// Run this named definition (repo/name already known) — tasks-pane "Run".
-    RunNamedDef { repo: String, name: String },
     OpenTmux { path: String },
     RemoveWorktree { repo: String, name: String, branch: String },
     // --- Bulk actions (Task 16). Targets are frozen at menu-open time: the
@@ -85,6 +85,7 @@ fn status_kebab(s: TaskStatus) -> &'static str {
 
 const RERUN_DESC: &str = "Re-queue this task and run it again.";
 const SKIP_DESC: &str = "Mark this task as skipped; it will not run.";
+const STOP_DESC: &str = "Stop this running task by killing its claude process.";
 const ASSIGN_DESC: &str = "Assign a worktree to this needs-input task, then re-queue it.";
 const TASK_FRESH_DESC: &str = "Queue a new adhoc task on this worktree in a fresh session.";
 const TASK_MAIN_DESC: &str = "Queue a new adhoc task that resumes this worktree's main session.";
@@ -103,6 +104,7 @@ pub fn queue_menu(row: &QueueRow, full: &TaskInstance) -> (String, Vec<ActionIte
             vec![
                 item("Rerun", false, "archived", RERUN_DESC, MenuAction::Rerun { id: id.clone() }),
                 item("Skip", false, "archived", SKIP_DESC, MenuAction::Skip { id: id.clone() }),
+                item("Stop", false, "archived", STOP_DESC, MenuAction::Stop { id: id.clone() }),
                 item("Assign worktree", false, "archived", ASSIGN_DESC, MenuAction::AssignWorktree { id }),
             ],
         );
@@ -111,32 +113,16 @@ pub fn queue_menu(row: &QueueRow, full: &TaskInstance) -> (String, Vec<ActionIte
     let k = status_kebab(s);
     let rerun_ok = matches!(s, TaskStatus::Failed | TaskStatus::NeedsInput);
     let skip_ok = matches!(s, TaskStatus::Failed | TaskStatus::NeedsInput | TaskStatus::Done);
+    let stop_ok = matches!(s, TaskStatus::Running);
     let assign_ok = matches!(s, TaskStatus::NeedsInput);
     (
         title,
         vec![
             item("Rerun", rerun_ok, &format!("cannot rerun a {k} task"), RERUN_DESC, MenuAction::Rerun { id: id.clone() }),
             item("Skip", skip_ok, &format!("cannot skip a {k} task"), SKIP_DESC, MenuAction::Skip { id: id.clone() }),
+            item("Stop", stop_ok, "only for running tasks", STOP_DESC, MenuAction::Stop { id: id.clone() }),
             item("Assign worktree", assign_ok, "only for needs-input tasks", ASSIGN_DESC, MenuAction::AssignWorktree { id }),
         ],
-    )
-}
-
-/// Single-target tasks menu: one "Run" row → the named-def run. The row's
-/// description prefers the def's own one-liner, falling back to a generic hint.
-pub fn tasks_menu(def: &DefinitionSummary) -> (String, Vec<ActionItem>) {
-    let description = def
-        .description
-        .clone()
-        .unwrap_or_else(|| "Run this task definition.".into());
-    (
-        def.name.clone(),
-        vec![ActionItem {
-            label: "Run".into(),
-            disabled: None,
-            description,
-            action: MenuAction::RunNamedDef { repo: def.repo.clone(), name: def.name.clone() },
-        }],
     )
 }
 
@@ -364,8 +350,8 @@ mod builder_tests {
         // Stable order regardless of status.
         let (title, items) = queue_menu(&qrow(false), &task(TaskStatus::Running));
         assert_eq!(title, "do the thing");
-        assert_eq!(labels(&items), ["Rerun", "Skip", "Assign worktree"]);
-        assert!(enabled(&items).is_empty()); // running: nothing enabled
+        assert_eq!(labels(&items), ["Rerun", "Skip", "Stop", "Assign worktree"]);
+        assert_eq!(enabled(&items), ["Stop"]); // running: only Stop enabled
 
         assert_eq!(enabled(&queue_menu(&qrow(false), &task(TaskStatus::Failed)).1), ["Rerun", "Skip"]);
         assert_eq!(
@@ -387,37 +373,32 @@ mod builder_tests {
         let (_t, items) = queue_menu(&qrow(false), &task(TaskStatus::Running));
         assert_eq!(items[0].disabled.as_deref(), Some("cannot rerun a running task"));
         assert_eq!(items[1].disabled.as_deref(), Some("cannot skip a running task"));
-        assert_eq!(items[2].disabled.as_deref(), Some("only for needs-input tasks"));
+        // Stop is the one row enabled under Running.
+        assert_eq!(items[2].disabled, None);
+        assert_eq!(items[3].disabled.as_deref(), Some("only for needs-input tasks"));
+    }
+
+    #[test]
+    fn queue_stop_disabled_off_running() {
+        // Stop is enabled only for Running; every other status disables it with
+        // the "only for running tasks" reason.
+        let by_stop = |s: TaskStatus| {
+            let (_t, items) = queue_menu(&qrow(false), &task(s));
+            items[2].disabled.clone()
+        };
+        assert_eq!(by_stop(TaskStatus::Running), None);
+        assert_eq!(by_stop(TaskStatus::Failed).as_deref(), Some("only for running tasks"));
+        assert_eq!(by_stop(TaskStatus::Done).as_deref(), Some("only for running tasks"));
+        assert_eq!(by_stop(TaskStatus::Queued).as_deref(), Some("only for running tasks"));
+        assert_eq!(by_stop(TaskStatus::NeedsInput).as_deref(), Some("only for running tasks"));
     }
 
     #[test]
     fn queue_rows_carry_descriptions() {
         let (_t, items) = queue_menu(&qrow(false), &task(TaskStatus::NeedsInput));
         assert_eq!(items[0].description, RERUN_DESC);
-        assert_eq!(items[2].description, ASSIGN_DESC);
-    }
-
-    #[test]
-    fn tasks_menu_offers_run() {
-        let mut d = DefinitionSummary::default();
-        d.repo = "platform".into();
-        d.name = "pr-ready".into();
-        let (title, items) = tasks_menu(&d);
-        assert_eq!(title, "pr-ready");
-        assert_eq!(labels(&items), ["Run"]);
-        assert!(matches!(items[0].action, MenuAction::RunNamedDef { .. }));
-        // No def description → generic fallback.
-        assert_eq!(items[0].description, "Run this task definition.");
-    }
-
-    #[test]
-    fn tasks_menu_run_uses_def_description_when_present() {
-        let mut d = DefinitionSummary::default();
-        d.repo = "platform".into();
-        d.name = "pr-ready".into();
-        d.description = Some("Flip WIP → ready and assign reviewers.".into());
-        let (_t, items) = tasks_menu(&d);
-        assert_eq!(items[0].description, "Flip WIP → ready and assign reviewers.");
+        assert_eq!(items[2].description, STOP_DESC);
+        assert_eq!(items[3].description, ASSIGN_DESC);
     }
 
     fn wrow(state: WtState, branch: &str, is_session: bool) -> WorktreeRow {

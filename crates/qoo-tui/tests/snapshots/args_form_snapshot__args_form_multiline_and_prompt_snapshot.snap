@@ -1,0 +1,32 @@
+---
+source: crates/qoo-tui/tests/args_form_snapshot.rs
+expression: term.backend()
+---
+"                                                            daemon unreachable — retrying… running 0"
+"╭📋 QUEUE─── ➕ [c] ⚙️ [a] 🔽 [z]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " "), (28, " "), (36, " ")]
+"│                                ││(nothing selected)                                              │"
+"│ 🔍 [/] f╭ pr-ready args ───────────────────╮╭ pr-ready ────────────────────────────────╮         │" Hidden by multi-width symbols: [(3, " ")]
+"│         │ pr  PR number                    ││Flip the PR from WIP to ready-for-review. │         │"
+"│ queue em│  first line of the report        ││                                          │         │"
+"│         │  second line that is long enough ││Run a self review sized to the diff, sync │         │"
+"│         │   to soft-wrap across the field  ││the description, then assign the four     │         │"
+"│         │                                  ││standing reviewers.                       │         │"
+"│         │ mode ‹ready›                     ││                                          │         │"
+"│         │                                  ││                                          │         │"
+"│         │ source wt-a                      ││                                          │         │"
+"│         │                                  ││                                          │         │"
+"│         │                                  ││                                          │         │"
+"╰─────────│                                  ││                                          │         │"
+"╭⚡ TASKS─│                                  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/] f│                                  ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
+"│ no task │                                  ││                                          │         │"
+"│         │                                  ││                                          │         │"
+"│         │                                  ││                                          │         │"
+"╰─────────│                                  ││                                          │         │"
+"╭🌲 WORKTR│                                  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/] f│                                  ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
+"│ no workt│ [ Run ]  [ Cancel ]              ││                                          │         │"
+"│         ╰ tab/↑↓ move · ←/→ enum · shift/al╯╰──────────────────────────────────────────╯         │"
+"│                                ││                                                                │"
+"╰────────────────────────────────╯╰────────────────────────────────────────────────────────────────╯"
+"[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit                                   "

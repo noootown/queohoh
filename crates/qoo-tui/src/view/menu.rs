@@ -46,20 +46,21 @@ pub struct PickerState<'a> {
 }
 
 /// Picker geometry: one big centered area split into two adjacent bordered
-/// panels (left ≈ 45% for the list, right = the preview).
-struct PickerLayout {
+/// panels (left ≈ 45% for the list, right = the preview). Shared with the run
+/// form (`args_form::render_run_form`), which reuses the same two-panel shell.
+pub(crate) struct PickerLayout {
     /// Left panel rect (borders included) and its interior.
-    left: Rect,
-    left_inner: Rect,
+    pub left: Rect,
+    pub left_inner: Rect,
     /// Right panel rect (borders included) and its interior.
-    right: Rect,
-    right_inner: Rect,
+    pub right: Rect,
+    pub right_inner: Rect,
 }
 
 /// Big picker: width = 4/5 of the terminal clamped to [60, cols−4], height =
 /// 4/5 clamped to [15, rows−2] — degrading gracefully below the floors (the
 /// `min` folds "use cols−4 when < 60" into the clamp bounds).
-fn picker_layout(area: Rect) -> PickerLayout {
+pub(crate) fn picker_layout(area: Rect) -> PickerLayout {
     let max_w = area.width.saturating_sub(4).max(1);
     let width = (area.width as u32 * 4 / 5) as u16;
     let width = width.clamp(60.min(max_w), max_w);
@@ -238,8 +239,9 @@ fn wrap_styled(lines: &[(String, Style)], width: usize) -> Vec<Line<'static>> {
 /// Render the right preview panel: pre-wrapped styled `content`, scrolled by
 /// `preview_scroll` (clamped), with a scrollbar when the wrapped content
 /// overflows. Registers the `MenuPreview` wheel target over the interior.
-/// Returns the metrics the key handler needs to clamp the next scroll.
-fn render_preview(
+/// Returns the metrics the key handler needs to clamp the next scroll. Shared
+/// with the run form's prompt panel.
+pub(crate) fn render_preview(
     frame: &mut ratatui::Frame,
     hit: &mut HitMap,
     layout: &PickerLayout,

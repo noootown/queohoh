@@ -13,7 +13,7 @@ const HELP_ROWS: [(&str, &str); 15] = [
     ("ctrl+x / ctrl+z", "next / previous detail sub-tab"),
     ("j/k · arrows", "move cursor"),
     ("J/K · shift+↑↓", "extend selection"),
-    ("Enter / a", "action menu (or double-click a row)"),
+    ("Enter / a", "tasks: run def · queue/worktrees: action menu"),
     ("c", "create (queue: adhoc task · worktrees: worktree)"),
     ("t", "task menu — run a task definition"),
     ("z", "collapse / expand focused list pane"),

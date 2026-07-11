@@ -49,6 +49,11 @@ export interface EngineDeps {
 
 export class Engine {
 	private running = new Map<string, Promise<void>>();
+	// Spawned claude child pid per running task, populated via the worker's
+	// onSpawned dep and cleared when the run settles. Absent for a task whose
+	// worker never reported a pid (spawn failed) or that started under a previous
+	// daemon process — stopTask throws in that case.
+	private childPids = new Map<string, number>();
 	private ticking = false;
 	private worktreeCache = new Map<string, WorktreeInfo[]>(); // repo name -> worktrees
 	// Git enrichment, keyed by worktree PATH, refreshed off the hot pass() path.
@@ -423,6 +428,7 @@ export class Engine {
 				...deps.config.vars,
 			},
 			repoVars,
+			onSpawned: (id, pid) => this.childPids.set(id, pid),
 			loadDef: (definition) => {
 				const [repo, ...nameParts] = definition.split("/");
 				const name = nameParts.join("/");
@@ -454,10 +460,38 @@ export class Engine {
 			})
 			.then(() => {
 				this.running.delete(task.id);
+				this.childPids.delete(task.id);
 				deps.registry.unregisterWorker(task.id);
 				deps.onChange?.();
 			});
 		this.running.set(task.id, promise);
 		deps.onChange?.();
+	}
+
+	/**
+	 * Stop a running task by killing its claude child's process group, mirroring
+	 * runner's timeout path: SIGTERM the group (fallback to a direct kill), then
+	 * an unref'd 5s SIGKILL escalation. The signal surfaces as the run's failure
+	 * reason ("stopped (SIGTERM)"). Throws when no pid is tracked for the id — the
+	 * task started under a previous daemon process, or its spawn never reported.
+	 */
+	stopTask(taskId: string): void {
+		const pid = this.childPids.get(taskId);
+		if (pid === undefined) {
+			throw new Error(`no running child tracked for task: ${taskId}`);
+		}
+		try {
+			process.kill(-pid, "SIGTERM");
+		} catch {
+			try {
+				process.kill(pid, "SIGTERM");
+			} catch {}
+		}
+		const killTimer = setTimeout(() => {
+			try {
+				process.kill(-pid, "SIGKILL");
+			} catch {}
+		}, 5000);
+		killTimer.unref();
 	}
 }

@@ -1,5 +1,5 @@
 import type { TargetRef } from "./ref.js";
-import { extractTicketId, parseRef } from "./ref.js";
+import { parseRef } from "./ref.js";
 import { qooTempName } from "./slug.js";
 
 /**
@@ -82,18 +82,18 @@ export async function resolveTarget(
 					ephemeral: false,
 				};
 			}
-			const ticket = extractTicketId(branch);
-			if (ticket === null) {
-				return {
-					outcome: "needs-input",
-					reason: `no ticket id in branch: ${branch}`,
-				};
-			}
-			const byName = existing.find((w) => w.name === ticket);
+			// A PR always has a branch, so the branch itself names the worktree.
+			// Conventional branches (branch = ticket id) keep their old names;
+			// off-convention ones (dependabot/…) resolve instead of parking as
+			// needs-input. Only `/` needs folding — the one path-hostile character
+			// a valid git branch name can contain. No truncation: a lossy cut
+			// (slugify caps at 24) would collide two dependabot branches.
+			const name = branch.replace(/\//g, "-");
+			const byName = existing.find((w) => w.name === name);
 			if (byName) {
 				return { outcome: "resolved", worktree: byName.name, ephemeral: false };
 			}
-			const spawned = await io.spawnWorktree(ctx.repoPath, ticket, branch);
+			const spawned = await io.spawnWorktree(ctx.repoPath, name, branch);
 			return { outcome: "resolved", worktree: spawned.name, ephemeral: false };
 		}
 		case "ticket": {

@@ -11,6 +11,10 @@ export interface RunUsage {
 export interface RunResult {
 	exitCode: number;
 	timedOut: boolean;
+	// The signal that terminated the child (e.g. "SIGTERM"), or null when it
+	// exited normally. A stop kills the process group, so this is how a stopped
+	// run is distinguished from a plain non-zero exit.
+	signal: string | null;
 	sessionId: string | null;
 	resultText: string;
 	stderr: string;
@@ -100,6 +104,7 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 			resolve({
 				exitCode: 1,
 				timedOut: false,
+				signal: null,
 				sessionId: null,
 				resultText: "",
 				stderr: `Failed to initialize run files: ${msg}`,
@@ -183,13 +188,14 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 			stderr += chunk.toString();
 		});
 
-		child.on("close", (code) => {
+		child.on("close", (code, signal) => {
 			clearTimeout(timeout);
 			if (killTimer) clearTimeout(killTimer);
 			if (lineBuffer) handleLine(lineBuffer);
 			resolve({
 				exitCode: code ?? 1,
 				timedOut,
+				signal: signal ?? null,
 				sessionId,
 				resultText,
 				stderr,
@@ -202,6 +208,7 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 			resolve({
 				exitCode: 1,
 				timedOut: false,
+				signal: null,
 				sessionId,
 				resultText: "",
 				stderr: "Failed to spawn process",

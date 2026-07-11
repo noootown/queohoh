@@ -14,6 +14,10 @@ use crate::runfiles::RunFiles;
 pub enum Event {
     Key(crossterm::event::KeyEvent),
     Mouse(crossterm::event::MouseEvent),
+    /// Bracketed-paste payload (verbatim, newlines included). Enabled at startup
+    /// so a multiline paste arrives as one event instead of a burst of Enter
+    /// keypresses that would submit a text field mid-paste.
+    Paste(String),
     Resize,
     Snapshot(StateSnapshot),
     Disconnected,
@@ -62,8 +66,9 @@ fn map_terminal_event(ev: crossterm::event::Event) -> Option<Event> {
     match ev {
         Ct::Key(k) => Some(Event::Key(k)),
         Ct::Mouse(m) => Some(Event::Mouse(m)),
+        Ct::Paste(s) => Some(Event::Paste(s)),
         Ct::Resize(_, _) => Some(Event::Resize),
-        _ => None, // focus/paste events unused
+        _ => None, // focus events unused
     }
 }
 

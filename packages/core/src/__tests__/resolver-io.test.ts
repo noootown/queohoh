@@ -91,6 +91,33 @@ describe("createResolverIO", () => {
 		expect(spawned.name).toBe("JUS-77");
 	});
 
+	it("spawnWorktree with a branch fetches + tracks it and switches WITHOUT -c", async () => {
+		const branch = "dependabot/npm_and_yarn/npm-0846159061";
+		const name = "dependabot-npm_and_yarn-npm-0846159061";
+		const after = `${PORCELAIN}worktree /Users/me/ws/platform-worktrees/${name}\nHEAD aaa\nbranch refs/heads/${branch}\n\n`;
+		let wtRan = false;
+		const calls: string[] = [];
+		const exec: Exec = async (command, args) => {
+			const key = [command, ...args].join(" ");
+			calls.push(key);
+			if (key === "git worktree list --porcelain") {
+				return { stdout: wtRan ? after : PORCELAIN, exitCode: 0 };
+			}
+			if (key === `wt switch ${branch}`) {
+				wtRan = true;
+				return { stdout: "", exitCode: 0 };
+			}
+			// fetch + branch --track succeed silently.
+			return { stdout: "", exitCode: 0 };
+		};
+		const io = createResolverIO(exec);
+		const spawned = await io.spawnWorktree("/repo", name, branch);
+		expect(spawned.branch).toBe(branch);
+		expect(calls).toContain(`git fetch origin ${branch}`);
+		expect(calls).toContain(`git branch --track ${branch} origin/${branch}`);
+		expect(calls.some((c) => c.startsWith("wt switch -c"))).toBe(false);
+	});
+
 	it("spawnWorktree throws when wt fails", async () => {
 		const exec = fakeExec({
 			"git worktree list --porcelain": { stdout: PORCELAIN, exitCode: 0 },

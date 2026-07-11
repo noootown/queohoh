@@ -246,7 +246,13 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
             app.menu_preview_page.set(m.half_page);
         }
         crate::app::Mode::DefArgs { form } => {
-            args_form::render_args_form(frame, &mut hits, &p, form);
+            // Resolve the def's full prompt for the right panel (keyed "repo/name",
+            // same source as the DefPick preview); `None` until the fetch lands.
+            let full = app.full_defs.get(&format!("{}/{}", form.repo, form.def_name));
+            let m = args_form::render_run_form(frame, &mut hits, &p, form, full);
+            // Render-feedback for ctrl+d/u + wheel clamping (see the App fields).
+            app.menu_preview_max_scroll.set(m.max_scroll);
+            app.menu_preview_page.set(m.half_page);
         }
         crate::app::Mode::CreateWorktree { input, error } => {
             let repo = app.active_repo().unwrap_or_default();

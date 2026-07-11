@@ -72,9 +72,21 @@ export function createResolverIO(exec: Exec): ResolverIO {
 		},
 
 		async spawnWorktree(repoPath, name, branch) {
-			const { exitCode } = await exec("wt", ["switch", "-c", branch ?? name], {
-				cwd: repoPath,
-			});
+			// `branch` given (the PR flow) means "check out this EXISTING branch":
+			// fetch it and switch WITHOUT -c — `wt switch -c` would mint a brand-new
+			// branch of the same name off HEAD, silently landing the worktree on
+			// main's tip instead of the PR. No branch (ticket/temp flows) keeps the
+			// create-new-branch semantics.
+			if (branch) {
+				// Both best-effort: fetch may be offline, --track fails when the
+				// local branch already exists. `wt switch` is the load-bearing step.
+				await exec("git", ["fetch", "origin", branch], { cwd: repoPath });
+				await exec("git", ["branch", "--track", branch, `origin/${branch}`], {
+					cwd: repoPath,
+				});
+			}
+			const args = branch ? ["switch", branch] : ["switch", "-c", name];
+			const { exitCode } = await exec("wt", args, { cwd: repoPath });
 			if (exitCode === 0) {
 				const after = await listWorktrees(repoPath);
 				const spawned =

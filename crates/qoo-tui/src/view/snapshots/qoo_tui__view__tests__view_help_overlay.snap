@@ -1,6 +1,5 @@
 ---
 source: crates/qoo-tui/src/view/mod.rs
-assertion_line: 376
 expression: terminal.backend()
 ---
 " 1:acme ╭ keymap ──────────────────────────────────────────────────────╮ning 1/3"
@@ -10,7 +9,7 @@ expression: terminal.backend()
 "│       │ ctrl+x / ctrl+z next / previous detail sub-tab               │       │"
 "│ ⠯ ⌂  f│ j/k · arrows    move cursor                                  │       │"
 "│ ○    f│ J/K · shift+↑↓  extend selection                             │       │"
-"│ ──────│ Enter / a       action menu (or double-click a row)          │       │"
+"│ ──────│ Enter / a       tasks: run def · queue/worktrees: action menu│       │"
 "│ ✗    m│ c               create (queue: adhoc task · worktrees: worktr│       │"
 "│ ✓    m│ t               task menu — run a task definition            │       │"
 "│       │ z               collapse / expand focused list pane          │       │"

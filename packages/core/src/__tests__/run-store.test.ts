@@ -80,6 +80,7 @@ describe("RunStore", () => {
 				result: {
 					exitCode: 0,
 					timedOut: false,
+					signal: null,
 					sessionId: "s1",
 					resultText: "Fixed everything with shh-token.",
 					stderr: "",

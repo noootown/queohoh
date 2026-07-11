@@ -798,6 +798,38 @@ impl App {
                     _ => Update { dirty: false, cmds: vec![] },
                 }
             }
+            // Bracketed paste. The run form's free-text field takes the payload
+            // verbatim (newlines preserved — this is the "paste your bug report"
+            // flow). The single-line prompt/worktree/branch inputs take it with
+            // control chars (newlines/tabs) collapsed to spaces so a multiline
+            // paste can't smuggle a newline into a one-line field. Every other
+            // mode ignores paste (List has no text target).
+            Event::Paste(s) => match &mut self.mode {
+                Mode::DefArgs { form } => {
+                    let inserted = form.insert_str(&s);
+                    Update { dirty: inserted, cmds: vec![] }
+                }
+                Mode::AddTask { input, .. }
+                | Mode::WorktreeInput { input, .. }
+                | Mode::CreateWorktree { input, .. } => {
+                    let flat: String =
+                        s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+                    for c in flat.chars() {
+                        input.handle_event(&crossterm::event::Event::Key(
+                            crossterm::event::KeyEvent::new(
+                                KeyCode::Char(c),
+                                crossterm::event::KeyModifiers::NONE,
+                            ),
+                        ));
+                    }
+                    // A create-worktree paste clears any prior validation error.
+                    if let Mode::CreateWorktree { error, .. } = &mut self.mode {
+                        *error = None;
+                    }
+                    Update { dirty: !flat.is_empty(), cmds: vec![] }
+                }
+                _ => Update { dirty: false, cmds: vec![] },
+            },
             Event::Mouse(m) => self.on_mouse(m),
             Event::ActionResult { status, invalidate_defs_for } => {
                 // Success carries status = None → leave the line untouched (never clobber
@@ -1073,11 +1105,9 @@ impl App {
             },
             A::ClearEsc => self.clear_esc(),
             A::OpenActionMenu => {
-                match self.open_action_menu() {
-                    Some(mode) => self.mode = mode,
-                    None => self.status_line = Some("nothing selected".into()),
-                }
-                true
+                let u = self.open_actions_or_run();
+                cmds.extend(u.cmds);
+                u.dirty
             }
             A::OpenTaskMenu => {
                 // Opens the def picker over the active repo (with the selected
@@ -1136,10 +1166,61 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Enter / `a` / double-click over a list row. A single-row selection on the
+    /// TASKS pane runs the highlighted definition directly (no menu hop — zero-arg
+    /// defs dispatch immediately, defs with args open the run form); a bulk range
+    /// on any pane and single rows on queue/worktrees open the action menu.
+    fn open_actions_or_run(&mut self) -> Update {
+        let ui = self.active_ui();
+        let pane = ui.last_list_pane;
+        let (start, end) = crate::view::selection_range(&ui.selections[pane.idx()]);
+        if end == start && pane == ListPane::Tasks {
+            return self.run_selected_task_def();
+        }
+        match self.open_action_menu() {
+            Some(mode) => self.mode = mode,
+            None => self.status_line = Some("nothing selected".into()),
+        }
+        Update { dirty: true, cmds: vec![] }
+    }
+
+    /// Run the TASKS pane's highlighted definition directly (single-row Enter /
+    /// double-click). Resolves the def from the current filtered selection: a
+    /// zero-arg def dispatches `runDefinition`; a def with args opens the run
+    /// form with an ambient worktree overlay (initial values from the selected
+    /// worktree row) and fetches its prompt for the right panel. Mirrors the
+    /// def-picker `Enter` path minus the explicit worktree target.
+    fn run_selected_task_def(&mut self) -> Update {
+        let Some(repo) = self.active_repo() else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        let ui = self.active_ui();
+        let defs = self.defs_by_project.get(&repo).cloned().unwrap_or_default();
+        let vis = crate::selectors::filter_rows(&defs, &ui.search[ListPane::Tasks.idx()], |d| d.name.clone());
+        let cursor = ui.selections[ListPane::Tasks.idx()].cursor.min(vis.len().saturating_sub(1));
+        let Some(def) = vis.get(cursor).and_then(|&i| defs.get(i)).cloned() else {
+            self.status_line = Some("nothing selected".into());
+            return Update { dirty: true, cmds: vec![] };
+        };
+        if def.args.is_empty() {
+            return Update {
+                dirty: true,
+                cmds: vec![Self::run_definition_cmd(&def.repo, &def.name, &[], None)],
+            };
+        }
+        let rows = self.active_worktree_rows();
+        let selected = self.selected_worktree_row();
+        let (args, initial) =
+            crate::worktree_context::ambient_run_args(&def.args, &rows, selected.as_ref());
+        let cmds = self.open_def_args(def.repo, def.name, args, HashMap::new(), initial, None);
+        Update { dirty: true, cmds }
+    }
+
     /// Build the action menu for the last-focused list pane's current selection.
-    /// Returns `None` when nothing is selectable (empty pane). Bulk (range > 1)
-    /// support is added in Task 16 by prepending a guard here; Task 14 handles
-    /// the single-target case.
+    /// Returns `None` when nothing is selectable (empty pane). A multi-row range
+    /// opens the bulk menu; the single-target case handles queue/worktrees (the
+    /// tasks pane has no single-target menu — `open_actions_or_run` runs the
+    /// highlighted def before reaching here).
     fn open_action_menu(&mut self) -> Option<Mode> {
         // Bulk branch: a multi-row range opens the bulk menu with eligibility
         // frozen at open time (Task 16). A single-row selection (anchor cleared
@@ -1170,14 +1251,10 @@ impl App {
                 let (title, items) = crate::action_menu::queue_menu(row, task);
                 Some(Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 })
             }
-            ListPane::Tasks => {
-                let defs = self.defs_by_project.get(&repo).cloned().unwrap_or_default();
-                let vis = crate::selectors::filter_rows(&defs, &ui.search[1], |d| d.name.clone());
-                let cursor = ui.selections[1].cursor.min(vis.len().saturating_sub(1));
-                let def = vis.get(cursor).and_then(|&i| defs.get(i))?;
-                let (title, items) = crate::action_menu::tasks_menu(def);
-                Some(Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 })
-            }
+            // Tasks: single-target Enter runs the highlighted def directly
+            // (`open_actions_or_run` intercepts before calling this); a bulk range
+            // is handled by the guard above. Nothing to show here.
+            ListPane::Tasks => None,
             ListPane::Worktrees => {
                 let rows = crate::selectors::worktree_rows(snap, &repo);
                 let vis = crate::selectors::filter_rows(&rows, &ui.search[2], |r| r.name.clone());
@@ -1346,12 +1423,14 @@ impl App {
         Update { dirty: true, cmds: vec![] }
     }
 
-    /// Current picker preview scroll (0 outside ActionMenu/DefPick).
+    /// Current picker preview scroll (0 outside ActionMenu/DefPick/DefArgs). The
+    /// run form carries its scroll inside the `ArgsForm`; the pickers on the mode.
     fn menu_preview_scroll_value(&self) -> usize {
         match &self.mode {
             Mode::ActionMenu { preview_scroll, .. } | Mode::DefPick { preview_scroll, .. } => {
                 *preview_scroll
             }
+            Mode::DefArgs { form } => form.preview_scroll,
             _ => 0,
         }
     }
@@ -1362,6 +1441,11 @@ impl App {
             Mode::ActionMenu { preview_scroll, .. } | Mode::DefPick { preview_scroll, .. } => {
                 let changed = *preview_scroll != next;
                 *preview_scroll = next;
+                Update { dirty: changed, cmds: vec![] }
+            }
+            Mode::DefArgs { form } => {
+                let changed = form.preview_scroll != next;
+                form.preview_scroll = next;
                 Update { dirty: changed, cmds: vec![] }
             }
             _ => Update { dirty: false, cmds: vec![] },
@@ -1439,6 +1523,10 @@ impl App {
                 let cmd = self.dispatch_rpc("skip task", "skip", serde_json::json!({ "id": id }), RpcOpts::default());
                 Update { dirty: true, cmds: vec![cmd] }
             }
+            M::Stop { id } => {
+                let cmd = self.dispatch_rpc("stop task", "stop", serde_json::json!({ "id": id }), RpcOpts::default());
+                Update { dirty: true, cmds: vec![cmd] }
+            }
             M::AssignWorktree { id } => {
                 self.mode = Mode::WorktreeInput { task_id: id, input: tui_input::Input::default() };
                 Update { dirty: true, cmds: vec![] }
@@ -1454,32 +1542,6 @@ impl App {
             M::OpenTmux { path } => Update { dirty: true, cmds: vec![Cmd::OpenTmux { path }] },
             M::RemoveWorktree { repo, name, branch } => {
                 self.mode = Mode::ConfirmRemove { repo, worktree: name, branch };
-                Update { dirty: true, cmds: vec![] }
-            }
-            // Tasks pane → the definition is already chosen (ambient run). Zero-arg
-            // defs dispatch immediately; otherwise open the args form with a
-            // worktree-branch overlay prefilled from the selected worktree row.
-            M::RunNamedDef { repo, name } => {
-                let Some(def) = self
-                    .defs_by_project
-                    .get(&repo)
-                    .and_then(|defs| defs.iter().find(|d| d.name == name))
-                    .cloned()
-                else {
-                    self.status_line = Some("definition not found".into());
-                    return Update { dirty: true, cmds: vec![] };
-                };
-                if def.args.is_empty() {
-                    return Update {
-                        dirty: true,
-                        cmds: vec![Self::run_definition_cmd(&repo, &name, &[], None)],
-                    };
-                }
-                let rows = self.active_worktree_rows();
-                let selected = self.selected_worktree_row();
-                let (args, initial) =
-                    crate::worktree_context::ambient_run_args(&def.args, &rows, selected.as_ref());
-                self.open_def_args(repo, name, args, HashMap::new(), initial, None);
                 Update { dirty: true, cmds: vec![] }
             }
             // --- Bulk actions (Task 16). Range cleared before dispatch; the
@@ -1629,7 +1691,9 @@ impl App {
         rows.into_iter().nth(cursor)
     }
 
-    /// Open the args form. `fixed`/`initial` and `worktree` are caller-decided.
+    /// Open the run form. `fixed`/`initial` and `worktree` are caller-decided.
+    /// Returns the prompt-fetch command(s) for the def's right panel (empty when
+    /// the full definition is already cached / in flight).
     fn open_def_args(
         &mut self,
         repo: String,
@@ -1638,10 +1702,25 @@ impl App {
         fixed: HashMap<String, String>,
         initial: HashMap<String, String>,
         worktree: Option<String>,
-    ) {
+    ) -> Vec<Cmd> {
+        let cmds = self.ensure_full_def(&repo, &name);
         self.mode = Mode::DefArgs {
             form: crate::view::args_form::ArgsForm::new(repo, name, args, fixed, initial, worktree),
         };
+        cmds
+    }
+
+    /// Emit a `definition` (full/prompt) fetch for `repo/name` when its prompt is
+    /// neither cached nor already in flight; marks in-flight before returning so
+    /// repeat calls dedup. Shared by the def-picker prefetch and the run-form open
+    /// paths (both show the prompt in their right panel).
+    fn ensure_full_def(&mut self, repo: &str, name: &str) -> Vec<Cmd> {
+        let key = format!("{repo}/{name}");
+        if self.full_defs.contains_key(&key) || self.full_defs_inflight.contains(&key) {
+            return Vec::new();
+        }
+        self.full_defs_inflight.insert(key);
+        vec![Cmd::FetchDefinition { repo: repo.to_string(), name: name.to_string() }]
     }
 
     /// Emit a lazy `definitions` fetch for the active repo when its summaries are
@@ -1703,12 +1782,7 @@ impl App {
             };
             (def.repo.clone(), def.name.clone())
         };
-        let key = format!("{repo}/{name}");
-        if self.full_defs.contains_key(&key) || self.full_defs_inflight.contains(&key) {
-            return Vec::new();
-        }
-        self.full_defs_inflight.insert(key);
-        vec![Cmd::FetchDefinition { repo, name }]
+        self.ensure_full_def(&repo, &name)
     }
 
     /// `Mode::DefPick` key handling (lazyvim-style). Esc closes; Up/Ctrl+k/Ctrl+p
@@ -1812,8 +1886,8 @@ impl App {
             .as_deref()
             .map(crate::worktree_context::context_arg_values)
             .unwrap_or_default();
-        self.open_def_args(def.repo, def.name, def.args, fixed, HashMap::new(), worktree);
-        Update { dirty: true, cmds: vec![] }
+        let cmds = self.open_def_args(def.repo, def.name, def.args, fixed, HashMap::new(), worktree);
+        Update { dirty: true, cmds }
     }
 
     /// Route a left-click while the def-pick popup is open: a `MenuItem` picks
@@ -1845,13 +1919,29 @@ impl App {
     }
 
     /// `Mode::DefArgs` key handling. Dropdown-open: ↑/↓ move, Enter picks, Esc
-    /// closes the dropdown only. Dropdown-closed: Tab/↓ next, Shift-Tab/↑ prev,
-    /// ←/→ cycle enum, Enter opens an enum dropdown or validates+submits, Esc
-    /// cancels, printable/Backspace edit text.
+    /// closes the dropdown only. Dropdown-closed: Tab/Shift-Tab move focus; ↑/↓
+    /// move the cursor within a multiline free-text value (moving focus only at
+    /// the value's top/bottom line, or on an enum); ←/→ cycle an enum or move the
+    /// cursor in text; Home/End jump within the current line; ctrl+d/u scroll the
+    /// prompt preview; Shift+Enter / Alt+Enter insert a hard newline; plain Enter
+    /// opens an enum dropdown or validates+submits; Esc cancels; printable/
+    /// Backspace edit at the cursor.
     fn def_args_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
         use crossterm::event::{KeyCode::*, KeyModifiers};
         let dropdown_open = matches!(&self.mode, Mode::DefArgs { form } if form.dropdown.is_some());
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = ev.modifiers.contains(KeyModifiers::ALT);
+        // ctrl+d / ctrl+u scroll the prompt preview (render-feedback clamp),
+        // resolved before the `form` borrow so `set_menu_preview_scroll` can
+        // re-borrow `self.mode`.
+        if ctrl && !dropdown_open {
+            match ev.code {
+                Char('d') => return self.menu_preview_page_scroll(1),
+                Char('u') => return self.menu_preview_page_scroll(-1),
+                _ => {}
+            }
+        }
         let Mode::DefArgs { form } = &mut self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
@@ -1864,29 +1954,48 @@ impl App {
                 _ => return Update { dirty: false, cmds: vec![] },
             }
         }
+        let enum_focus = form.is_enum(form.focus);
         match ev.code {
             Esc => { self.mode = Mode::List; Update { dirty: true, cmds: vec![] } }
-            Tab if !shift => { form.next_focus(); Update { dirty: true, cmds: vec![] } }
-            Down => { form.next_focus(); Update { dirty: true, cmds: vec![] } }
-            BackTab => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
-            Tab if shift => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
-            Up => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
-            Left => { let i = form.focus; form.cycle_option(i, -1); Update { dirty: true, cmds: vec![] } }
-            Right => { let i = form.focus; form.cycle_option(i, 1); Update { dirty: true, cmds: vec![] } }
+            // Newline chords first — they must win over the plain-Enter run arm.
+            // No-op on enum/fixed rows (nothing to insert into).
+            Enter if shift || alt => { form.insert_newline(); Update { dirty: true, cmds: vec![] } }
             Enter => {
-                let i = form.focus;
-                if form.is_enum(i) && !form.is_fixed(i) {
-                    form.open_dropdown(i);
+                if enum_focus && !form.is_fixed(form.focus) {
+                    form.open_dropdown(form.focus);
                     Update { dirty: true, cmds: vec![] }
                 } else {
                     self.submit_def_args()
                 }
             }
-            Backspace => { form.backspace(); Update { dirty: true, cmds: vec![] } }
-            Char(c) if !ev.modifiers.contains(KeyModifiers::CONTROL) && !ev.modifiers.contains(KeyModifiers::ALT) => {
-                form.input_char(c);
+            Tab if !shift => { form.next_focus(); Update { dirty: true, cmds: vec![] } }
+            BackTab => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
+            Tab if shift => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
+            // ↑/↓ walk a multiline value's lines; only at the value edge (or on an
+            // enum) do they step focus.
+            Up => {
+                if form.try_move_up() { Update { dirty: true, cmds: vec![] } }
+                else { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
+            }
+            Down => {
+                if form.try_move_down() { Update { dirty: true, cmds: vec![] } }
+                else { form.next_focus(); Update { dirty: true, cmds: vec![] } }
+            }
+            // ←/→ cycle an enum; on a free-text row they move the cursor.
+            Left => {
+                if enum_focus { let i = form.focus; form.cycle_option(i, -1); }
+                else { form.move_left(); }
                 Update { dirty: true, cmds: vec![] }
             }
+            Right => {
+                if enum_focus { let i = form.focus; form.cycle_option(i, 1); }
+                else { form.move_right(); }
+                Update { dirty: true, cmds: vec![] }
+            }
+            Home => { form.move_home(); Update { dirty: true, cmds: vec![] } }
+            End => { form.move_end(); Update { dirty: true, cmds: vec![] } }
+            Backspace => { form.backspace(); Update { dirty: true, cmds: vec![] } }
+            Char(c) if !ctrl && !alt => { form.input_char(c); Update { dirty: true, cmds: vec![] } }
             _ => Update { dirty: false, cmds: vec![] },
         }
     }
@@ -1921,7 +2030,7 @@ impl App {
             }
             HitTarget::FormField(i) => {
                 if let Mode::DefArgs { form } = &mut self.mode {
-                    form.focus = *i;
+                    form.focus_field(*i);
                     if form.is_enum(*i) && !form.is_fixed(*i) {
                         form.open_dropdown(*i);
                     }
@@ -1933,7 +2042,9 @@ impl App {
                 self.mode = Mode::List;
                 Update { dirty: true, cmds: vec![] }
             }
-            HitTarget::Modal => Update { dirty: false, cmds: vec![] }, // body click: inert
+            // Left panel body and right (prompt) panel: inert (the wheel scrolls
+            // the preview over `MenuPreview`).
+            HitTarget::Modal | HitTarget::MenuPreview => Update { dirty: false, cmds: vec![] },
             // Any other target is behind the popup (a pane row/body/tab): a click
             // outside the form dismisses it, same as esc (mirrors def-pick/menu).
             _ => {
@@ -2282,11 +2393,11 @@ impl App {
                         self.set_cursor(pane, i, &mut cmds);
                         if double {
                             // Consume the sequence so a third click starts fresh.
+                            // Same target as Enter/`a`: a tasks-pane row runs its
+                            // def directly; other panes open the action menu.
                             self.last_click = None;
-                            match self.open_action_menu() {
-                                Some(mode) => self.mode = mode,
-                                None => self.status_line = Some("nothing selected".into()),
-                            }
+                            let u = self.open_actions_or_run();
+                            cmds.extend(u.cmds);
                         } else {
                             // Arm on the clicked row's identity (None → nothing to
                             // match against next click; disarms the sequence).
@@ -2360,7 +2471,10 @@ impl App {
             // the preview, over the left panel it moves the selection; it never
             // reaches the panes beneath the modal.
             K::ScrollDown | K::ScrollUp
-                if matches!(self.mode, Mode::ActionMenu { .. } | Mode::DefPick { .. }) =>
+                if matches!(
+                    self.mode,
+                    Mode::ActionMenu { .. } | Mode::DefPick { .. } | Mode::DefArgs { .. }
+                ) =>
             {
                 let delta: i32 = if matches!(m.kind, K::ScrollDown) { 1 } else { -1 };
                 return self.menu_wheel(target, delta);
@@ -3012,7 +3126,7 @@ mod tests {
             // Row 1 is the queued fixture task "write docs for the cache".
             Mode::ActionMenu { title, items, index, .. } => {
                 assert_eq!(title, "write docs for the cache");
-                assert_eq!(items.len(), 3);
+                assert_eq!(items.len(), 4);
                 assert_eq!(*index, 0);
             }
             other => panic!("expected ActionMenu, got {other:?}"),
@@ -3612,7 +3726,6 @@ mod action_result_tests {
 #[cfg(test)]
 mod menu_flow_tests {
     use super::*;
-    use crate::action_menu::MenuAction;
     use crate::ipc::types::{Project, StateSnapshot, TaskInstance, TaskStatus, WorktreeInfo};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::collections::HashMap;
@@ -3690,6 +3803,26 @@ mod menu_flow_tests {
     }
 
     #[test]
+    fn queue_menu_execute_stop_emits_stop_and_closes() {
+        // A running task: Stop (index 2) is the sole enabled row; Enter dispatches
+        // the "stop" RPC with the task id and closes the menu.
+        let mut snap = failed_task_snapshot();
+        snap.tasks[0].status = TaskStatus::Running;
+        let mut a = app_with(snap);
+        a.update(enter()); // open menu
+        a.update(down()); // Skip
+        a.update(down()); // Stop
+        let u = a.update(enter()); // execute Stop
+        assert!(matches!(a.mode, Mode::List));
+        assert!(
+            u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+                if call.method == "stop" && call.params == serde_json::json!({ "id": "t1" }))),
+            "expected stop Cmd, got {:?}",
+            u.cmds,
+        );
+    }
+
+    #[test]
     fn queue_menu_arrows_move_highlight() {
         let mut a = app_with(failed_task_snapshot());
         a.update(enter());
@@ -3748,7 +3881,7 @@ mod menu_flow_tests {
                 assert_eq!(query, "sk");
                 assert_eq!(*index, 0);
                 // Underlying items unchanged; the filter is a view over them.
-                assert_eq!(items.len(), 3);
+                assert_eq!(items.len(), 4);
             }
             other => panic!("{other:?}"),
         }
@@ -3865,7 +3998,8 @@ mod menu_flow_tests {
         let mut a = app_with(snap);
         a.update(enter());
         a.update(down());
-        a.update(down()); // -> Assign worktree
+        a.update(down());
+        a.update(down()); // -> Assign worktree (past the disabled Stop row)
         a.update(enter());
         match &a.mode {
             Mode::WorktreeInput { task_id, .. } => assert_eq!(task_id, "t1"),
@@ -3935,8 +4069,8 @@ mod menu_flow_tests {
 
     #[test]
     fn tasks_pane_run_zero_arg_def_dispatches_and_closes() {
-        // tasks-pane Run → RunNamedDef. A zero-arg def dispatches runDefinition
-        // immediately (implemented in Task 18; args-form path is Task 19).
+        // tasks-pane Enter runs the highlighted def directly (no menu hop). A
+        // zero-arg def dispatches runDefinition immediately.
         let snap = StateSnapshot {
             projects: vec![Project { name: "platform".into() }],
             ..Default::default()
@@ -3949,8 +4083,7 @@ mod menu_flow_tests {
             d
         }]);
         focus_tasks(&mut a);
-        a.update(enter()); // open tasks menu
-        let u = a.update(enter()); // execute Run → immediate dispatch (zero-arg)
+        let u = a.update(enter()); // single Enter → immediate dispatch (zero-arg)
         assert!(matches!(a.mode, Mode::List));
         assert!(
             u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, invalidate_defs_for, .. }
@@ -3961,9 +4094,6 @@ mod menu_flow_tests {
             "expected an immediate runDefinition dispatch, got {:?}",
             u.cmds,
         );
-        // The menu action carries repo+name for the dispatch.
-        let (_t, items) = crate::action_menu::tasks_menu(&a.defs_by_project["platform"][0]);
-        assert!(matches!(items[0].action, MenuAction::RunNamedDef { .. }));
     }
 
     #[test]
@@ -4491,7 +4621,6 @@ mod bulk_flow_tests {
 #[cfg(test)]
 mod def_pick_tests {
     use super::*;
-    use crate::action_menu::MenuAction;
     use crate::ipc::types::{ArgSpec, DefinitionSummary, Project, StateSnapshot, WorktreeInfo};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::collections::HashMap;
@@ -4609,36 +4738,36 @@ mod def_pick_tests {
         assert!(app.reconcile_defs().is_none(), "reconcile must dedup against the eager re-fetch");
     }
 
-    // --- Step 11: RunNamedDef (tasks pane) dispatch shapes ---
+    // --- tasks-pane Enter runs the highlighted def (dispatch shapes) ---
     #[test]
-    fn run_named_def_zero_arg_dispatches_immediately() {
+    fn tasks_pane_enter_zero_arg_dispatches_immediately() {
         let mut app = fixture_app_with_defs("platform", vec![dsum("platform", "noargs", "project", vec![])]);
-        let update = app.execute_menu_action(MenuAction::RunNamedDef { repo: "platform".into(), name: "noargs".into() });
-        match &update.cmds[0] {
-            Cmd::Rpc { call, invalidate_defs_for, timeout_is_ok, .. } => {
-                assert_eq!(call.method, "runDefinition");
-                assert_eq!(call.params["repo"], "platform");
-                assert_eq!(call.params["name"], "noargs");
-                assert_eq!(call.params["args"], serde_json::json!([]));
-                assert_eq!(call.params["source"], "tui");
-                assert!(call.params.get("worktree").is_none());
-                assert_eq!(invalidate_defs_for.as_deref(), Some("platform"));
-                assert!(*timeout_is_ok);
-            }
-            other => panic!("expected runDefinition Rpc, got {other:?}"),
-        }
+        app.set_focus(PaneId::Tasks);
+        let update = app.update(key(KeyCode::Enter));
+        assert!(
+            update.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, invalidate_defs_for, timeout_is_ok, .. }
+                if call.method == "runDefinition"
+                    && call.params["repo"] == "platform"
+                    && call.params["name"] == "noargs"
+                    && call.params["args"] == serde_json::json!([])
+                    && call.params["source"] == "tui"
+                    && call.params.get("worktree").is_none()
+                    && invalidate_defs_for.as_deref() == Some("platform")
+                    && *timeout_is_ok)),
+            "expected an immediate runDefinition Rpc, got {:?}", update.cmds,
+        );
         assert!(matches!(app.mode, Mode::List));
     }
 
     #[test]
-    fn run_named_def_with_args_opens_def_args_with_ambient_overlay() {
+    fn tasks_pane_enter_with_args_opens_run_form_with_ambient_overlay() {
         let mut app = fixture_app_with_defs_and_worktree(
             "platform",
             vec![dsum("platform", "deploy", "project", vec![arg("source")])],
             ("wt-a", "jus-9-x"),
         );
-        let update = app.execute_menu_action(MenuAction::RunNamedDef { repo: "platform".into(), name: "deploy".into() });
-        assert!(update.cmds.is_empty()); // no dispatch yet — form opens
+        app.set_focus(PaneId::Tasks);
+        let update = app.update(key(KeyCode::Enter));
         match &app.mode {
             Mode::DefArgs { form } => {
                 assert_eq!(form.args[0].options.as_deref(), Some(&["jus-9-x".to_string()][..]));
@@ -4648,6 +4777,12 @@ mod def_pick_tests {
             }
             other => panic!("expected DefArgs, got {other:?}"),
         }
+        // Opening the form fetches the prompt for the right panel.
+        assert!(
+            update.cmds.iter().any(|c| matches!(c, Cmd::FetchDefinition { repo, name }
+                if repo == "platform" && name == "deploy")),
+            "expected a FetchDefinition, got {:?}", update.cmds,
+        );
     }
 
     // --- task menu (`t`) → Mode::DefPick, ordering, context, empty guard ---
@@ -4979,6 +5114,50 @@ mod def_pick_tests {
         });
         let update = app.update(ev);
         assert!(matches!(update.cmds[0], Cmd::Rpc { .. }));
+        assert!(matches!(app.mode, Mode::List));
+    }
+
+    // Bracketed paste into the run form's free-text field keeps newlines verbatim
+    // (the "paste a bug report" flow); a multiline blob must not submit mid-paste.
+    #[test]
+    fn def_args_paste_inserts_multiline_verbatim() {
+        let mut app = def_args_app(
+            vec![ArgSpec { name: "desc".into(), default: None, options: None, description: None }],
+            HashMap::new(),
+            None,
+        );
+        let u = app.update(Event::Paste("line one\nline two".into()));
+        assert!(u.dirty);
+        assert!(u.cmds.is_empty()); // no submit — the paste just fills the field
+        match &app.mode {
+            Mode::DefArgs { form } => assert_eq!(form.values[0], "line one\nline two"),
+            other => panic!("expected DefArgs still open, got {other:?}"),
+        }
+    }
+
+    // Paste into a single-line input collapses newlines/tabs to spaces so a
+    // multiline paste can't smuggle a newline into a one-line field.
+    #[test]
+    fn paste_into_single_line_input_collapses_control_chars() {
+        let mut app = fixture_app_one_project("platform");
+        app.mode = Mode::AddTask {
+            worktree: None,
+            session: SessionMode::Fresh,
+            input: tui_input::Input::default(),
+        };
+        app.update(Event::Paste("do a\nthen b".into()));
+        match &app.mode {
+            Mode::AddTask { input, .. } => assert_eq!(input.value(), "do a then b"),
+            other => panic!("expected AddTask, got {other:?}"),
+        }
+    }
+
+    // Paste is inert in List mode (no text target).
+    #[test]
+    fn paste_in_list_mode_is_ignored() {
+        let mut app = fixture_app_one_project("platform");
+        let u = app.update(Event::Paste("noise".into()));
+        assert!(!u.dirty);
         assert!(matches!(app.mode, Mode::List));
     }
 }

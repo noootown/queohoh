@@ -380,6 +380,16 @@ export class ApiServer {
 				deps.onMutation();
 				return true;
 			}
+			case "stop": {
+				const task = this.mustGet(String(params.id));
+				if (task.status !== "running") {
+					throw new Error(`cannot stop task in status ${task.status}`);
+				}
+				// No onMutation: the status change follows later, when the killed
+				// worker settles and the store flips the task to failed.
+				deps.engine.stopTask(task.id);
+				return true;
+			}
 			case "setWorktree": {
 				const task = this.mustGet(String(params.id));
 				if (task.status !== "needs-input") {

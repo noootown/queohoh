@@ -54,26 +54,50 @@ describe("resolveTarget", () => {
 		});
 	});
 
-	it("pr ref: spawns ticket-named worktree from branch ticket id", async () => {
+	it("pr ref: spawns a branch-named worktree", async () => {
 		const io = stubIO({ prBranch: async () => "JUS-1423-fix-auth" });
 		expect(await resolveTarget("pr:1423", ctx, io)).toEqual({
 			outcome: "resolved",
-			worktree: "JUS-1423",
+			worktree: "JUS-1423-fix-auth",
 			ephemeral: false,
 		});
 		expect(io.spawned).toEqual([
-			{ name: "JUS-1423", branch: "JUS-1423-fix-auth" },
+			{ name: "JUS-1423-fix-auth", branch: "JUS-1423-fix-auth" },
+		]);
+	});
+
+	it("pr ref: reuses an existing worktree named like the branch", async () => {
+		const io = stubIO({
+			prBranch: async () => "JUS-1423-fix-auth",
+			listWorktrees: async () => [wt("JUS-1423-fix-auth", "other-branch")],
+		});
+		expect(await resolveTarget("pr:1423", ctx, io)).toEqual({
+			outcome: "resolved",
+			worktree: "JUS-1423-fix-auth",
+			ephemeral: false,
+		});
+		expect(io.spawned).toEqual([]);
+	});
+
+	it("pr ref: folds branch slashes into the worktree name", async () => {
+		const io = stubIO({
+			prBranch: async () => "dependabot/npm_and_yarn/npm-0846159061",
+		});
+		expect(await resolveTarget("pr:1821", ctx, io)).toEqual({
+			outcome: "resolved",
+			worktree: "dependabot-npm_and_yarn-npm-0846159061",
+			ephemeral: false,
+		});
+		expect(io.spawned).toEqual([
+			{
+				name: "dependabot-npm_and_yarn-npm-0846159061",
+				branch: "dependabot/npm_and_yarn/npm-0846159061",
+			},
 		]);
 	});
 
 	it("pr ref: needs-input when pr not found", async () => {
 		const result = await resolveTarget("pr:9999", ctx, stubIO());
-		expect(result.outcome).toBe("needs-input");
-	});
-
-	it("pr ref: needs-input when branch has no ticket id", async () => {
-		const io = stubIO({ prBranch: async () => "random-branch-name" });
-		const result = await resolveTarget("pr:1423", ctx, io);
 		expect(result.outcome).toBe("needs-input");
 	});
 

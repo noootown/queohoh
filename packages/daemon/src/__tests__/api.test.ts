@@ -52,6 +52,7 @@ async function setup(opts?: {
 	const okResult: RunResult = {
 		exitCode: 0,
 		timedOut: false,
+		signal: null,
 		sessionId: null,
 		resultText: "ok",
 		stderr: "",
@@ -174,6 +175,7 @@ describe("ApiServer", () => {
 		const okResult: RunResult = {
 			exitCode: 0,
 			timedOut: false,
+			signal: null,
 			sessionId: null,
 			resultText: "ok",
 			stderr: "",
@@ -448,6 +450,37 @@ describe("ApiServer", () => {
 		});
 		await expect(client.call("retry", { id: t.id })).rejects.toThrow(
 			/cannot retry/,
+		);
+	});
+
+	it("stop rejects tasks that are not running", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "failed", error: "boom" });
+		await expect(client.call("stop", { id: t.id })).rejects.toThrow(
+			/cannot stop task in status failed/,
+		);
+	});
+
+	it("stop on a running task with no tracked child surfaces the engine error", async () => {
+		// A task marked running but whose child was never tracked (e.g. it started
+		// under a previous daemon) has no pid — stopTask throws, and the RPC relays
+		// that message rather than silently succeeding.
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "running", error: null });
+		await expect(client.call("stop", { id: t.id })).rejects.toThrow(
+			/no running child tracked/,
 		);
 	});
 

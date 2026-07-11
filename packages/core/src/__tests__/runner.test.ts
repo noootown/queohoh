@@ -38,6 +38,7 @@ describe("executeClaude", () => {
 		});
 		expect(result.exitCode).toBe(0);
 		expect(result.timedOut).toBe(false);
+		expect(result.signal).toBeNull();
 		expect(result.sessionId).toBe("sess-123");
 		expect(result.resultText).toBe("All done.");
 		expect(result.usage).toEqual({ costUsd: 0.42, turns: 3, durationMs: 1234 });
@@ -68,6 +69,9 @@ describe("executeClaude", () => {
 			redact: passthrough,
 		});
 		expect(result.timedOut).toBe(true);
+		// The timeout path kills the process group with SIGTERM; the close event
+		// surfaces that signal.
+		expect(result.signal).toBe("SIGTERM");
 	}, 15_000);
 
 	it("reports nonzero exit with stderr", async () => {
@@ -84,6 +88,7 @@ describe("executeClaude", () => {
 			redact: passthrough,
 		});
 		expect(result.exitCode).toBe(2);
+		expect(result.signal).toBeNull();
 		expect(result.stderr).toContain("boom");
 	});
 

@@ -158,6 +158,127 @@ describe("instantiateDefinition — args", () => {
 		expect(created[0]?.target.ref).toBe("worktree:wt-plan-a");
 	});
 
+	it("canonicalizes a pasted URL ref rendered from the worktree template", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [{ name: "ref", default: "temp" }],
+				dedup: "none",
+				worktree: "{{ref}}",
+				prompt: "fix it\n",
+			}),
+			{ mode: "args", values: ["https://github.com/acme/widgets/pull/1821"] },
+			deps(store, "[]"),
+		);
+		expect(created[0]?.target.ref).toBe("pr:1821");
+	});
+
+	it("keeps an unparseable rendered ref verbatim for later resolution", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [{ name: "ref", default: "temp" }],
+				dedup: "none",
+				worktree: "{{ref}}",
+				prompt: "fix it\n",
+			}),
+			{ mode: "args", values: ["not-a-ref"] },
+			deps(store, "[]"),
+		);
+		expect(created[0]?.target.ref).toBe("not-a-ref");
+	});
+
+	it("derives a PR ref from a situation arg under worktree auto", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [{ name: "situation" }],
+				dedup: "none",
+				worktree: "auto",
+				prompt: "{{situation}}\n",
+			}),
+			{
+				mode: "args",
+				values: ["fix https://github.com/acme/widgets/pull/1821 please"],
+			},
+			deps(store, "[]"),
+		);
+		expect(created[0]?.target.ref).toBe("pr:1821");
+	});
+
+	it("derives a ticket ref from a Linear URL under worktree auto", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [{ name: "situation" }],
+				dedup: "none",
+				worktree: "auto",
+				prompt: "{{situation}}\n",
+			}),
+			{
+				mode: "args",
+				values: ["see https://linear.app/jb/issue/JUS-123-fix-it"],
+			},
+			deps(store, "[]"),
+		);
+		expect(created[0]?.target.ref).toBe("ticket:JUS-123");
+	});
+
+	it("derives a ticket ref from a leading bare ticket under worktree auto", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [{ name: "situation" }],
+				dedup: "none",
+				worktree: "auto",
+				prompt: "{{situation}}\n",
+			}),
+			{ mode: "args", values: ["JUS-1821: rework the extraction"] },
+			deps(store, "[]"),
+		);
+		expect(created[0]?.target.ref).toBe("ticket:JUS-1821");
+	});
+
+	it("falls back to temp when auto finds no ref in plain prose", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [{ name: "situation" }],
+				dedup: "none",
+				worktree: "auto",
+				prompt: "{{situation}}\n",
+			}),
+			{ mode: "args", values: ["just make the tests pass"] },
+			deps(store, "[]"),
+		);
+		expect(created[0]?.target.ref).toBe("temp");
+	});
+
+	it("lets refOverride win over worktree auto", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				discovery: null,
+				args: [{ name: "situation" }],
+				dedup: "none",
+				worktree: "auto",
+				prompt: "{{situation}}\n",
+			}),
+			{
+				mode: "args",
+				values: ["fix https://github.com/acme/widgets/pull/1821"],
+			},
+			{ ...deps(store, "[]"), refOverride: "worktree:wt-plan-a" },
+		);
+		expect(created[0]?.target.ref).toBe("worktree:wt-plan-a");
+	});
+
 	it("throws when a required arg has no value and no default", async () => {
 		const store = freshStore();
 		await expect(

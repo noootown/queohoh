@@ -4,25 +4,25 @@ expression: term.backend()
 ---
 "                                        daemon unreachable — retrying… running 0"
 "╭📋 QUEUE─── ➕ [c] ⚙️ [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " "), (29, " ")]
-"│                         ││(nothing selected)                                 │"
-"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│                         ││                                                   │"
-"│ queue empty — [a] on a  ││                                                   │"
-"│                         ││                                                   │"
-"│                         ││                                                   │"
-"│   ╭ pr-ready args ───────────────────────────────────────────────────────╮   │"
-"│   │ pr>     █                          PR number                         │   │"
-"│   │ mode>   ‹ready›                    ready | create                    │   │"
-"│   │ source> wt-a                                                         │   │"
-"╰───│ tab/↓ next · ←/→ cycle · enter run · esc cancel                      │   │"
-"╭⚡ │ [ Run ]  [ Cancel ]                                                  │   │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍╰──────────────────────────────────────────────────────────────────────╯   │" Hidden by multi-width symbols: [(3, " ")]
-"│ no task definitions     ││                                                   │"
-"│                         ││                                                   │"
-"╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES────── ➕ [c]╮│                                                   │" Hidden by multi-width symbols: [(2, " "), (21, " ")]
-"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│ no worktrees            ││                                                   │"
+"│       ╭ pr-ready args ───────────╮╭ pr-ready ────────────────────────╮       │"
+"│ 🔍 [/]│ pr  PR number            ││(loading definition…)             │       │" Hidden by multi-width symbols: [(3, " ")]
+"│       │                          ││                                  │       │"
+"│ queue │                          ││                                  │       │"
+"│       │ mode ‹ready›             ││                                  │       │"
+"│       │                          ││                                  │       │"
+"│       │ source wt-a              ││                                  │       │"
+"│       │                          ││                                  │       │"
+"│       │                          ││                                  │       │"
+"│       │                          ││                                  │       │"
+"╰───────│                          ││                                  │       │"
+"╭⚡ TASK│                          ││                                  │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│                          ││                                  │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no tas│                          ││                                  │       │"
+"│       │                          ││                                  │       │"
+"╰───────│                          ││                                  │       │"
+"╭🌲 WORK│                          ││                                  │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ [ Run ]  [ Cancel ]      ││                                  │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no wor╰ tab/↑↓ move · ←/→ enum · ╯╰──────────────────────────────────╯       │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
 "[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "

@@ -25,11 +25,15 @@ export interface WorkerDeps {
 	globalVars?: Record<string, string>;
 	repoVars?: Record<string, string>;
 	mainSessions?: MainSessionStore;
+	// Reports the spawned claude child's pid so the engine can track it for a
+	// Stop action. Fires once per run, right after spawn.
+	onSpawned?: (taskId: string, pid: number) => void;
 }
 
 const EMPTY_RESULT: RunResult = {
 	exitCode: 1,
 	timedOut: false,
+	signal: null,
 	sessionId: null,
 	resultText: "",
 	stderr: "",
@@ -166,10 +170,18 @@ export async function runTask(
 			eventsPath: deps.runStore.eventsPath(taskId),
 			transcriptPath: deps.runStore.transcriptPath(taskId),
 			redact: deps.redact,
+			onSpawned: (pid) => deps.onSpawned?.(taskId, pid),
 		});
+		// Reason precedence: a timeout is its own outcome; else a signal (a Stop
+		// kills the process group) wins over exit code AND the dirty-tree check,
+		// since a stopped run usually leaves the tree dirty and the signal is the
+		// truer cause; else a non-zero exit; else a dirty tree.
 		if (result.timedOut) {
 			outcome = "failed";
 			reason = "timed out";
+		} else if (result.signal !== null) {
+			outcome = "failed";
+			reason = `stopped (${result.signal})`;
 		} else if (result.exitCode !== 0) {
 			outcome = "failed";
 			reason = `exit code ${result.exitCode}`;

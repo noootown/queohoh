@@ -1,6 +1,7 @@
 import { filterNewItems } from "./dedup.js";
 import type { TaskDefinition } from "./definition.js";
 import { discoverItems } from "./discovery.js";
+import { extractRef, formatRef, parseRef } from "./ref.js";
 import type { Exec } from "./resolver-io.js";
 import type { QueueStore } from "./store.js";
 import type { TaskInstance, TaskSource } from "./task.js";
@@ -83,7 +84,9 @@ export async function instantiateDefinition(
 		deps.store.create({
 			prompt: render(def.prompt, globalVars, repoVars, item),
 			repo: def.repo,
-			ref: deps.refOverride ?? render(def.worktree, globalVars, repoVars, item),
+			ref: canonicalizeRef(
+				resolveRef(def, item, globalVars, repoVars, deps.refOverride),
+			),
 			source: deps.source,
 			priority: def.priority,
 			definition,
@@ -92,6 +95,41 @@ export async function instantiateDefinition(
 			resumeSessionId: deps.resumeSessionId,
 		}),
 	);
+}
+
+/**
+ * Resolve the ref string for a task before canonicalization. `refOverride`
+ * (from launching off a worktree row) always wins. Otherwise `worktree: auto`
+ * derives the ref from the arg values — the first PR URL / Linear URL / leading
+ * ticket found across the item, in declared-arg order — falling back to `temp`;
+ * a literal `auto` is never stored. Any other `worktree` value is a template.
+ */
+function resolveRef(
+	def: TaskDefinition,
+	item: Record<string, string>,
+	globalVars: Record<string, string>,
+	repoVars: Record<string, string>,
+	refOverride: string | undefined,
+): string {
+	if (refOverride !== undefined) return refOverride;
+	if (def.worktree === "auto") {
+		const haystack = def.args.map((a) => item[a.name] ?? "").join("\n");
+		return formatRef(extractRef(haystack) ?? { kind: "temp" });
+	}
+	return render(def.worktree, globalVars, repoVars, item);
+}
+
+/**
+ * Store the canonical `kind:value` form when the ref parses (so a pasted URL
+ * lands as `pr:1821`); leave anything unparseable verbatim for resolution to
+ * surface as needs-input later.
+ */
+function canonicalizeRef(ref: string): string {
+	try {
+		return formatRef(parseRef(ref));
+	} catch {
+		return ref;
+	}
 }
 
 /** Key template when a definition has no discovery block: join declared args. */

@@ -1,7 +1,13 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
+import type {
+	ClaudeExecutor,
+	Exec,
+	GlobalConfig,
+	ResolverIO,
+	RunResult,
+} from "@queohoh/core";
 import {
 	MainSessionStore,
 	makeRedactor,
@@ -15,6 +21,7 @@ import { Engine } from "../engine.js";
 const okResult: RunResult = {
 	exitCode: 0,
 	timedOut: false,
+	signal: null,
 	sessionId: null,
 	resultText: "ok",
 	stderr: "",
@@ -27,6 +34,7 @@ function setup(
 		config?: Partial<GlobalConfig>;
 		claudeResult?: RunResult;
 		exec?: Exec;
+		executeClaude?: ClaudeExecutor;
 	} = {},
 ) {
 	const base = mkdtempSync(join(tmpdir(), "qo-engine-"));
@@ -66,7 +74,9 @@ function setup(
 		config,
 		resolverIO,
 		exec,
-		executeClaude: async () => overrides.claudeResult ?? okResult,
+		executeClaude:
+			overrides.executeClaude ??
+			(async () => overrides.claudeResult ?? okResult),
 		redact: makeRedactor(new Map()),
 		mainSessions,
 	});
@@ -428,4 +438,47 @@ describe("Engine.laneOfCwd", () => {
 		);
 		expect(engine.laneOfCwd("/elsewhere")).toBeNull();
 	});
+});
+
+describe("Engine.stopTask", () => {
+	it("throws when no child is tracked for the id", () => {
+		const { engine } = setup();
+		expect(() => engine.stopTask("nope")).toThrow(/no running child tracked/);
+	});
+
+	it("kills a running task's child, failing it with the signal reason", async () => {
+		const { spawn } = await import("node:child_process");
+		let markSpawned: () => void = () => {};
+		const spawned = new Promise<void>((r) => {
+			markSpawned = r;
+		});
+		// A real detached child (own process group) so stopTask's group-kill lands.
+		const executeClaude: ClaudeExecutor = (opts) =>
+			new Promise((resolve) => {
+				const child = spawn("sleep", ["30"], {
+					detached: true,
+					stdio: "ignore",
+				});
+				if (child.pid) opts.onSpawned?.(child.pid);
+				markSpawned();
+				child.on("close", (code, signal) => {
+					resolve({ ...okResult, exitCode: code ?? 1, signal: signal ?? null });
+				});
+			});
+		const { engine, store } = setup({ executeClaude });
+		const task = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		await engine.tick(); // resolve
+		await engine.tick(); // start → spawns the child
+		await spawned; // the pid is now tracked
+		engine.stopTask(task.id);
+		await engine.drain();
+		const t = store.list()[0];
+		expect(t?.status).toBe("failed");
+		expect(t?.error).toBe("stopped (SIGTERM)");
+	}, 15_000);
 });

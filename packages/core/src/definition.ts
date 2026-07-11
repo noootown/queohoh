@@ -39,6 +39,9 @@ const DefinitionConfigSchema = z
 		cron: z.string().min(1).optional(),
 		args: z.array(ArgEntrySchema).default([]),
 		dedup: z.enum(["skip_seen", "retry_errored", "none"]).default("skip_seen"),
+		// A ref template (`temp`, `repo`, `pr:{{n}}`, `ticket:{{id}}`,
+		// `worktree:{{name}}`) or the literal `auto`, which derives the ref from
+		// the task's arg values at instantiate time (see resolveRef).
 		worktree: z.string().default("temp"),
 		pre_run: z.string().optional(),
 		post_run: z.string().optional(),
