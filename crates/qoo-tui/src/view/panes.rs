@@ -10,7 +10,7 @@ use crate::app::{App, ListPane, PaneId, Selection};
 use crate::hit::{HitMap, HitTarget, PaneButton};
 use crate::ipc::types::DefinitionSummary;
 use crate::selectors::{
-    COLLAPSED_H, DefColLayout, QueueColLayout, QueueRow, WorktreeRow, WtColLayout, WtState,
+    COLLAPSED_H, DefColLayout, QueueColLayout, QueueRow, WorktreeRow, WtColLayout,
     absolute_local_label, cron_human, def_col_layout, elapsed_label, pad_clip,
     pane_layout, pane_title, queue_col_layout, queue_divider_after, relative_age_label,
     wt_author_text, wt_col_layout,
@@ -132,8 +132,7 @@ fn fit_chip_strip(
 /// (each chip costs a leading space + its cell width); when even zero chips fit
 /// the title is left to be clipped by `Block::title`. Returns the border `title`
 /// Line to draw and the absolute hit rects for the surviving chips at their
-/// right-aligned coordinates. All widths are cell widths (`Span::width`), so the
-/// double-width emoji icons stay aligned.
+/// right-aligned coordinates. All widths are cell widths (`Span::width`).
 fn build_header(
     area: Rect,
     title: &str,
@@ -365,10 +364,17 @@ fn worktree_line(
     p: &Palette,
     now_epoch_s: u64,
 ) -> Line<'static> {
-    let dot = match row.state {
-        WtState::Free => p.ok,
-        WtState::Busy | WtState::You => p.warn,
-        WtState::Failed => p.error,
+    // Leading indicator: outstanding work on the lane (the running task + queued
+    // tasks). 0 → the green idle dot; N > 0 → the count as a single yellow digit
+    // ('9' caps the cell at ≥9). Failed lanes no longer color this slot red —
+    // the ✗ glyph in the last-task column already carries failure (user request:
+    // green/yellow only, count over state).
+    let outstanding = row.queued + usize::from(row.running_elapsed.is_some());
+    let lead = if outstanding == 0 {
+        Span::styled(GLYPH_DOT.to_string(), Style::default().fg(p.ok))
+    } else {
+        let digit = char::from_digit(outstanding.min(9) as u32, 10).expect("min(9) is a digit");
+        Span::styled(digit.to_string(), Style::default().fg(p.warn))
     };
     let gap = " ".repeat(crate::selectors::COL_GAP);
     // Informational columns read in real palette colors (never grey — grey-on-dark
@@ -379,11 +385,11 @@ fn worktree_line(
     let warn = Style::default().fg(p.warn);
     let mauve = Style::default().fg(p.mauve);
     let fg = Style::default().fg(p.fg);
-    // Anchor: `●` + space, then the front marker cluster — the ⌂ main-session
-    // marker and the `±` uncommitted-changes marker (each a single-cell slot,
-    // present when any visible row carries the value) — then the accent-colored
-    // worktree identity name.
-    let mut spans = vec![Span::styled(GLYPH_DOT.to_string(), Style::default().fg(dot)), Span::raw(" ")];
+    // Anchor: the lead indicator + space, then the front marker cluster — the ⌂
+    // main-session marker and the `±` uncommitted-changes marker (single-cell
+    // slots, statically reserved) — then the accent-colored worktree identity
+    // name.
+    let mut spans = vec![lead, Span::raw(" ")];
     if layout.has_chain {
         if row.has_main_session {
             spans.push(Span::styled(GLYPH_MAIN_SESSION.to_string(), info));
@@ -413,22 +419,23 @@ fn worktree_line(
                 spans.push(Span::styled(glyph.to_string(), glyph_style(*glyph, p)));
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(shown.clone(), if *is_def { mauve } else { fg }));
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(age.clone(), info));
+                // Right-pin the age at the far edge of the column so ages line
+                // up vertically regardless of task-name length.
                 let used = 2 + shown.chars().count() + 1 + age.chars().count();
-                if used < layout.last_w {
-                    spans.push(Span::raw(" ".repeat(layout.last_w - used)));
-                }
+                let pad = 1 + layout.last_w.saturating_sub(used);
+                spans.push(Span::raw(" ".repeat(pad)));
+                spans.push(Span::styled(age.clone(), info));
             }
             None => spans.push(Span::raw(pad_clip("", layout.last_w))),
         }
     }
-    // Last-commit author name (info); pairs with the commit-age to read
-    // `koshea  3d ago` = who · when. Clipped with `…` past AUTHOR_W.
+    // Last-commit author name (plain fg — a full column of teal read as noise);
+    // pairs with the commit-age to read `koshea  3d ago` = who · when. Clipped
+    // with `…` past AUTHOR_W.
     if layout.author_w > 0 {
         spans.push(Span::raw(gap.clone()));
         match wt_author_text(row) {
-            Some(t) => spans.push(Span::styled(pad_clip(&t, layout.author_w), info)),
+            Some(t) => spans.push(Span::styled(pad_clip(&t, layout.author_w), fg)),
             None => spans.push(Span::raw(pad_clip("", layout.author_w))),
         }
     }
@@ -503,6 +510,17 @@ fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line
             Style::default().fg(p.fg),
         ));
     }
+    // Model column: the def's model (`claude-` prefix stripped), a fixed metadata cell
+    // right before the schedule chip. Teal/info like args. Padded to the reserved
+    // width so a def without a model leaves it blank and the schedule stays
+    // pinned; omitted entirely when no visible def carries a model.
+    if layout.model_w > 0 {
+        spans.push(Span::raw(gap.clone()));
+        spans.push(Span::styled(
+            pad_clip(&crate::selectors::def_model_text(def), layout.model_w),
+            Style::default().fg(p.info),
+        ));
+    }
     // Schedule column: the ⏰ icon plus the humanized cron when the def has one;
     // a def with a discovery command but no cron keeps the bare ⏰ marker; a def
     // with neither leaves the column blank. Teal/info like the args column.
@@ -553,8 +571,16 @@ fn render_scrollbar(
         Rect { x: track.x, y: thumb_top, width: 1, height: thumb_h },
         HitTarget::ScrollbarThumb(pane),
     );
+    // Explicit bg(Reset) on every scrollbar part: a selected row paints its
+    // selection bg across the full pane width (including this column), and the
+    // scrollbar glyphs alone would let that blue bleed through behind them.
+    let clear_bg = Style::default().bg(ratatui::style::Color::Reset);
     frame.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight),
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .track_style(clear_bg)
+            .thumb_style(clear_bg)
+            .begin_style(clear_bg)
+            .end_style(clear_bg),
         area,
         &mut state,
     );
@@ -950,7 +976,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     // Title-bar buttons register LAST of all so each chip wins its sub-rect over
     // the divider band sharing the border row. There is deliberately NO
     // whole-title-row collapse target: it swallowed divider drags starting on
-    // the border (collapse stays on the 🔽 [z] chip and the `z` key).
+    // the border (collapse stays on the [z] chip and the `z` key).
     for (rect, pane, button) in btn_hits {
         hits.push(rect, HitTarget::PaneButton(pane, button));
     }

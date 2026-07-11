@@ -41,7 +41,7 @@ pub enum HitTarget {
     /// click wins its sub-rect over the divider band sharing the border row.
     /// The rest of the title row deliberately has no click target — a whole-row
     /// collapse toggle used to live there and swallowed divider drags (collapse
-    /// ≡ the 🔽 [z] chip or the `z` key).
+    /// ≡ the [z] collapse chip or the `z` key).
     PaneButton(PaneId, PaneButton),
     /// The picker's right (preview) panel interior. Clicks are inert (like
     /// `Modal`); the mouse wheel over it scrolls the preview instead of moving

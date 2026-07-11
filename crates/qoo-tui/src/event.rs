@@ -6,7 +6,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::app::{App, Update};
 use crate::ipc::client::{spawn_subscription, RpcClient};
-use crate::ipc::types::{DefinitionSummary, StateSnapshot, TaskDefinition};
+use crate::ipc::types::{DefinitionSummary, SettingsPayload, StateSnapshot, TaskDefinition};
 use crate::runfiles::RunFiles;
 
 /// Everything enters the app through this one enum (contract-verbatim).
@@ -25,6 +25,13 @@ pub enum Event {
     RunFiles { task_id: String, files: RunFiles },
     Definitions { repo: String, defs: Vec<DefinitionSummary> },
     Definition { repo: String, name: String, def: Option<TaskDefinition> },
+    /// Result of the on-demand `settings` RPC that backs the `s` overlay.
+    /// `None` = the call failed or the daemon predates the RPC (stored as
+    /// `Some(None)` in `App::settings` → overlay shows the "unavailable" line).
+    Settings { payload: Option<SettingsPayload> },
+    /// The post-copy selection fade fired. Stale (epoch < the current selection
+    /// generation) expiries are ignored by `update`.
+    SelectionExpired { epoch: u64 },
     ActionResult { status: Option<String>, invalidate_defs_for: Option<String> },
 }
 
@@ -52,11 +59,24 @@ pub enum Cmd {
     },
     FetchDefinitions { repo: String },
     FetchDefinition { repo: String, name: String },
+    /// One-shot fetch of the daemon's model-alias settings for the `s` overlay.
+    /// Emitted once on first open (App::settings is None); the reply lands as
+    /// [`Event::Settings`].
+    FetchSettings,
     ReadRunFiles { task_id: String, tail_lines: usize, delay_ms: u64 },
     OpenTmux { path: String },
     /// Write-through of the per-project pane layout. Fire-and-forget off the UI
     /// thread; a failed write is silently tolerated (layout is a convenience).
     SaveLayout { path: PathBuf, json: String },
+    /// Copy `text` to the system clipboard from the detail-pane text selection:
+    /// an OSC 52 escape (works in modern terminals and over ssh/tmux) written
+    /// synchronously on the UI thread before the next redraw, plus a best-effort
+    /// `pbcopy` pipe on macOS. Fire-and-forget.
+    CopyClipboard { text: String },
+    /// Arm the post-copy selection fade: after `delay_ms`, deliver
+    /// [`Event::SelectionExpired`] carrying `epoch` so a selection started in
+    /// the meantime survives (its epoch is newer).
+    ExpireSelection { epoch: u64, delay_ms: u64 },
     Heal,
     Quit,
 }
@@ -158,6 +178,12 @@ pub async fn run_event_loop<B: ratatui::backend::Backend>(
         if let Some(cmd) = app.reconcile_defs() {
             cmds.push(cmd);
         }
+        // Same lazy pattern for the FULL definition backing the detail pane's
+        // Definition context — without this, `full_defs` never fills and the
+        // pane shows "(loading definition…)" forever.
+        if let Some(cmd) = app.reconcile_full_def() {
+            cmds.push(cmd);
+        }
         let mut quit = false;
         for cmd in cmds {
             if matches!(cmd, Cmd::Quit) {
@@ -173,6 +199,24 @@ pub async fn run_event_loop<B: ratatui::backend::Backend>(
             draw(terminal, app)?;
         }
     }
+}
+
+/// Minimal standard base64 (RFC 4648, `+`/`/` alphabet, `=` padded) for the
+/// clipboard OSC 52 payload — kept local so the copy path pulls in no new crate.
+fn base64_encode(input: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(A[(n >> 18 & 63) as usize] as char);
+        out.push(A[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { A[(n >> 6 & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
+    }
+    out
 }
 
 /// Compose the RpcSeq status line: "reran 3" or "reran 2, 1 failed: <first error>".
@@ -251,6 +295,20 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 let _ = tx.send(Event::Definition { repo, name, def });
             });
         }
+        Cmd::FetchSettings => {
+            tokio::spawn(async move {
+                let call = RpcCall { method: "settings".into(), params: serde_json::Value::Null };
+                // A failed call OR a shape an old daemon can't produce → None,
+                // stored as `Some(None)` so the overlay renders the "unavailable"
+                // line instead of spinning forever (mirrors FetchDefinition's
+                // catch → null pattern).
+                let payload = match rpc_once(&sock, &call, 5_000).await {
+                    Ok(v) => serde_json::from_value::<SettingsPayload>(v).ok(),
+                    Err(_) => None,
+                };
+                let _ = tx.send(Event::Settings { payload });
+            });
+        }
         Cmd::ReadRunFiles { task_id, tail_lines, delay_ms } => {
             tokio::spawn(async move {
                 // Selection-settle debounce lives here (caller just issues the Cmd
@@ -290,6 +348,44 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 let _ = tokio::fs::write(&path, json).await;
             });
         }
+        Cmd::CopyClipboard { text } => {
+            // OSC 52 is written on the calling (UI) thread, not a spawned task, so
+            // it cannot interleave with crossterm's draw bytes: the event loop runs
+            // execute() for each cmd BEFORE the frame redraw, so this lands cleanly
+            // and the next draw fully repaints regardless. `c` = the clipboard
+            // selection; base64 payload per the OSC 52 spec.
+            let encoded = base64_encode(text.as_bytes());
+            {
+                use std::io::Write;
+                let mut out = std::io::stdout().lock();
+                let _ = write!(out, "\x1b]52;c;{encoded}\x07");
+                let _ = out.flush();
+            }
+            // Belt-and-suspenders macOS fallback: pipe the raw text to pbcopy
+            // off-thread (covers terminals with OSC 52 disabled).
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                if let Ok(mut child) = tokio::process::Command::new("pbcopy")
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()
+                {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(text.as_bytes()).await;
+                        let _ = stdin.shutdown().await;
+                    }
+                    let _ = child.wait().await;
+                }
+            });
+        }
+        Cmd::ExpireSelection { epoch, delay_ms } => {
+            // The 1s post-copy fade: sleep off-thread, then hand the epoch back
+            // through the event channel. `update` drops it as stale if a newer
+            // selection started in the meantime.
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                let _ = tx.send(Event::SelectionExpired { epoch });
+            });
+        }
         Cmd::Heal => {
             tokio::spawn(async move {
                 let state = crate::paths::state_path();
@@ -316,6 +412,25 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_matches_known_vectors() {
+        // RFC 4648 test vectors — exercises 0/1/2 trailing bytes (padding cases).
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn base64_encodes_multibyte_utf8() {
+        // "中" is 3 UTF-8 bytes (E4 B8 AD) → one full quantum, no padding.
+        // Ground truth: `printf '中' | base64` → 5Lit.
+        assert_eq!(base64_encode("中".as_bytes()), "5Lit");
+    }
 
     #[test]
     fn seq_summary_all_ok() {

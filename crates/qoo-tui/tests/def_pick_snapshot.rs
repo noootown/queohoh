@@ -16,6 +16,7 @@ fn def_pick_popup_snapshot() {
                 has_discovery: true,
                 cron: None,
                 description: None,
+                model: None,
             },
             DefinitionSummary {
                 repo: "platform".into(),
@@ -28,6 +29,7 @@ fn def_pick_popup_snapshot() {
                 has_discovery: false,
                 cron: None,
                 description: None,
+                model: None,
             },
         ],
         index: 1,

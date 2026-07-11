@@ -3,11 +3,14 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEventKind};
+use ratatui::layout::{Position, Rect};
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::event::{Cmd, Event, RpcCall};
 use crate::hit::{HitMap, HitTarget};
-use crate::ipc::types::{ArgSpec, DefinitionSummary, StateSnapshot, TaskDefinition, TaskStatus};
+use crate::ipc::types::{
+    ArgSpec, DefinitionSummary, SettingsPayload, StateSnapshot, TaskDefinition, TaskStatus,
+};
 use crate::keymap::AppAction;
 use crate::runfiles::RunFiles;
 
@@ -29,6 +32,65 @@ pub enum DragKind {
     DividerH(usize),
     /// Vertical divider between the left pane stack and DETAIL.
     DividerV,
+    /// Text selection in the DETAIL pane content area: the drag extends
+    /// `App::detail_selection.cursor`; the matching `Up` copies to the clipboard.
+    DetailSelect,
+}
+
+/// A point in the DETAIL pane's WRAPPED content, in ABSOLUTE display-line
+/// coordinates (survives scrolling — the same text stays selected as the window
+/// moves under it). `cell` is a 0-based terminal cell column relative to the
+/// line's first cell; it is mapped to a char index only when text is extracted,
+/// so multi-width chars are handled once at that boundary rather than smeared
+/// through the selection logic. `Copy` so `DetailSelection` stays trivial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetailPoint {
+    pub line: usize,
+    pub cell: usize,
+}
+
+/// An in-progress or finalized text selection in the DETAIL pane. `anchor` is
+/// where the drag began, `cursor` where it currently is; the pair is ordered at
+/// read time (`ordered`). It persists after the drag-release (stays highlighted)
+/// until a plain click, or a content / sub-tab / focus change, clears it — so a
+/// scroll keeps the highlight anchored to the same wrapped lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetailSelection {
+    pub anchor: DetailPoint,
+    pub cursor: DetailPoint,
+}
+
+impl DetailSelection {
+    /// `(start, end)` ordered by `(line, cell)` — reading order.
+    pub fn ordered(&self) -> (DetailPoint, DetailPoint) {
+        if (self.anchor.line, self.anchor.cell) <= (self.cursor.line, self.cursor.cell) {
+            (self.anchor, self.cursor)
+        } else {
+            (self.cursor, self.anchor)
+        }
+    }
+
+    /// A zero-width selection (press with no movement) — a plain click, which
+    /// clears rather than copies.
+    fn is_click(&self) -> bool {
+        self.anchor == self.cursor
+    }
+}
+
+/// Render-feedback geometry the DETAIL view publishes each frame so mouse
+/// routing can resolve a `(col, row)` into a [`DetailPoint`] against the SAME
+/// wrapped lines that were just drawn. Interior-mutability twin of `hit` /
+/// `detail_wrapped_len` (see [`App::detail_geom`]); always fresh because every
+/// state change redraws before the next event is read.
+#[derive(Debug, Clone, Default)]
+pub struct DetailGeom {
+    /// The content region (below the sub-tab chip row, inside the border).
+    pub area: Rect,
+    /// Absolute index of the first wrapped display line visible in `area`.
+    pub window_start: usize,
+    /// Every wrapped display line's text (the WHOLE content, not just the
+    /// window) so absolute line indices resolve and clamp correctly.
+    pub lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +170,10 @@ pub enum Mode {
     Search { pane: ListPane },
     /// Full-screen keymap overlay; any key returns to `List`.
     Help,
+    /// Read-only model-alias settings overlay (`s`). Any key returns to `List`,
+    /// exactly like `Help`. The data it shows lives in `App::settings`, fetched
+    /// once on first open.
+    Settings,
     /// Single-target (or bulk) action menu over the last-focused list pane's
     /// selection. Lazyvim-style picker: `query` filters `items` by label (empty
     /// = all), `index` is the highlighted row WITHIN the filtered view (reset to
@@ -181,14 +247,23 @@ pub struct App {
     pub status_line: Option<String>,
     pub run_files: Option<(String, RunFiles)>,
     pub defs_by_project: HashMap<String, Vec<DefinitionSummary>>,
+    /// Model-alias settings backing the `s` overlay, lazily fetched on first
+    /// open. Three-state: `None` = never fetched (fetch is in flight → overlay
+    /// shows "loading"); `Some(None)` = the fetch failed or the daemon predates
+    /// the `settings` RPC (overlay shows the "unavailable" line); `Some(Some(p))`
+    /// = data. Fetched once and cached for the session.
+    pub settings: Option<Option<SettingsPayload>>,
     /// Repos with a `FetchDefinitions` in flight — the lazy per-tab fetch dedup
     /// set. `reconcile_defs` inserts before emitting; `Event::Definitions`
     /// clears on arrival (Task 18).
     pub defs_inflight: HashSet<String>,
     pub full_defs: HashMap<String, TaskDefinition>, // keyed "repo/name"
-    /// Defs with a `FetchDefinition` in flight — the lazy per-def prompt fetch
-    /// dedup set (keyed "repo/name", same as `full_defs`). `prefetch_full_def`
-    /// inserts before emitting; `Event::Definition` clears on arrival.
+    /// `"repo/name"` keys with a `FetchDefinition` in flight — the lazy detail
+    /// fetch dedup set (mirrors `defs_inflight`), shared by the task-menu
+    /// prefetch (`prefetch_full_def`) and the detail-pane preview
+    /// (`reconcile_full_def`). A FAILED fetch leaves its key here as a poison
+    /// marker so `reconcile_full_def` doesn't refetch-loop; invalidation
+    /// (`ActionResult::invalidate_defs_for`) clears the repo's keys.
     pub full_defs_inflight: HashSet<String>,
     pub now_epoch_s: u64,
     /// Monotonic millisecond clock stamped by the event loop before every
@@ -233,8 +308,23 @@ pub struct App {
     /// step), written by the view each draw.
     pub menu_preview_page: std::cell::Cell<usize>,
     /// Active left-mouse drag: `Some(kind)` between a `Down` on a draggable
-    /// target (scrollbar thumb/track, a pane divider) and the matching `Up`.
+    /// target (scrollbar thumb/track, a pane divider, a detail text-selection)
+    /// and the matching `Up`.
     pub drag: Option<DragKind>,
+    /// Current DETAIL-pane text selection (tmux-style copy-on-drag). `Some`
+    /// while dragging and briefly after release (a 1s post-copy fade); anchored
+    /// to absolute wrapped-line indices so scrolling keeps the same text
+    /// highlighted.
+    pub detail_selection: Option<DetailSelection>,
+    /// Monotonic selection generation. Incremented when a selection starts; the
+    /// post-copy fade timer carries the epoch it was armed with, so an expiry
+    /// arriving after a NEWER selection began is recognized as stale and ignored.
+    pub selection_epoch: u64,
+    /// Render-feedback twin of `hit` for the DETAIL content: the geometry +
+    /// wrapped lines of the last frame, so a mouse `(col,row)` can be resolved to
+    /// a [`DetailPoint`] against exactly what was drawn (interior mutability — the
+    /// view holds only `&App`).
+    pub detail_geom: std::cell::RefCell<DetailGeom>,
     /// Session-only pane-layout overrides set by dragging the dividers (global,
     /// not per-tab, not persisted to disk). `None` = the default size formula.
     /// Held as requested heights/width; `pane_layout`/`clamp_left_cols` re-clamp
@@ -287,6 +377,7 @@ impl App {
             status_line: None,
             run_files: None,
             defs_by_project: HashMap::new(),
+            settings: None,
             defs_inflight: HashSet::new(),
             full_defs: HashMap::new(),
             full_defs_inflight: HashSet::new(),
@@ -301,6 +392,9 @@ impl App {
             menu_preview_max_scroll: std::cell::Cell::new(0),
             menu_preview_page: std::cell::Cell::new(0),
             drag: None,
+            detail_selection: None,
+            selection_epoch: 0,
+            detail_geom: std::cell::RefCell::new(DetailGeom::default()),
             left_cols: None,
             queue_h_override: None,
             tasks_h_override: None,
@@ -717,8 +811,8 @@ impl App {
                     return Update { dirty: false, cmds: vec![] };
                 }
                 match &self.mode {
-                    Mode::Help => {
-                        // Any key closes the help overlay.
+                    Mode::Help | Mode::Settings => {
+                        // Any key closes the help / settings overlay.
                         self.mode = Mode::List;
                         Update { dirty: true, cmds: Vec::new() }
                     }
@@ -852,6 +946,12 @@ impl App {
                     // this eager re-fetch instead of emitting a duplicate.
                     self.defs_by_project.remove(&repo);
                     self.defs_inflight.insert(repo.clone());
+                    // Full definitions may be stale for the same reason; dropping
+                    // them (and their poison markers) lets `reconcile_full_def`
+                    // lazily refetch whichever one the detail pane shows next.
+                    let prefix = format!("{repo}/");
+                    self.full_defs.retain(|k, _| !k.starts_with(&prefix));
+                    self.full_defs_inflight.retain(|k| !k.starts_with(&prefix));
                     cmds.push(Cmd::FetchDefinitions { repo });
                 }
                 Update { dirty: true, cmds }
@@ -869,17 +969,37 @@ impl App {
                 self.defs_inflight.remove(&repo);
                 Update { dirty: true, cmds: vec![] }
             }
-            Event::Definition { repo, name, def } => {
-                // Full-def prompt arrived (task-menu right pane). Clear the
-                // in-flight flag; cache the def only when present (a fetch error
-                // or missing def yields `None`, leaving the pane on "loading…"
-                // until the next open re-tries).
-                let key = format!("{repo}/{name}");
-                self.full_defs_inflight.remove(&key);
-                if let Some(def) = def {
-                    self.full_defs.insert(key, def);
-                }
+            Event::Settings { payload } => {
+                // Store the fetch outcome (payload may be None = failed/unsupported
+                // → cached as Some(None) so the overlay stops "loading" and never
+                // re-fetches). Repaints so an open overlay swaps from the loading
+                // line to the table.
+                self.settings = Some(payload);
                 Update { dirty: true, cmds: vec![] }
+            }
+            Event::SelectionExpired { epoch } => {
+                // Post-copy fade. Only the CURRENT selection generation may be
+                // cleared — a stale timer racing a newer selection is a no-op.
+                let clear = epoch == self.selection_epoch && self.detail_selection.is_some();
+                if clear {
+                    self.detail_selection = None;
+                }
+                Update { dirty: clear, cmds: vec![] }
+            }
+            Event::Definition { repo, name, def } => {
+                // Full-definition reply for the detail pane. Success fills the
+                // cache (and clears the in-flight marker); failure LEAVES the
+                // marker as a poison so the per-event `reconcile_full_def` doesn't
+                // refetch-loop against a broken daemon — invalidation clears it.
+                let key = format!("{repo}/{name}");
+                match def {
+                    Some(d) => {
+                        self.full_defs.insert(key.clone(), d);
+                        self.full_defs_inflight.remove(&key);
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    None => Update { dirty: false, cmds: vec![] },
+                }
             }
         }
     }
@@ -963,6 +1083,8 @@ impl App {
             ui.last_list_pane = l;
             ui.scroll_offset = 0; // leaving detail resets its scroll (parity)
         }
+        // A focus change swaps the detail content out from under any selection.
+        self.detail_selection = None;
     }
 
     /// Set a list pane's cursor (clamped), clear the anchor, reset scroll, and
@@ -976,6 +1098,8 @@ impl App {
         sel.anchor = None;
         if changed {
             self.ui().scroll_offset = 0;
+            // New detail content selected → drop any lingering text selection.
+            self.detail_selection = None;
             self.schedule_run_read(cmds, 120);
         }
         changed
@@ -995,6 +1119,16 @@ impl App {
             }
             A::Help => {
                 self.mode = Mode::Help;
+                true
+            }
+            A::Settings => {
+                self.mode = Mode::Settings;
+                // Fetch once on first open; thereafter the cached value renders
+                // instantly. `None` means never fetched (Some(None) is a cached
+                // failure that must not re-fetch on every open).
+                if self.settings.is_none() {
+                    cmds.push(Cmd::FetchSettings);
+                }
                 true
             }
             A::SwitchTab(i) => {
@@ -1085,6 +1219,10 @@ impl App {
                 }
                 None => self.detail_scroll_edge(dir),
             },
+            // Home/End scroll the detail pane unconditionally — no list branch,
+            // so the left-side cursor never moves even though a list pane is
+            // focused. This is the deliberate split from `ScrollEdge` (g/G).
+            A::DetailScrollEdge(dir) => self.detail_scroll_edge(dir),
             A::SwitchSubTab(i) => self.set_sub_tab_clamped(i, &mut cmds),
             A::CycleSubTab(d) => {
                 let (kind, cur) = self.detail_kind_and_subtab();
@@ -1270,11 +1408,10 @@ impl App {
     /// to a single cursor). Called before every bulk dispatch, mirroring the
     /// App.tsx `runBulk` clear-then-dispatch order.
     fn clear_range(&mut self, pane: ListPane) {
-        if let Some(repo) = self.active_repo() {
-            if let Some(ui) = self.ui_by_tab.get_mut(&repo) {
+        if let Some(repo) = self.active_repo()
+            && let Some(ui) = self.ui_by_tab.get_mut(&repo) {
                 ui.selections[pane.idx()].anchor = None;
             }
-        }
     }
 
     /// Clamp a frozen `[start, end]` selection span against the current visible
@@ -1785,6 +1922,33 @@ impl App {
         self.ensure_full_def(&repo, &name)
     }
 
+    /// Emit a lazy full-definition fetch when the detail pane is showing a
+    /// Definition context (Tasks pane focused last, cursor on a def) whose full
+    /// body is neither cached in `full_defs` nor already in flight. Mirrors the
+    /// view's derivation (search-filter then clamp) so the fetched key is exactly
+    /// the def the detail pane resolves. Called by the event loop after every
+    /// `update`, sibling to [`Self::reconcile_defs`].
+    pub(crate) fn reconcile_full_def(&mut self) -> Option<Cmd> {
+        let repo = self.active_repo()?;
+        let ui = self.ui_by_tab.get(&repo)?;
+        if ui.last_list_pane != ListPane::Tasks {
+            return None;
+        }
+        let defs = self.defs_by_project.get(&repo)?;
+        let idx = crate::selectors::filter_rows(defs, &ui.search[1], |d| d.name.clone());
+        if idx.is_empty() {
+            return None;
+        }
+        let cursor = ui.selections[1].cursor.min(idx.len() - 1);
+        let def = &defs[idx[cursor]];
+        let key = format!("{}/{}", def.repo, def.name);
+        if self.full_defs.contains_key(&key) || self.full_defs_inflight.contains(&key) {
+            return None;
+        }
+        self.full_defs_inflight.insert(key);
+        Some(Cmd::FetchDefinition { repo: def.repo.clone(), name: def.name.clone() })
+    }
+
     /// `Mode::DefPick` key handling (lazyvim-style). Esc closes; Up/Ctrl+k/Ctrl+p
     /// and Down/Ctrl+j/Ctrl+n move circularly over the FILTERED defs; Enter picks
     /// the highlighted def (zero-arg dispatch or open the args form with the
@@ -2166,7 +2330,9 @@ impl App {
         true
     }
 
-    /// `ScrollEdge(dir)` in the detail pane. dir < 0 = head/oldest, dir > 0 =
+    /// Scroll the detail pane to its edge. Driven by `Home`/`End`
+    /// (`DetailScrollEdge`) and by `g`/`G` (`ScrollEdge`) when the detail pane is
+    /// focused. dir < 0 = head/oldest, dir > 0 =
     /// tail/end. Jumps to the render-fed max (not an unclamped sentinel, which
     /// left the stored offset far past the edge — same phantom-scroll bug class
     /// as `detail_scroll`'s missing upper clamp).
@@ -2195,6 +2361,120 @@ impl App {
     /// focus change so a new selection always starts at its default view.
     pub(crate) fn reset_scroll(&mut self) {
         self.ui().scroll_offset = 0;
+        // Sub-tab / selection changes route through here — clear any text
+        // selection so it never straddles freshly-swapped content.
+        self.detail_selection = None;
+    }
+
+    /// Resolve a mouse `(col, row)` to a [`DetailPoint`] ONLY when it lands inside
+    /// the rendered detail content area — used to START a selection on `Down` so a
+    /// click on the chip-row gap (which still hits `PaneBody(Detail)`) or an empty
+    /// pane never begins one. `None` when there is no content or the point is out
+    /// of the content rect.
+    fn detail_point_in_content(&self, col: u16, row: u16) -> Option<DetailPoint> {
+        let g = self.detail_geom.borrow();
+        if g.lines.is_empty() || g.area.width == 0 || g.area.height == 0 {
+            return None;
+        }
+        if !g.area.contains(Position { x: col, y: row }) {
+            return None;
+        }
+        let row_off = (row - g.area.y) as usize;
+        let line = (g.window_start + row_off).min(g.lines.len() - 1);
+        let cell = (col - g.area.x) as usize;
+        Some(DetailPoint { line, cell })
+    }
+
+    /// Resolve a mouse `(col, row)` to a [`DetailPoint`], CLAMPED into the content
+    /// area — used while DRAGGING so a drag past an edge still extends the
+    /// selection to the nearest line/column (no auto-scroll). `None` only when
+    /// there is no rendered content.
+    fn detail_point_clamped(&self, col: u16, row: u16) -> Option<DetailPoint> {
+        let g = self.detail_geom.borrow();
+        if g.lines.is_empty() || g.area.width == 0 || g.area.height == 0 {
+            return None;
+        }
+        let r = row.clamp(g.area.y, g.area.bottom().saturating_sub(1));
+        let c = col.clamp(g.area.x, g.area.right().saturating_sub(1));
+        let row_off = (r - g.area.y) as usize;
+        let line = (g.window_start + row_off).min(g.lines.len() - 1);
+        let cell = (c - g.area.x) as usize;
+        Some(DetailPoint { line, cell })
+    }
+
+    /// The current detail selection rendered to text — each selected wrapped
+    /// display line sliced by the selection's cell columns, joined with `\n`.
+    /// Empty when there is no selection.
+    fn detail_selection_text(&self) -> String {
+        match &self.detail_selection {
+            Some(sel) => {
+                let g = self.detail_geom.borrow();
+                crate::view::detail::extract_selection(&g.lines, sel)
+            }
+            None => String::new(),
+        }
+    }
+
+    /// Begin a detail text selection at `(col, row)` on `Down`. Starts a
+    /// zero-width selection (replacing any prior one, which clears its highlight)
+    /// and arms the drag. When the click is outside the content area it clears an
+    /// existing selection instead. Returns whether a redraw is needed.
+    fn start_detail_selection(&mut self, col: u16, row: u16) -> bool {
+        match self.detail_point_in_content(col, row) {
+            Some(pt) => {
+                let redraw = self.detail_selection.is_some(); // clearing the old highlight
+                self.detail_selection = Some(DetailSelection { anchor: pt, cursor: pt });
+                // A new selection invalidates any pending post-copy fade timer —
+                // its `SelectionExpired` will arrive with a stale epoch and no-op.
+                self.selection_epoch += 1;
+                self.drag = Some(DragKind::DetailSelect);
+                redraw
+            }
+            None => self.detail_selection.take().is_some(),
+        }
+    }
+
+    /// Extend the active detail selection to `(col, row)` on `Drag`. Returns true
+    /// only when the cursor moved to a new cell (avoids redraw churn within one
+    /// cell).
+    fn drag_detail_selection(&mut self, col: u16, row: u16) -> bool {
+        let Some(pt) = self.detail_point_clamped(col, row) else { return false };
+        match self.detail_selection.as_mut() {
+            Some(sel) if sel.cursor != pt => {
+                sel.cursor = pt;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Finalize a detail text-selection drag on `Up`. A plain click (anchor ==
+    /// cursor, no movement) clears the selection and copies nothing; a real drag
+    /// copies the text (OSC 52 + `pbcopy` via [`Cmd::CopyClipboard`]), reports
+    /// the size on the status line, and keeps the highlight for a 1s fade (an
+    /// epoch-guarded [`Cmd::ExpireSelection`] clears it unless a newer selection
+    /// started in the meantime). Returns whether a redraw is needed.
+    fn finish_detail_selection(&mut self, cmds: &mut Vec<Cmd>) -> bool {
+        let Some(sel) = self.detail_selection else { return false };
+        if sel.is_click() {
+            // Plain click: the zero-width selection shows nothing, so clearing it
+            // is visually a no-op. Copy nothing.
+            self.detail_selection = None;
+            return false;
+        }
+        let text = self.detail_selection_text();
+        if text.is_empty() {
+            return false;
+        }
+        let n_lines = text.matches('\n').count() + 1;
+        self.status_line = Some(if n_lines > 1 {
+            format!("copied {n_lines} lines")
+        } else {
+            format!("copied {} chars", text.chars().count())
+        });
+        cmds.push(Cmd::CopyClipboard { text });
+        cmds.push(Cmd::ExpireSelection { epoch: self.selection_epoch, delay_ms: 1000 });
+        true
     }
 
     /// Detail content height ≈ terminal rows − 6 (header + footer + borders +
@@ -2312,7 +2592,10 @@ impl App {
             K::Down(MouseButton::Left)
                 if matches!(
                     self.mode,
-                    Mode::ConfirmRemove { .. } | Mode::ConfirmBulkRemove { .. } | Mode::Help
+                    Mode::ConfirmRemove { .. }
+                        | Mode::ConfirmBulkRemove { .. }
+                        | Mode::Help
+                        | Mode::Settings
                 ) =>
             {
                 return match target {
@@ -2342,9 +2625,10 @@ impl App {
                 Some(HitTarget::PaneBody(p)) => {
                     // Detail is display-only: clicking its body must not steal
                     // focus (wheel scrolling over it still works — that routes by
-                    // hover, not focus).
+                    // hover, not focus). A press in the content area instead begins
+                    // a tmux-style text selection.
                     if p == PaneId::Detail {
-                        false
+                        self.start_detail_selection(m.column, m.row)
                     } else {
                         self.set_focus(p);
                         true
@@ -2455,17 +2739,22 @@ impl App {
                 Some(DragKind::Scrollbar(p)) => self.drag_to_offset(p, m.row, &mut cmds),
                 Some(DragKind::DividerH(i)) => self.drag_divider_h(i, m.row),
                 Some(DragKind::DividerV) => self.drag_divider_v(m.column),
+                Some(DragKind::DetailSelect) => self.drag_detail_selection(m.column, m.row),
                 None => false,
             },
             K::Up(MouseButton::Left) => {
                 // Drag ends. A divider drag changed the per-project layout → write
                 // it through to disk (once, on release — not on every drag frame).
-                // Scrollbar drags change no layout, so they don't persist.
-                let ended = self.drag.take();
-                if matches!(ended, Some(DragKind::DividerH(_)) | Some(DragKind::DividerV)) {
-                    cmds.push(self.save_layout_cmd());
+                // Scrollbar drags change no layout, so they don't persist. A detail
+                // text selection copies + reports on release.
+                match self.drag.take() {
+                    Some(DragKind::DividerH(_)) | Some(DragKind::DividerV) => {
+                        cmds.push(self.save_layout_cmd());
+                        false
+                    }
+                    Some(DragKind::DetailSelect) => self.finish_detail_selection(&mut cmds),
+                    _ => false,
                 }
-                false
             }
             // An open picker owns the wheel: over the preview panel it scrolls
             // the preview, over the left panel it moves the selection; it never
@@ -2482,7 +2771,9 @@ impl App {
             K::ScrollDown | K::ScrollUp => {
                 let delta: i32 = if matches!(m.kind, K::ScrollDown) { 1 } else { -1 };
                 match target.as_ref().and_then(Self::pane_of_target) {
-                    Some(PaneId::Detail) => self.detail_scroll(delta),
+                    // Detail scrolls 3 lines per wheel tick (the common TUI/terminal
+                    // step) — 1 line per tick read as sluggish over long transcripts.
+                    Some(PaneId::Detail) => self.detail_scroll(delta * 3),
                     Some(p) => {
                         // Wheel scrolls the pane UNDER the cursor without focus change.
                         let pane = match p {
@@ -2730,6 +3021,37 @@ mod tests {
         assert!(app.detail_scroll_edge(1)); // tail → 0
         assert_eq!(app.ui().scroll_offset, 0);
         assert!(!app.detail_scroll_edge(1)); // already at tail
+    }
+
+    #[test]
+    fn home_end_scroll_detail_only_never_the_list_cursor() {
+        // Regression: Home/End used to share ScrollEdge with g/G, which — because
+        // a list pane is always focused in Mode::List — jumped the LIST cursor.
+        // DetailScrollEdge must take the detail path unconditionally: the queue
+        // selection stays put while only the detail scroll moves.
+        let mut app = crate::test_fixtures::fixture_app();
+        // Queue is focused by default; pin the cursor to the first row so the old
+        // End→last-row behavior would be observable if it regressed.
+        assert_eq!(app.ui().focus, PaneId::Queue);
+        app.ui().selections[ListPane::Queue.idx()] = Selection { cursor: 0, anchor: None };
+        app.detail_max_scroll.set(10); // fixture detail is bottom-anchored
+
+        // End (dir > 0). Bottom-anchored tail = 0, so no scroll change, but the
+        // key must still route through the detail path (never the list arm).
+        let up = app.apply_action(AppAction::DetailScrollEdge(1));
+        assert!(!up.dirty, "already at tail → no-op");
+        assert_eq!(app.ui().selections[ListPane::Queue.idx()].cursor, 0);
+
+        // Home (dir < 0). Bottom-anchored head = max: the detail scrolls but the
+        // queue cursor still must not move.
+        let up = app.apply_action(AppAction::DetailScrollEdge(-1));
+        assert!(up.dirty);
+        assert_eq!(app.ui().scroll_offset, 10, "detail jumped to head");
+        assert_eq!(
+            app.ui().selections[ListPane::Queue.idx()].cursor,
+            0,
+            "list cursor untouched by Home/End"
+        );
     }
 
     #[test]
@@ -3053,6 +3375,51 @@ mod tests {
     }
 
     #[test]
+    fn settings_opens_fetches_once_and_any_key_closes() {
+        let mut app = crate::test_fixtures::fixture_app();
+        // First open: enters the overlay AND emits exactly one FetchSettings
+        // (settings is None → never fetched).
+        let up = press(&mut app, KeyCode::Char('s'));
+        assert!(matches!(app.mode, Mode::Settings));
+        assert_eq!(
+            up.cmds.iter().filter(|c| matches!(c, Cmd::FetchSettings)).count(),
+            1,
+            "first open fetches settings"
+        );
+        // Any key closes.
+        let up = press(&mut app, KeyCode::Char('z'));
+        assert!(matches!(app.mode, Mode::List));
+        assert!(up.dirty);
+        // The reply lands and is cached.
+        app.update(Event::Settings { payload: Some(SettingsPayload::default()) });
+        assert!(matches!(app.settings, Some(Some(_))));
+        // Second open: cached → NO re-fetch.
+        let up = press(&mut app, KeyCode::Char('s'));
+        assert!(matches!(app.mode, Mode::Settings));
+        assert!(
+            !up.cmds.iter().any(|c| matches!(c, Cmd::FetchSettings)),
+            "cached settings must not re-fetch on re-open"
+        );
+    }
+
+    #[test]
+    fn settings_failed_fetch_caches_none_and_does_not_refetch() {
+        let mut app = crate::test_fixtures::fixture_app();
+        press(&mut app, KeyCode::Char('s'));
+        // A failed/unsupported fetch caches Some(None) (the "unavailable" state).
+        app.update(Event::Settings { payload: None });
+        assert!(matches!(app.settings, Some(None)));
+        press(&mut app, KeyCode::Char('z')); // close
+        // Re-open must NOT re-fetch — Some(None) is a cached outcome, not "never
+        // fetched".
+        let up = press(&mut app, KeyCode::Char('s'));
+        assert!(
+            !up.cmds.iter().any(|c| matches!(c, Cmd::FetchSettings)),
+            "cached failure must not re-fetch"
+        );
+    }
+
+    #[test]
     fn status_line_clears_on_list_mode_keypress() {
         let mut app = crate::test_fixtures::fixture_app();
         app.status_line = Some("boom".into());
@@ -3162,6 +3529,125 @@ mod tests {
             "a resort into the clicked slot must not fire the menu on the wrong row"
         );
         assert_eq!(app.ui().selections[0], Selection { cursor: 0, anchor: None });
+    }
+
+    /// App with a DETAIL `PaneBody` hit rect + published selection geometry over a
+    /// small content area (x=1,y=1,20×4) and three known wrapped lines — ready to
+    /// drive a text-selection drag without rendering.
+    fn app_with_detail() -> App {
+        let mut app = crate::test_fixtures::fixture_app();
+        let area = Rect { x: 1, y: 1, width: 20, height: 4 };
+        let mut hits = crate::hit::HitMap::new();
+        hits.push(area, HitTarget::PaneBody(PaneId::Detail));
+        app.hit = hits;
+        *app.detail_geom.borrow_mut() = DetailGeom {
+            area,
+            window_start: 0,
+            lines: vec![
+                "hello world".to_string(),
+                "second line".to_string(),
+                "third".to_string(),
+            ],
+        };
+        app
+    }
+
+    #[test]
+    fn detail_drag_selects_and_copies_on_release() {
+        let mut app = app_with_detail();
+        // Press at cell 0 of line 0 (col == area.x == 1, row == area.y == 1).
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 1, 1));
+        assert!(matches!(app.drag, Some(DragKind::DetailSelect)));
+        assert!(app.detail_selection.is_some());
+        // Drag to cell 4 (col 5) on the same line → "hello".
+        app.update(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 1));
+        let up = app.update(mouse(MouseEventKind::Up(MouseButton::Left), 5, 1));
+        assert!(app.drag.is_none(), "drag ends on release");
+        assert_eq!(app.status_line.as_deref(), Some("copied 5 chars"));
+        assert!(
+            up.cmds.iter().any(|c| matches!(c, Cmd::CopyClipboard { text } if text == "hello")),
+            "release emits a clipboard copy of the selected text"
+        );
+        assert!(app.detail_selection.is_some(), "selection persists (highlighted) after release");
+    }
+
+    #[test]
+    fn release_arms_the_fade_and_matching_expiry_clears_but_stale_does_not() {
+        let mut app = app_with_detail();
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 1, 1));
+        app.update(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 1));
+        let up = app.update(mouse(MouseEventKind::Up(MouseButton::Left), 5, 1));
+        let armed = up.cmds.iter().find_map(|c| match c {
+            Cmd::ExpireSelection { epoch, delay_ms } => Some((*epoch, *delay_ms)),
+            _ => None,
+        });
+        assert_eq!(armed, Some((app.selection_epoch, 1000)), "release arms a 1s fade");
+        // A stale expiry (older generation) is a no-op.
+        let stale = app.update(Event::SelectionExpired { epoch: app.selection_epoch - 1 });
+        assert!(!stale.dirty);
+        assert!(app.detail_selection.is_some(), "stale expiry must not clear a live selection");
+        // The matching expiry clears the highlight.
+        let hit = app.update(Event::SelectionExpired { epoch: app.selection_epoch });
+        assert!(hit.dirty);
+        assert!(app.detail_selection.is_none(), "matching expiry fades the highlight");
+    }
+
+    #[test]
+    fn new_selection_within_the_fade_window_survives_the_old_timer() {
+        let mut app = app_with_detail();
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 1, 1));
+        app.update(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 1));
+        app.update(mouse(MouseEventKind::Up(MouseButton::Left), 5, 1));
+        let old_epoch = app.selection_epoch;
+        // A new selection starts before the old fade fires...
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 1, 2));
+        app.update(mouse(MouseEventKind::Drag(MouseButton::Left), 4, 2));
+        // ...so the old timer's expiry is stale and leaves it alone.
+        app.update(Event::SelectionExpired { epoch: old_epoch });
+        assert!(app.detail_selection.is_some(), "old fade must not kill the new selection");
+    }
+
+    #[test]
+    fn detail_drag_across_lines_copies_with_newline() {
+        let mut app = app_with_detail();
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 7, 1)); // line 0, cell 6 = "world"
+        app.update(mouse(MouseEventKind::Drag(MouseButton::Left), 3, 2)); // line 1, cell 2 = "sec"
+        let up = app.update(mouse(MouseEventKind::Up(MouseButton::Left), 3, 2));
+        let copied = up.cmds.iter().find_map(|c| match c {
+            Cmd::CopyClipboard { text } => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(copied.as_deref(), Some("world\nsec"));
+        assert_eq!(app.status_line.as_deref(), Some("copied 2 lines"));
+    }
+
+    #[test]
+    fn detail_plain_click_clears_selection_and_copies_nothing() {
+        let mut app = app_with_detail();
+        // Seed a prior selection; a plain click (no drag) must clear it, no copy.
+        app.detail_selection = Some(DetailSelection {
+            anchor: DetailPoint { line: 0, cell: 0 },
+            cursor: DetailPoint { line: 1, cell: 3 },
+        });
+        app.update(mouse(MouseEventKind::Down(MouseButton::Left), 3, 2));
+        let up = app.update(mouse(MouseEventKind::Up(MouseButton::Left), 3, 2));
+        assert!(app.detail_selection.is_none(), "plain click clears the selection");
+        assert!(
+            !up.cmds.iter().any(|c| matches!(c, Cmd::CopyClipboard { .. })),
+            "no copy on plain click"
+        );
+        assert!(app.status_line.is_none());
+    }
+
+    #[test]
+    fn detail_selection_cleared_on_content_change() {
+        let mut app = app_with_detail();
+        app.detail_selection = Some(DetailSelection {
+            anchor: DetailPoint { line: 0, cell: 0 },
+            cursor: DetailPoint { line: 0, cell: 3 },
+        });
+        app.reset_scroll(); // sub-tab / selection changes route through here
+        assert!(app.detail_selection.is_none());
     }
 
     fn ctrl_s(app: &mut App) -> Update {
@@ -3624,6 +4110,11 @@ mod tests {
     #[test]
     fn help_overlay_owns_clicks() {
         assert_overlay_owns_clicks(|| Mode::Help);
+    }
+
+    #[test]
+    fn settings_overlay_owns_clicks() {
+        assert_overlay_owns_clicks(|| Mode::Settings);
     }
 
     #[test]
@@ -4634,7 +5125,7 @@ mod def_pick_tests {
     }
 
     fn dsum(repo: &str, name: &str, scope: &str, args: Vec<ArgSpec>) -> DefinitionSummary {
-        DefinitionSummary { repo: repo.into(), name: name.into(), scope: scope.into(), args, has_discovery: false, cron: None, description: None }
+        DefinitionSummary { repo: repo.into(), name: name.into(), scope: scope.into(), args, has_discovery: false, cron: None, description: None, model: None }
     }
 
     fn fixture_app_one_project(name: &str) -> App {
@@ -4725,6 +5216,50 @@ mod def_pick_tests {
             cached.iter().map(|d| (d.repo.as_str(), d.name.as_str())).collect::<Vec<_>>(),
             vec![("platform", "squash-merge"), ("platform", "pr-review")]
         );
+    }
+
+    #[test]
+    fn reconcile_full_def_fetches_the_selected_def_once_and_caches_on_reply() {
+        // Tasks pane focused, cursor on the only def: the reconcile emits ONE
+        // FetchDefinition, dedups while in flight, and stops once the reply
+        // fills `full_defs` — the "(loading definition…)" fix.
+        let mut app = fixture_app_with_defs("platform", vec![dsum("platform", "pr-ready", "project", vec![])]);
+        let mut ui = TabUiState::default();
+        ui.last_list_pane = ListPane::Tasks;
+        app.ui_by_tab.insert("platform".into(), ui);
+        let cmd = app.reconcile_full_def();
+        assert!(
+            matches!(cmd, Some(Cmd::FetchDefinition { ref repo, ref name }) if repo == "platform" && name == "pr-ready")
+        );
+        assert!(app.reconcile_full_def().is_none(), "in-flight fetch dedups");
+        app.update(Event::Definition {
+            repo: "platform".into(),
+            name: "pr-ready".into(),
+            def: Some(TaskDefinition::default()),
+        });
+        assert!(app.full_defs.contains_key("platform/pr-ready"));
+        assert!(app.reconcile_full_def().is_none(), "cached def is not refetched");
+    }
+
+    #[test]
+    fn reconcile_full_def_ignores_non_tasks_panes_and_failed_replies_dont_loop() {
+        let mut app = fixture_app_with_defs("platform", vec![dsum("platform", "pr-ready", "project", vec![])]);
+        // Default UI (last pane = Queue): no Definition context, no fetch.
+        assert!(app.reconcile_full_def().is_none());
+        let mut ui = TabUiState::default();
+        ui.last_list_pane = ListPane::Tasks;
+        app.ui_by_tab.insert("platform".into(), ui);
+        assert!(app.reconcile_full_def().is_some());
+        // Failed reply leaves the poison marker: no refetch loop.
+        app.update(Event::Definition { repo: "platform".into(), name: "pr-ready".into(), def: None });
+        assert!(app.reconcile_full_def().is_none(), "failed fetch must not refetch-loop");
+        // Invalidation clears the poison so the next reconcile can retry.
+        app.update(Event::ActionResult { status: None, invalidate_defs_for: Some("platform".into()) });
+        app.update(Event::Definitions {
+            repo: "platform".into(),
+            defs: vec![dsum("platform", "pr-ready", "project", vec![])],
+        });
+        assert!(app.reconcile_full_def().is_some(), "invalidation re-arms the fetch");
     }
 
     #[test]

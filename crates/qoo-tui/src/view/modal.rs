@@ -182,8 +182,8 @@ pub fn render_create_worktree(
     );
 
     // Second interior row: the inline error (red) when validation failed.
-    if let Some(msg) = error {
-        if inner.height >= 2 {
+    if let Some(msg) = error
+        && inner.height >= 2 {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!(" {msg}"),
@@ -192,7 +192,6 @@ pub fn render_create_worktree(
                 Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
             );
         }
-    }
 
     // Hint line on the bottom interior row.
     if inner.height >= 3 {

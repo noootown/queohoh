@@ -49,6 +49,7 @@ function setup(
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
 		vars: {},
+		models: {},
 		...overrides.config,
 	};
 	const resolverIO: ResolverIO = {
@@ -203,6 +204,7 @@ describe("Engine.tick", () => {
 			maxConcurrentTasks: 3,
 			archiveAfterDays: 7,
 			vars: {},
+			models: {},
 		};
 		let claudeRan = false;
 		const resolverIO: ResolverIO = {
@@ -244,6 +246,30 @@ describe("Engine.tick", () => {
 		expect(t?.status).toBe("failed");
 		expect(t?.error).toContain("non-scalar var");
 		expect(claudeRan).toBe(false);
+	});
+
+	it("resolves the task model alias through the project vars.yaml models block", async () => {
+		const { engine, store, base } = setup();
+		mkdirSync(join(base, "ws", "platform"), { recursive: true });
+		writeFileSync(
+			join(base, "ws", "platform", "vars.yaml"),
+			"models:\n  sonnet: claude-sonnet-4-6\n",
+		);
+		store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+			model: "sonnet",
+		});
+		await engine.tick(); // resolve
+		await engine.tick(); // start
+		await engine.drain();
+		const id = store.list()[0]?.id ?? "";
+		expect(store.list()[0]?.status).toBe("done");
+		expect(new RunStore(join(base, "runs")).readRunMeta(id)?.model).toBe(
+			"claude-sonnet-4-6",
+		);
 	});
 
 	it("marks running tasks with no live worker as orphaned", async () => {
@@ -339,6 +365,41 @@ describe("Engine.worktreesByRepo", () => {
 				},
 			],
 		});
+	});
+});
+
+describe("Engine.refreshWorktreeCache failure handling", () => {
+	it("keeps the last-known worktrees when a refresh transiently fails", async () => {
+		// index.lock contention (e.g. a second daemon or a concurrent git op) must
+		// not blank the pane for a tick — the old `catch → set []` clobber did.
+		let calls = 0;
+		const { engine, base } = setup({
+			resolverIO: {
+				listWorktrees: async () => {
+					calls++;
+					if (calls > 1) throw new Error("index.lock contention");
+					return [
+						{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+					];
+				},
+			},
+		});
+		await engine.tick(); // first refresh succeeds and fills the cache
+		await engine.tick(); // second refresh throws — must keep the last-known list
+		expect(calls).toBeGreaterThan(1);
+		expect(engine.worktreesByRepo().platform).toHaveLength(1);
+	});
+
+	it("records an empty list for a repo that has never listed successfully", async () => {
+		const { engine } = setup({
+			resolverIO: {
+				listWorktrees: async () => {
+					throw new Error("boom");
+				},
+			},
+		});
+		await engine.tick();
+		expect(engine.worktreesByRepo().platform).toEqual([]);
 	});
 });
 

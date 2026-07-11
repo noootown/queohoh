@@ -2,6 +2,14 @@
 node = "22"
 rust = "1.97"
 
+[env]
+# One shared cargo build cache for every worktree of this repo — a fresh
+# worktree builds warm instead of cold-compiling all deps into its own
+# target/ (~190MB and minutes per worktree). Cargo serializes concurrent
+# builds against the same dir with its own lock, so parallel worktrees are
+# safe. Bumping the rust toolchain still invalidates it (by design).
+CARGO_TARGET_DIR = "{{env.HOME}}/.cache/queohoh/cargo-target"
+
 # --- dev loop ---
 
 [tasks.sync]
@@ -33,9 +41,21 @@ run = "pnpm lint"
 description = "biome check, read-only"
 run = "pnpm lint:ci"
 
+[tasks."test:rs"]
+description = "cargo test across all crates"
+run = "cargo test"
+
+[tasks."typecheck:rs"]
+description = "cargo check across all targets (tsc --noEmit analog)"
+run = "cargo check --all-targets"
+
+[tasks."lint:rs"]
+description = "clippy, warnings are errors (biome analog)"
+run = "cargo clippy --all-targets -- -D warnings"
+
 [tasks.check]
-description = "Full gate: test + typecheck + lint:ci"
-depends = ["test", "typecheck", "lint:ci"]
+description = "Full gate, both languages: TS test + typecheck + lint:ci, Rust test + check + clippy"
+depends = ["test", "typecheck", "lint:ci", "test:rs", "typecheck:rs", "lint:rs"]
 
 # --- run ---
 
@@ -63,7 +83,8 @@ description = "Launch the qoo-tui cockpit (ratatui; builds the release binary, s
 depends = ["daemon:ensure"]
 run = [
 	"cargo build --release -p qoo-tui",
-	"./target/release/qoo-tui",
+	# The binary lands in the shared CARGO_TARGET_DIR (see [env]), not ./target.
+	'"${CARGO_TARGET_DIR:-./target}/release/qoo-tui"',
 ]
 
 # --- integrations ---
@@ -93,7 +114,7 @@ run = [
 description = "Build and launch the Rust ratatui TUI (release)"
 run = [
 	"cargo build --release -p qoo-tui",
-	"./target/release/qoo-tui",
+	'"${CARGO_TARGET_DIR:-./target}/release/qoo-tui"',
 ]
 
 [tasks."tui:rs:dev"]

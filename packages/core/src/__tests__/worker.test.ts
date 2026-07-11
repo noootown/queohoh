@@ -416,6 +416,47 @@ describe("runTask", () => {
 	});
 });
 
+describe("runTask model-alias resolution", () => {
+	it("resolves the alias against modelTable at spawn (snapshot + spawn)", async () => {
+		let seenModel = "";
+		const { deps, store, runStore } = makeDeps({
+			modelTable: { sonnet: "claude-sonnet-4-6" },
+			executeClaude: async (opts) => {
+				seenModel = opts.model;
+				return okResult;
+			},
+		});
+		// default model is "sonnet" (deps.defaults.model)
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		expect(seenModel).toBe("claude-sonnet-4-6");
+		expect(runStore.readRunMeta(t.id)?.model).toBe("claude-sonnet-4-6");
+	});
+
+	it("passes an unknown/full model id through untouched", async () => {
+		let seenModel = "";
+		const { deps, store } = makeDeps({
+			modelTable: { sonnet: "claude-sonnet-4-6" },
+			executeClaude: async (opts) => {
+				seenModel = opts.model;
+				return okResult;
+			},
+		});
+		const t = store.create({
+			prompt: "p\n",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			model: "claude-fable-5",
+		});
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenModel).toBe("claude-fable-5");
+	});
+});
+
 describe("runTask main-session pointer", () => {
 	const mainStore = () =>
 		new MainSessionStore(

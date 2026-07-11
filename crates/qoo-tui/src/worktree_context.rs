@@ -238,7 +238,7 @@ mod tests {
     fn ambient_run_args_leaves_declared_options_and_freetext_untouched() {
         let r = rows();
         let declared = ArgSpec { options: Some(vec!["x".into(), "y".into()]), ..arg("source") };
-        let (args, _) = ambient_run_args(&[declared.clone()], &r, Some(&r[0]));
+        let (args, _) = ambient_run_args(std::slice::from_ref(&declared), &r, Some(&r[0]));
         assert_eq!(args[0], declared);
 
         let only_main = vec![wt("main", "main", false)];

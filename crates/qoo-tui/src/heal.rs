@@ -125,10 +125,10 @@ pub async fn perform_heal(sock: &Path, pid_file: &Path, daemon_cli: &Path) -> Re
     // 2. SIGTERM fallback for an old daemon that lacks the shutdown RPC. No new
     //    runtime dependency: POSIX `kill` sends SIGTERM. (nix::sys::signal::kill
     //    is an equivalent if the crate is already present.)
-    if !shutdown_accepted {
-        if let Ok(text) = std::fs::read_to_string(pid_file) {
-            if let Ok(pid) = text.trim().parse::<i32>() {
-                if pid > 0 {
+    if !shutdown_accepted
+        && let Ok(text) = std::fs::read_to_string(pid_file)
+            && let Ok(pid) = text.trim().parse::<i32>()
+                && pid > 0 {
                     let _ = tokio::process::Command::new("kill")
                         .arg("-TERM")
                         .arg(pid.to_string())
@@ -138,9 +138,6 @@ pub async fn perform_heal(sock: &Path, pid_file: &Path, daemon_cli: &Path) -> Re
                         .status()
                         .await;
                 }
-            }
-        }
-    }
 
     // 3. Poll ping until the old socket stops answering (bounded ~5s).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

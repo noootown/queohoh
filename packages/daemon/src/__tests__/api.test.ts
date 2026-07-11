@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
 import {
 	createResolverIO,
+	DEFAULT_MODEL_ALIASES,
 	MainSessionStore,
 	makeRedactor,
 	QueueStore,
@@ -14,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ApiServer } from "../api.js";
 import { ApiClient } from "../client.js";
 import { Engine } from "../engine.js";
+import { configPath } from "../paths.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -26,6 +28,7 @@ async function setup(opts?: {
 	execExitCode?: number;
 	executeClaude?: () => Promise<RunResult>;
 	vars?: Record<string, string>;
+	models?: Record<string, string>;
 }) {
 	const base = mkdtempSync(join(tmpdir(), "qo-api-"));
 	const repoPath = join(base, "repo");
@@ -48,6 +51,7 @@ async function setup(opts?: {
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
 		vars: opts?.vars ?? {},
+		models: opts?.models ?? {},
 	};
 	const okResult: RunResult = {
 		exitCode: 0,
@@ -245,6 +249,7 @@ describe("ApiServer", () => {
 			hasDiscovery: boolean;
 			cron: string | null;
 			description: string | null;
+			model: string;
 		}[];
 		expect(defs).toEqual([
 			{
@@ -255,8 +260,72 @@ describe("ApiServer", () => {
 				hasDiscovery: false,
 				cron: "*/15 * * * *",
 				description: "Greet someone by name.",
+				// summary carries the RESOLVED id (built-in default sonnet alias).
+				model: "claude-sonnet-5",
 			},
 		]);
+	});
+
+	it("definitions resolves the model alias against the per-project table", async () => {
+		const { client, workspace } = await setup();
+		// Project-local override: sonnet → a custom id via vars.yaml models block.
+		writeFileSync(
+			join(workspace, "platform", "vars.yaml"),
+			"models:\n  sonnet: my-custom-sonnet\n",
+		);
+		const defs = (await client.call("definitions")) as { model: string }[];
+		expect(defs[0]?.model).toBe("my-custom-sonnet");
+	});
+
+	describe("settings", () => {
+		it("returns defaults, an empty global, and no projects when nothing is overridden", async () => {
+			const { client } = await setup();
+			const settings = (await client.call("settings")) as {
+				models: {
+					defaults: Record<string, string>;
+					global: { entries: Record<string, string>; source: string };
+					projects: unknown[];
+				};
+			};
+			expect(settings.models.defaults).toEqual(DEFAULT_MODEL_ALIASES);
+			expect(settings.models.global).toEqual({
+				entries: {},
+				source: configPath(),
+			});
+			expect(settings.models.projects).toEqual([]);
+		});
+
+		it("carries the global override and only overriding project blocks", async () => {
+			const { client, workspace } = await setup({
+				models: { sonnet: "claude-sonnet-global" },
+			});
+			writeFileSync(
+				join(workspace, "platform", "vars.yaml"),
+				"models:\n  opus: claude-opus-project\n",
+			);
+			const settings = (await client.call("settings")) as {
+				models: {
+					defaults: Record<string, string>;
+					global: { entries: Record<string, string>; source: string };
+					projects: {
+						repo: string;
+						entries: Record<string, string>;
+						source: string;
+					}[];
+				};
+			};
+			expect(settings.models.defaults).toEqual(DEFAULT_MODEL_ALIASES);
+			expect(settings.models.global.entries).toEqual({
+				sonnet: "claude-sonnet-global",
+			});
+			expect(settings.models.projects).toEqual([
+				{
+					repo: "platform",
+					entries: { opus: "claude-opus-project" },
+					source: join(workspace, "platform", "vars.yaml"),
+				},
+			]);
+		});
 	});
 
 	it("definitions merges global defs and lets a project-local name shadow them", async () => {
@@ -405,6 +474,42 @@ describe("ApiServer", () => {
 		expect(def.args).toEqual([{ name: "name" }]);
 		expect(def.worktree).toBe("temp");
 		expect(def.model).toBe("sonnet");
+	});
+
+	it("definition resolves the model alias into modelResolved, preserving the authored model", async () => {
+		const { client, workspace } = await setup();
+		// A def authored with the `opus` alias resolves to its built-in id, while
+		// the authored `model` field stays "opus".
+		const opusDir = join(workspace, "platform", "tasks", "opusdef");
+		mkdirSync(opusDir, { recursive: true });
+		writeFileSync(join(opusDir, "config.yaml"), "model: opus\n");
+		writeFileSync(join(opusDir, "prompt.md"), "hi\n");
+		const opus = (await client.call("definition", {
+			repo: "platform",
+			name: "opusdef",
+		})) as { model: string; modelResolved: string };
+		expect(opus.model).toBe("opus");
+		expect(opus.modelResolved).toBe("claude-opus-4-8");
+
+		// The greet fixture defaults to the `sonnet` alias.
+		const greet = (await client.call("definition", {
+			repo: "platform",
+			name: "greet",
+		})) as { model: string; modelResolved: string };
+		expect(greet.model).toBe("sonnet");
+		expect(greet.modelResolved).toBe("claude-sonnet-5");
+
+		// A def already naming a full/unknown model id passes through unchanged.
+		const fullDir = join(workspace, "platform", "tasks", "fulldef");
+		mkdirSync(fullDir, { recursive: true });
+		writeFileSync(join(fullDir, "config.yaml"), "model: claude-custom-9\n");
+		writeFileSync(join(fullDir, "prompt.md"), "hi\n");
+		const full = (await client.call("definition", {
+			repo: "platform",
+			name: "fulldef",
+		})) as { model: string; modelResolved: string };
+		expect(full.model).toBe("claude-custom-9");
+		expect(full.modelResolved).toBe("claude-custom-9");
 	});
 
 	it("definition rejects unknown repo", async () => {

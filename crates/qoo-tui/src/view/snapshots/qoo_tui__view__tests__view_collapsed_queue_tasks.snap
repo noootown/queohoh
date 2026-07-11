@@ -11,7 +11,7 @@ expression: terminal.backend()
 "│                         ││                                                   │"
 "│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││                                                   │"
-"│ ● ⌂ feature  ⏱ 0s       ││                                                   │"
+"│ 2 ⌂ feature  ⏱ 0s       ││                                                   │"
 "│ ●   hotfix              ││                                                   │"
 "│ ●   feature             ││                                                   │"
 "│                         ││                                                   │"

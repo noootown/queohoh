@@ -18,6 +18,7 @@ const GlobalConfigSchema = z
 		max_concurrent_tasks: z.number().int().positive().default(3),
 		archive_after_days: z.number().int().positive().default(7),
 		vars: z.record(z.string(), z.string()).default({}),
+		models: z.record(z.string(), z.unknown()).default({}),
 	})
 	.superRefine((config, ctx) => {
 		const seen = new Set<string>();
@@ -39,6 +40,7 @@ export interface GlobalConfig {
 	maxConcurrentTasks: number;
 	archiveAfterDays: number;
 	vars: Record<string, string>;
+	models: Record<string, string>;
 }
 
 function expandTilde(path: string): string {
@@ -49,6 +51,17 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 	if (!existsSync(path)) throw new Error(`config not found: ${path}`);
 	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
 	const config = GlobalConfigSchema.parse(raw);
+	// Tolerant models parse: a malformed value (non-string or nested map) is
+	// skipped with a warning rather than crashing config loading — mirrors
+	// loadProjectModels and keeps daemon boot resilient to a bad models block.
+	const models: Record<string, string> = {};
+	for (const [alias, id] of Object.entries(config.models)) {
+		if (typeof id === "string" && id.length > 0) {
+			models[alias] = id;
+		} else {
+			console.warn(`config.yaml models.${alias}: not a string, skipping`);
+		}
+	}
 	return {
 		workspace: expandTilde(config.workspace),
 		projects: config.projects.map((p) => ({
@@ -58,6 +71,7 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 		maxConcurrentTasks: config.max_concurrent_tasks,
 		archiveAfterDays: config.archive_after_days,
 		vars: config.vars,
+		models,
 	};
 }
 
@@ -109,10 +123,30 @@ export function loadProjectVars(projectDir: string): Record<string, string> {
 	}
 	const vars: Record<string, string> = {};
 	for (const [key, value] of Object.entries(raw)) {
+		if (key === "models") continue; // reserved: read by loadProjectModels
 		if (value !== null && typeof value === "object") {
 			throw new Error(`non-scalar var: ${key}`);
 		}
 		vars[key] = String(value);
 	}
 	return vars;
+}
+
+/** The project's `models:` alias overrides from vars.yaml. Tolerant: absent
+ * file, absent key, or a non-map value all yield {} (a bad block must never
+ * take down config loading — it only disables the override). Non-string
+ * values are skipped. */
+export function loadProjectModels(projectDir: string): Record<string, string> {
+	const path = join(projectDir, "vars.yaml");
+	if (!existsSync(path)) return {};
+	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+	const block = (raw as Record<string, unknown>).models;
+	if (block === null || typeof block !== "object" || Array.isArray(block))
+		return {};
+	const out: Record<string, string> = {};
+	for (const [alias, id] of Object.entries(block)) {
+		if (typeof id === "string" && id.length > 0) out[alias] = id;
+	}
+	return out;
 }

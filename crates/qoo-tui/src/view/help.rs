@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use crate::hit::{HitMap, HitTarget};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 15] = [
+const HELP_ROWS: [(&str, &str); 16] = [
     ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
     ("1–9 / 0", "switch project tab (0 = 10th)"),
     ("ctrl+s then n/p", "next / previous project tab"),
@@ -19,7 +19,8 @@ const HELP_ROWS: [(&str, &str); 15] = [
     ("z", "collapse / expand focused list pane"),
     ("/", "filter focused pane"),
     ("esc", "clear range → clear filter → close overlay"),
-    ("g / G", "jump to top / bottom"),
+    ("g/G · Home/End", "top / bottom (Home/End: detail pane)"),
+    ("s", "settings — model table"),
     ("?", "this help"),
     ("q", "quit"),
 ];
@@ -28,11 +29,11 @@ const HELP_ROWS: [(&str, &str); 15] = [
 /// dense with markers; this is their one written explanation).
 const LEGEND_ROWS: [(&str, &str); 6] = [
     ("✓ ✗ ○ ?", "task done / failed / queued / needs input"),
-    ("● (colored)", "worktree: green free · yellow busy · red failed"),
+    ("● / N", "worktree: green dot idle · yellow N = running + queued tasks"),
     ("⏱", "elapsed time of the running task on that lane"),
     ("⌂", "lane has a main session (tasks can resume it)"),
     ("±", "worktree has uncommitted changes"),
-    ("koshea · 3d ago", "last commit author · last commit age"),
+    ("ian · 3d ago", "last commit author · last commit age"),
 ];
 
 pub fn render(frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap, p: &Palette) {

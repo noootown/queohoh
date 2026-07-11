@@ -950,6 +950,10 @@ pub const NAME_CAP: usize = 48;
 /// its trailing space sit outside this budget). A raw-cron fallback longer than
 /// this is clipped with `…` rather than blowing out the row.
 pub const SCHED_CAP: usize = 20;
+/// Max width of the model cell in the TASKS pane (the `claude-` prefix is
+/// stripped first, so real values are short: `sonnet`, `opus`, `fable-5`,
+/// `opus-4-8`). Clipped with `…` if somehow longer.
+pub const MODEL_CAP: usize = 20;
 pub const SUMMARY_MIN: usize = 10;
 /// Gutter between adjacent field columns (glyph/chain markers keep single
 /// spaces; the field columns get a wider gap so they read as columns).
@@ -1016,7 +1020,9 @@ pub struct QueueColLayout {
 /// then live — so the summary keeps at least `SUMMARY_MIN` cells; only if that
 /// still isn't enough does def drop and then worktree shrink.
 pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> QueueColLayout {
-    let has_chain = rows.iter().any(|r| r.main_session);
+    // The ⌂ slot is ALWAYS reserved (user request): gating it on visible-row data
+    // made the whole row shift whenever scroll/data changed the answer.
+    let has_chain = !rows.is_empty();
     let worktree_w = capped_max(rows.iter().map(|r| r.worktree.as_str()), WORKTREE_CAP);
     let mut def_w = capped_max(rows.iter().filter_map(|r| r.def_name.as_deref()), DEF_CAP);
 
@@ -1076,19 +1082,25 @@ pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> Q
     QueueColLayout { has_chain, worktree_w, def_w, summary_w, show_timestamp, age_w, live_w }
 }
 
-/// Resolved column widths for the TASKS pane: `name | args | description | ⏰
-/// schedule`. `name_w`/`args_w` are content-capped columns; `desc_w` is the FILL
-/// (the remainder, like the queue pane's summary — prose gets the slack), 0 when
-/// no visible def has a description or the pane is too narrow to spare any; the
-/// schedule stays the trailing capped column (`sched_w` sizes the humanized cron
-/// text; the `⏰ ` prefix is reserved separately). Narrow-pane drop order: the
-/// desc FILL shrinks to 0 first, then args drops, then `name_w` shrinks last; the
-/// schedule column is always kept. A width of 0 means that column is omitted.
+/// Resolved column widths for the TASKS pane: `name | args | description | model
+/// | ⏰ schedule`. `name_w`/`args_w`/`model_w` are content-capped columns; `desc_w`
+/// is the FILL (the remainder, like the queue pane's summary — prose gets the
+/// slack), 0 when no visible def has a description or the pane is too narrow to
+/// spare any. `model_w` is a fixed metadata column right before the schedule
+/// chip, pane-gated (reserved only while some visible def carries a model, blank
+/// on a def without one so the schedule never slides), mirroring the WORKTREES
+/// pane's fixed author/commit-age columns clustered after its FILL. The schedule
+/// stays the trailing capped column (`sched_w` sizes the humanized cron text; the
+/// `⏰ ` prefix is reserved separately). Narrow-pane drop order: the desc FILL
+/// shrinks to 0 first, then the model column drops, then args drops, then
+/// `name_w` shrinks last; the schedule column is always kept. A width of 0 means
+/// that column is omitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DefColLayout {
     pub name_w: usize,
     pub args_w: usize,
     pub desc_w: usize,
+    pub model_w: usize,
     pub sched_w: usize,
 }
 
@@ -1111,6 +1123,17 @@ pub fn def_args_text(def: &DefinitionSummary) -> String {
 /// plain fg and filling the remaining pane width (truncated with `…` when tight).
 pub fn def_desc_text(def: &DefinitionSummary) -> String {
     def.description.clone().unwrap_or_default()
+}
+
+/// The model cell text for a def ("" when the summary has no model, e.g. an old
+/// daemon). The `claude-` prefix is stripped so the column stays narrow
+/// (`claude-fable-5` → `fable-5`); short aliases like `sonnet`/`opus` pass
+/// through unchanged.
+pub fn def_model_text(def: &DefinitionSummary) -> String {
+    match def.model.as_deref() {
+        Some(m) if !m.is_empty() => m.strip_prefix("claude-").unwrap_or(m).to_string(),
+        _ => String::new(),
+    }
 }
 
 pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout {
@@ -1143,34 +1166,42 @@ pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout 
     // The desc FILL is present only when some visible def actually has a
     // description (else the schedule keeps its today-position, no layout shift).
     let has_desc = rows.iter().any(|d| d.description.as_deref().is_some_and(|s| !s.is_empty()));
+    // Model column: fixed, pane-gated on whole-pane data (widest model cell, 0
+    // pane-wide when no visible def carries a model — e.g. an old daemon).
+    let model_w0 = rows.iter().map(|d| cw(&def_model_text(d))).max().unwrap_or(0).min(MODEL_CAP);
 
-    // Cells used by the fixed (non-fill) columns for a given name/args width.
-    let used_wo_desc = |name_w: usize, args_w: usize| -> usize {
+    // Cells used by the fixed (non-fill) columns for a given name/args/model width.
+    let used_wo_desc = |name_w: usize, args_w: usize, model_w: usize| -> usize {
         name_w
             + if args_w > 0 { COL_GAP + args_w } else { 0 }
+            + if model_w > 0 { COL_GAP + model_w } else { 0 }
             + if sched_col > 0 { COL_GAP + sched_col } else { 0 }
     };
-    // Reclaim when even the fixed columns overflow: drop args, then shrink name.
-    // (The desc fill has already implicitly shrunk to 0 — it is only ever the
-    // leftover remainder below.)
+    // Reclaim when even the fixed columns overflow: drop model, then args, then
+    // shrink name. (The desc fill has already implicitly shrunk to 0 — it is only
+    // ever the leftover remainder below.)
+    let mut model_w = model_w0;
     let mut args_w = args_w0;
-    if used_wo_desc(name_w0, args_w) > avail {
+    if used_wo_desc(name_w0, args_w, model_w) > avail {
+        model_w = 0;
+    }
+    if used_wo_desc(name_w0, args_w, model_w) > avail {
         args_w = 0;
     }
     let mut name_w = name_w0;
-    let u = used_wo_desc(name_w, args_w);
+    let u = used_wo_desc(name_w, args_w, model_w);
     if u > avail {
         name_w = name_w.saturating_sub(u - avail);
     }
-    // Description is the FILL: the remainder after name/args/schedule and its
-    // leading gutter. Zero when absent or when nothing is left to give it.
+    // Description is the FILL: the remainder after name/args/model/schedule and
+    // its leading gutter. Zero when absent or when nothing is left to give it.
     let desc_w = if has_desc {
-        avail.saturating_sub(used_wo_desc(name_w, args_w) + COL_GAP)
+        avail.saturating_sub(used_wo_desc(name_w, args_w, model_w) + COL_GAP)
     } else {
         0
     };
 
-    DefColLayout { name_w, args_w, desc_w, sched_w }
+    DefColLayout { name_w, args_w, desc_w, model_w, sched_w }
 }
 
 /// The `N queued · next: <name>` cell text for a row with `queued > 0` (the
@@ -1205,14 +1236,14 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 /// `elapsed`) are FIXED widths — never sized from row data — so a row gaining a
 /// value never shifts any column; `name_w` stays content-capped and `last_w` is
 /// the FILL column (absorbs the remaining width, like the queue pane's summary
-/// — per user request the last task's description gets the slack). The live
-/// timer is ALWAYS reserved when the ladder keeps it; dirty/queued/author/
-/// commit-age are pane-gated (reserved only while some visible row carries the
-/// value — the slot's first pane-wide appearance is the one accepted shift).
+/// — per user request the last task's description gets the slack). The front
+/// `⌂`/`±` marker slots and the live timer are ALWAYS reserved when the ladder
+/// keeps them (per user request — data-gated slots made the name column shift
+/// as scroll/data changed); queued/author/commit-age stay pane-gated (reserved
+/// only while some visible row carries the value).
 /// Degradation drop priority (first dropped first): commit-age → author →
 /// queued·next → dirty → last-finished → live; only after all of those drop
-/// does `name_w` shrink. The ⌂ slot is exempt and always kept when any visible
-/// row has a main session.
+/// does `name_w` shrink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WtColLayout {
     pub name_w: usize,
@@ -1231,11 +1262,14 @@ pub struct WtColLayout {
 /// commit-age columns stay gated on whole-pane data availability.
 pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     let name_w0 = capped_max(rows.iter().map(|r| r.name.as_str()), NAME_CAP);
-    // Fixed marker/time widths, gated on whole-pane data availability (except the
-    // live timer, the queued column, and the last-task fill, which are always
-    // candidates — blank when a row has no value — so a first value appearing
-    // anywhere never shifts columns).
-    let dirty_w0 = if rows.iter().any(|r| r.dirty == Some(true)) { 1 } else { 0 };
+    // Fixed marker/time widths. The ⌂/± front slots and the live timer are
+    // statically reserved (blank when a row has no value); queued/author/
+    // commit-age stay gated on whole-pane data availability.
+    // STATICALLY reserved (user request): gating this slot on visible-row data
+    // made the name column shift whenever a dirty flag flipped or scrolling
+    // changed which rows were visible. The width ladder may still drop it under
+    // width pressure (geometry-driven, not data-driven).
+    let dirty_w0 = if rows.is_empty() { 0 } else { 1 };
     let elapsed_w0 = TIMER_W; // live timer: always reserved when the ladder keeps it
     // Queued·next is pane-gated like dirty/author/commit-age: its fixed slot is
     // reserved only while some visible row actually has a queued task. Always
@@ -1245,7 +1279,8 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     let queued_w0 = if rows.iter().any(|r| r.queued > 0) { WT_QUEUED_W } else { 0 };
     let author_w0 = if rows.iter().any(|r| wt_author_text(r).is_some()) { AUTHOR_W } else { 0 };
     let commit_w0 = if rows.iter().any(|r| r.last_commit_epoch.is_some()) { COMMIT_AGE_W } else { 0 };
-    let has_chain = rows.iter().any(|r| r.has_main_session);
+    // Same static reservation as `dirty_w0` — the ⌂ slot never flexes with data.
+    let has_chain = !rows.is_empty();
 
     // Anchor width: `● ` (dot + space) + the front marker cluster — `⌂ ` (main
     // session) and `± ` (dirty), each a single cell + space when present — then
@@ -2696,5 +2731,54 @@ mod tests {
             ..Default::default()
         }];
         assert_eq!(def_col_layout(&no_desc, 120).desc_w, 0);
+    }
+
+    #[test]
+    fn def_model_text_strips_claude_prefix_and_handles_absence() {
+        let stripped = DefinitionSummary { model: Some("claude-fable-5".into()), ..Default::default() };
+        assert_eq!(def_model_text(&stripped), "fable-5");
+        // Short aliases pass through unchanged.
+        let alias = DefinitionSummary { model: Some("sonnet".into()), ..Default::default() };
+        assert_eq!(def_model_text(&alias), "sonnet");
+        // Absent (old daemon) and empty both render blank.
+        assert_eq!(def_model_text(&DefinitionSummary::default()), "");
+        let empty = DefinitionSummary { model: Some(String::new()), ..Default::default() };
+        assert_eq!(def_model_text(&empty), "");
+    }
+
+    #[test]
+    fn def_col_layout_model_sizes_and_degrades_before_args() {
+        // name="pr-review"(9), args="(pr)"(4), model "claude-fable-5"→"fable-5"(7),
+        // cron→"Everyday 1:30pm"(15), description present. Schedule footprint = 18.
+        let defs = vec![
+            DefinitionSummary {
+                name: "pr-review".into(),
+                args: vec![ArgSpec { name: "pr".into(), ..Default::default() }],
+                model: Some("claude-fable-5".into()),
+                cron: Some("30 13 * * *".into()),
+                has_discovery: true,
+                description: Some("Review an open PR end to end.".into()),
+                ..Default::default()
+            },
+            DefinitionSummary { name: "lint".into(), model: Some("sonnet".into()), ..Default::default() },
+        ];
+        // Wide: model sized to the widest cell (7), desc is the fill remainder.
+        // used_wo_desc = 9 + (2+4) + (2+7) + (2+18) = 44; desc = 120 - 44 - 2 = 74.
+        let wide = def_col_layout(&defs, 120);
+        assert_eq!((wide.name_w, wide.args_w, wide.model_w, wide.sched_w), (9, 4, 7, 15));
+        assert_eq!(wide.desc_w, 74, "description is the fill remainder after the model column");
+        // Tighter: the model column drops before args (args still fits).
+        // used_wo_desc without model = 9 + (2+4) + (2+18) = 35.
+        let mid = def_col_layout(&defs, 40);
+        assert_eq!(mid.model_w, 0, "model drops first once the fill is exhausted");
+        assert_eq!(mid.args_w, 4, "args kept after the model column drops");
+        assert_eq!(mid.desc_w, 3, "fill absorbs only what's left: 40 - 35 - 2");
+        // Narrower: model gone, now args drops too. used_wo_desc(name only) = 29.
+        let narrow = def_col_layout(&defs, 30);
+        assert_eq!((narrow.model_w, narrow.args_w, narrow.desc_w), (0, 0, 0));
+        assert_eq!(narrow.name_w, 9, "name still fits; schedule kept");
+        // No model anywhere → the model column is omitted pane-wide even when wide.
+        let no_model = vec![DefinitionSummary { name: "lint".into(), ..Default::default() }];
+        assert_eq!(def_col_layout(&no_model, 120).model_w, 0);
     }
 }

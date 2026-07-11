@@ -1,6 +1,6 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import type {
 	ArgSpec,
 	GlobalConfig,
@@ -13,17 +13,22 @@ import type {
 	WorktreeInfo,
 } from "@queohoh/core";
 import {
+	DEFAULT_MODEL_ALIASES,
 	defaultExec,
+	effectiveModelTable,
 	globalWorkspaceDir,
 	instantiateDefinition,
 	listDefinitions,
+	loadProjectModels,
 	loadProjectVars,
 	projectWorkspaceDir,
 	resolveDefinition,
+	resolveModel,
 	SessionModeSchema,
 } from "@queohoh/core";
 import { currentBuildId } from "./build-id.js";
 import type { Engine } from "./engine.js";
+import { configPath } from "./paths.js";
 
 export interface StateSnapshot {
 	tasks: TaskInstance[];
@@ -174,6 +179,26 @@ export class ApiServer {
 		switch (method) {
 			case "ping":
 				return "pong";
+			case "settings": {
+				// Only projects that actually override models are listed; everyone
+				// else is fully described by defaults + global.
+				const projects = deps.config.projects
+					.map((p) => ({
+						repo: p.name,
+						entries: loadProjectModels(
+							projectWorkspaceDir(deps.config, p.name),
+						),
+						source: join(projectWorkspaceDir(deps.config, p.name), "vars.yaml"),
+					}))
+					.filter((p) => Object.keys(p.entries).length > 0);
+				return {
+					models: {
+						defaults: DEFAULT_MODEL_ALIASES,
+						global: { entries: deps.config.models, source: configPath() },
+						projects,
+					},
+				};
+			}
 			case "state":
 				return this.snapshot();
 			case "subscribe":
@@ -239,10 +264,18 @@ export class ApiServer {
 					hasDiscovery: boolean;
 					cron: string | null;
 					description: string | null;
+					model: string;
 				};
 				const out: Summary[] = [];
 				for (const project of deps.config.projects) {
 					try {
+						// Resolve model aliases against the effective per-project table
+						// (built-in defaults ← global config.yaml ← project vars.yaml).
+						// Computed once per project so both def loops share it.
+						const table = effectiveModelTable(
+							deps.config.models,
+							loadProjectModels(projectWorkspaceDir(deps.config, project.name)),
+						);
 						// Global defs first, then project-local defs shadow them by name.
 						const byName = new Map<string, Summary>();
 						for (const def of listDefinitions(
@@ -257,6 +290,7 @@ export class ApiServer {
 								hasDiscovery: def.discovery !== null,
 								cron: def.cron,
 								description: def.description,
+								model: resolveModel(def.model, table),
 							});
 						}
 						for (const def of listDefinitions(
@@ -271,6 +305,7 @@ export class ApiServer {
 								hasDiscovery: def.discovery !== null,
 								cron: def.cron,
 								description: def.description,
+								model: resolveModel(def.model, table),
 							});
 						}
 						for (const summary of [...byName.values()].sort((a, b) =>
@@ -357,7 +392,18 @@ export class ApiServer {
 				if (!deps.config.projects.some((p) => p.name === repo)) {
 					throw new Error(`unknown repo: ${repo}`);
 				}
-				return resolveDefinition(deps.config, repo, name);
+				const def = resolveDefinition(deps.config, repo, name);
+				// Resolve the authored model alias against the effective per-project
+				// table (built-in defaults ← global config.yaml ← project vars.yaml) —
+				// the exact construction `case "definitions"` uses. The authored
+				// `model` is preserved as-is; `modelResolved` carries the concrete id
+				// so the detail pane can show `alias → id` when they differ. Unknown
+				// names (including full ids) pass through unchanged via resolveModel.
+				const table = effectiveModelTable(
+					deps.config.models,
+					loadProjectModels(projectWorkspaceDir(deps.config, repo)),
+				);
+				return { ...def, modelResolved: resolveModel(def.model, table) };
 			}
 			case "retry": {
 				const task = this.mustGet(String(params.id));

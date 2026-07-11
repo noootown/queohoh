@@ -6,6 +6,7 @@ import type { GlobalConfig } from "../config.js";
 import {
 	globalWorkspaceDir,
 	loadGlobalConfig,
+	loadProjectModels,
 	loadProjectVars,
 	projectWorkspaceDir,
 	resolveDefinition,
@@ -102,6 +103,7 @@ describe("resolveDefinition — project vs global", () => {
 			maxConcurrentTasks: 3,
 			archiveAfterDays: 7,
 			vars: {},
+			models: {},
 		};
 	}
 
@@ -159,5 +161,83 @@ describe("loadProjectVars", () => {
 		expect(loadProjectVars(dir)).toEqual({});
 		writeFileSync(join(dir, "vars.yaml"), "nested:\n  a: 1\n");
 		expect(() => loadProjectVars(dir)).toThrow(/non-scalar var: nested/);
+	});
+
+	it("skips the reserved models block instead of throwing", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"ticket: JUS-1\nmodels:\n  sonnet: claude-sonnet-4-6\n",
+		);
+		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+	});
+});
+
+describe("loadGlobalConfig — models map", () => {
+	it("parses a global models: map and defaults to empty", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-models-"));
+		const withModels = join(dir, "with.yaml");
+		writeFileSync(
+			withModels,
+			["projects: []", "models:", "  sonnet: claude-sonnet-4-6"].join("\n"),
+		);
+		expect(loadGlobalConfig(withModels).models).toEqual({
+			sonnet: "claude-sonnet-4-6",
+		});
+		const bare = join(dir, "bare.yaml");
+		writeFileSync(bare, "projects: []\n");
+		expect(loadGlobalConfig(bare).models).toEqual({});
+	});
+
+	it("tolerates malformed models entries instead of crashing", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-models-bad-"));
+		const path = join(dir, "config.yaml");
+		writeFileSync(
+			path,
+			[
+				"projects: []",
+				"models:",
+				"  sonnet: claude-x",
+				"  bad: 4.6",
+				"  nested:",
+				"    a: b",
+			].join("\n"),
+		);
+		expect(() => loadGlobalConfig(path)).not.toThrow();
+		expect(loadGlobalConfig(path).models).toEqual({ sonnet: "claude-x" });
+	});
+});
+
+describe("loadProjectModels", () => {
+	it("reads the block and tolerates absence/garbage", () => {
+		const withBlock = mkdtempSync(join(tmpdir(), "queohoh-pm-"));
+		writeFileSync(
+			join(withBlock, "vars.yaml"),
+			"ticket: JUS-1\nmodels:\n  sonnet: claude-sonnet-4-6\n",
+		);
+		expect(loadProjectModels(withBlock)).toEqual({
+			sonnet: "claude-sonnet-4-6",
+		});
+
+		const withoutVarsYaml = mkdtempSync(join(tmpdir(), "queohoh-pm-"));
+		expect(loadProjectModels(withoutVarsYaml)).toEqual({});
+
+		const withGarbage = mkdtempSync(join(tmpdir(), "queohoh-pm-"));
+		writeFileSync(join(withGarbage, "vars.yaml"), "models: [not, a, map]\n");
+		expect(loadProjectModels(withGarbage)).toEqual({});
+	});
+
+	it("skips non-string and empty-string values, keeping valid entries", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pm-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			[
+				"models:",
+				"  sonnet: claude-sonnet-4-6",
+				"  bad: 4.6",
+				"  blank: ''",
+			].join("\n"),
+		);
+		expect(loadProjectModels(dir)).toEqual({ sonnet: "claude-sonnet-4-6" });
 	});
 });

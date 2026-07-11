@@ -139,6 +139,11 @@ pub struct DefinitionSummary {
     /// One-line human description of the def, or `None` when unset. `default` on
     /// the container covers old daemons that omit the field.
     pub description: Option<String>,
+    /// Model the def runs with (e.g. `claude-fable-5`), shown in the TASKS def
+    /// rows (prefix-stripped). `None` on an old daemon that omits the field (via
+    /// the container `default`) — a modern daemon always sends it (config default
+    /// `"sonnet"`), so this is `Option` purely for backward compatibility.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -154,6 +159,12 @@ pub struct TaskDefinition {
     pub pre_run: Option<String>,
     pub post_run: Option<String>,
     pub model: String,
+    /// The authored `model` alias resolved to a concrete id against the effective
+    /// per-project table (e.g. `opus` → `claude-opus-4-8`). `None` on an old
+    /// daemon that omits it (via the container `default`) — the detail pane then
+    /// falls back to showing the authored `model` alone. A modern daemon always
+    /// sends it (unknown/full ids resolve to themselves).
+    pub model_resolved: Option<String>,
     pub timeout_ms: u64,
     pub priority: String,
     pub prompt: String,
@@ -164,6 +175,53 @@ pub struct TaskDefinition {
 pub struct Discovery {
     pub command: String,
     pub item_key: String,
+}
+
+/// Read-only mirror of the daemon's `settings` RPC (Task 4). Every field is
+/// `#[serde(default)]` so an OLD daemon that omits the whole block — or any
+/// subtree of it — deserializes to empties rather than erroring; the app stores
+/// a *failed* fetch as `Some(None)` and never reaches `from_value`, but a
+/// partial/forward-compatible payload from a mixed-version daemon still lands
+/// cleanly. Keys are single lowercase words on the wire (`models`/`defaults`/
+/// `global`/`entries`/`source`/`projects`/`repo`), so field names match 1:1 and
+/// no `rename_all` is needed.
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+pub struct SettingsPayload {
+    #[serde(default)]
+    pub models: SettingsModels,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+pub struct SettingsModels {
+    /// Built-in alias → model-id defaults the daemon ships with.
+    #[serde(default)]
+    pub defaults: std::collections::BTreeMap<String, String>,
+    /// The global override layer (config-file `models:` block). Overlays
+    /// `defaults` to form the effective global table.
+    #[serde(default)]
+    pub global: SettingsLayer,
+    /// Only projects that actually override models; each carries its deltas.
+    #[serde(default)]
+    pub projects: Vec<SettingsProjectLayer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+pub struct SettingsLayer {
+    #[serde(default)]
+    pub entries: std::collections::BTreeMap<String, String>,
+    /// Path the layer was loaded from, shown as the section's provenance line.
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+pub struct SettingsProjectLayer {
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub entries: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub source: String,
 }
 
 #[cfg(test)]
@@ -315,11 +373,12 @@ mod tests {
         let with: DefinitionSummary = serde_json::from_str(
             r#"{"repo": "platform", "name": "pr-review", "scope": "project",
                 "args": [], "hasDiscovery": true, "cron": "30 13 * * *",
-                "description": "Review an open PR."}"#,
+                "description": "Review an open PR.", "model": "claude-fable-5"}"#,
         )
         .unwrap();
         assert_eq!(with.cron.as_deref(), Some("30 13 * * *"));
         assert_eq!(with.description.as_deref(), Some("Review an open PR."));
+        assert_eq!(with.model.as_deref(), Some("claude-fable-5"));
         // ...and an old daemon that omits them defaults to None (container `default`).
         let without: DefinitionSummary = serde_json::from_str(
             r#"{"repo": "platform", "name": "lint", "scope": "global",
@@ -328,6 +387,24 @@ mod tests {
         .unwrap();
         assert_eq!(without.cron, None);
         assert_eq!(without.description, None);
+        assert_eq!(without.model, None);
+    }
+
+    #[test]
+    fn task_definition_model_resolved_present_and_absent() {
+        // A modern daemon sends camelCase `modelResolved`...
+        let with: TaskDefinition = serde_json::from_str(
+            r#"{"name": "pr-ready", "repo": "acme", "model": "opus",
+                "modelResolved": "claude-opus-4-8", "timeoutMs": 1800000}"#,
+        )
+        .unwrap();
+        assert_eq!(with.model, "opus");
+        assert_eq!(with.model_resolved.as_deref(), Some("claude-opus-4-8"));
+        // ...and an old daemon that omits it defaults to None (container `default`).
+        let without: TaskDefinition =
+            serde_json::from_str(r#"{"name": "lint", "repo": "acme", "model": "sonnet"}"#).unwrap();
+        assert_eq!(without.model, "sonnet");
+        assert_eq!(without.model_resolved, None);
     }
 
     #[test]
@@ -335,5 +412,51 @@ mod tests {
         let t: TaskInstance =
             serde_json::from_str(r#"{"id": "x", "status": "needs-input"}"#).unwrap();
         assert_eq!(t.status, TaskStatus::NeedsInput);
+    }
+
+    #[test]
+    fn settings_payload_full_deserializes() {
+        // The exact shape the daemon's `settings` RPC returns (Task 4).
+        let s: SettingsPayload = serde_json::from_str(
+            r#"{"models": {
+                "defaults": {"opus": "claude-opus-4-8", "sonnet": "claude-sonnet-4-5"},
+                "global": {"entries": {"sonnet": "claude-sonnet-4-6"},
+                           "source": "/home/ian/.config/qoo/config.yaml"},
+                "projects": [{"repo": "acme", "entries": {"opus": "claude-opus-4-9"},
+                              "source": "/repos/acme/vars.yaml"}]
+            }}"#,
+        )
+        .unwrap();
+        assert_eq!(s.models.defaults.get("opus").map(String::as_str), Some("claude-opus-4-8"));
+        // BTreeMap: iteration order is sorted, so snapshots stay deterministic.
+        assert_eq!(
+            s.models.defaults.keys().cloned().collect::<Vec<_>>(),
+            vec!["opus", "sonnet"]
+        );
+        assert_eq!(s.models.global.entries.get("sonnet").map(String::as_str), Some("claude-sonnet-4-6"));
+        assert_eq!(s.models.global.source, "/home/ian/.config/qoo/config.yaml");
+        assert_eq!(s.models.projects.len(), 1);
+        assert_eq!(s.models.projects[0].repo, "acme");
+        assert_eq!(s.models.projects[0].entries.get("opus").map(String::as_str), Some("claude-opus-4-9"));
+        assert_eq!(s.models.projects[0].source, "/repos/acme/vars.yaml");
+    }
+
+    #[test]
+    fn settings_payload_empty_object_defaults_without_error() {
+        // An old daemon (predating the settings RPC) that somehow returns `{}` —
+        // or any partial subtree — must default rather than panic. Every field is
+        // `#[serde(default)]`, so the empty object is a fully-defaulted payload.
+        let s: SettingsPayload = serde_json::from_str("{}").unwrap();
+        assert_eq!(s, SettingsPayload::default());
+        assert!(s.models.defaults.is_empty());
+        assert!(s.models.global.entries.is_empty());
+        assert_eq!(s.models.global.source, "");
+        assert!(s.models.projects.is_empty());
+        // Partial: `models` present but `projects`/`global` omitted.
+        let partial: SettingsPayload =
+            serde_json::from_str(r#"{"models": {"defaults": {"haiku": "claude-haiku-4-5"}}}"#).unwrap();
+        assert_eq!(partial.models.defaults.get("haiku").map(String::as_str), Some("claude-haiku-4-5"));
+        assert!(partial.models.projects.is_empty());
+        assert_eq!(partial.models.global.source, "");
     }
 }

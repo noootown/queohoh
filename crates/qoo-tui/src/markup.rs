@@ -18,6 +18,11 @@ pub enum LineCtx {
     /// A content line inside a fence, tagged with the block's language (empty
     /// string for an unlabeled block).
     Fenced { lang: String },
+    /// A `key   value` row on the definition detail's config sub-tab. `key_col`
+    /// is the char index where the value column begins (the key is left-padded to
+    /// this width across all rows), so [`style_config_line`] can color the key
+    /// column distinctly from the value without re-parsing a separator.
+    Config { key_col: usize },
 }
 
 /// One cheap pass over the full transcript classifying each line. A line whose
@@ -70,6 +75,44 @@ fn str_width(s: &str) -> usize {
 /// Cell width of one char (`None` — control chars — treated as 0, as ratatui does).
 fn char_width(c: char) -> usize {
     UnicodeWidthChar::width(c).unwrap_or(0)
+}
+
+/// Char index in `text` whose cell span covers terminal cell column `target`.
+/// Walks unicode cell widths left to right; a multi-width char covers all its
+/// cells, so a click on either half maps to the same char. When `target` is at
+/// or past the text's total cell width the index clamps to the last char (a
+/// click in the trailing padding selects to end-of-line). Empty text → 0 (no
+/// char; the caller treats an empty line as contributing no text). Used by the
+/// detail-pane mouse selection to turn a cell column into a char boundary only
+/// at the extraction edge, so the rest of the code stays in cell space.
+pub fn char_at_cell(text: &str, target: usize) -> usize {
+    let mut col = 0usize;
+    let mut idx = 0usize;
+    for (i, ch) in text.chars().enumerate() {
+        idx = i;
+        let w = char_width(ch);
+        if w > 0 && target < col + w {
+            return i;
+        }
+        col += w;
+    }
+    idx
+}
+
+/// Substring of `text` covered by the inclusive cell range `[lo, hi]`. Both cell
+/// columns are mapped to char indices via [`char_at_cell`] and the inclusive
+/// char slice is returned; `hi == usize::MAX` (the whole-line sentinel) selects
+/// through the last char. Robust to `lo > hi` (clamps to empty-safe order) so a
+/// caller that clamped absolute line indices can't trigger an underflow. Empty
+/// text → "".
+pub fn slice_cells(text: &str, lo: usize, hi: usize) -> String {
+    let n = text.chars().count();
+    if n == 0 {
+        return String::new();
+    }
+    let hi_c = char_at_cell(text, hi).min(n - 1);
+    let lo_c = char_at_cell(text, lo).min(hi_c);
+    text.chars().skip(lo_c).take(hi_c + 1 - lo_c).collect()
 }
 
 /// Reflow logical lines into DISPLAY lines that each fit `width` cells, so every
@@ -191,12 +234,132 @@ fn push_hard_broken(word: &str, width: usize, segs: &mut Vec<String>, cur: &mut 
 /// content gets best-effort, line-local syntax accents; plain text delegates to
 /// [`style_line`]. `width` is the content width the rules are sized to (any
 /// overflow is clipped by the `Paragraph`).
+///
+/// Rule precedence (nvim-treesitter-like): fence-delimiter RULES are pure and
+/// take no further styling. For every other line a `{{jinja}}` overlay
+/// ([`apply_jinja`]) is applied LAST, on top of whatever the base styler
+/// produced, so a placeholder is warn-yellow consistently in prose, inside
+/// inline `` `code` ``, and inside fenced blocks — outranking the inline-code
+/// green (rule 1 wins the placeholder span). Base styling within a text line is
+/// itself ordered whole-line rule (heading / hr) > leading list marker > inline
+/// tokens (bold > code > URL); see [`style_line`].
 pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette) -> Line<'static> {
     match ctx {
-        LineCtx::Text => style_line(line, p),
+        LineCtx::Text => apply_jinja(style_line(line, p), p),
         LineCtx::Fence { lang } => fence_rule(lang.as_deref(), width, p),
-        LineCtx::Fenced { lang } => style_fenced(line, lang, p),
+        LineCtx::Fenced { lang } => apply_jinja(style_fenced(line, lang, p), p),
+        LineCtx::Config { key_col } => style_config_line(line, *key_col, p),
     }
+}
+
+/// Style a `key   value` config row: the key column (chars `[0, key_col)`,
+/// including its right-padding) in `accent`, the value in `fg`. A lone `—`
+/// placeholder value is dimmed; a value carrying a ` → ` resolution arrow dims
+/// the arrow and emphasizes (bold `fg`) the resolved right-hand side. Splits at
+/// the `key_col` CHAR boundary — the key + padding are always ASCII, so this is
+/// also the cell boundary. A too-short line (no value column) styles wholly as a
+/// key. Pure over the input; every char lands in exactly one contiguous span, so
+/// the downstream cell-column selection patch keeps working.
+fn style_config_line(line: &str, key_col: usize, p: &Palette) -> Line<'static> {
+    let key_style = Style::default().fg(p.accent);
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= key_col {
+        return Line::from(Span::styled(line.to_string(), key_style));
+    }
+    let key: String = chars[..key_col].iter().collect();
+    let value: String = chars[key_col..].iter().collect();
+    let mut spans = vec![Span::styled(key, key_style)];
+    spans.extend(style_config_value(&value, p));
+    Line::from(spans)
+}
+
+/// Spans for a config row's value column (see [`style_config_line`]).
+fn style_config_value(value: &str, p: &Palette) -> Vec<Span<'static>> {
+    let fg = Style::default().fg(p.fg);
+    if value.trim() == "—" {
+        return vec![Span::styled(value.to_string(), p.dim_style())];
+    }
+    if let Some(idx) = value.find(" → ") {
+        let arrow = " → ";
+        let before = &value[..idx];
+        let after = &value[idx + arrow.len()..];
+        return vec![
+            Span::styled(before.to_string(), fg),
+            Span::styled(arrow.to_string(), p.dim_style()),
+            Span::styled(after.to_string(), fg.add_modifier(Modifier::BOLD)),
+        ];
+    }
+    vec![Span::styled(value.to_string(), fg)]
+}
+
+/// Char-index ranges `[start, end)` of every `{{...}}` placeholder in `s`. The
+/// nearest `}}` closes each `{{` (non-greedy); a `{{` with no closing `}}` on the
+/// line yields no range (matching per-line styling — a lone `{{` stays unstyled).
+/// The braces are included in the range so the whole placeholder is highlighted.
+fn jinja_ranges(s: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut ranges = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < n {
+        if chars[i] == '{' && chars[i + 1] == '{' {
+            let mut j = i + 2;
+            let mut close = None;
+            while j + 1 < n {
+                if chars[j] == '}' && chars[j + 1] == '}' {
+                    close = Some(j + 2);
+                    break;
+                }
+                j += 1;
+            }
+            match close {
+                Some(end) => {
+                    ranges.push((i, end));
+                    i = end;
+                    continue;
+                }
+                None => break, // no closing `}}` on this line
+            }
+        }
+        i += 1;
+    }
+    ranges
+}
+
+/// Overlay `{{jinja}}` warn-yellow styling onto an already-styled `line`, keying
+/// on char ranges found over the concatenated text ([`jinja_ranges`]) and
+/// splitting spans at the range boundaries so surrounding syntax colors survive.
+/// Placeholder chars get a flat warn fg (replacing any base color, so inline-code
+/// green becomes yellow). No-op when the line has no placeholder. Pure; span
+/// shape stays well-formed (every char in exactly one contiguous span) so the
+/// downstream cell-column selection patch keeps working.
+fn apply_jinja(line: Line<'static>, p: &Palette) -> Line<'static> {
+    let full: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let ranges = jinja_ranges(&full);
+    if ranges.is_empty() {
+        return line;
+    }
+    let warn = Style::default().fg(p.warn);
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut idx = 0usize; // global char index across the whole line
+    for span in &line.spans {
+        let base = span.style;
+        let mut buf = String::new();
+        let mut buf_jinja = false;
+        for ch in span.content.chars() {
+            let in_jinja = ranges.iter().any(|&(a, b)| idx >= a && idx < b);
+            if !buf.is_empty() && in_jinja != buf_jinja {
+                out.push(Span::styled(std::mem::take(&mut buf), if buf_jinja { warn } else { base }));
+            }
+            buf.push(ch);
+            buf_jinja = in_jinja;
+            idx += 1;
+        }
+        if !buf.is_empty() {
+            out.push(Span::styled(buf, if buf_jinja { warn } else { base }));
+        }
+    }
+    Line::from(out)
 }
 
 /// A horizontal rule sized to `width`. With a language it embeds the label as
@@ -403,14 +566,17 @@ fn json_literal_at(rest: &str) -> Option<&'static str> {
 }
 
 /// Style one detail-pane text line (port of markup.ts styleLine). Whole-line
-/// rules (headings, horizontal rules) win; otherwise the line is tokenized into
-/// **bold** / `code` / URL spans with surrounding text plain. Returns an owned
-/// Line — always at least one span.
+/// rules win first: headings (bold + magenta, `#` marks KEPT — nvim styles the
+/// whole line) and horizontal rules. Otherwise a leading list marker is accented
+/// (blue) and the remainder is tokenized into **bold** / `code` / URL spans with
+/// surrounding text plain. Returns an owned Line — always at least one span. The
+/// `{{jinja}}` overlay is applied by the caller ([`style_transcript_line`]), not
+/// here.
 pub fn style_line(line: &str, p: &Palette) -> Line<'static> {
-    if let Some(text) = heading_text(line) {
+    if is_heading(line) {
         return Line::from(Span::styled(
-            text.to_string(),
-            Style::default().add_modifier(Modifier::BOLD),
+            line.to_string(),
+            Style::default().fg(p.heading).add_modifier(Modifier::BOLD),
         ));
     }
     if is_rule(line) {
@@ -420,16 +586,42 @@ pub fn style_line(line: &str, p: &Palette) -> Line<'static> {
     }
 
     let mut spans: Vec<Span<'static>> = Vec::new();
+    // A leading list marker (`- ` / `* ` / `+ ` / `1. ` / `2) `) is accented; the
+    // item text after it tokenizes normally.
+    let mut start = 0usize;
+    if let Some((indent, marker_len)) = list_marker(line) {
+        if indent > 0 {
+            spans.push(Span::raw(line[..indent].to_string()));
+        }
+        spans.push(Span::styled(
+            line[indent..indent + marker_len].to_string(),
+            Style::default().fg(p.accent),
+        ));
+        start = indent + marker_len;
+    }
+    spans.extend(tokenize_inline(&line[start..], p));
+    if spans.is_empty() {
+        spans.push(Span::raw(line.to_string()));
+    }
+    Line::from(spans)
+}
+
+/// Tokenize inline markup in `text`, emitting **bold** / `code` / URL spans with
+/// surrounding runs raw. Returns `[]` for empty `text` (the caller supplies the
+/// empty-line fallback). Precedence per position mirrors [`match_token`]: bold >
+/// code > URL.
+fn tokenize_inline(text: &str, p: &Palette) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
     let mut last = 0usize;
     let mut i = 0usize;
-    while i < line.len() {
-        if !line.is_char_boundary(i) {
+    while i < text.len() {
+        if !text.is_char_boundary(i) {
             i += 1;
             continue;
         }
-        if let Some((end, span)) = match_token(line, i, p) {
+        if let Some((end, span)) = match_token(text, i, p) {
             if i > last {
-                spans.push(Span::raw(line[last..i].to_string()));
+                spans.push(Span::raw(text[last..i].to_string()));
             }
             spans.push(span);
             last = end;
@@ -438,28 +630,50 @@ pub fn style_line(line: &str, p: &Palette) -> Line<'static> {
             i += 1;
         }
     }
-    if last < line.len() {
-        spans.push(Span::raw(line[last..].to_string()));
+    if last < text.len() {
+        spans.push(Span::raw(text[last..].to_string()));
     }
-    if spans.is_empty() {
-        spans.push(Span::raw(line.to_string()));
-    }
-    Line::from(spans)
+    spans
 }
 
-/// `^#{1,3}\s+(.*)$` — 1–3 hashes followed by ≥1 whitespace; returns the text
-/// after the whitespace run. 4+ hashes or no whitespace → not a heading.
-fn heading_text(line: &str) -> Option<&str> {
+/// `^#{1,6}\s` — 1–6 hashes followed by ≥1 whitespace. 7+ hashes or no
+/// whitespace after the markers → not a heading. (The text is NOT stripped:
+/// callers style the whole line including the `#` marks.)
+fn is_heading(line: &str) -> bool {
     let hashes = line.bytes().take_while(|&b| b == b'#').count();
-    if !(1..=3).contains(&hashes) {
+    if !(1..=6).contains(&hashes) {
+        return false;
+    }
+    line[hashes..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_whitespace())
+}
+
+/// Leading list marker on a (possibly indented) line, as byte lengths
+/// `(indent, marker)` where `marker` excludes the trailing whitespace. Bullets
+/// are `-` / `*` / `+` followed by whitespace (or end of line); ordered markers
+/// are a digit run then `.` or `)` then whitespace (or end of line). `None` when
+/// the line does not start with a marker. (`*` followed by `*` is left for the
+/// bold tokenizer, not read as a bullet.)
+fn list_marker(line: &str) -> Option<(usize, usize)> {
+    let indent = line.len() - line.trim_start().len();
+    let b = line.as_bytes();
+    let rest = &b[indent..];
+    if rest.is_empty() {
         return None;
     }
-    let rest = &line[hashes..];
-    let trimmed = rest.trim_start();
-    if trimmed.len() == rest.len() {
-        return None; // no whitespace after the markers
+    if matches!(rest[0], b'-' | b'*' | b'+') {
+        return (rest.len() == 1 || rest[1].is_ascii_whitespace()).then_some((indent, 1));
     }
-    Some(trimmed)
+    let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 && digits < rest.len() && matches!(rest[digits], b'.' | b')') {
+        let marker = digits + 1;
+        if marker == rest.len() || rest[marker].is_ascii_whitespace() {
+            return Some((indent, marker));
+        }
+    }
+    None
 }
 
 /// `^---+$` — three or more dashes, nothing else.
@@ -494,7 +708,9 @@ fn match_token(line: &str, i: usize, p: &Palette) -> Option<(usize, Span<'static
     {
         let content = &inner[..close];
         let end = i + 1 + close + 1;
-        return Some((end, Span::styled(content.to_string(), Style::default().fg(p.info))));
+        // Green (nvim renders inline code like `git status --porcelain` green);
+        // a `{{jinja}}` inside overrides to yellow via the caller's overlay.
+        return Some((end, Span::styled(content.to_string(), Style::default().fg(p.ok))));
     }
     // https?://[^\s)>\]"']+ — the `+` requires >=1 host char after the scheme.
     let scheme_len = if rest.starts_with("https://") {
@@ -536,7 +752,10 @@ mod tests {
         Style::default().fg(p.border)
     }
     fn code(p: &Palette) -> Style {
-        Style::default().fg(p.info)
+        Style::default().fg(p.ok)
+    }
+    fn heading(p: &Palette) -> Style {
+        Style::default().fg(p.heading).add_modifier(Modifier::BOLD)
     }
     fn link(p: &Palette) -> Style {
         Style::default().fg(p.accent)
@@ -555,17 +774,21 @@ mod tests {
     }
 
     #[test]
-    fn bolds_headings_and_strips_markers() {
+    fn styles_headings_bold_magenta_keeping_markers() {
         let p = Palette::default();
-        assert_eq!(parts(&style_line("## Findings", &p)), vec![("Findings".into(), bold())]);
-        assert_eq!(parts(&style_line("# Title", &p)), vec![("Title".into(), bold())]);
-        assert_eq!(parts(&style_line("### Deep", &p)), vec![("Deep".into(), bold())]);
+        // Whole line (including the `#` marks) is bold + magenta — nvim styles both.
+        assert_eq!(parts(&style_line("## Findings", &p)), vec![("## Findings".into(), heading(&p))]);
+        assert_eq!(parts(&style_line("# Title", &p)), vec![("# Title".into(), heading(&p))]);
+        assert_eq!(parts(&style_line("### Deep", &p)), vec![("### Deep".into(), heading(&p))]);
+        // 1–6 hashes are all headings now.
+        assert_eq!(parts(&style_line("#### Four", &p)), vec![("#### Four".into(), heading(&p))]);
+        assert_eq!(parts(&style_line("###### Six", &p)), vec![("###### Six".into(), heading(&p))]);
     }
 
     #[test]
-    fn four_hashes_or_no_space_are_not_headings() {
+    fn seven_hashes_or_no_space_are_not_headings() {
         let p = Palette::default();
-        assert_eq!(parts(&style_line("#### Four", &p)), vec![("#### Four".into(), plain())]);
+        assert_eq!(parts(&style_line("####### Seven", &p)), vec![("####### Seven".into(), plain())]);
         assert_eq!(parts(&style_line("#hash", &p)), vec![("#hash".into(), plain())]);
     }
 
@@ -600,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn colors_inline_code_cyan_and_strips_backticks() {
+    fn colors_inline_code_green_and_strips_backticks() {
         let p = Palette::default();
         assert_eq!(
             parts(&style_line("call `foo.py:275` now", &p)),
@@ -665,6 +888,120 @@ mod tests {
     fn returns_one_segment_for_an_empty_line() {
         let p = Palette::default();
         assert_eq!(parts(&style_line("", &p)), vec![("".into(), plain())]);
+    }
+
+    // ---- jinja overlay (applied by style_transcript_line) ------------------
+
+    /// Style a plain-text line the way the renderer does (Text ctx), so the
+    /// `{{jinja}}` overlay runs.
+    fn text(line: &str, p: &Palette) -> Vec<(String, Style)> {
+        parts(&style_transcript_line(line, &LineCtx::Text, 80, p))
+    }
+
+    #[test]
+    fn jinja_placeholder_is_warn_in_prose() {
+        let p = Palette::default();
+        assert_eq!(
+            text("hello {{name}} bye", &p),
+            vec![
+                ("hello ".into(), plain()),
+                ("{{name}}".into(), warn(&p)),
+                (" bye".into(), plain()),
+            ]
+        );
+    }
+
+    #[test]
+    fn jinja_inside_inline_code_overrides_green_to_warn() {
+        let p = Palette::default();
+        // The code span is green; the placeholder within it is re-colored yellow.
+        assert_eq!(
+            text("run `{{cmd}} x`", &p),
+            vec![
+                ("run ".into(), plain()),
+                ("{{cmd}}".into(), warn(&p)),
+                (" x".into(), ok(&p)),
+            ]
+        );
+    }
+
+    #[test]
+    fn jinja_inside_fenced_block_is_warn() {
+        let p = Palette::default();
+        // Unknown fenced language → plain body; the placeholder still styles.
+        let got = parts(&style_transcript_line(
+            "value = {{var}}",
+            &LineCtx::Fenced { lang: "rust".into() },
+            80,
+            &p,
+        ));
+        assert_eq!(
+            got,
+            vec![
+                ("value = ".into(), plain()),
+                ("{{var}}".into(), warn(&p)),
+            ]
+        );
+    }
+
+    #[test]
+    fn lone_open_braces_without_close_stay_unstyled() {
+        let p = Palette::default();
+        assert_eq!(text("a {{ b never closes", &p), vec![("a {{ b never closes".into(), plain())]);
+    }
+
+    #[test]
+    fn jinja_non_greedy_closes_at_nearest_braces() {
+        let p = Palette::default();
+        // First `}}` closes the placeholder; the trailing text stays plain.
+        assert_eq!(
+            text("{{a}} and {{b}}", &p),
+            vec![
+                ("{{a}}".into(), warn(&p)),
+                (" and ".into(), plain()),
+                ("{{b}}".into(), warn(&p)),
+            ]
+        );
+    }
+
+    // ---- list markers ------------------------------------------------------
+
+    #[test]
+    fn bullet_marker_is_accent_text_normal() {
+        let p = Palette::default();
+        assert_eq!(
+            parts(&style_line("- item one", &p)),
+            vec![("-".into(), accent(&p)), (" item one".into(), plain())]
+        );
+        // Indented bullet keeps the indent plain, marker accented.
+        assert_eq!(
+            parts(&style_line("  * nested", &p)),
+            vec![
+                ("  ".into(), plain()),
+                ("*".into(), accent(&p)),
+                (" nested".into(), plain()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ordered_marker_is_accent() {
+        let p = Palette::default();
+        assert_eq!(
+            parts(&style_line("1. first", &p)),
+            vec![("1.".into(), accent(&p)), (" first".into(), plain())]
+        );
+        assert_eq!(
+            parts(&style_line("2) second", &p)),
+            vec![("2)".into(), accent(&p)), (" second".into(), plain())]
+        );
+    }
+
+    #[test]
+    fn leading_double_star_is_bold_not_a_bullet() {
+        let p = Palette::default();
+        // `**` must not read as a `*` bullet — the bold tokenizer owns it.
+        assert_eq!(parts(&style_line("**hi**", &p)), vec![("hi".into(), bold())]);
     }
 
     // ---- fence_states ------------------------------------------------------
@@ -1022,6 +1359,86 @@ mod tests {
             .collect();
         assert!(body.len() > 1, "long fenced line wrapped into multiple segments");
         assert!(body.iter().all(|d| d.ctx == LineCtx::Fenced { lang: "bash".into() }));
+    }
+
+    // ---- cell ↔ char mapping (detail selection) ---------------------------
+
+    #[test]
+    fn char_at_cell_maps_ascii_columns_and_clamps_past_end() {
+        assert_eq!(char_at_cell("hello", 0), 0);
+        assert_eq!(char_at_cell("hello", 4), 4);
+        // Past the end clamps to the last char (click in trailing padding).
+        assert_eq!(char_at_cell("hello", 99), 4);
+        // Empty text has no char → 0.
+        assert_eq!(char_at_cell("", 3), 0);
+    }
+
+    #[test]
+    fn char_at_cell_handles_double_width_chars() {
+        // "中" is 2 cells; "中x" occupies cells [0,1]=中, [2]=x.
+        assert_eq!(char_at_cell("中x", 0), 0); // first cell of 中
+        assert_eq!(char_at_cell("中x", 1), 0); // second cell of 中 → same char
+        assert_eq!(char_at_cell("中x", 2), 1); // x
+    }
+
+    #[test]
+    fn slice_cells_extracts_inclusive_ascii_range() {
+        assert_eq!(slice_cells("hello world", 0, 4), "hello");
+        assert_eq!(slice_cells("hello world", 6, 10), "world");
+        // MAX sentinel selects through end-of-line.
+        assert_eq!(slice_cells("hello world", 6, usize::MAX), "world");
+        // Whole line from column 0.
+        assert_eq!(slice_cells("abc", 0, usize::MAX), "abc");
+        assert_eq!(slice_cells("", 0, usize::MAX), "");
+    }
+
+    #[test]
+    fn slice_cells_is_multiwidth_aware_and_underflow_safe() {
+        // Cells: 中(0,1) 中(2,3) x(4). Range [2,4] = second 中 + x.
+        assert_eq!(slice_cells("中中x", 2, 4), "中x");
+        // lo > hi (can arise after clamping) yields a safe single-char slice, not
+        // a panic.
+        let _ = slice_cells("abc", 5, 1);
+    }
+
+    // ---- config rows -------------------------------------------------------
+
+    fn config(line: &str, key_col: usize, p: &Palette) -> Vec<(String, Style)> {
+        parts(&style_transcript_line(line, &LineCtx::Config { key_col }, 80, p))
+    }
+
+    #[test]
+    fn config_row_colors_key_accent_and_value_fg() {
+        let p = Palette::default();
+        let fg = Style::default().fg(p.fg);
+        assert_eq!(
+            config("dedup      none", 11, &p),
+            vec![("dedup      ".into(), accent(&p)), ("none".into(), fg)]
+        );
+    }
+
+    #[test]
+    fn config_row_dims_em_dash_placeholder() {
+        let p = Palette::default();
+        assert_eq!(
+            config("discovery  —", 11, &p),
+            vec![("discovery  ".into(), accent(&p)), ("—".into(), p.dim_style())]
+        );
+    }
+
+    #[test]
+    fn config_row_dims_arrow_and_bolds_resolved_model() {
+        let p = Palette::default();
+        let fg = Style::default().fg(p.fg);
+        assert_eq!(
+            config("model      opus → claude-opus-4-8", 11, &p),
+            vec![
+                ("model      ".into(), accent(&p)),
+                ("opus".into(), fg),
+                (" → ".into(), p.dim_style()),
+                ("claude-opus-4-8".into(), fg.add_modifier(Modifier::BOLD)),
+            ]
+        );
     }
 
     #[test]

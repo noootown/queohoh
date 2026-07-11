@@ -2,6 +2,7 @@ export type { GlobalConfig } from "./config.js";
 export {
 	globalWorkspaceDir,
 	loadGlobalConfig,
+	loadProjectModels,
 	loadProjectVars,
 	projectWorkspaceDir,
 	resolveDefinition,
@@ -22,6 +23,11 @@ export type { InstantiateDeps, Trigger } from "./instantiate.js";
 export { instantiateDefinition } from "./instantiate.js";
 export type { MainSessionEntry } from "./main-sessions.js";
 export { MainSessionStore } from "./main-sessions.js";
+export {
+	DEFAULT_MODEL_ALIASES,
+	effectiveModelTable,
+	resolveModel,
+} from "./models.js";
 export type { Redactor } from "./redact.js";
 export { buildSecretMap, makeRedactor, redact } from "./redact.js";
 export type { TargetRef } from "./ref.js";

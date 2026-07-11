@@ -9,15 +9,15 @@ expression: terminal.backend()
 "│                         ││                                                   │"
 "│ ⠯ ⌂  featu…  implement… ││                                                   │"
 "│ ○    featu…  write doc… ││                                                   │"
-"│ ──────── finished ───── ││                                                   │"
-"│ ✗    main    flaky mig… ││                                                   │"
-"│ ✓    main    earlier c… ││                                                   │"
-"│                         ││                                                   │"
-"│                         ││                                                   │"
-"╰─────────────────────────╯│                                                   │"
-"╭⚡ TASKS─── ⚙️ [a] 🔽 [z]╮│                                                   │" Hidden by multi-width symbols: [(2, " "), (14, " "), (21, " ")]
-"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│ no task definitions     ││                                                   │"
+"│ ──╭ settings — model aliases ────────────────────────────────────────────╮   │"
+"│ ✗ │ models (global)  ~/.config/qoo/config.yaml                           │   │"
+"│ ✓ │   haiku   claude-haiku-4-5                                           │   │"
+"│   │   opus    claude-opus-4-8                                            │   │"
+"│   │   sonnet  claude-sonnet-4-6                                          │   │"
+"╰───│ acme (overrides)  acme/vars.yaml                                     │   │"
+"╭⚡ │   opus    claude-opus-4-9                                            │   │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍│ any key to close                                                     │   │" Hidden by multi-width symbols: [(3, " ")]
+"│ no╰──────────────────────────────────────────────────────────────────────╯   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
 "╭🌲 WORKTREES────── ➕ [c]╮│                                                   │" Hidden by multi-width symbols: [(2, " "), (21, " ")]

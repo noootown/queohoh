@@ -1,6 +1,7 @@
 import type { TaskDefinition } from "./definition.js";
 import { execHook } from "./hooks.js";
 import type { MainSessionStore } from "./main-sessions.js";
+import { resolveModel } from "./models.js";
 import type { Redactor } from "./redact.js";
 import type { Exec } from "./resolver-io.js";
 import type { RunStore } from "./run-store.js";
@@ -24,6 +25,9 @@ export interface WorkerDeps {
 	defaults: { model: string; timeoutMs: number };
 	globalVars?: Record<string, string>;
 	repoVars?: Record<string, string>;
+	/** Effective alias→id table for the task's repo; absent = no resolution
+	 * (old callers). Already merged (defaults ⊕ global ⊕ project). */
+	modelTable?: Record<string, string>;
 	mainSessions?: MainSessionStore;
 	// Reports the spawned claude child's pid so the engine can track it for a
 	// Stop action. Fires once per run, right after spawn.
@@ -106,7 +110,10 @@ export async function runTask(
 		def = deps.loadDef(task.definition);
 		if (def === null) return fail(`definition not found: ${task.definition}`);
 	}
-	const model = def?.model ?? task.model ?? deps.defaults.model;
+	const model = resolveModel(
+		def?.model ?? task.model ?? deps.defaults.model,
+		deps.modelTable ?? {},
+	);
 	const timeoutMs = def?.timeoutMs ?? deps.defaults.timeoutMs;
 
 	deps.runStore.writeSnapshot(

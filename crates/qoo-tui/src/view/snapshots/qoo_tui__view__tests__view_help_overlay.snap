@@ -15,14 +15,14 @@ expression: terminal.backend()
 "│       │ z               collapse / expand focused list pane          │       │"
 "│       │ /               filter focused pane                          │       │"
 "╰───────│ esc             clear range → clear filter → close overlay   │       │"
-"╭⚡ TASK│ g / G           jump to top / bottom                         │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ ?               this help                                    │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no tas│ q               quit                                         │       │"
-"│       │                                                              │       │"
-"╰───────│ legend                                                       │       │"
-"╭🌲 WORK│ ✓ ✗ ○ ?         task done / failed / queued / needs input    │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ ● (colored)     worktree: green free · yellow busy · red fail│       │" Hidden by multi-width symbols: [(3, " ")]
-"│ ● ⌂ fe│ ⏱               elapsed time of the running task on that lane│       │"
-"│ ●   ho│ ⌂               lane has a main session (tasks can resume it)│       │"
-"╰───────│ ±               worktree has uncommitted changes             │───────╯"
+"╭⚡ TASK│ g/G · Home/End  top / bottom (Home/End: detail pane)         │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ s               settings — model table                       │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no tas│ ?               this help                                    │       │"
+"│       │ q               quit                                         │       │"
+"╰───────│                                                              │       │"
+"╭🌲 WORK│ legend                                                       │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ ✓ ✗ ○ ?         task done / failed / queued / needs input    │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ 2 ⌂ fe│ ● / N           worktree: green dot idle · yellow N = running│       │"
+"│ ●   ho│ ⏱               elapsed time of the running task on that lane│       │"
+"╰───────│ ⌂               lane has a main session (tasks can resume it)│───────╯"
 "[1-9/0 ·╰──────────────────────────────────────────────────────────────╯        "

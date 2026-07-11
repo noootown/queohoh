@@ -5,6 +5,7 @@ pub mod help;
 pub mod menu;
 pub mod modal;
 pub mod panes;
+pub mod settings;
 pub mod tabbar;
 pub mod theme;
 
@@ -179,6 +180,9 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
     // Overlays render last so their rects register topmost in the hit map.
     match &app.mode {
         crate::app::Mode::Help => help::render(frame, area, &mut hits, &p),
+        crate::app::Mode::Settings => {
+            settings::render(frame, area, &mut hits, &p, &app.settings)
+        }
         crate::app::Mode::ActionMenu { title, items, index, query, preview_scroll } => {
             let state =
                 menu::PickerState { index: *index, query, preview_scroll: *preview_scroll };
@@ -311,7 +315,7 @@ mod tests {
     fn snapshot_wide_140x30() {
         // A wide terminal with a widened left column (override) so the pane inner
         // width clears the labeled-chip threshold: chips render as
-        // `➕ (c) create  ⚙️ (a) actions  🔽 (z) collapse`.
+        // `[c]reate  [a]ctions  [z] collapse`.
         let mut app = fixture_app();
         // Widened enough to clear the labeled-chip threshold AND leave the
         // WORKTREES pane room for the author + commit-age columns (they drop
@@ -321,8 +325,10 @@ mod tests {
         // Seed the TASKS pane with defs that exercise the schedule column:
         // discovery + humanized cron, humanized cron only, a bare ⏰ (discovery,
         // no cron), and a plain def (blank schedule). Two carry a description so
-        // the desc FILL column renders (blank on the two that don't); seeded here
-        // locally, not in the shared fixture, mirroring the cron-column precedent.
+        // the desc FILL column renders (blank on the two that don't); all four
+        // carry a model so the model column renders (two `claude-`-prefixed to
+        // exercise stripping, two plain aliases); seeded here locally, not in the
+        // shared fixture, mirroring the cron-column precedent.
         app.defs_by_project.insert(
             "acme".to_string(),
             vec![
@@ -334,6 +340,7 @@ mod tests {
                     has_discovery: true,
                     cron: Some("30 13 * * *".into()),
                     description: Some("Review an open PR end to end.".into()),
+                    model: Some("claude-opus-4-8".into()),
                 },
                 crate::ipc::types::DefinitionSummary {
                     repo: "acme".into(),
@@ -341,6 +348,7 @@ mod tests {
                     scope: "project".into(),
                     cron: Some("0 2 * * *".into()),
                     description: Some("Nightly repo tidy sweep.".into()),
+                    model: Some("sonnet".into()),
                     ..Default::default()
                 },
                 crate::ipc::types::DefinitionSummary {
@@ -348,12 +356,14 @@ mod tests {
                     name: "deploy".into(),
                     scope: "project".into(),
                     has_discovery: true,
+                    model: Some("claude-fable-5".into()),
                     ..Default::default()
                 },
                 crate::ipc::types::DefinitionSummary {
                     repo: "acme".into(),
                     name: "lint".into(),
                     scope: "project".into(),
+                    model: Some("haiku".into()),
                     ..Default::default()
                 },
             ],
@@ -361,8 +371,8 @@ mod tests {
         // Seed last-commit author + epoch on the acme worktrees so the WORKTREES
         // AUTHOR column renders (`koshea  3d ago` = who · when). Local to this
         // snapshot, not the shared fixture.
-        if let Some(snap) = app.snapshot.as_mut() {
-            if let Some(wts) = snap.worktrees.get_mut("acme") {
+        if let Some(snap) = app.snapshot.as_mut()
+            && let Some(wts) = snap.worktrees.get_mut("acme") {
                 if let Some(w) = wts.get_mut(0) {
                     w.last_commit_author = Some("koshea".into());
                     w.last_commit_epoch = Some(app.now_epoch_s - 3 * 86_400);
@@ -372,7 +382,6 @@ mod tests {
                     w.last_commit_epoch = Some(app.now_epoch_s - 6 * 3600);
                 }
             }
-        }
         let (terminal, _hits) = render_at(&app, 140, 30);
         insta::assert_snapshot!("view_wide_140x30", terminal.backend());
     }
@@ -393,6 +402,45 @@ mod tests {
         assert!(
             hits.iter().any(|(_, t)| *t == HitTarget::Modal),
             "help overlay registers a topmost Modal hit target"
+        );
+    }
+
+    #[test]
+    fn snapshot_settings_overlay() {
+        use crate::ipc::types::{
+            SettingsLayer, SettingsModels, SettingsPayload, SettingsProjectLayer,
+        };
+        use std::collections::BTreeMap;
+        let m = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        let mut app = fixture_app();
+        app.mode = crate::app::Mode::Settings;
+        // Some(Some(_)): defaults ⊕ a global remap (sonnet) + one project delta,
+        // exercising all three row kinds the overlay renders.
+        app.settings = Some(Some(SettingsPayload {
+            models: SettingsModels {
+                defaults: m(&[
+                    ("haiku", "claude-haiku-4-5"),
+                    ("opus", "claude-opus-4-8"),
+                    ("sonnet", "claude-sonnet-4-5"),
+                ]),
+                global: SettingsLayer {
+                    entries: m(&[("sonnet", "claude-sonnet-4-6")]),
+                    source: "~/.config/qoo/config.yaml".into(),
+                },
+                projects: vec![SettingsProjectLayer {
+                    repo: "acme".into(),
+                    entries: m(&[("opus", "claude-opus-4-9")]),
+                    source: "acme/vars.yaml".into(),
+                }],
+            },
+        }));
+        let (terminal, hits) = render_at(&app, 80, 24);
+        insta::assert_snapshot!("view_settings_overlay", terminal.backend());
+        assert!(
+            hits.iter().any(|(_, t)| *t == HitTarget::Modal),
+            "settings overlay registers a topmost Modal hit target"
         );
     }
 

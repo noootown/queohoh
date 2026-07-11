@@ -54,6 +54,10 @@ pub const BTN_EXPAND: &str = "🔼";
 
 // Chip label words (the lowercase verb after the `(key)`). No inline literals in
 // the component; the collapse chip picks LABEL_COLLAPSE / LABEL_EXPAND by state.
+// A chip renders `[{key}] {label}` when there is room, degrading to the compact
+// `[{key}]` form (labels dropped) on narrow panes. Icons were dropped — the
+// emoji glyphs (➕ ⚙️ 🔽) rendered inconsistently across terminals and carried
+// no meaning the label doesn't.
 pub const BTN_LABEL_CREATE: &str = "create";
 pub const BTN_LABEL_TASKS: &str = "tasks";
 pub const BTN_LABEL_ACTIONS: &str = "actions";
@@ -80,15 +84,18 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// |------------------|------------------------|--------------------------------------------------------------------------------------------|
 /// | `mauve`          | task / definition NAME | QUEUE def column; TASKS name column; WORKTREES `next: <name>` and last-task name WHEN a def |
 /// | `accent` (blue)  | worktree IDENTITY      | QUEUE worktree column; WORKTREES name column                                                |
-/// | `info` (teal)    | timestamps / metadata  | QUEUE timestamp + age; TASKS args + `⏰` schedule; WORKTREES ahead/behind, commit-age, `N queued · next:` count lead |
-/// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text                       |
+/// | `info` (teal)    | timestamps / metadata  | QUEUE timestamp + age; TASKS args + model + `⏰` schedule; WORKTREES ahead/behind, commit-age, `N queued · next:` count lead |
+/// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
 /// | `fg`             | prompt summaries       | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
 /// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`✓ ✗ ▶ ○ ?`)                                                  |
 ///
 /// Central color palette (Catppuccin Mocha-inspired dark theme). The one place
-/// colors are defined; components take `&Palette` and never name raw colors.
-/// `info` doubles as the inline `` `code` `` color and `accent` as the URL color
-/// in `markup.rs`. Fields are only ever added, never renamed.
+/// colors are defined; components take `&Palette` and never name raw colors. The
+/// three status slots (`ok`/`warn`/`error`) use raw terminal ANSI colors
+/// (green/yellow/red) for a vivid, high-contrast look; the rest stay Catppuccin
+/// RGB. `ok` doubles as the inline `` `code` `` color, `accent` as the URL color,
+/// and `heading` as the markdown heading color in `markup.rs`. Fields are only
+/// ever added, never renamed.
 #[derive(Debug, Clone)]
 pub struct Palette {
     pub accent: Color,
@@ -101,6 +108,7 @@ pub struct Palette {
     pub info: Color,
     pub fg: Color,
     pub mauve: Color,
+    pub heading: Color,
     pub selection_fg: Color,
     pub selection_bg: Color,
 }
@@ -114,12 +122,13 @@ impl Default for Palette {
             dim: Color::Rgb(147, 153, 178),          // overlay2 — brightest overlay; DIM
                                                      // modifier deliberately not used
                                                      // (user: grey-on-grey unreadable)
-            error: Color::Rgb(243, 139, 168),        // red
-            ok: Color::Rgb(166, 227, 161),           // green
-            warn: Color::Rgb(249, 226, 175),         // yellow
+            error: Color::Red,                       // ANSI red — vivid status
+            ok: Color::Green,                        // ANSI green — vivid status
+            warn: Color::Yellow,                     // ANSI yellow — vivid status
             info: Color::Rgb(148, 226, 213),         // teal
             fg: Color::Rgb(205, 214, 244),           // text
             mauve: Color::Rgb(203, 166, 247),        // mauve
+            heading: Color::Magenta,                 // ANSI magenta — markdown headings
             selection_fg: Color::Rgb(30, 30, 46),    // base
             selection_bg: Color::Rgb(137, 180, 250), // blue
         }

@@ -25,9 +25,19 @@ pub enum AppAction {
     ToggleCollapse,
     OpenSearch,
     ClearEsc,
+    /// `g`/`G`: jump the focused list cursor to the first/last row (dir < 0 =
+    /// top, dir > 0 = bottom). In `Mode::List` focus is always a list pane, so
+    /// this always moves the left-side selection.
     ScrollEdge(i32),
+    /// `Home`/`End`: scroll ONLY the detail pane to head/tail (dir < 0 = head,
+    /// dir > 0 = tail). Deliberately distinct from `ScrollEdge`: it never moves
+    /// the list cursor, so Home/End are pure detail-pane controls.
+    DetailScrollEdge(i32),
     SwitchSubTab(usize),
     Help,
+    /// Read-only model-alias settings overlay (`s`). Distinct from the `ctrl+s`
+    /// project-tab prefix, which `App` consumes before the keymap ever sees it.
+    Settings,
     Quit,
     None,
 }
@@ -51,14 +61,22 @@ pub fn list_mode_action(key: &KeyEvent, _focus: PaneId) -> AppAction {
         KeyCode::Char('0') => AppAction::SwitchTab(9),
         KeyCode::Char('q') => AppAction::Quit,
         KeyCode::Char('?') => AppAction::Help,
+        // Plain `s` opens the settings overlay. `ctrl+s` (the project-tab prefix)
+        // never reaches here — `App` arms/consumes it before dispatching to the
+        // keymap — so this bare arm can't shadow it.
+        KeyCode::Char('s') => AppAction::Settings,
         KeyCode::Char('a') => AppAction::OpenActionMenu,
         KeyCode::Char('t') => AppAction::OpenTaskMenu,
         KeyCode::Char('c') => AppAction::Create,
         // `z` (plain) toggles collapse; `x` is reserved for a future delete
         // action and stays unbound.
         KeyCode::Char('z') => AppAction::ToggleCollapse,
+        // g/G jump the list cursor to the first/last row; Home/End scroll ONLY
+        // the detail pane (head/tail) and never touch the list selection.
         KeyCode::Char('g') => AppAction::ScrollEdge(-1),
         KeyCode::Char('G') => AppAction::ScrollEdge(1),
+        KeyCode::Home => AppAction::DetailScrollEdge(-1),
+        KeyCode::End => AppAction::DetailScrollEdge(1),
         KeyCode::Esc => AppAction::ClearEsc,
         KeyCode::Char('/') => AppAction::OpenSearch,
         KeyCode::Enter => AppAction::OpenActionMenu,
@@ -90,6 +108,17 @@ mod tests {
     #[test]
     fn q_quits() {
         assert_eq!(list_mode_action(&k(KeyCode::Char('q')), F), AppAction::Quit);
+    }
+
+    #[test]
+    fn s_opens_settings() {
+        // Plain `s` → Settings on any focused list pane. The keymap is
+        // modifier-agnostic on the char; `App` arms/consumes the `ctrl+s`
+        // project-tab prefix BEFORE dispatching to the keymap, so the ctrl case
+        // never reaches this arm in practice.
+        for f in LISTS {
+            assert_eq!(list_mode_action(&k(KeyCode::Char('s')), f), AppAction::Settings);
+        }
     }
 
     #[test]
@@ -186,6 +215,17 @@ mod tests {
     }
 
     #[test]
+    fn home_end_edges() {
+        // Home/End are detail-only: they emit DetailScrollEdge (head/tail) on
+        // every focused list pane and never map to ScrollEdge, so they can't
+        // move the left-side list cursor.
+        for f in LISTS {
+            assert_eq!(list_mode_action(&k(KeyCode::Home), f), AppAction::DetailScrollEdge(-1));
+            assert_eq!(list_mode_action(&k(KeyCode::End), f), AppAction::DetailScrollEdge(1));
+        }
+    }
+
+    #[test]
     fn z_toggles_collapse_but_ctrl_z_does_not() {
         // Plain z toggles collapse; ctrl+z is the sub-tab cycle. The two coexist.
         assert_eq!(list_mode_action(&k(KeyCode::Char('z')), F), AppAction::ToggleCollapse);
@@ -202,10 +242,10 @@ mod tests {
 
     #[test]
     fn unbound_keys_are_none() {
-        // r/s/w/f/m moved to the action menu (parity with the Ink keymap tests).
-        // `t` now opens the task menu (see `t_opens_task_menu`). Plain `x` is
-        // reserved/unbound (ctrl+x is the sub-tab cycle).
-        for c in ['r', 's', 'w', 'f', 'm', 'x'] {
+        // r/w/f/m moved to the action menu (parity with the Ink keymap tests).
+        // `t` opens the task menu and `s` opens the settings overlay, so both are
+        // bound; plain `x` is reserved/unbound (ctrl+x is the sub-tab cycle).
+        for c in ['r', 'w', 'f', 'm', 'x'] {
             assert_eq!(list_mode_action(&k(KeyCode::Char(c)), PaneId::Queue), AppAction::None);
         }
     }

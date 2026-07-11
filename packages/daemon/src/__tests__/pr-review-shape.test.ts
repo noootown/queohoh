@@ -67,6 +67,7 @@ async function setup() {
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
 		vars: { github_username: "ianchiu-jb" },
+		models: {},
 	};
 	const okResult: RunResult = {
 		exitCode: 0,
@@ -128,6 +129,7 @@ describe("agent247 pr-review port shape", () => {
 			hasDiscovery: boolean;
 			cron: string | null;
 			description: string | null;
+			model: string;
 		}[];
 		expect(defs).toEqual([
 			{
@@ -138,6 +140,8 @@ describe("agent247 pr-review port shape", () => {
 				hasDiscovery: true,
 				cron: null,
 				description: null,
+				// summary carries the RESOLVED id (built-in default opus alias).
+				model: "claude-opus-4-8",
 			},
 		]);
 	});

@@ -13,7 +13,9 @@ import type {
 } from "@queohoh/core";
 import {
 	buildLiveState,
+	effectiveModelTable,
 	laneKey,
+	loadProjectModels,
 	loadProjectVars,
 	projectWorkspaceDir,
 	qooTempName,
@@ -245,7 +247,14 @@ export class Engine {
 					await this.deps.resolverIO.listWorktrees(project.path),
 				);
 			} catch {
-				this.worktreeCache.set(project.name, []);
+				// Transient git failure (e.g. index.lock contention): KEEP the
+				// last-known list instead of clobbering it with [] — the clobber
+				// made every visible row of the repo vanish for a tick, which the
+				// user saw as flashing. A repo with no prior entry still records
+				// [] so downstream lookups see it as known-empty.
+				if (!this.worktreeCache.has(project.name)) {
+					this.worktreeCache.set(project.name, []);
+				}
 			}
 		}
 	}
@@ -410,6 +419,15 @@ export class Engine {
 			return;
 		}
 
+		// Effective alias→id table for this task's repo. Computed outside the
+		// vars.yaml guard above: loadProjectModels is tolerant (never throws), so a
+		// malformed `models:` block only disables the override — it must not add a
+		// new way to fail the task.
+		const modelTable = effectiveModelTable(
+			deps.config.models,
+			loadProjectModels(projectWorkspaceDir(deps.config, task.target.repo)),
+		);
+
 		const lane = laneKey(task) ?? task.id;
 		deps.registry.registerWorker(task.id, lane, process.pid);
 		const repoPath = this.repoPath(task.target.repo);
@@ -429,6 +447,7 @@ export class Engine {
 			},
 			repoVars,
 			onSpawned: (id, pid) => this.childPids.set(id, pid),
+			modelTable,
 			loadDef: (definition) => {
 				const [repo, ...nameParts] = definition.split("/");
 				const name = nameParts.join("/");
