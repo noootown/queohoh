@@ -4,7 +4,7 @@ expression: terminal.backend()
 ---
 " 1:acme                                                            ● running 1/3"
 "╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
-"│                         ││ 1:transcript  2:report  3:prompt                  │"
+"│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/] filter           ││Build steps:                                       │" Hidden by multi-width symbols: [(3, " ")]
 "│      Workt…  Prompt     ││──────── bash ─────────────────────────────────────│"
 "│ ⠯ ⌂  featu…  implement… ││cd ~/proj && make build                            │"

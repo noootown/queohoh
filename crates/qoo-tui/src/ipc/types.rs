@@ -176,6 +176,10 @@ pub struct DefinitionSummary {
 pub struct TaskDefinition {
     pub name: String,
     pub repo: String,
+    /// One-line human description of the def, or `None` when unset (via the
+    /// container `default` — also covers an old daemon that omits it). Shown in
+    /// the run detail's `info` sub-tab Config section.
+    pub description: Option<String>,
     pub discovery: Option<Discovery>,
     pub cron: Option<String>,
     pub args: Vec<ArgSpec>,

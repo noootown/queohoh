@@ -101,6 +101,10 @@ equality:
 - None fit → ad-hoc enqueue (step 3).
 - Never invent definition names — only names returned by
   `list_task_definitions`.
+- Arg values must map EXACTLY onto a definition's declared options.
+  If the user's words don't ("light" when the options are
+  full-review | bypass-review), that is a LOSSY MAPPING — never
+  silently nearest-match; it forces a stop in step 4.
 
 ### 3. Ad-hoc: compose the handoff prompt
 
@@ -132,11 +136,42 @@ prompt fully self-contained: transcribe verbatim error messages, file
 paths, stack traces, and a faithful description of any pasted images (a
 fresh worker sees ONLY the prompt).
 
+### 4. Preview the plan, then enqueue
+
+Before ANY enqueue call, render the resolved plan so the user sees
+exactly what will run:
+
+```text
+Plan → platform · fresh temp worktree (ref: temp) · fresh session
+  1. autofix    situation: "CI gap: root manifest changes don't trigger…"
+  2. pr-ready   pr: "" · review: full-review
+```
+
+One line per step: the definition name + EVERY arg it will receive
+(truncate long values to ~80 chars), or `prompt:` + the first line for
+ad-hoc steps. Then decide:
+
+- **Clean mapping** → enqueue immediately in the SAME turn, with the
+  plan at the top of the report. Do not wait for approval —
+  fire-and-forget is the point.
+- **Lossy or uncertain mapping** → STOP: show the plan with the
+  mismatch called out (`review: full-review ← you said "light"; no
+  such option`) and get a go-ahead before enqueuing. Triggers:
+  - a user word had no exact match among a definition's options and
+    would have to be coerced;
+  - a requested step got dropped, merged, or demoted to an ad-hoc
+    prompt because no definition covers it;
+  - the worktree/ref target is a judgment call the user might dispute
+    (the step-1b "reference vs deliverable" ambiguity).
+  This stop IS the one clarifying question — one round max; fold the
+  answer in, re-render the plan line that changed, enqueue.
+
 ## Report
 
-One line: what was queued (chains: the steps in order), target
-repo:worktree (or "fresh temp worktree" / the ref), "resumes this
-session" or "fresh session", model. Then two short notes:
+Plan (as rendered in step 4), then one line: what was queued (chains:
+the steps in order), target repo:worktree (or "fresh temp worktree" /
+the ref), "resumes this session" or "fresh session", model. Then two
+short notes:
 
 - The run starts IMMEDIATELY (within seconds — interactive sessions no
   longer hold the lane). A continuation forks this session's transcript

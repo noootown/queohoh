@@ -12,7 +12,8 @@ use crate::detail::{
     DetailContext, bottom_anchored, clamp_sub_tab, derive_context, sub_tab_names, window_lines,
 };
 use crate::hit::{HitMap, HitTarget};
-use crate::ipc::types::TaskDefinition;
+use crate::ipc::types::{TaskDefinition, TaskInstance, TaskStatus};
+use crate::runfiles::RunMeta;
 use crate::markup::{DisplayLine, LineCtx, fence_states, style_transcript_line, wrap_lines};
 use crate::selectors::arg_summary;
 use crate::view::Computed;
@@ -22,6 +23,8 @@ use crate::view::theme::{Palette, TITLE_DETAIL};
 const EM_DASH: &str = "—";
 /// Minimum gap between the aligned key column and the value column.
 const CONFIG_KEY_GAP: usize = 2;
+/// Two-space indent under each `info` sub-tab section header.
+const INFO_INDENT: &str = "  ";
 
 /// Human-readable duration from milliseconds: `Xs` below a minute, `Xm` on the
 /// minute range (whole minutes, seconds truncated), `Xh` / `Xh Ym` for hours.
@@ -107,6 +110,148 @@ fn worktree_rows(
     ]
 }
 
+/// Wire status → the lowercase label shown in the `info` tab's Run section
+/// (mirrors the daemon's kebab-case wire values).
+fn status_label(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "queued",
+        TaskStatus::NeedsInput => "needs-input",
+        TaskStatus::Running => "running",
+        TaskStatus::Done => "done",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Skipped => "skipped",
+        TaskStatus::Unknown => "unknown",
+    }
+}
+
+/// Section header + indented `key   value` rows for the run `info` sub-tab, in
+/// the agent247-dashboard shape. Identity/status come from the LIVE `task`
+/// (freshest); timing, usage, and the def config come from the run's `data.json`
+/// snapshot (`meta`). Absent values render the dim `—`. `now_epoch_s`/`tz_offset_s`
+/// drive each timing stamp's absolute local time + relative age. Lines are
+/// returned parallel to their [`LineCtx`] — [`LineCtx::Header`] for section
+/// titles, [`LineCtx::Config`] for the rows (one value column across all rows).
+fn run_info_lines(
+    task: &TaskInstance,
+    meta: &RunMeta,
+    now_epoch_s: u64,
+    tz_offset_s: i32,
+) -> (Vec<String>, Vec<LineCtx>) {
+    let dash = || EM_DASH.to_string();
+    let or_dash = |v: Option<String>| v.filter(|s| !s.is_empty()).unwrap_or_else(dash);
+    // "MM/DD HH:MM (Nd ago)" from an ISO stamp; dim `—` when absent.
+    let stamp = |iso: Option<&str>| match iso.filter(|s| !s.is_empty()) {
+        Some(s) => {
+            let e = crate::selectors::parse_iso_epoch_s(s);
+            format!(
+                "{} ({})",
+                crate::selectors::absolute_local_label(e, tz_offset_s),
+                crate::selectors::relative_age_label(e, now_epoch_s),
+            )
+        }
+        None => dash(),
+    };
+
+    // Section title → its rows, in render order. The renderer separates sections
+    // with a blank line and a `Header`-styled title line.
+    let mut sections: Vec<(&'static str, Vec<(&'static str, String)>)> = Vec::new();
+
+    // Run — identity + status from the live task; error/reason only on failure.
+    let mut run = vec![
+        ("id", task.id.clone()),
+        ("definition", task.definition.clone().unwrap_or_else(|| "adhoc".to_string())),
+        ("status", status_label(task.status).to_string()),
+    ];
+    if let Some(err) = task.error.as_deref().filter(|e| !e.is_empty()) {
+        run.push(("error", err.to_string()));
+    } else if let Some(reason) = meta.reason.as_deref().filter(|r| !r.is_empty()) {
+        run.push(("reason", reason.to_string()));
+    }
+    sections.push(("Run", run));
+
+    // Timing — created (live) + started/finished (run record); duration prefers
+    // the recorded usage, else spans finished − started.
+    let duration = meta
+        .duration_ms
+        .map(format_duration)
+        .or_else(|| match (meta.started_at.as_deref(), meta.finished_at.as_deref()) {
+            (Some(a), Some(b)) => {
+                let (s, f) =
+                    (crate::selectors::parse_iso_epoch_s(a), crate::selectors::parse_iso_epoch_s(b));
+                Some(format_duration(f.saturating_sub(s) * 1000))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(dash);
+    sections.push((
+        "Timing",
+        vec![
+            ("created", stamp(Some(task.created.as_str()))),
+            ("started", stamp(meta.started_at.as_deref())),
+            ("finished", stamp(meta.finished_at.as_deref())),
+            ("duration", duration),
+        ],
+    ));
+
+    // Details — worktree/session/model prefer the run record, fall back to live.
+    let mut details = vec![
+        (
+            "worktree",
+            or_dash(meta.resolved_worktree.clone().or_else(|| task.target.worktree.clone())),
+        ),
+        ("session", or_dash(meta.session_id.clone())),
+        ("model", or_dash(meta.model.clone().or_else(|| task.model.clone()))),
+        ("exit code", meta.exit_code.map(|c| c.to_string()).unwrap_or_else(dash)),
+    ];
+    if meta.timed_out {
+        details.push(("timed out", "yes".to_string()));
+    }
+    details.push(("cost", meta.cost_usd.map(|c| format!("${c}")).unwrap_or_else(dash)));
+    details.push(("turns", meta.turns.map(|t| t.to_string()).unwrap_or_else(dash)));
+    sections.push(("Details", details));
+
+    // Config — only when the run recorded a def snapshot (absent for adhoc runs).
+    if let Some(def) = &meta.definition {
+        sections.push((
+            "Config",
+            vec![
+                ("description", or_dash(def.description.clone())),
+                ("worktree", def.worktree.clone()),
+                ("dedup", def.dedup.clone()),
+                ("timeout", format_duration(def.timeout_ms)),
+                ("priority", def.priority.clone()),
+                ("cron", or_dash(def.cron.clone())),
+            ],
+        ));
+    }
+
+    // One value column across ALL rows (indent + key), then emit.
+    let key_col = sections
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(k, _)| INFO_INDENT.len() + k.chars().count())
+        .max()
+        .unwrap_or(0)
+        + CONFIG_KEY_GAP;
+    let mut lines = Vec::new();
+    let mut ctxs = Vec::new();
+    for (i, (title, rows)) in sections.iter().enumerate() {
+        if i > 0 {
+            lines.push(String::new());
+            ctxs.push(LineCtx::Text);
+        }
+        lines.push(title.to_string());
+        ctxs.push(LineCtx::Header);
+        for (k, v) in rows {
+            let key = format!("{INFO_INDENT}{k}");
+            lines.push(format!("{key:<key_col$}{v}"));
+            ctxs.push(LineCtx::Config { key_col });
+        }
+    }
+    (lines, ctxs)
+}
+
 /// Content lines, their per-line [`LineCtx`], and a placeholder for the given
 /// context/sub-tab. `def` is the resolved full definition (None while loading),
 /// `run_files` the current run's (report, transcript_tail). `detail_row` is the
@@ -130,13 +275,22 @@ pub(crate) fn content_for(
         (lines, ctxs, ph)
     };
     match ctx {
+        // Sub-tabs: 0 report (default/first), 1 transcript (tail-anchored),
+        // 2 prompt, 3 info. Clamp guarantees the range, so `_` == report.
         DetailContext::Run { task } => match sub_tab {
-            1 => fenced(run_files.map(|f| f.report.clone()).unwrap_or_default(), "(no report yet)"),
-            2 => fenced(task.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
-            _ => fenced(
+            1 => fenced(
                 run_files.map(|f| f.transcript_tail.clone()).unwrap_or_default(),
                 "(no transcript yet)",
             ),
+            2 => fenced(task.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
+            3 => match run_files.and_then(|f| f.meta.as_ref()) {
+                Some(meta) => {
+                    let (lines, ctxs) = run_info_lines(task, meta, now_epoch_s, tz_offset_s);
+                    (lines, ctxs, "")
+                }
+                None => (Vec::new(), Vec::new(), "(no run recorded yet)"),
+            },
+            _ => fenced(run_files.map(|f| f.report.clone()).unwrap_or_default(), "(no report yet)"),
         },
         DetailContext::Definition { .. } => match def {
             None => (Vec::new(), Vec::new(), "(loading definition…)"),
@@ -517,10 +671,11 @@ mod tests {
 
     #[test]
     fn snapshot_detail_transcript() {
-        let (terminal, hits) = render_at(&detail_app(0), 80, 24);
+        // Transcript is now sub-tab index 1 (report is first).
+        let (terminal, hits) = render_at(&detail_app(1), 80, 24);
         insta::assert_snapshot!("detail_transcript", terminal.backend());
         assert!(
-            hits.iter().any(|(_, t)| *t == HitTarget::SubTab(0)),
+            hits.iter().any(|(_, t)| *t == HitTarget::SubTab(1)),
             "transcript sub-tab chip is clickable"
         );
     }
@@ -546,7 +701,7 @@ mod tests {
             .into_iter()
             .map(String::from)
             .collect(),
-            0,
+            1,
         );
         let (terminal, _hits) = render_at(&app, 80, 24);
         insta::assert_snapshot!("detail_transcript_fenced", terminal.backend());
@@ -564,7 +719,7 @@ mod tests {
             "See https://github.com/justicebid/monorepo/pull/1234/files#diff-0a1b2c3d4e5f done"
                 .to_string(),
         );
-        let (terminal, _hits) = render_at(&detail_app_transcript(lines, 0), 80, 24);
+        let (terminal, _hits) = render_at(&detail_app_transcript(lines, 1), 80, 24);
         insta::assert_snapshot!("detail_transcript_wrapped_url", terminal.backend());
     }
 
@@ -589,6 +744,7 @@ mod tests {
             TaskDefinition {
                 name: "pr-ready".to_string(),
                 repo: "acme".to_string(),
+                description: None,
                 discovery: None,
                 cron: None,
                 args: vec![ArgSpec { name: "situation".to_string(), ..Default::default() }],
@@ -663,6 +819,184 @@ mod tests {
         assert!(body.contains("#42"), "PR number shown");
         assert!(!body.contains("state"), "state row dropped");
         insta::assert_snapshot!("detail_worktree_info", terminal.backend());
+    }
+
+    /// Detail pane over the run `info` sub-tab: a single finished run (so the
+    /// queue cursor deterministically selects it) with a fully-populated
+    /// `data.json` meta including a def snapshot → all four sections (Run/Timing/
+    /// Details/Config) render.
+    fn detail_info_app() -> App {
+        use crate::ipc::types::TaskStatus;
+        let mut app = fixture_app();
+        // Anchor `now` just after this run's timestamps so the Timing rows show
+        // meaningful relative ages (the shared fixture's `now` predates them).
+        app.now_epoch_s = crate::selectors::parse_iso_epoch_s("2026-07-09T12:05:03.000Z");
+        if let Some(snap) = app.snapshot.as_mut() {
+            let mut t = snap.tasks[0].clone(); // 01RUN base (worktree acme.feature, tui)
+            t.status = TaskStatus::Done;
+            t.definition = Some("squash-merge".to_string());
+            t.created = "2026-07-09T12:00:00.000Z".to_string();
+            t.finished_at = Some("2026-07-09T12:03:20.000Z".to_string());
+            snap.tasks = vec![t];
+            snap.archived_recent = vec![];
+            snap.running = vec![];
+        }
+        app.run_files = Some((
+            "01RUN".to_string(),
+            RunFiles {
+                session_id: Some("sess-abc123".to_string()),
+                worktree_path: Some("/repos/acme.feature".to_string()),
+                meta: Some(RunMeta {
+                    started_at: Some("2026-07-09T12:00:05.000Z".to_string()),
+                    finished_at: Some("2026-07-09T12:03:20.000Z".to_string()),
+                    outcome: Some("done".to_string()),
+                    reason: None,
+                    exit_code: Some(0),
+                    timed_out: false,
+                    session_id: Some("sess-abc123".to_string()),
+                    model: Some("claude-opus-4-8".to_string()),
+                    resolved_worktree: Some("/repos/acme.feature".to_string()),
+                    cost_usd: Some(0.42),
+                    turns: Some(37),
+                    duration_ms: Some(195_000),
+                    definition: Some(TaskDefinition {
+                        name: "squash-merge".to_string(),
+                        repo: "acme".to_string(),
+                        description: Some("Squash-merge the branch.".to_string()),
+                        dedup: "none".to_string(),
+                        worktree: "auto".to_string(),
+                        model: "opus".to_string(),
+                        timeout_ms: 1_800_000,
+                        priority: "normal".to_string(),
+                        cron: Some("30 13 * * *".to_string()),
+                        ..Default::default()
+                    }),
+                }),
+                ..Default::default()
+            },
+        ));
+        let mut ui = TabUiState::default();
+        ui.focus = PaneId::Detail;
+        ui.last_list_pane = ListPane::Queue;
+        ui.sub_tab[DetailKind::Run as usize] = 3; // info sub-tab
+        app.ui_by_tab.insert("acme".to_string(), ui);
+        app
+    }
+
+    #[test]
+    fn snapshot_detail_run_info() {
+        // Taller viewport so all four sections fit on one screen (the info panel
+        // runs ~26 lines).
+        let (terminal, hits) = render_at(&detail_info_app(), 80, 34);
+        let body = terminal.backend().to_string();
+        // All four sections present; def name surfaced; info chip clickable.
+        for header in ["Run", "Timing", "Details", "Config"] {
+            assert!(body.contains(header), "{header} section header present");
+        }
+        assert!(body.contains("squash-merge"), "definition name shown");
+        assert!(body.contains("$0.42"), "cost shown");
+        assert!(
+            hits.iter().any(|(_, t)| *t == HitTarget::SubTab(3)),
+            "info sub-tab chip is clickable"
+        );
+        insta::assert_snapshot!("detail_run_info", terminal.backend());
+    }
+
+    /// Minimal live task for the `run_info_lines` unit tests.
+    fn info_task(status: TaskStatus) -> TaskInstance {
+        TaskInstance {
+            id: "01RUN".to_string(),
+            status,
+            definition: Some("squash-merge".to_string()),
+            created: "2026-07-09T12:00:00.000Z".to_string(),
+            ..Default::default()
+        }
+    }
+
+    // 2026-07-09T12:05:03Z, matching fixture_app; tz is arbitrary for value checks.
+    const INFO_NOW: u64 = 1_752_062_703;
+    const INFO_TZ: i32 = -18_000;
+
+    #[test]
+    fn run_info_lines_empty_meta() {
+        // No run record yet: sections still render, but unfinished fields dash out
+        // and there is no Config section (no def snapshot) and no error/reason row.
+        let task = info_task(TaskStatus::Queued);
+        let (lines, ctxs) = run_info_lines(&task, &RunMeta::default(), INFO_NOW, INFO_TZ);
+        assert!(lines.iter().any(|l| l == "Run"));
+        assert!(lines.iter().any(|l| l == "Timing"));
+        assert!(lines.iter().any(|l| l == "Details"));
+        assert!(!lines.iter().any(|l| l == "Config"), "no Config without a def snapshot");
+        assert_eq!(ctxs.iter().filter(|c| matches!(c, LineCtx::Header)).count(), 3);
+        assert!(lines.iter().any(|l| l.contains("01RUN")), "id row");
+        for key in ["started", "finished", "duration", "exit code", "cost", "turns"] {
+            assert!(
+                lines.iter().any(|l| l.trim_start().starts_with(key) && l.contains(EM_DASH)),
+                "{key} dashes out"
+            );
+        }
+        assert!(!lines.iter().any(|l| l.trim_start().starts_with("error")));
+        assert!(!lines.iter().any(|l| l.trim_start().starts_with("reason")));
+        assert!(!lines.iter().any(|l| l.trim_start().starts_with("timed out")));
+    }
+
+    #[test]
+    fn run_info_lines_finished_run() {
+        let task = info_task(TaskStatus::Done);
+        let meta = RunMeta {
+            started_at: Some("2026-07-09T12:00:05.000Z".to_string()),
+            finished_at: Some("2026-07-09T12:03:20.000Z".to_string()),
+            outcome: Some("done".to_string()),
+            exit_code: Some(0),
+            session_id: Some("sess-abc123".to_string()),
+            model: Some("claude-opus-4-8".to_string()),
+            resolved_worktree: Some("/repos/acme.feature".to_string()),
+            cost_usd: Some(0.42),
+            turns: Some(37),
+            duration_ms: Some(195_000),
+            definition: Some(TaskDefinition {
+                worktree: "auto".to_string(),
+                dedup: "none".to_string(),
+                timeout_ms: 1_800_000,
+                priority: "normal".to_string(),
+                description: Some("Squash-merge the branch.".to_string()),
+                cron: Some("30 13 * * *".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (lines, _) = run_info_lines(&task, &meta, INFO_NOW, INFO_TZ);
+        assert!(lines.iter().any(|l| l == "Config"), "Config section present with a def");
+        assert!(lines.iter().any(|l| l.contains("$0.42")), "cost shown");
+        assert!(lines.iter().any(|l| l.trim_start().starts_with("turns") && l.contains("37")));
+        assert!(lines.iter().any(|l| l.trim_start().starts_with("duration") && l.contains("3m")));
+        assert!(lines.iter().any(|l| l.contains("Squash-merge the branch.")), "description row");
+        assert!(lines.iter().any(|l| l.trim_start().starts_with("cron") && l.contains("30 13")));
+        assert!(!lines.iter().any(|l| l.trim_start().starts_with("timed out")), "false → no row");
+    }
+
+    #[test]
+    fn run_info_lines_failed_run_with_reason() {
+        let mut task = info_task(TaskStatus::Failed);
+        task.error = None; // no live error → falls back to the run record's reason
+        let meta = RunMeta {
+            outcome: Some("failed".to_string()),
+            reason: Some("timed out waiting".to_string()),
+            exit_code: Some(1),
+            timed_out: true,
+            ..Default::default()
+        };
+        let (lines, _) = run_info_lines(&task, &meta, INFO_NOW, INFO_TZ);
+        assert!(
+            lines.iter().any(|l| l.trim_start().starts_with("reason") && l.contains("timed out waiting"))
+        );
+        assert!(!lines.iter().any(|l| l.trim_start().starts_with("error")), "no live error → reason used");
+        assert!(lines.iter().any(|l| l.trim_start().starts_with("timed out") && l.contains("yes")));
+        // Live error preempts the run record's reason.
+        task.error = Some("boom".to_string());
+        let (lines2, _) = run_info_lines(&task, &meta, INFO_NOW, INFO_TZ);
+        assert!(lines2.iter().any(|l| l.trim_start().starts_with("error") && l.contains("boom")));
+        assert!(!lines2.iter().any(|l| l.trim_start().starts_with("reason")), "error preempts reason");
     }
 
     #[test]
@@ -741,7 +1075,7 @@ mod tests {
         // line would have left `detail_max_scroll` at 0 (nothing to scroll).
         // Render the same instance (not `render_at`, which clones) so the
         // interior-mutability feedback cells are observable afterwards.
-        let mut app = detail_app_transcript(vec!["x".repeat(2000)], 0);
+        let mut app = detail_app_transcript(vec!["x".repeat(2000)], 1);
         app.size = (80, 24);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| {
@@ -840,12 +1174,13 @@ mod tests {
 
     #[test]
     fn out_of_range_sub_tab_clamps_into_range() {
-        // sub_tab 9 on a Run context clamps to the last valid index (2 = prompt),
-        // not the fall-through transcript an *unclamped* index would hit via the
-        // `_` arm. Proves clamping is active and nothing indexes out of bounds.
+        // sub_tab 9 on a Run context clamps to the last valid index (3 = info),
+        // NOT the report the `_` fall-through would hit with an unclamped index.
+        // The fixture has no run meta, so info shows its own placeholder — text
+        // distinct from the report placeholder proves the clamp landed on info.
         let (terminal, _hits) = render_at(&detail_app(9), 80, 24);
         let body = terminal.backend().to_string();
-        assert!(body.contains("implement the widget cache"), "clamped to the prompt sub-tab");
-        assert!(!body.contains("line 39"), "clamped index is not the transcript tail");
+        assert!(body.contains("(no run recorded yet)"), "clamped to the info sub-tab");
+        assert!(!body.contains("(no report yet)"), "clamped index is not the report fall-through");
     }
 }

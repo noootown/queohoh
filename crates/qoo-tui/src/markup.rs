@@ -18,6 +18,10 @@ pub enum LineCtx {
     /// A content line inside a fence, tagged with the block's language (empty
     /// string for an unlabeled block).
     Fenced { lang: String },
+    /// A section header on the run detail's `info` sub-tab (e.g. `Run`,
+    /// `Timing`), styled bold in the heading color and never key/value-split.
+    /// Distinct from a markdown `#` heading — no marks are shown.
+    Header,
     /// A `key   value` row on the definition detail's config sub-tab. `key_col`
     /// is the char index where the value column begins (the key is left-padded to
     /// this width across all rows), so [`style_config_line`] can color the key
@@ -265,6 +269,9 @@ fn push_hard_broken(word: &str, width: usize, segs: &mut Vec<String>, cur: &mut 
 pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette) -> Line<'static> {
     match ctx {
         LineCtx::Text => apply_jinja(style_line(line, p), p),
+        LineCtx::Header => {
+            Line::from(Span::styled(line.to_string(), Style::default().fg(p.heading).add_modifier(Modifier::BOLD)))
+        }
         LineCtx::Fence { lang } => fence_rule(lang.as_deref(), width, p),
         LineCtx::Fenced { lang } => apply_jinja(style_fenced(line, lang, p), p),
         LineCtx::Config { key_col } => style_config_line(line, *key_col, p),

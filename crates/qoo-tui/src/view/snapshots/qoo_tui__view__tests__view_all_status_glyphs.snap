@@ -4,8 +4,8 @@ expression: terminal.backend()
 ---
 " 1:acme                                                                                  ● running 0"
 "╭📋 QUEUE── [r] [x] [a] · [c] [z]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
-"│                                ││ 1:transcript  2:report  3:prompt                               │"
-"│ 🔍 [/] filter                  ││(no transcript yet)                                             │" Hidden by multi-width symbols: [(3, " ")]
+"│                                ││ 1:report  2:transcript  3:prompt  4:info                       │"
+"│ 🔍 [/] filter                  ││(no report yet)                                                 │" Hidden by multi-width symbols: [(3, " ")]
 "│      Prompt         Live       ││                                                                │"
 "│ ‼    ipt task                  ││                                                                │"
 "│ ○    que task       #1 in lane ││                                                                │"

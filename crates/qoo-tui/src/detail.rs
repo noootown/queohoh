@@ -21,7 +21,7 @@ impl DetailContext {
     }
 }
 
-const RUN_TABS: &[&str] = &["transcript", "report", "prompt"];
+const RUN_TABS: &[&str] = &["report", "transcript", "prompt", "info"];
 const DEF_TABS: &[&str] = &["prompt", "config"];
 const WT_TABS: &[&str] = &["info"];
 const NO_TABS: &[&str] = &[];
@@ -44,7 +44,8 @@ pub fn clamp_sub_tab(idx: usize, kind: DetailKind) -> usize {
 }
 
 pub fn bottom_anchored(kind: DetailKind, sub_tab: usize) -> bool {
-    matches!(kind, DetailKind::Run) && sub_tab == 0
+    // Only the transcript tail-anchors; it now sits at index 1 (report is first).
+    matches!(kind, DetailKind::Run) && sub_tab == 1
 }
 
 /// `(start, end_exclusive)` slice into `total` lines for a `height`-tall window
@@ -139,7 +140,7 @@ mod tests {
 
     #[test]
     fn sub_tab_names_per_kind() {
-        assert_eq!(sub_tab_names(DetailKind::Run), &["transcript", "report", "prompt"]);
+        assert_eq!(sub_tab_names(DetailKind::Run), &["report", "transcript", "prompt", "info"]);
         assert_eq!(sub_tab_names(DetailKind::Definition), &["prompt", "config"]);
         assert_eq!(sub_tab_names(DetailKind::Worktree), &["info"]);
         assert_eq!(sub_tab_names(DetailKind::Empty), &[] as &[&str]);
@@ -148,8 +149,8 @@ mod tests {
     #[test]
     fn clamp_sub_tab_into_range() {
         assert_eq!(clamp_sub_tab(0, DetailKind::Run), 0);
-        assert_eq!(clamp_sub_tab(2, DetailKind::Run), 2);
-        assert_eq!(clamp_sub_tab(5, DetailKind::Run), 2);
+        assert_eq!(clamp_sub_tab(3, DetailKind::Run), 3);
+        assert_eq!(clamp_sub_tab(5, DetailKind::Run), 3); // clamps to `info` (last)
         assert_eq!(clamp_sub_tab(3, DetailKind::Definition), 1);
         assert_eq!(clamp_sub_tab(1, DetailKind::Worktree), 0);
         assert_eq!(clamp_sub_tab(0, DetailKind::Empty), 0);
@@ -158,9 +159,11 @@ mod tests {
 
     #[test]
     fn bottom_anchored_only_run_transcript() {
-        assert!(bottom_anchored(DetailKind::Run, 0));
-        assert!(!bottom_anchored(DetailKind::Run, 1));
-        assert!(!bottom_anchored(DetailKind::Run, 2));
+        // Transcript (index 1) is the only tail-anchored view.
+        assert!(bottom_anchored(DetailKind::Run, 1));
+        assert!(!bottom_anchored(DetailKind::Run, 0)); // report
+        assert!(!bottom_anchored(DetailKind::Run, 2)); // prompt
+        assert!(!bottom_anchored(DetailKind::Run, 3)); // info
         assert!(!bottom_anchored(DetailKind::Definition, 0));
         assert!(!bottom_anchored(DetailKind::Worktree, 0));
         assert!(!bottom_anchored(DetailKind::Empty, 0));

@@ -93,9 +93,11 @@ fn wants_tick_requires_running_task_in_active_project() {
 
 #[test]
 fn detail_scroll_inverts_on_bottom_anchored_transcript() {
-    // fixture_app: active detail context is the running task's transcript,
-    // which is bottom-anchored (k = older, so a negative delta grows offset).
+    // fixture_app: active detail context is the running task; select the
+    // transcript sub-tab (index 1), which is bottom-anchored (k = older, so a
+    // negative delta grows offset).
     let mut app = crate::test_fixtures::fixture_app();
+    app.ui().sub_tab[DetailKind::Run as usize] = 1; // transcript
     app.detail_max_scroll.set(10); // as if the last render had 10 lines of slack
     assert!(!app.detail_scroll(1)); // toward newest — already at tail, no-op
     assert!(app.detail_scroll(-1)); // toward older — offset grows
@@ -105,6 +107,7 @@ fn detail_scroll_inverts_on_bottom_anchored_transcript() {
 #[test]
 fn detail_scroll_edge_jumps_head_and_tail() {
     let mut app = crate::test_fixtures::fixture_app();
+    app.ui().sub_tab[DetailKind::Run as usize] = 1; // transcript = bottom-anchored
     app.detail_max_scroll.set(42);
     assert!(app.detail_scroll_edge(-1)); // head/oldest → the render-fed max
     assert_eq!(app.ui().scroll_offset, 42);
@@ -124,7 +127,8 @@ fn home_end_scroll_detail_only_never_the_list_cursor() {
     // End→last-row behavior would be observable if it regressed.
     assert_eq!(app.ui().focus, PaneId::Queue);
     app.ui().selections[ListPane::Queue.idx()] = Selection { cursor: 0, anchor: None };
-    app.detail_max_scroll.set(10); // fixture detail is bottom-anchored
+    app.ui().sub_tab[DetailKind::Run as usize] = 1; // transcript = bottom-anchored
+    app.detail_max_scroll.set(10);
 
     // End (dir > 0). Bottom-anchored tail = 0, so no scroll change, but the
     // key must still route through the detail path (never the list arm).
@@ -149,6 +153,7 @@ fn detail_scroll_clamps_at_max_so_overscroll_banks_no_phantom_distance() {
     // Regression: over-scrolling past the head kept growing the stored
     // offset, so scrolling back required burning through phantom distance.
     let mut app = crate::test_fixtures::fixture_app();
+    app.ui().sub_tab[DetailKind::Run as usize] = 1; // transcript = bottom-anchored
     app.detail_max_scroll.set(3);
     for _ in 0..10 {
         app.detail_scroll(-1); // way past the head
@@ -162,6 +167,7 @@ fn detail_scroll_clamps_at_max_so_overscroll_banks_no_phantom_distance() {
 #[test]
 fn reset_scroll_returns_to_anchor() {
     let mut app = crate::test_fixtures::fixture_app();
+    app.ui().sub_tab[DetailKind::Run as usize] = 1; // transcript = bottom-anchored
     app.detail_max_scroll.set(10);
     app.detail_scroll(-5);
     assert_eq!(app.ui().scroll_offset, 5);
@@ -570,16 +576,17 @@ fn status_line_clears_on_list_mode_keypress() {
 #[test]
 fn cycle_sub_tab_wraps_within_kind() {
     let mut app = crate::test_fixtures::fixture_app();
-    // Run context (queue cursor 0 → 01RUN): 3 sub-tabs. ctrl+x = next (global,
-    // no detail focus needed), ctrl+z = previous.
+    // Run context (queue cursor 0 → 01RUN): 4 sub-tabs (report/transcript/prompt/
+    // info). ctrl+x = next (global, no detail focus needed), ctrl+z = previous.
     let ctrl = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
     app.update(ctrl('x'));
     assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 1);
     app.update(ctrl('x'));
     app.update(ctrl('x'));
-    assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 0, "wraps past the end");
+    app.update(ctrl('x'));
+    assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 0, "wraps past the end (4 tabs)");
     app.update(ctrl('z'));
-    assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 2, "wraps below zero");
+    assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 3, "wraps below zero");
 }
 
 // -- Task 12: mouse routing ----------------------------------------------------

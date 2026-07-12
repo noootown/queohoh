@@ -769,7 +769,7 @@ pub fn elapsed_label(created_epoch_s: u64, now_epoch_s: u64) -> String {
 
 /// Parse a daemon ISO-8601 UTC timestamp ("YYYY-MM-DDTHH:MM:SS[.mmm]Z") into
 /// epoch seconds. No date crate: Howard Hinnant's days-from-civil algorithm.
-fn parse_iso_epoch_s(iso: &str) -> u64 {
+pub fn parse_iso_epoch_s(iso: &str) -> u64 {
     if iso.len() < 19 {
         return 0;
     }
