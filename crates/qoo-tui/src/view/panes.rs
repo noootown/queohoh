@@ -478,6 +478,9 @@ fn wt_header(layout: &WtColLayout, p: &Palette) -> Line<'static> {
     if layout.last_w > 0 {
         header_col(&mut spans, "Last Task", layout.last_w, p);
     }
+    if layout.pr_w > 0 {
+        header_col(&mut spans, "PR", layout.pr_w, p);
+    }
     if layout.author_w > 0 {
         header_col(&mut spans, "Author", layout.author_w, p);
     }
@@ -564,6 +567,30 @@ fn worktree_line(
                 spans.push(Span::styled(age.clone(), info));
             }
             None => spans.push(Span::raw(pad_clip("", layout.last_w))),
+        }
+    }
+    // Open PR `#<n>` (meta) — the fixed PR column, immediately left of the
+    // author. Only the cell layout lives here; the clickable hit rect is
+    // registered in `render_rows` (which knows the row's on-screen x/y) using
+    // `WtColLayout::pr_col_x`, so the two can't drift. Blank-padded when the row
+    // has no open PR so the trailing columns stay aligned down the pane. A row
+    // whose PR also carries its url — i.e. the cell is actually clickable —
+    // underlines the `#<n>` glyphs (never the pad, so the underline hugs the
+    // text) as the link affordance, matching the detail info tab's pr value.
+    if layout.pr_w > 0 {
+        spans.push(Span::raw(gap.clone()));
+        match row.pr_number {
+            Some(n) => {
+                let text = crate::selectors::clip(&format!("#{n}"), layout.pr_w);
+                let pad = layout.pr_w.saturating_sub(text.chars().count());
+                let style =
+                    if row.pr_url.is_some() { meta.add_modifier(Modifier::UNDERLINED) } else { meta };
+                spans.push(Span::styled(text, style));
+                if pad > 0 {
+                    spans.push(Span::raw(" ".repeat(pad)));
+                }
+            }
+            None => spans.push(Span::raw(pad_clip("", layout.pr_w))),
         }
     }
     // Last-commit author name (plain fg — a full column of teal read as noise);
@@ -794,6 +821,12 @@ fn render_list_pane<T, C>(
     // Real-row index after which to splice an inert section divider (the QUEUE
     // ACTIVE/FINISHED break). `None` → no divider (tasks/worktrees always pass it).
     divider_after: Option<usize>,
+    // Per-row EXTRA hit registration, invoked with the row, its on-screen rect,
+    // and the resolved column ctx so a pane can register sub-rects the generic
+    // loop can't know about (the WORKTREES PR-link cell). Called AFTER the row's
+    // `Row` hit so an extra rect wins the reverse hit scan over the row beneath
+    // it. Queue/tasks pass a no-op.
+    extra_row_hits: impl Fn(&T, Rect, &C, &mut HitMap),
 ) {
     let title = pane_title(title_base, sel);
     let (mut header, rects) =
@@ -904,6 +937,15 @@ fn render_list_pane<T, C>(
                     // pane (a dimmed pane is never focused, so no selection to show).
                     patch_line(&mut line, p.dim_style());
                 } else if selected {
+                    // Pad the line's spans out to the full row width BEFORE patching
+                    // so the selection bg spans the WHOLE row even when the line's
+                    // own spans end early (e.g. a TASKS def row with no cron appends
+                    // nothing past its name) — `Line::style` alone tints only the
+                    // cells a span actually covers, leaving the tail unhighlighted.
+                    let w = line.width();
+                    if w < rows_area.width as usize {
+                        line.spans.push(Span::raw(" ".repeat(rows_area.width as usize - w)));
+                    }
                     // Patch every span so per-span fg colors don't survive over the
                     // selection bg (a blue worktree name on blue bg would be unreadable).
                     patch_line(&mut line, p.selection());
@@ -913,10 +955,9 @@ fn render_list_pane<T, C>(
                     patch_line(&mut line, p.dim_style());
                 }
                 lines.push(line);
-                hits.push(
-                    Rect { x: rows_area.x, y, width: rows_area.width, height: 1 },
-                    HitTarget::Row(list_pane, idx),
-                );
+                let row_rect = Rect { x: rows_area.x, y, width: rows_area.width, height: 1 };
+                hits.push(row_rect, HitTarget::Row(list_pane, idx));
+                extra_row_hits(&rows[idx], row_rect, &ctx, hits);
             }
             DisplayRow::Divider => {
                 // Inert: no hit target and no cursor position.
@@ -1032,6 +1073,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             spotlight && !c.searching[0],
             // ACTIVE/FINISHED section divider (drawn only when both sections exist).
             queue_divider_after(&c.queue),
+            |_, _, _, _| {}, // no per-row extra hits on QUEUE
         );
     }
     if collapsed[ListPane::Tasks.idx()] {
@@ -1075,6 +1117,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             |_| false,
             spotlight && !c.searching[1],
             None, // tasks pane has no section divider
+            |_, _, _, _| {}, // no per-row extra hits on TASKS
         );
     }
     if collapsed[ListPane::Worktrees.idx()] {
@@ -1118,6 +1161,27 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             |_| false,
             spotlight && !c.searching[2],
             None, // worktrees pane has no section divider
+            // PR-link cell: when the PR column is present and the row has BOTH a
+            // number and its url, register the `#<n>` sub-rect as a PrLink. The
+            // x comes from the shared `pr_col_x` (so it tracks the exact cell the
+            // line builder drew); the width is the visible `#<n>` glyph count.
+            |row, rect, layout, hits| {
+                if layout.pr_w == 0 {
+                    return;
+                }
+                if let (Some(n), Some(url)) = (row.pr_number, row.pr_url.clone()) {
+                    let w = crate::selectors::clip(&format!("#{n}"), layout.pr_w).chars().count();
+                    hits.push(
+                        Rect {
+                            x: rect.x + layout.pr_col_x() as u16,
+                            y: rect.y,
+                            width: w as u16,
+                            height: 1,
+                        },
+                        HitTarget::PrLink(url),
+                    );
+                }
+            },
         );
     }
 

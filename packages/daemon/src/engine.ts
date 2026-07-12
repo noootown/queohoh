@@ -36,12 +36,16 @@ interface GitEnrichment {
 	/** Open PR number for this worktree's branch (via `gh pr list`). null =
 	 * unknown / no open PR / gh unavailable. */
 	prNumber: number | null;
+	/** Web URL of that open PR (via `gh pr list`'s `url` field). null =
+	 * unknown / no open PR / gh unavailable / gh omitted the field. Paired with
+	 * prNumber so the TUI can open the PR on a click. */
+	prUrl: string | null;
 }
 
 /** The git-commit subset of GitEnrichment — everything computeGitEnrichment
- * derives from a single worktree path. prNumber is layered on separately (it's
- * a per-repo fact, fetched once per sweep, not per worktree). */
-type GitCommitFacts = Omit<GitEnrichment, "prNumber">;
+ * derives from a single worktree path. prNumber/prUrl are layered on separately
+ * (they're per-repo facts, fetched once per sweep, not per worktree). */
+type GitCommitFacts = Omit<GitEnrichment, "prNumber" | "prUrl">;
 
 /** Serve last-known enrichment for a worktree this long before re-shelling git. */
 const GIT_ENRICH_TTL_MS = 60_000;
@@ -307,11 +311,15 @@ export class Engine {
 		let changed = false;
 		const live = new Set<string>();
 		for (const [repo, list] of this.worktreeCache) {
-			// Branch→PR-number map for this repo, fetched at most ONCE per sweep and
-			// only when at least one worktree here is actually being refreshed (all
-			// within TTL → no gh call at all). Lazy so a repo served entirely from
-			// cache costs nothing. `undefined` = not yet fetched this sweep.
-			let prMap: Map<string, number> | null | undefined;
+			// Branch→PR-{number,url} map for this repo, fetched at most ONCE per
+			// sweep and only when at least one worktree here is actually being
+			// refreshed (all within TTL → no gh call at all). Lazy so a repo served
+			// entirely from cache costs nothing. `undefined` = not yet fetched this
+			// sweep.
+			let prMap:
+				| Map<string, { number: number; url: string | null }>
+				| null
+				| undefined;
 			const repoPath = this.repoPath(repo);
 			for (const wt of list) {
 				live.add(wt.path);
@@ -324,8 +332,10 @@ export class Engine {
 					prMap = repoPath === null ? null : await this.ghPrMap(repoPath);
 				}
 				const facts = await this.computeGitEnrichment(wt.path);
-				const prNumber = prMap?.get(wt.branch) ?? null;
-				const e: GitEnrichment = { ...facts, prNumber };
+				const pr = prMap?.get(wt.branch) ?? null;
+				const prNumber = pr?.number ?? null;
+				const prUrl = pr?.url ?? null;
+				const e: GitEnrichment = { ...facts, prNumber, prUrl };
 				this.gitEnrichFetchedAt.set(wt.path, Date.now());
 				const prev = this.gitEnrichCache.get(wt.path);
 				if (
@@ -335,7 +345,8 @@ export class Engine {
 					prev.lastCommitAuthor !== e.lastCommitAuthor ||
 					prev.lastCommitAuthorEmail !== e.lastCommitAuthorEmail ||
 					prev.lastCommitHash !== e.lastCommitHash ||
-					prev.prNumber !== e.prNumber
+					prev.prNumber !== e.prNumber ||
+					prev.prUrl !== e.prUrl
 				) {
 					changed = true;
 				}
@@ -424,12 +435,16 @@ export class Engine {
 	}
 
 	/**
-	 * Open PRs for a repo as a branch→number map, via ONE `gh pr list` call at
-	 * the repo root. Any failure — gh missing, unauthenticated, non-zero exit,
+	 * Open PRs for a repo as a branch→{number,url} map, via ONE `gh pr list` call
+	 * at the repo root. Any failure — gh missing, unauthenticated, non-zero exit,
 	 * unparseable JSON — is treated as "no data" and returns null (never throws).
+	 * A row with a non-string `url` keeps its number but stamps url null (gh
+	 * always sends it, so this only guards a malformed/forward-compat payload).
 	 * Logged at most once per call at debug so a gh-less machine doesn't spam.
 	 */
-	private async ghPrMap(repoPath: string): Promise<Map<string, number> | null> {
+	private async ghPrMap(
+		repoPath: string,
+	): Promise<Map<string, { number: number; url: string | null }> | null> {
 		try {
 			const { stdout, exitCode } = await this.deps.exec(
 				"gh",
@@ -439,7 +454,7 @@ export class Engine {
 					"--state",
 					"open",
 					"--json",
-					"number,headRefName",
+					"number,headRefName,url",
 					"--limit",
 					"200",
 				],
@@ -451,15 +466,19 @@ export class Engine {
 			}
 			const rows: unknown = JSON.parse(stdout);
 			if (!Array.isArray(rows)) return null;
-			const map = new Map<string, number>();
+			const map = new Map<string, { number: number; url: string | null }>();
 			for (const row of rows) {
 				if (row === null || typeof row !== "object") continue;
-				const { headRefName, number } = row as {
+				const { headRefName, number, url } = row as {
 					headRefName?: unknown;
 					number?: unknown;
+					url?: unknown;
 				};
 				if (typeof headRefName === "string" && typeof number === "number") {
-					map.set(headRefName, number);
+					map.set(headRefName, {
+						number,
+						url: typeof url === "string" ? url : null,
+					});
 				}
 			}
 			return map;

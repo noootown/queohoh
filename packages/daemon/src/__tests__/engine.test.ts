@@ -353,7 +353,7 @@ describe("Engine.worktreesByRepo", () => {
 		await engine.refreshGitEnrichment();
 		// With the default all-zero-exit / empty-stdout exec stub: status "" → not
 		// dirty; log "" → epoch parseInt(NaN) → null, empty author/hash → null; and
-		// `gh pr list` "" → JSON.parse throws → prNumber null (failure-tolerant).
+		// `gh pr list` "" → JSON.parse throws → prNumber/prUrl null (failure-tolerant).
 		expect(engine.worktreesByRepo()).toEqual({
 			platform: [
 				{
@@ -366,6 +366,7 @@ describe("Engine.worktreesByRepo", () => {
 					lastCommitAuthorEmail: null,
 					lastCommitHash: null,
 					prNumber: null,
+					prUrl: null,
 				},
 			],
 		});
@@ -556,13 +557,21 @@ describe("Engine git enrichment", () => {
 		expect(counts.log).toBe(logAfterFirst);
 	});
 
-	it("stamps prNumber when an open PR matches the worktree branch", async () => {
+	it("stamps prNumber and prUrl when an open PR matches the worktree branch", async () => {
 		const exec = gitExec({
 			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
 			gh: () => ({
 				stdout: JSON.stringify([
-					{ number: 99, headRefName: "other" },
-					{ number: 42, headRefName: "JUS-1" },
+					{
+						number: 99,
+						headRefName: "other",
+						url: "https://github.com/o/r/pull/99",
+					},
+					{
+						number: 42,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/42",
+					},
 				]),
 				exitCode: 0,
 			}),
@@ -572,6 +581,26 @@ describe("Engine git enrichment", () => {
 		await engine.refreshGitEnrichment();
 		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
 			prNumber: 42,
+			prUrl: "https://github.com/o/r/pull/42",
+		});
+	});
+
+	it("stamps prUrl null when gh omits the url field but sends the number", async () => {
+		// Defensive: gh always sends `url`, but a forward-compat / malformed row
+		// with a non-string url keeps its number and stamps prUrl null.
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			gh: () => ({
+				stdout: JSON.stringify([{ number: 42, headRefName: "JUS-1" }]),
+				exitCode: 0,
+			}),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			prNumber: 42,
+			prUrl: null,
 		});
 	});
 
@@ -588,6 +617,7 @@ describe("Engine git enrichment", () => {
 		await engine.refreshGitEnrichment();
 		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
 			prNumber: null,
+			prUrl: null,
 		});
 	});
 
@@ -617,6 +647,7 @@ describe("Engine git enrichment", () => {
 		await engine.refreshGitEnrichment();
 		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
 			prNumber: null,
+			prUrl: null,
 		});
 	});
 
@@ -626,7 +657,13 @@ describe("Engine git enrichment", () => {
 			{
 				log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
 				gh: () => ({
-					stdout: JSON.stringify([{ number: 5, headRefName: "JUS-1" }]),
+					stdout: JSON.stringify([
+						{
+							number: 5,
+							headRefName: "JUS-1",
+							url: "https://github.com/o/r/pull/5",
+						},
+					]),
 					exitCode: 0,
 				}),
 			},
@@ -651,7 +688,11 @@ describe("Engine git enrichment", () => {
 		// The matching branch got the PR; the other stayed null.
 		const list = engine.worktreesByRepo().platform ?? [];
 		expect(list.find((w) => w.branch === "JUS-1")?.prNumber).toBe(5);
+		expect(list.find((w) => w.branch === "JUS-1")?.prUrl).toBe(
+			"https://github.com/o/r/pull/5",
+		);
 		expect(list.find((w) => w.branch === "JUS-2")?.prNumber).toBeNull();
+		expect(list.find((w) => w.branch === "JUS-2")?.prUrl).toBeNull();
 	});
 });
 

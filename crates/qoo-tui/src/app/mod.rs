@@ -109,6 +109,14 @@ pub struct App {
     /// target (scrollbar thumb/track, a pane divider, a detail text-selection)
     /// and the matching `Up`.
     pub drag: Option<DragKind>,
+    /// Whether the mouse currently hovers a clickable PR link (`HitTarget::
+    /// PrLink`). Tracked so `Moved` routing emits [`Cmd::SetPointerShape`] ONLY
+    /// on the enter/leave transition — never per motion event — and hover never
+    /// dirties a frame (no buffer cell changes on hover). Best-effort terminal
+    /// state: it can go briefly stale when the link disappears under a
+    /// stationary mouse (overlay opens, rows resort); the next `Moved`
+    /// re-hit-tests and corrects it.
+    pub hovering_link: bool,
     /// Current DETAIL-pane text selection (tmux-style copy-on-drag). `Some`
     /// while dragging and briefly after release (a 1s post-copy fade); anchored
     /// to absolute wrapped-line indices so scrolling keeps the same text
@@ -194,6 +202,7 @@ impl App {
             detail_wrapped_len: std::cell::Cell::new(0),
             menu_preview_max_scroll: std::cell::Cell::new(0),
             drag: None,
+            hovering_link: false,
             detail_selection: None,
             selection_epoch: 0,
             detail_geom: std::cell::RefCell::new(DetailGeom::default()),

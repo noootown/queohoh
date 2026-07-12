@@ -23,51 +23,28 @@ vars:
   github_user: you
 ```
 
-Task definitions live in the workspace, one directory per project:
-`<workspace>/<project>/tasks/<name>/` (`config.yaml` + `prompt.md`). An
-optional `<workspace>/<project>/vars.yaml` supplies per-project template vars.
-For the config above, `platform`'s definitions live in
-`~/workspace/queohoh/platform/tasks/<name>/`.
+Task definitions live in the workspace, one directory per project: `<workspace>/<project>/tasks/<name>/` (`config.yaml` + `prompt.md`). An optional `<workspace>/<project>/vars.yaml` supplies per-project template vars. For the config above, `platform`'s definitions live in `~/workspace/queohoh/platform/tasks/<name>/`.
 
-`vars.yaml` also holds two reserved keys that are read as settings rather than
-exposed as `{{var}}` placeholders:
+`vars.yaml` also holds two reserved keys that are read as settings rather than exposed as `{{var}}` placeholders:
 
 - `models:` — per-project model-alias overrides (see the model-aliases docs).
-- `github_id:` — your author identity, e.g. `github_id: noootown`. The TUI uses
-  it to sort your own worktrees first. A worktree counts as **yours** when
-  `github_id` is a case-insensitive **substring of the last-commit author
-  email**, OR a case-insensitive **substring of the author name**. So pick
-  a value that appears in the email or name of the commits you author — e.g. the
-  login embedded in a GitHub noreply email
-  (`12345+noootown@users.noreply.github.com` → `noootown`), or a distinctive
-  token of your name/email if you commit as `Ian Chiu <noootown@gmail.com>`
-  (here `noootown` matches the email, `Ian` or `Chiu` matches the name; your
-  work GitHub login would match neither). Optional and parsed leniently — an
-  absent, empty, or non-string value simply disables the "mine-first" sort.
+- `github_id:` — your author identity, e.g. `github_id: noootown`. The TUI uses it to sort your own worktrees first. A worktree counts as **yours** when `github_id` is a case-insensitive **substring of the last-commit author email**, OR a case-insensitive **substring of the author name**. So pick a value that appears in the email or name of the commits you author — e.g. the login embedded in a GitHub noreply email (`12345+noootown@users.noreply.github.com` → `noootown`), or a distinctive token of your name/email if you commit as `Ian Chiu <noootown@gmail.com>` (here `noootown` matches the email, `Ian` or `Chiu` matches the name; your work GitHub login would match neither). Optional and parsed leniently — an absent, empty, or non-string value simply disables the "mine-first" sort.
 
 ### Builtin vars
 
-Prompts and `pre_run`/`post_run` hooks can reference these `{{var}}`
-placeholders without declaring them as args. Any explicitly configured var
-(global `vars`, project `vars.yaml`, or an arg of the same name) overrides the
-builtin.
+Prompts and `pre_run`/`post_run` hooks can reference these `{{var}}` placeholders without declaring them as args. Any explicitly configured var (global `vars`, project `vars.yaml`, or an arg of the same name) overrides the builtin.
 
 Resolved at **instantiate time** (definition → task):
 
 - `{{project}}` — the registered project name (e.g. `platform`).
 - `{{repo_path}}` — the project's primary-checkout path from `config.yaml`.
 
-Resolved at **execution time** (in the task's actual worktree), via a second
-render pass — so they work even for late-resolving refs (`pr:`, `ticket:`,
-`temp`):
+Resolved at **execution time** (in the task's actual worktree), via a second render pass — so they work even for late-resolving refs (`pr:`, `ticket:`, `temp`):
 
 - `{{worktree}}` — the resolved worktree/lane name.
 - `{{worktree_path}}` — its absolute path.
-- `{{branch}}` — `git rev-parse --abbrev-ref HEAD` in that worktree (empty if
-  it can't be read).
-- `{{ticket}}` — the ticket id derived from the branch name (convention: the
-  branch is named after its ticket, so `jus-1008-fix-thing` → `JUS-1008`;
-  empty when the branch has no ticket-shaped token).
+- `{{branch}}` — `git rev-parse --abbrev-ref HEAD` in that worktree (empty if it can't be read).
+- `{{ticket}}` — the ticket id derived from the branch name (convention: the branch is named after its ticket, so `jus-1008-fix-thing` → `JUS-1008`; empty when the branch has no ticket-shaped token).
 
 ## 3. Run the daemon
 
@@ -89,8 +66,7 @@ claude mcp add queohoh -- queohoh mcp
 ln -s "$(pwd)/skills/qoo" ~/.claude/skills/qoo
 ```
 
-Interactive-session awareness (the scheduler won't run tasks in a worktree
-you're actively using) — add to `~/.claude/settings.json` hooks:
+Interactive-session awareness (the scheduler won't run tasks in a worktree you're actively using) — add to `~/.claude/settings.json` hooks:
 
 ```json
 {
@@ -109,25 +85,18 @@ Heartbeats expire after 5 minutes; they're best-effort and never block.
 
 ## 5. Enqueue from anywhere
 
-- In any Claude Code session: `/qoo <request>` — by default this queues a
-  headless continuation of that session in the current worktree (close the
-  tab; the daemon resumes it with full context). `/qoo status` shows the
-  queue.
+- In any Claude Code session: `/qoo <request>` — by default this queues a headless continuation of that session in the current worktree (close the tab; the daemon resumes it with full context). `/qoo status` shows the queue.
 - Drop a well-formed task file into `~/.local/state/queohoh/tasks/` — that IS an enqueue.
 
 ## 6. TUI (the cockpit)
 
-The cockpit is the Rust ratatui binary (`crates/qoo-tui`). It talks to the
-daemon over the unix socket, so build the workspace first (`pnpm -r build`) to
-compile the daemon's `dist/`, then launch the TUI:
+The cockpit is the Rust ratatui binary (`crates/qoo-tui`). It talks to the daemon over the unix socket, so build the workspace first (`pnpm -r build`) to compile the daemon's `dist/`, then launch the TUI:
 
 ```bash
 pnpm -r build          # compile the daemon
 mise run tui           # builds the release binary, self-heals the daemon, launches
 ```
 
-`mise run tui` is the one-shot path; it also rebuilds `qoo-tui` and ensures the
-daemon is up. To iterate on the TUI unoptimized, use `mise run tui:rs:dev`.
+`mise run tui` is the one-shot path; it also rebuilds `qoo-tui` and ensures the daemon is up. To iterate on the TUI unoptimized, use `mise run tui:rs:dev`.
 
-Run it in tmux tab 0 and leave it open — queue left, cron/worktrees right,
-`a` to add, `enter` for the live transcript, `q` to quit.
+Run it in tmux tab 0 and leave it open — queue left, cron/worktrees right, `a` to add, `enter` for the live transcript, `q` to quit.

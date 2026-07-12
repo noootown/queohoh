@@ -49,6 +49,11 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut out = io::stdout();
+        // The OSC 22 pointer shape is terminal-GLOBAL state (not scoped to the
+        // alt screen), so quitting while a PR link was hovered would leave the
+        // user's shell with a hand cursor. Reset unconditionally — a no-op when
+        // the shape is already default or the terminal ignores OSC 22.
+        qoo_tui::event::write_pointer_shape(false);
         if self.kbd_enhanced {
             let _ = execute!(out, PopKeyboardEnhancementFlags);
         }
@@ -66,6 +71,10 @@ fn install_panic_hook() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let mut out = io::stdout();
+        // Same unconditional pointer-shape reset as TerminalGuard::drop — the
+        // guard's Drop doesn't run on a panic abort, and a lingering hand
+        // cursor would outlive the process.
+        qoo_tui::event::write_pointer_shape(false);
         let _ = execute!(
             out,
             PopKeyboardEnhancementFlags,

@@ -77,6 +77,20 @@ pub enum Cmd {
     /// synchronously on the UI thread before the next redraw, plus a best-effort
     /// `pbcopy` pipe on macOS. Fire-and-forget.
     CopyClipboard { text: String },
+    /// Open `url` in the user's default browser via the platform opener
+    /// (`open` on macOS, `xdg-open` elsewhere), spawned off the UI thread.
+    /// Fire-and-forget — a failed open is silently tolerated (mirrors the
+    /// `pbcopy` fallback in [`Cmd::CopyClipboard`]). Fired by a click on a PR
+    /// link ([`crate::hit::HitTarget::PrLink`]).
+    OpenUrl { url: String },
+    /// Set the terminal's mouse pointer shape: the hand cursor (`pointer:
+    /// true`, entering a clickable PR link — CSS `cursor: pointer`) or back to
+    /// the terminal default (leaving it). Best-effort OSC 22: xterm, kitty,
+    /// Ghostty and WezTerm honor it; a terminal without the extension (iTerm2,
+    /// today) ignores the sequence silently, which is fine — the link is still
+    /// underlined. Emitted by `Moved` routing ONLY on hover enter/leave
+    /// transitions, never per motion event.
+    SetPointerShape { pointer: bool },
     /// Arm the post-copy selection fade: after `delay_ms`, deliver
     /// [`Event::SelectionExpired`] carrying `epoch` so a selection started in
     /// the meantime survives (its epoch is newer).
@@ -203,6 +217,22 @@ pub async fn run_event_loop<B: ratatui::backend::Backend>(
             draw(terminal, app)?;
         }
     }
+}
+
+/// Write the OSC 22 pointer-shape escape: `pointer` → the hand cursor,
+/// `false` → the terminal's default arrow. Same BEL-terminated OSC framing
+/// (and same synchronous stdout write + flush) as the OSC 52 clipboard write
+/// in [`execute`]. Best-effort — unsupported terminals (iTerm2, today) drop
+/// the sequence silently. Public so terminal teardown (main's TerminalGuard
+/// and its panic hook) can force `default` on every exit path: the shape is
+/// terminal-GLOBAL state that outlives the process, and quitting mid-hover
+/// must never leave the user's shell with a hand cursor.
+pub fn write_pointer_shape(pointer: bool) {
+    use std::io::Write;
+    let shape = if pointer { "pointer" } else { "default" };
+    let mut out = std::io::stdout().lock();
+    let _ = write!(out, "\x1b]22;{shape}\x07");
+    let _ = out.flush();
 }
 
 /// Minimal standard base64 (RFC 4648, `+`/`/` alphabet, `=` padded) for the
@@ -403,6 +433,23 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                     let _ = child.wait().await;
                 }
             });
+        }
+        Cmd::OpenUrl { url } => {
+            // Hand the URL to the platform opener off-thread — `open` on macOS,
+            // `xdg-open` on every other target. Best-effort like the `pbcopy`
+            // fallback above: a missing opener or non-zero exit is dropped (no UI
+            // surface), so a click never blocks or errors the pane.
+            tokio::spawn(async move {
+                let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                let _ = tokio::process::Command::new(opener).arg(&url).output().await;
+            });
+        }
+        Cmd::SetPointerShape { pointer } => {
+            // Written on the calling (UI) thread, not a spawned task, for the
+            // same reason as the OSC 52 clipboard write above: execute() runs
+            // before the frame redraw, so the escape lands cleanly between
+            // crossterm's draw bytes rather than interleaving with them.
+            write_pointer_shape(pointer);
         }
         Cmd::ExpireSelection { epoch, delay_ms } => {
             // The 1s post-copy fade: sleep off-thread, then hand the epoch back

@@ -252,6 +252,38 @@ fn run_info_lines(
     (lines, ctxs)
 }
 
+/// A clickable descriptor for the worktree info block's `pr` row, or `None`
+/// unless the row carries BOTH an open PR number and its (non-empty) url — an
+/// old daemon sends neither, and the em-dash placeholder is never a link.
+/// `line_text` is [`align_kv`]'s exact output for the pr row so the renderer can
+/// locate its (in-practice-unwrapped) display segment by an exact match — a
+/// wrap simply declines the link. `value_col` is the shared aligned value
+/// column; `value_len` the `#<n>` char width (the clickable span).
+struct PrLink {
+    line_text: String,
+    value_col: usize,
+    value_len: usize,
+    url: String,
+}
+
+fn worktree_pr_link(
+    row: &crate::selectors::WorktreeRow,
+    now_epoch_s: u64,
+    tz_offset_s: i32,
+) -> Option<PrLink> {
+    let number = row.pr_number?;
+    let url = row.pr_url.clone().filter(|u| !u.is_empty())?;
+    let rows = worktree_rows(row, now_epoch_s, tz_offset_s);
+    let idx = rows.iter().position(|(k, _)| *k == "pr")?;
+    let (lines, key_col) = align_kv(&rows);
+    Some(PrLink {
+        line_text: lines.get(idx)?.clone(),
+        value_col: key_col,
+        value_len: format!("#{number}").chars().count(),
+        url,
+    })
+}
+
 /// Content lines, their per-line [`LineCtx`], and a placeholder for the given
 /// context/sub-tab. `def` is the resolved full definition (None while loading),
 /// `run_files` the current run's (report, transcript_tail). `detail_row` is the
@@ -578,6 +610,38 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             line
         })
         .collect();
+    // Worktree info block: the `pr #<n>` value is a clickable browser link when
+    // the row carries an open PR and its url. Locate the pr line among the
+    // (unwrapped-in-practice) Config display segments by an exact text match — a
+    // wrap declines the link — underline the `#<n>` in link teal, and register a
+    // PrLink hit ONLY while the line sits inside the visible window. Registered
+    // after the detail `PaneBody` so it wins the reverse hit scan.
+    if let DetailContext::Worktree { row, .. } = &ctx
+        && let Some(link) = worktree_pr_link(row, app.now_epoch_s, tz_offset)
+        && let Some(seg) = display
+            .iter()
+            .position(|d| {
+                !d.is_continuation
+                    && matches!(d.ctx, LineCtx::Config { .. })
+                    && d.text == link.line_text
+            })
+            .filter(|&s| s >= start && s < end)
+    {
+        let vis = seg - start;
+        let lo = link.value_col;
+        let hi = link.value_col + link.value_len - 1;
+        let link_style = Style::default().fg(p.info).add_modifier(Modifier::UNDERLINED);
+        styled[vis] = patch_line_cols(&styled[vis], lo, hi, link_style);
+        hits.push(
+            Rect {
+                x: content_area.x + link.value_col as u16,
+                y: content_area.y + vis as u16,
+                width: link.value_len as u16,
+                height: 1,
+            },
+            HitTarget::PrLink(link.url),
+        );
+    }
     // Overlay the mouse text selection (anchored to ABSOLUTE display-line indices,
     // so it stays put as the window scrolls) with the palette selection style.
     if let Some(sel) = &app.detail_selection {
@@ -997,6 +1061,44 @@ mod tests {
         let (lines2, _) = run_info_lines(&task, &meta, INFO_NOW, INFO_TZ);
         assert!(lines2.iter().any(|l| l.trim_start().starts_with("error") && l.contains("boom")));
         assert!(!lines2.iter().any(|l| l.trim_start().starts_with("reason")), "error preempts reason");
+    }
+
+    #[test]
+    fn detail_worktree_pr_registers_link_only_with_a_url() {
+        // The base fixture sets pr_number but no pr_url → the `#42` value is plain
+        // text (the em-dash-style fallback for a link), no PrLink registered.
+        let (_t, hits) = render_at(&detail_worktree_app(), 80, 24);
+        assert!(
+            !hits.iter().any(|(_, t)| matches!(t, HitTarget::PrLink(_))),
+            "pr number without a url is not a clickable link"
+        );
+
+        // Add the url: the `#42` value becomes a clickable PrLink carrying it, the
+        // hit's first cell is the `#` as actually rendered, and it reads as a link
+        // (underlined). Width is the `#42` glyph count.
+        let mut app = detail_worktree_app();
+        let url = "https://github.com/acme/acme/pull/42".to_string();
+        if let Some(w) = app
+            .snapshot
+            .as_mut()
+            .and_then(|snap| snap.worktrees.get_mut("acme"))
+            .and_then(|wts| wts.iter_mut().find(|w| w.name == "acme.feature"))
+        {
+            w.pr_url = Some(url.clone());
+        }
+        let (terminal, hits) = render_at(&app, 80, 24);
+        let (rect, target) = hits
+            .iter()
+            .find(|(_, t)| matches!(t, HitTarget::PrLink(_)))
+            .expect("PR link registered when the row has a url");
+        assert_eq!(*target, HitTarget::PrLink(url));
+        assert_eq!(rect.width, 3, "#42 is three glyphs");
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(rect.x, rect.y)].symbol(), "#", "hit lands on the rendered #42");
+        assert!(
+            buf[(rect.x, rect.y)].modifier.contains(Modifier::UNDERLINED),
+            "the #42 value reads as an underlined link"
+        );
     }
 
     #[test]

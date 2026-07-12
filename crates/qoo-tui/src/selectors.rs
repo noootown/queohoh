@@ -84,6 +84,10 @@ pub struct WorktreeRow {
     /// old daemon); surfaced in the worktree detail info tab.
     pub last_commit_hash: Option<String>,
     pub pr_number: Option<u64>,
+    /// Web URL of the open PR (paired with `pr_number`; `None` on an old daemon
+    /// or when there is no open PR). Drives the clickable `#<n>` link in the
+    /// detail info tab and the WORKTREES PR column — a click opens it.
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -493,6 +497,7 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 last_commit_author_email: wt.last_commit_author_email.clone(),
                 last_commit_hash: wt.last_commit_hash.clone(),
                 pr_number: wt.pr_number,
+                pr_url: wt.pr_url.clone(),
             }
         })
         .collect();
@@ -1047,6 +1052,9 @@ pub const AGE_W: usize = 8;
 pub const AUTHOR_W: usize = 14;
 /// Last-commit relative-age column (`relative_age_label` max `just now`).
 pub const COMMIT_AGE_W: usize = 8;
+/// Open-PR column (`#<n>`): a fixed reserved width like author/commit-age.
+/// Sized for a 5-digit PR number plus the `#` (`#12345`); longer numbers clip.
+pub const PR_W: usize = 6;
 /// Shared QUEUE live slot: `⏱ 99h59m` (8) or `#N in lane` (`#9 in lane` = 10);
 /// `#10 in lane` and beyond clip.
 pub const QUEUE_LIVE_W: usize = 10;
@@ -1266,24 +1274,26 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 /// Columns, left→right (identity → content → time → live):
 ///   `● ⌂ ± name` (anchor; the ⌂ main-session and `±` dirty markers are
 ///   single-cell front slots after the dot, per user request),
-///   last-finished (FILL), last-commit author (fixed `AUTHOR_W`),
-///   last-commit age (fixed `COMMIT_AGE_W`), `next: <name>` (fixed
-///   `WT_QUEUED_W`), live `⏱` (fixed `TIMER_W`, right-pinned by the fill).
-///   The author sits right before the commit-age so the pair reads
-///   `koshea  3d ago` = who · when.
+///   last-finished (FILL), PR `#<n>` (fixed `PR_W`), last-commit author
+///   (fixed `AUTHOR_W`), last-commit age (fixed `COMMIT_AGE_W`),
+///   `next: <name>` (fixed `WT_QUEUED_W`), live `⏱` (fixed `TIMER_W`,
+///   right-pinned by the fill). The PR column sits immediately LEFT of the
+///   author (between the fill and author) so the open-PR chip reads before the
+///   who·when pair; the author sits right before the commit-age so the pair
+///   reads `koshea  3d ago` = who · when.
 ///
-/// The marker/time columns (`dirty`, `queued`, `author`, `commit_age`,
+/// The marker/time columns (`dirty`, `pr`, `queued`, `author`, `commit_age`,
 /// `elapsed`) are FIXED widths — never sized from row data — so a row gaining a
 /// value never shifts any column; `name_w` stays content-capped and `last_w` is
 /// the FILL column (absorbs the remaining width, like the queue pane's summary
 /// — per user request the last task's description gets the slack). The front
 /// `⌂`/`±` marker slots and the live timer are ALWAYS reserved when the ladder
 /// keeps them (per user request — data-gated slots made the name column shift
-/// as scroll/data changed); queued/author/commit-age stay pane-gated (reserved
-/// only while some visible row carries the value).
-/// Degradation drop priority (first dropped first): commit-age → author →
-/// queued·next → dirty → last-finished → live; only after all of those drop
-/// does `name_w` shrink.
+/// as scroll/data changed); pr/queued/author/commit-age stay pane-gated
+/// (reserved only while some visible row carries the value).
+/// Degradation drop priority (first dropped first): commit-age → author → PR
+/// → queued·next → dirty → last-finished → live; only after all of those drop
+/// does `name_w` shrink. PR outlives author/commit-age dropping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WtColLayout {
     pub name_w: usize,
@@ -1291,14 +1301,35 @@ pub struct WtColLayout {
     pub elapsed_w: usize,
     pub queued_w: usize,
     pub last_w: usize,
+    /// PR `#<n>` column (`PR_W` when some visible row has an open PR, else 0).
+    /// Positioned between the last-task fill and the author column.
+    pub pr_w: usize,
     pub author_w: usize,
     pub commit_age_w: usize,
     pub has_chain: bool,
 }
 
+impl WtColLayout {
+    /// Char offset from the row start to the first cell of the PR `#<n>` value —
+    /// the SINGLE source of truth shared by `worktree_line` (which lays the cell
+    /// out) and `render_rows` (which registers the click rect), so the two can
+    /// never drift. Mirrors the span widths `worktree_line` pushes before the PR
+    /// cell: the anchor (`● ` + the ⌂/± front slots + the name), then the
+    /// last-task FILL when present, then the `COL_GAP` before the PR column.
+    /// Meaningless when `pr_w == 0` (the column is absent); callers gate on that.
+    pub fn pr_col_x(&self) -> usize {
+        let anchor = 2
+            + if self.has_chain { 2 } else { 0 }
+            + if self.dirty_w > 0 { 2 } else { 0 }
+            + self.name_w;
+        let after_last = if self.last_w > 0 { COL_GAP + self.last_w } else { 0 };
+        anchor + after_last + COL_GAP
+    }
+}
+
 /// Fit the WORKTREES columns into `avail` inner cells (see [`WtColLayout`] for the
 /// column order, fixed-width model, and drop priority). The live `⏱` column and
-/// the last-task fill are always candidates; the dirty/queued/author/
+/// the last-task fill are always candidates; the dirty/pr/queued/author/
 /// commit-age columns stay gated on whole-pane data availability.
 pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     let name_w0 = capped_max(rows.iter().map(|r| r.name.as_str()), NAME_CAP);
@@ -1319,6 +1350,10 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     let queued_w0 = if rows.iter().any(|r| r.queued > 0) { WT_QUEUED_W } else { 0 };
     let author_w0 = if rows.iter().any(|r| wt_author_text(r).is_some()) { AUTHOR_W } else { 0 };
     let commit_w0 = if rows.iter().any(|r| r.last_commit_epoch.is_some()) { COMMIT_AGE_W } else { 0 };
+    // PR is pane-gated like author/commit-age: reserved only while some visible
+    // row carries an open PR number. It survives author/commit-age dropping (it
+    // drops third, after them) — an open PR is the more actionable signal.
+    let pr_w0 = if rows.iter().any(|r| r.pr_number.is_some()) { PR_W } else { 0 };
     // Same static reservation as `dirty_w0` — the ⌂ slot never flexes with data.
     let has_chain = !rows.is_empty();
 
@@ -1330,14 +1365,17 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     };
     // Used cells for a set of column widths and whether the last-task FILL is
     // reserved (at its `WT_LAST_MIN` floor — the actual fill absorbs the slack).
-    // cols = [queued, author, commit]; `elapsed` is the trailing fixed
-    // live column.
-    let used = |name_w: usize, dirty: bool, cols: [usize; 3], elapsed_w: usize, last: bool| -> usize {
+    // cols = [queued, author, commit]; `pr` is the fixed PR column and `elapsed`
+    // the trailing fixed live column (both position-independent in the total).
+    let used = |name_w: usize, dirty: bool, cols: [usize; 3], pr_w: usize, elapsed_w: usize, last: bool| -> usize {
         let mut u = anchor(name_w, dirty);
         for w in cols {
             if w > 0 {
                 u += COL_GAP + w;
             }
+        }
+        if pr_w > 0 {
+            u += COL_GAP + pr_w;
         }
         if last {
             u += COL_GAP + WT_LAST_MIN;
@@ -1348,25 +1386,31 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         u
     };
 
-    // Degrade in drop order: commit → author → queued → dirty → last →
-    // elapsed. cols = [queued(0), author(1), commit(2)].
+    // Degrade in drop order: commit → author → pr → queued → dirty → last →
+    // elapsed. cols = [queued(0), author(1), commit(2)]; PR drops after author
+    // (so it outlives the who·when pair) but before queued·next.
     let mut cols = [queued_w0, author_w0, commit_w0];
+    let mut pr_w = pr_w0;
     let mut dirty = dirty_w0 > 0;
     let mut elapsed_w = elapsed_w0;
     let mut last = true;
     #[derive(Clone, Copy)]
     enum Drop {
         Col(usize),
+        Pr,
         Dirty,
         Last,
         Elapsed,
     }
-    for op in [Drop::Col(2), Drop::Col(1), Drop::Col(0), Drop::Dirty, Drop::Last, Drop::Elapsed] {
-        if used(name_w0, dirty, cols, elapsed_w, last) <= avail {
+    for op in
+        [Drop::Col(2), Drop::Col(1), Drop::Pr, Drop::Col(0), Drop::Dirty, Drop::Last, Drop::Elapsed]
+    {
+        if used(name_w0, dirty, cols, pr_w, elapsed_w, last) <= avail {
             break;
         }
         match op {
             Drop::Col(i) => cols[i] = 0,
+            Drop::Pr => pr_w = 0,
             Drop::Dirty => dirty = false,
             Drop::Last => last = false,
             Drop::Elapsed => elapsed_w = 0,
@@ -1374,7 +1418,7 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     }
     // Still too wide with only `● ⌂ ± name` left → shrink the name column.
     let mut name_w = name_w0;
-    let u = used(name_w, dirty, cols, elapsed_w, last);
+    let u = used(name_w, dirty, cols, pr_w, elapsed_w, last);
     if u > avail {
         name_w = name_w.saturating_sub(u - avail);
     }
@@ -1384,7 +1428,7 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // never any other column's offset — and the trailing live timer stays
     // right-pinned at the row edge.
     let last_w = if last {
-        let base = used(name_w, dirty, cols, elapsed_w, false);
+        let base = used(name_w, dirty, cols, pr_w, elapsed_w, false);
         avail.saturating_sub(base + COL_GAP)
     } else {
         0
@@ -1396,6 +1440,7 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         elapsed_w,
         queued_w: cols[0],
         last_w,
+        pr_w,
         author_w: cols[1],
         commit_age_w: cols[2],
         has_chain,
@@ -2710,6 +2755,46 @@ mod tests {
         // Below that, the name column shrinks (anchor `● ⌂ name` = 4 + name_w).
         assert_eq!(wt_col_layout(&rows, 10).name_w, 6);
         assert!(wt_col_layout(&rows, 10).has_chain);
+    }
+
+    #[test]
+    fn wt_col_layout_pr_column_gated_and_outlives_author_commit() {
+        let row = WorktreeRow {
+            name: "feature-x".into(),
+            raw_name: "feature-x".into(),
+            state: WtState::Busy,
+            has_main_session: true,
+            last: Some(('✓', "pr-ready".into(), now() - 7200, true)),
+            dirty: Some(true),
+            last_commit_author: Some("koshea".into()),
+            last_commit_epoch: Some(now() - 3 * 86_400),
+            pr_number: Some(42),
+            pr_url: Some("https://github.com/o/r/pull/42".into()),
+            ..Default::default()
+        };
+        let rows = [row.clone()];
+        // Wide: the PR column is present at its fixed width.
+        assert_eq!(wt_col_layout(&rows, 130).pr_w, PR_W);
+        // Pane-gated: a row with no PR number reserves no PR column.
+        let no_pr = WorktreeRow { pr_number: None, pr_url: None, ..row };
+        assert_eq!(wt_col_layout(&[no_pr], 130).pr_w, 0);
+        // Drop order: commit → author → PR. Scanning widths from wide to narrow,
+        // the first width at which PR drops must already have dropped author and
+        // commit-age (PR outlives them). While PR is present its cell offset stays
+        // inside the pane, matching the render's fixed-width arithmetic.
+        let mut pr_dropped = false;
+        for a in (10..=130).rev() {
+            let l = wt_col_layout(&rows, a);
+            if l.pr_w == 0 && !pr_dropped {
+                pr_dropped = true;
+                assert_eq!(l.author_w, 0, "author drops before PR");
+                assert_eq!(l.commit_age_w, 0, "commit-age drops before PR");
+            }
+            if l.pr_w > 0 {
+                assert!(l.pr_col_x() < a, "PR cell starts within the pane width");
+            }
+        }
+        assert!(pr_dropped, "PR eventually drops under width pressure");
     }
 
     #[test]

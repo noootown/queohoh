@@ -29,6 +29,10 @@ export interface WorktreeInfo {
 	/** Open PR number for this worktree's branch (via `gh pr list`). null =
 	 * unknown / no open PR / gh unavailable. */
 	prNumber?: number | null;
+	/** Web URL of that open PR (via `gh pr list`'s `url` field). null =
+	 * unknown / no open PR / gh unavailable. Paired with prNumber so the TUI can
+	 * open the PR in a browser on a click. */
+	prUrl?: string | null;
 }
 
 export interface ResolverIO {

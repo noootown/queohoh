@@ -139,6 +139,11 @@ pub struct WorktreeInfo {
     /// open PR, `gh` is unavailable, or on an old daemon). Shown as `#<n>` in the
     /// worktree detail info tab.
     pub pr_number: Option<u64>,
+    /// Web URL of that open PR (`None`/null when there is no open PR, `gh` is
+    /// unavailable, or on an old daemon that predates the field). Paired with
+    /// `pr_number` so the `#<n>` chip in the detail info tab and the WORKTREES
+    /// PR column open the PR in a browser on a click.
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]

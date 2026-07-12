@@ -142,10 +142,34 @@ pub const MOCHA: Palette = Palette {
     selection_bg: Color::Rgb(137, 180, 250), // blue
 };
 
+/// Brightened Mocha (user request: the original read too dim overall). Same
+/// hues, lightness raised a step — every non-status slot moves up the
+/// Catppuccin ladder (text→near-white, overlay2→subtext0, surface1→overlay0,
+/// pastels lightened ~10%). The three status slots (`ok`/`warn`/`error`) stay
+/// the raw ANSI colors — deliberately untouched. `dim` must stay clearly
+/// dimmer than `fg` (it carries archived/empty de-emphasis), so it rises only
+/// to subtext0 while `fg` goes near-white.
+pub const MOCHA_BRIGHT: Palette = Palette {
+    accent: Color::Rgb(166, 204, 255),       // blue, lightened
+    border: Color::Rgb(108, 112, 134),       // overlay0 — brighter frame
+    border_focused: Color::Rgb(166, 204, 255),
+    dim: Color::Rgb(166, 173, 200),          // subtext0 — brighter, still dim vs fg
+    error: Color::Red,                       // ANSI red — vivid status (unchanged)
+    ok: Color::Green,                        // ANSI green — vivid status (unchanged)
+    warn: Color::Yellow,                     // ANSI yellow — vivid status (unchanged)
+    info: Color::Rgb(178, 240, 229),         // teal, lightened — timestamps ONLY
+    meta: Color::Rgb(205, 212, 255),         // lavender, lightened
+    fg: Color::Rgb(230, 237, 255),           // near-white text
+    mauve: Color::Rgb(221, 192, 255),        // mauve, lightened
+    heading: Color::LightMagenta,            // brighter ANSI magenta headings
+    selection_fg: Color::Rgb(30, 30, 46),    // base (dark text on the bright bar)
+    selection_bg: Color::Rgb(166, 204, 255), // blue, lightened with accent
+};
+
 /// The active theme profile. Re-theming the whole TUI = pointing this at a
 /// different profile const (or adding a new one above) — nothing else names
 /// colors.
-pub const THEME: Palette = MOCHA;
+pub const THEME: Palette = MOCHA_BRIGHT;
 
 impl Default for Palette {
     fn default() -> Self {

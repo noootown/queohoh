@@ -523,4 +523,88 @@ mod tests {
             "queue pane body registered for empty-area clicks"
         );
     }
+
+    #[test]
+    fn worktrees_pane_pr_cell_registers_link_where_it_renders() {
+        // A worktree with BOTH a PR number and its url gets a clickable `#<n>`
+        // cell in the WORKTREES PR column; the hit rect lands on the rendered
+        // text. A wide left column keeps the PR column past the width ladder.
+        let mut app = fixture_app();
+        let url = "https://github.com/acme/acme/pull/77".to_string();
+        if let Some(w) = app
+            .snapshot
+            .as_mut()
+            .and_then(|s| s.worktrees.get_mut("acme"))
+            .and_then(|wts| wts.iter_mut().find(|w| w.name == "acme.feature"))
+        {
+            w.pr_number = Some(77);
+            w.pr_url = Some(url.clone());
+        }
+        app.left_cols = Some(110);
+        let (terminal, hits) = render_at(&app, 140, 30);
+        let (rect, target) = hits
+            .iter()
+            .find(|(_, t)| matches!(t, HitTarget::PrLink(_)))
+            .expect("PR link registered in the worktrees pane");
+        assert_eq!(*target, HitTarget::PrLink(url));
+        assert_eq!(rect.width, 3, "#77 is three glyphs");
+        // The hit's first cell is the `#` of `#77` as actually painted, and the
+        // clickable cell reads as a link (underlined — the same affordance as
+        // the detail info tab's pr value); the pad past `#77` stays bare.
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(rect.x, rect.y)].symbol(), "#", "hit lands on the rendered #77");
+        assert!(
+            buf[(rect.x, rect.y)].modifier.contains(ratatui::style::Modifier::UNDERLINED),
+            "clickable #77 is underlined"
+        );
+        assert!(
+            !buf[(rect.x + rect.width, rect.y)]
+                .modifier
+                .contains(ratatui::style::Modifier::UNDERLINED),
+            "the pad cell past #77 is not underlined"
+        );
+    }
+
+    #[test]
+    fn selected_def_row_without_cron_paints_full_width_selection() {
+        // A def with no cron/description/model → `def_line` appends nothing past
+        // the name, so its spans end early. Selecting it must STILL paint the
+        // selection bg across the whole row (the fix pads the line to the row
+        // width before patching); otherwise the tail cells stay unhighlighted.
+        let mut app = fixture_app();
+        app.defs_by_project.insert(
+            "acme".to_string(),
+            vec![crate::ipc::types::DefinitionSummary {
+                repo: "acme".into(),
+                name: "lint".into(),
+                scope: "project".into(),
+                ..Default::default()
+            }],
+        );
+        let mut ui = crate::app::TabUiState::default();
+        ui.focus = PaneId::Tasks;
+        ui.last_list_pane = crate::app::ListPane::Tasks;
+        ui.selections[crate::app::ListPane::Tasks as usize].cursor = 0;
+        app.ui_by_tab.insert("acme".to_string(), ui);
+
+        let (terminal, _hits) = render_at(&app, 80, 24);
+        let buf = terminal.backend().buffer();
+        let sel_bg = crate::view::theme::Palette::default().selection_bg;
+        // Find the row that renders the "lint" def and count its selection-bg
+        // cells: the selected short-def row extends far past its 4-char name.
+        let mut sel_count = 0usize;
+        for y in 0..buf.area.height {
+            let row: String =
+                (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            if row.contains("lint") {
+                let count =
+                    (0..buf.area.width).filter(|&x| buf[(x, y)].bg == sel_bg).count();
+                sel_count = sel_count.max(count);
+            }
+        }
+        assert!(
+            sel_count >= 20,
+            "selection bg spans well past the short def name (got {sel_count} cells)"
+        );
+    }
 }
