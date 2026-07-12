@@ -1,14 +1,15 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskDefinition } from "../definition.js";
-import { MainSessionStore } from "../main-sessions.js";
 import { makeRedactor } from "../redact.js";
 import type { Exec } from "../resolver-io.js";
 import { RunStore } from "../run-store.js";
 import type { RunResult } from "../runner.js";
+import { SessionLineageStore } from "../session-lineage.js";
 import { QueueStore } from "../store.js";
+import type { SessionMode } from "../task.js";
 import type { WorkerDeps } from "../worker.js";
 import { runTask } from "../worker.js";
 
@@ -49,16 +50,28 @@ function makeDeps(overrides: Partial<WorkerDeps> = {}) {
 	return { deps, store, runStore, hookCalls };
 }
 
-const enqueue = (store: QueueStore, definition?: string) =>
-	store.create({
+interface EnqueueOpts {
+	definition?: string;
+	resumeSessionId?: string;
+	session?: SessionMode;
+}
+
+// Second arg is either a definition string (existing callers) or an options
+// object carrying resume/session overrides (lineage tests).
+const enqueue = (store: QueueStore, opts: string | EnqueueOpts = {}) => {
+	const o: EnqueueOpts = typeof opts === "string" ? { definition: opts } : opts;
+	return store.create({
 		prompt: "do it\n",
 		repo: "platform",
 		ref: "temp",
 		source: "tui",
-		definition,
-		item: definition ? { number: "1" } : undefined,
-		itemKey: definition ? "1" : undefined,
+		definition: o.definition,
+		item: o.definition ? { number: "1" } : undefined,
+		itemKey: o.definition ? "1" : undefined,
+		resumeSessionId: o.resumeSessionId,
+		session: o.session,
 	});
+};
 
 /** A verify executor recording each invocation and returning a scripted result. */
 function fakeVerify(
@@ -510,120 +523,121 @@ describe("runTask model-alias resolution", () => {
 	});
 });
 
-describe("runTask main-session pointer", () => {
-	const mainStore = () =>
-		new MainSessionStore(
-			join(mkdtempSync(join(tmpdir(), "qo-main-")), "main-sessions.json"),
+describe("runTask resume via lineage", () => {
+	function lineageStore(): SessionLineageStore {
+		return new SessionLineageStore(
+			join(mkdtempSync(join(tmpdir(), "lin-")), "lineage.json"),
 		);
+	}
 
-	const enqueueMain = (store: QueueStore) =>
-		store.create({
-			prompt: "do it\n",
-			repo: "platform",
-			ref: "temp",
-			source: "tui",
-			session: "main",
-		});
-
-	// laneKey for a withWorktree'd platform task is "platform:tmp-x".
-	const LANE = "platform:tmp-x";
-
-	it("main task with pointer set → executor receives resumeSessionId = pointer", async () => {
-		const mainSessions = mainStore();
-		mainSessions.set(LANE, "prev-session");
+	it("pinned task resumes the tip of its pin's lineage", async () => {
+		const lineage = lineageStore();
+		lineage.recordFork("sess-x", "sess-y");
 		let seenResume: string | undefined;
 		const { deps, store } = makeDeps({
-			mainSessions,
+			lineage,
+			executeClaude: async (opts) => {
+				seenResume = opts.resumeSessionId;
+				return { ...okResult, sessionId: "sess-z" };
+			},
+		});
+		const task = withWorktree(
+			store,
+			enqueue(store, { resumeSessionId: "sess-x" }).id,
+		);
+		await runTask(task.id, deps);
+		expect(seenResume).toBe("sess-y");
+		// The run recorded its own fork: y → z.
+		expect(lineage.tip("sess-x")).toBe("sess-z");
+	});
+
+	it("fresh task resumes nothing and records no fork", async () => {
+		const lineage = lineageStore();
+		let seenResume: string | undefined = "sentinel";
+		const { deps, store } = makeDeps({
+			lineage,
+			executeClaude: async (opts) => {
+				seenResume = opts.resumeSessionId;
+				return { ...okResult, sessionId: "sess-new" };
+			},
+		});
+		const task = withWorktree(store, enqueue(store).id);
+		await runTask(task.id, deps);
+		expect(seenResume).toBeUndefined();
+		expect(lineage.tip("sess-new")).toBe("sess-new");
+	});
+
+	it("session:'main' is treated as fresh (deprecated)", async () => {
+		const lineage = lineageStore();
+		let seenResume: string | undefined = "sentinel";
+		const { deps, store } = makeDeps({
+			lineage,
 			executeClaude: async (opts) => {
 				seenResume = opts.resumeSessionId;
 				return okResult;
 			},
 		});
-		const t = enqueueMain(store);
-		withWorktree(store, t.id);
-		await runTask(t.id, deps);
-		expect(seenResume).toBe("prev-session");
+		const task = withWorktree(store, enqueue(store, { session: "main" }).id);
+		await runTask(task.id, deps);
+		expect(seenResume).toBeUndefined();
 	});
 
-	it("main task without pointer → no resume, and captured sessionId advances the pointer", async () => {
-		const mainSessions = mainStore();
-		let seenResume: string | undefined = "sentinel";
+	it("two chains in one lane stay isolated (the old lane-pointer hazard)", async () => {
+		const lineage = lineageStore();
+		const resumes: (string | undefined)[] = [];
+		let n = 0;
 		const { deps, store } = makeDeps({
-			mainSessions,
+			lineage,
 			executeClaude: async (opts) => {
-				seenResume = opts.resumeSessionId;
-				return { ...okResult, sessionId: "s1" };
+				resumes.push(opts.resumeSessionId);
+				n += 1;
+				return { ...okResult, sessionId: `out-${n}` };
 			},
 		});
-		const t = enqueueMain(store);
-		withWorktree(store, t.id);
-		await runTask(t.id, deps);
-		expect(seenResume).toBeUndefined();
-		expect(mainSessions.get(LANE)).toBe("s1");
+		const a = withWorktree(
+			store,
+			enqueue(store, { resumeSessionId: "sess-1" }).id,
+		);
+		const b = withWorktree(
+			store,
+			enqueue(store, { resumeSessionId: "sess-3" }).id,
+		);
+		await runTask(a.id, deps);
+		await runTask(b.id, deps);
+		// A resumed its own pin; B was NOT hijacked onto A's chain.
+		expect(resumes).toEqual(["sess-1", "sess-3"]);
+		expect(lineage.tip("sess-1")).toBe("out-1");
+		expect(lineage.tip("sess-3")).toBe("out-2");
 	});
 
-	it("fresh task never reads or writes the store", async () => {
-		const mainSessions = mainStore();
-		mainSessions.set(LANE, "should-stay");
-		let seenResume: string | undefined = "sentinel";
+	it("chained tasks pinned to the same session stack", async () => {
+		const lineage = lineageStore();
+		const resumes: (string | undefined)[] = [];
+		let n = 0;
 		const { deps, store } = makeDeps({
-			mainSessions,
+			lineage,
 			executeClaude: async (opts) => {
-				seenResume = opts.resumeSessionId;
-				return { ...okResult, sessionId: "s-fresh" };
+				resumes.push(opts.resumeSessionId);
+				n += 1;
+				return { ...okResult, sessionId: `hop-${n}` };
 			},
 		});
-		// default session is "fresh"
-		const t = enqueue(store);
-		withWorktree(store, t.id);
-		await runTask(t.id, deps);
-		expect(seenResume).toBeUndefined();
-		expect(mainSessions.get(LANE)).toBe("should-stay");
-	});
-
-	it("failed main run with captured sessionId still advances the pointer", async () => {
-		const mainSessions = mainStore();
-		const { deps, store } = makeDeps({
-			mainSessions,
-			executeClaude: async () => ({
-				...okResult,
-				exitCode: 3,
-				sessionId: "s-failed",
-			}),
-		});
-		const t = enqueueMain(store);
-		withWorktree(store, t.id);
-		const result = await runTask(t.id, deps);
-		expect(result.status).toBe("failed");
-		expect(mainSessions.get(LANE)).toBe("s-failed");
-	});
-
-	it("main run with null sessionId leaves the pointer unchanged", async () => {
-		const mainSessions = mainStore();
-		mainSessions.set(LANE, "keep-me");
-		const { deps, store } = makeDeps({
-			mainSessions,
-			executeClaude: async () => ({ ...okResult, sessionId: null }),
-		});
-		const t = enqueueMain(store);
-		withWorktree(store, t.id);
-		await runTask(t.id, deps);
-		expect(mainSessions.get(LANE)).toBe("keep-me");
+		const a = withWorktree(
+			store,
+			enqueue(store, { resumeSessionId: "sess-x" }).id,
+		);
+		const b = withWorktree(
+			store,
+			enqueue(store, { resumeSessionId: "sess-x" }).id,
+		);
+		await runTask(a.id, deps);
+		await runTask(b.id, deps);
+		expect(resumes).toEqual(["sess-x", "hop-1"]);
+		expect(lineage.tip("sess-x")).toBe("hop-2");
 	});
 });
 
-describe("runTask pinned resume (resume_session_id)", () => {
-	const LANE = "platform:tmp-x";
-
-	const mainStoreAt = (entries: Record<string, unknown>) => {
-		const path = join(
-			mkdtempSync(join(tmpdir(), "qo-main-")),
-			"main-sessions.json",
-		);
-		writeFileSync(path, JSON.stringify({ sessions: entries }));
-		return new MainSessionStore(path);
-	};
-
+describe("runTask pinned resume model resolution", () => {
 	const enqueuePinned = (store: QueueStore, model?: string) =>
 		store.create({
 			prompt: "continue\n",
@@ -633,88 +647,6 @@ describe("runTask pinned resume (resume_session_id)", () => {
 			resumeSessionId: "pin-sess",
 			model,
 		});
-
-	it("pin with no pointer → executor resumes the pin", async () => {
-		const mainSessions = mainStoreAt({});
-		let seenResume: string | undefined;
-		const { deps, store } = makeDeps({
-			mainSessions,
-			executeClaude: async (opts) => {
-				seenResume = opts.resumeSessionId;
-				return okResult;
-			},
-		});
-		const t = enqueuePinned(store);
-		withWorktree(store, t.id);
-		await runTask(t.id, deps);
-		expect(seenResume).toBe("pin-sess");
-	});
-
-	it("pointer updated after task creation → pointer wins (chain-advance)", async () => {
-		const mainSessions = mainStoreAt({
-			[LANE]: {
-				sessionId: "descendant-sess",
-				updatedAt: "2999-01-01T00:00:00.000Z",
-			},
-		});
-		let seenResume: string | undefined;
-		const { deps, store } = makeDeps({
-			mainSessions,
-			executeClaude: async (opts) => {
-				seenResume = opts.resumeSessionId;
-				return okResult;
-			},
-		});
-		const t = enqueuePinned(store);
-		withWorktree(store, t.id);
-		await runTask(t.id, deps);
-		expect(seenResume).toBe("descendant-sess");
-	});
-
-	it("stale pointer (before task creation, incl. legacy) → pin wins", async () => {
-		const mainSessions = mainStoreAt({ [LANE]: "legacy-old-sess" });
-		let seenResume: string | undefined;
-		const { deps, store } = makeDeps({
-			mainSessions,
-			executeClaude: async (opts) => {
-				seenResume = opts.resumeSessionId;
-				return okResult;
-			},
-		});
-		const t = enqueuePinned(store);
-		withWorktree(store, t.id);
-		await runTask(t.id, deps);
-		expect(seenResume).toBe("pin-sess");
-	});
-
-	it("pinned run advances the lane pointer on done", async () => {
-		const mainSessions = mainStoreAt({});
-		const { deps, store } = makeDeps({
-			mainSessions,
-			executeClaude: async () => ({ ...okResult, sessionId: "new-sess" }),
-		});
-		const t = enqueuePinned(store);
-		withWorktree(store, t.id);
-		await runTask(t.id, deps);
-		expect(mainSessions.get(LANE)).toBe("new-sess");
-	});
-
-	it("pinned run advances the pointer even on failure", async () => {
-		const mainSessions = mainStoreAt({});
-		const { deps, store } = makeDeps({
-			mainSessions,
-			executeClaude: async () => ({
-				...okResult,
-				exitCode: 3,
-				sessionId: "failed-sess",
-			}),
-		});
-		const t = enqueuePinned(store);
-		withWorktree(store, t.id);
-		const result = await runTask(t.id, deps);
-		expect(result.status).toBe("failed");
-		expect(mainSessions.get(LANE)).toBe("failed-sess");
-	});
 
 	it("task.model overrides defaults; definition model still wins", async () => {
 		let seenModel = "";

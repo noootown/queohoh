@@ -6,12 +6,12 @@ expression: terminal.backend()
 "╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:info                                            │"
 "│ 🔍 [/] filter           ││path     /repos/acme.feature                       │" Hidden by multi-width symbols: [(3, " ")]
-"│      Workt…  Prompt     ││branch   feature/JB-1200-cache                     │"
-"│ ⠯ ⌂  featu…  implement… ││commit   a1b2c3d                                   │"
-"│ ○    featu…  write doc… ││author   Ian Chiu                                  │"
+"│    Worktr…  Prompt      ││branch   feature/JB-1200-cache                     │"
+"│ ⠯  feature  implement … ││commit   a1b2c3d                                   │"
+"│ ○  feature  write docs… ││author   Ian Chiu                                  │"
 "│ ──────── finished ───── ││updated  3d ago (07/06 07:05)                      │"
-"│ ✗    main    flaky mig… ││pr       #42                                       │"
-"│ ●    main    earlier c… ││                                                   │"
+"│ ✗  main     flaky migr… ││pr       #42                                       │"
+"│ ●  main     earlier cl… ││                                                   │"
 "│                         ││  Task            Created      Age       Live      │"
 "│                         ││▶ squash-merge    07/09 07:00  just now  ⏱ 0s      │"
 "╰─────────────────────────╯│○ write docs fo…  07/09 07:04  just now  #1 in lane│"
@@ -20,9 +20,9 @@ expression: terminal.backend()
 "│ no task definitions     ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES───── [t] [a]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [r] [g] [x]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│ 2 ⌂ feature  ⏱ 0s       ││                                                   │"
-"│ ●   hotfix              ││                                                   │"
+"│ 2 feature  ⏱ 0s         ││                                                   │"
+"│ ● hotfix                ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
 "[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "

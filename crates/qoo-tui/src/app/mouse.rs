@@ -65,8 +65,7 @@ impl App {
     }
 
     /// Scroll the detail pane to its edge. Driven by `Home`/`End`
-    /// (`DetailScrollEdge`) and by `g`/`G` (`ScrollEdge`) when the detail pane is
-    /// focused. dir < 0 = head/oldest, dir > 0 =
+    /// (`DetailScrollEdge`). dir < 0 = head/oldest, dir > 0 =
     /// tail/end. Jumps to the render-fed max (not an unclamped sentinel, which
     /// left the stored offset far past the edge — same phantom-scroll bug class
     /// as `detail_scroll`'s missing upper clamp).
@@ -285,6 +284,10 @@ impl App {
             K::Down(MouseButton::Left) if matches!(self.mode, Mode::DefPick { .. }) => {
                 return self.route_def_pick_click(target);
             }
+            // The session picker owns every click while open.
+            K::Down(MouseButton::Left) if matches!(self.mode, Mode::SessionPick { .. }) => {
+                return self.route_session_pick_click(target);
+            }
             // The args form owns every click while open: route to its hit
             // targets; a click hitting nothing (outside the popup) cancels.
             K::Down(MouseButton::Left) if matches!(self.mode, Mode::DefArgs { .. }) => {
@@ -443,18 +446,27 @@ impl App {
                         }
                         crate::hit::PaneButton::Run => {
                             self.set_focus(p);
-                            // Run means re-queue on QUEUE, run-def on TASKS (see
-                            // the keymap's per-pane `r` split).
-                            let action = if lp == ListPane::Queue {
-                                crate::keymap::AppAction::RequeueSelected
-                            } else {
-                                crate::keymap::AppAction::RunSelectedDef
+                            // Run means re-queue on QUEUE, run-def on TASKS, new
+                            // worktree-targeted task on WORKTREES (the keymap's
+                            // per-pane `r` split).
+                            let action = match lp {
+                                ListPane::Queue => crate::keymap::AppAction::RequeueSelected,
+                                ListPane::Worktrees => crate::keymap::AppAction::NewTaskOnWorktree,
+                                ListPane::Tasks => crate::keymap::AppAction::RunSelectedDef,
                             };
                             return self.apply_action(action);
+                        }
+                        crate::hit::PaneButton::Goto => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::GotoWorktree);
                         }
                         crate::hit::PaneButton::Cancel => {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::CancelSelected);
+                        }
+                        crate::hit::PaneButton::Remove => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::RemoveSelectedWorktree);
                         }
                     }
                 }
@@ -492,6 +504,13 @@ impl App {
             {
                 let delta: i32 = if matches!(m.kind, K::ScrollDown) { 1 } else { -1 };
                 return self.menu_wheel(target, delta);
+            }
+            // The session picker owns the wheel: over its body it moves the
+            // selection one row (clamped, non-circular); it never reaches the
+            // panes beneath the modal.
+            K::ScrollDown | K::ScrollUp if matches!(self.mode, Mode::SessionPick { .. }) => {
+                let delta: i32 = if matches!(m.kind, K::ScrollDown) { 1 } else { -1 };
+                return self.session_pick_wheel(target, delta);
             }
             K::ScrollDown | K::ScrollUp => {
                 let delta: i32 = if matches!(m.kind, K::ScrollDown) { 1 } else { -1 };

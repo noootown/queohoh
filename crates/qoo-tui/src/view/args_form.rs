@@ -372,7 +372,11 @@ impl ArgsForm {
 /// plus the caret's (row, col) within them. Reserving one extra display column
 /// for the caret is the caller's job (the caret can sit one past the last char
 /// of a full row).
-fn wrap_value_cursor(value: &str, cursor: usize, width: usize) -> (Vec<String>, usize, usize) {
+pub(crate) fn wrap_value_cursor(
+    value: &str,
+    cursor: usize,
+    width: usize,
+) -> (Vec<String>, usize, usize) {
     let w = width.max(1);
     let mut rows: Vec<String> = vec![String::new()];
     let mut col = 0usize; // column on the current row
@@ -415,7 +419,7 @@ fn pad(s: &str, width: usize) -> String {
 }
 
 const RUN_FORM_HINT: &str =
-    " tab/↑↓ move · ←/→ enum · shift/alt+enter newline · enter run · esc cancel ";
+    " tab/↑↓ move · ←/→ enum · shift+enter newline · enter run · esc cancel ";
 
 /// Render the run form: the full two-panel picker shell with the arg inputs on
 /// the left and the definition's prompt (scrollable, markdown-styled like the
@@ -581,7 +585,7 @@ fn render_fields(
 
 /// One display line of a free-text value with a reversed caret cell at `col`
 /// (a trailing caret renders as a reversed space).
-fn caret_line(text: &str, col: usize, p: &Palette) -> Line<'static> {
+pub(crate) fn caret_line(text: &str, col: usize, p: &Palette) -> Line<'static> {
     let chars: Vec<char> = text.chars().collect();
     let col = col.min(chars.len());
     let before: String = chars[..col].iter().collect();

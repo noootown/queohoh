@@ -6,23 +6,23 @@ expression: terminal.backend()
 "╭📋 QUEU│ Tab / Shift+Tab cycle focus: queue → tasks → worktrees       │───────╮" Hidden by multi-width symbols: [(2, " ")]
 "│       │ 1–9 / 0         switch project tab (0 = 10th)                │       │"
 "│ 🔍 [/]│ ctrl+s then n/p next / previous project tab                  │       │" Hidden by multi-width symbols: [(3, " ")]
-"│      W│ arrows          move list cursor (shift: extend selection)   │       │"
-"│ ⠯ ⌂  f│ j / k           detail: move lane-task row · else scroll     │       │"
-"│ ○    f│ h / l           detail: previous / next sub-tab              │       │"
+"│    Wor│ arrows          move list cursor (shift: extend selection)   │       │"
+"│ ⠯  fea│ j / k           detail: move lane-task row · else scroll     │       │"
+"│ ○  fea│ h / l           detail: previous / next sub-tab              │       │"
 "│ ──────│ ctrl+x / ctrl+z detail sub-tab (alias of l / h)              │       │"
-"│ ✗    m│ enter           open selected lane task (worktrees)          │       │"
-"│ ●    m│ a               action menu (queue: resume · worktrees)      │       │"
-"│       │ r               run: tasks run def · queue re-queues selected│       │"
-"│       │ x               queue: cancel selected (skip queued · stop ru│       │"
-"╰───────│ c               create (queue: adhoc task · worktrees: worktr│       │"
-"╭⚡TASKS│ t               task menu (worktrees)                        │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ z               collapse / expand focused list pane          │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no tas│ /               filter focused pane                          │       │"
-"│       │ esc             clear range → clear filter → close overlay   │       │"
-"╰───────│ g/G · Home/End  top / bottom (Home/End: detail pane)         │       │"
-"╭🌲 WORK│ s               settings — model table                       │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ ?               this help                                    │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ 2 ⌂ fe│ q               quit                                         │       │"
-"│ ●   ho│                                                              │       │"
-"╰───────│ legend                                                       │───────╯"
+"│ ✗  mai│ enter           open selected lane task (worktrees)          │       │"
+"│ ●  mai│ a               action menu (queue: resume)                  │       │"
+"│       │ r               run: new task on worktree (worktrees) · re-qu│       │"
+"│       │ g               goto: open worktree in tmux (worktrees)      │       │"
+"╰───────│ x               cancel (queue) · remove worktree (worktrees) │       │"
+"╭⚡TASKS│ c               create (queue: adhoc task · worktrees: worktr│       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ t               task menu (worktrees)                        │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no tas│ z               collapse / expand focused list pane          │       │"
+"│       │ /               filter focused pane                          │       │"
+"╰───────│ esc             clear range → clear filter → close overlay   │       │"
+"╭🌲 WORK│ Home/End        detail pane top / bottom                     │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│ s               settings — model table                       │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ 2 feat│ ?               this help                                    │       │"
+"│ ● hotf│ q               quit                                         │       │"
+"╰───────│                                                              │───────╯"
 "[1-9/0 ·╰──────────────────────────────────────────────────────────────╯        "

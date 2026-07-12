@@ -188,19 +188,28 @@ impl App {
             Event::Key(k)
                 if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::AddTask { .. }) =>
             {
-                use crossterm::event::KeyCode::*;
+                use crossterm::event::{KeyCode::*, KeyModifiers};
+                let shift = k.modifiers.contains(KeyModifiers::SHIFT);
                 match k.code {
+                    // Newline chord first — must win over the plain-Enter submit arm.
+                    Enter if shift => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.insert_newline();
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
                     Enter => {
-                        let (prompt, sess, worktree) =
-                            if let Mode::AddTask { worktree, session, input } = &self.mode {
-                                let sess = match session {
-                                    SessionMode::Fresh => "fresh",
-                                    SessionMode::Main => "main",
-                                };
-                                (input.value().to_string(), sess, worktree.clone())
-                            } else {
-                                unreachable!()
-                            };
+                        let (prompt, resume, worktree) = if let Mode::AddTask {
+                            worktree,
+                            resume_session_id,
+                            editor,
+                            ..
+                        } = &self.mode
+                        {
+                            (editor.text.clone(), resume_session_id.clone(), worktree.clone())
+                        } else {
+                            unreachable!()
+                        };
                         let repo = match self.active_repo() {
                             Some(r) => r,
                             None => {
@@ -208,10 +217,12 @@ impl App {
                                 return Update { dirty: true, cmds: vec![] };
                             }
                         };
-                        let mut params =
-                            serde_json::json!({ "prompt": prompt, "repo": repo, "session": sess });
+                        let mut params = serde_json::json!({ "prompt": prompt, "repo": repo });
                         if let Some(w) = worktree {
                             params["worktree"] = serde_json::Value::String(w);
+                        }
+                        if let Some(sid) = resume {
+                            params["resume_session_id"] = serde_json::Value::String(sid);
                         }
                         self.mode = Mode::List;
                         let cmd =
@@ -222,12 +233,43 @@ impl App {
                         self.mode = Mode::List;
                         Update { dirty: true, cmds: vec![] }
                     }
-                    _ => {
-                        if let Mode::AddTask { input, .. } = &mut self.mode {
-                            input.handle_event(&crossterm::event::Event::Key(k));
+                    Backspace => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.backspace();
                         }
                         Update { dirty: true, cmds: vec![] }
                     }
+                    Left => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.move_left();
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    Right => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.move_right();
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    Home => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.move_home();
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    End => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.move_end();
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    Char(c) => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.insert_char(c);
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    _ => Update { dirty: false, cmds: vec![] },
                 }
             }
             // Def-pick popup owns keys while open (checked before generic list
@@ -251,6 +293,13 @@ impl App {
                     && matches!(self.mode, Mode::CreateWorktree { .. }) =>
             {
                 self.create_worktree_key(&k)
+            }
+            // Session picker owns keys while open (checked before generic list
+            // handling); key-release falls through to the generic no-op.
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::SessionPick { .. }) =>
+            {
+                self.session_pick_key(&k)
             }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
@@ -348,7 +397,16 @@ impl App {
                     let inserted = form.insert_str(&s);
                     Update { dirty: inserted, cmds: vec![] }
                 }
-                Mode::AddTask { input, .. } | Mode::CreateWorktree { input, .. } => {
+                // The multiline prompt editor takes the payload verbatim
+                // (newlines preserved — this is the "paste your bug report" flow).
+                Mode::AddTask { editor, .. } => {
+                    editor.insert_str(&s);
+                    Update { dirty: !s.is_empty(), cmds: vec![] }
+                }
+                // The single-line branch input takes it with control chars
+                // (newlines/tabs) collapsed to spaces so a multiline paste can't
+                // smuggle a newline into a one-line field.
+                Mode::CreateWorktree { input, error } => {
                     let flat: String =
                         s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
                     for c in flat.chars() {
@@ -360,9 +418,7 @@ impl App {
                         ));
                     }
                     // A create-worktree paste clears any prior validation error.
-                    if let Mode::CreateWorktree { error, .. } = &mut self.mode {
-                        *error = None;
-                    }
+                    *error = None;
                     Update { dirty: !flat.is_empty(), cmds: vec![] }
                 }
                 _ => Update { dirty: false, cmds: vec![] },
@@ -429,6 +485,35 @@ impl App {
                 }
                 Update { dirty: clear, cmds: vec![] }
             }
+            Event::SessionsLoaded { worktree, result } => {
+                // Only applies to a session picker still open for the SAME
+                // worktree — a reply that arrives after the picker moved on (or
+                // closed) is stale and dropped. Both outcomes clear `loading`.
+                let fresh = matches!(
+                    &self.mode,
+                    Mode::SessionPick { worktree: wt, .. } if *wt == worktree
+                );
+                if !fresh {
+                    return Update { dirty: false, cmds: vec![] };
+                }
+                match result {
+                    Ok(v) => {
+                        if let Mode::SessionPick { items, loading, .. } = &mut self.mode {
+                            *items = v;
+                            *loading = false;
+                        }
+                    }
+                    Err(e) => {
+                        // Keep the modal usable ("New session" still selectable);
+                        // surface the error on the status line.
+                        if let Mode::SessionPick { loading, .. } = &mut self.mode {
+                            *loading = false;
+                        }
+                        self.status_line = Some(format!("list sessions: {e}"));
+                    }
+                }
+                Update { dirty: true, cmds: vec![] }
+            }
             Event::Definition { repo, name, def } => {
                 // Full-definition reply for the detail pane. Success fills the
                 // cache (and clears the in-flight marker); failure LEAVES the
@@ -437,7 +522,7 @@ impl App {
                 let key = format!("{repo}/{name}");
                 match def {
                     Some(d) => {
-                        self.full_defs.insert(key.clone(), d);
+                        self.full_defs.insert(key.clone(), *d);
                         self.full_defs_inflight.remove(&key);
                         Update { dirty: true, cmds: vec![] }
                     }

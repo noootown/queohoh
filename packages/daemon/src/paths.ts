@@ -17,6 +17,6 @@ export const socketPath = (state: string) => join(state, "daemon/daemon.sock");
 export const pidPath = (state: string) => join(state, "daemon/daemon.pid");
 export const sessionsPath = (state: string) =>
 	join(state, "daemon/sessions.json");
-export const mainSessionsPath = (state: string) =>
-	join(state, "daemon/main-sessions.json");
+export const sessionLineagePath = (state: string): string =>
+	join(state, "daemon/session-lineage.json");
 export const runsPath = (state: string) => join(state, "runs");

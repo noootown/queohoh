@@ -5,6 +5,7 @@ import {
 	configPath,
 	pidPath,
 	runsPath,
+	sessionLineagePath,
 	sessionsPath,
 	socketPath,
 	statePath,
@@ -32,6 +33,7 @@ describe("paths", () => {
 		expect(socketPath("/s")).toBe("/s/daemon/daemon.sock");
 		expect(pidPath("/s")).toBe("/s/daemon/daemon.pid");
 		expect(sessionsPath("/s")).toBe("/s/daemon/sessions.json");
+		expect(sessionLineagePath("/s")).toBe("/s/daemon/session-lineage.json");
 		expect(runsPath("/s")).toBe("/s/runs");
 	});
 });

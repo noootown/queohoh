@@ -26,7 +26,9 @@ pub enum Event {
     /// otherwise dominate every `Event` (clippy::large_enum_variant).
     RunFiles { task_id: String, files: Box<RunFiles> },
     Definitions { repo: String, defs: Vec<DefinitionSummary> },
-    Definition { repo: String, name: String, def: Option<TaskDefinition> },
+    /// Boxed: a full `TaskDefinition` (~400 bytes) would otherwise dominate every
+    /// `Event` (clippy::large_enum_variant).
+    Definition { repo: String, name: String, def: Option<Box<TaskDefinition>> },
     /// Result of the on-demand `settings` RPC that backs the `s` overlay.
     /// `None` = the call failed or the daemon predates the RPC (stored as
     /// `Some(None)` in `App::settings` → overlay shows the "unavailable" line).
@@ -35,6 +37,20 @@ pub enum Event {
     /// generation) expiries are ignored by `update`.
     SelectionExpired { epoch: u64 },
     ActionResult { status: Option<String>, invalidate_defs_for: Option<String> },
+    /// Reply to a [`Cmd::FetchSessions`]: the resumable Claude sessions for a
+    /// worktree (newest-first, capped by the daemon). `worktree` echoes the
+    /// request so `update` can drop a stale reply that arrives after the picker
+    /// moved on. `Err` carries the RPC/parse error for the status line.
+    SessionsLoaded { worktree: String, result: Result<Vec<SessionChoice>, String> },
+}
+
+/// One resumable Claude session offered by the `listSessions` RPC. Field names
+/// match the wire shape verbatim (serde snake_case).
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub struct SessionChoice {
+    pub session_id: String,
+    pub label: String,
+    pub mtime_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +77,10 @@ pub enum Cmd {
     },
     FetchDefinitions { repo: String },
     FetchDefinition { repo: String, name: String },
+    /// Fetch a worktree's resumable Claude sessions for the session picker via the
+    /// `listSessions` RPC; the reply lands as [`Event::SessionsLoaded`] (echoing
+    /// `worktree` so a stale reply is dropped). `repo`/`worktree` scope the query.
+    FetchSessions { repo: String, worktree: String },
     /// One-shot fetch of the daemon's model-alias settings for the `s` overlay.
     /// Emitted once on first open (App::settings is None); the reply lands as
     /// [`Event::Settings`].
@@ -316,10 +336,28 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 };
                 // Errors → None (actions.ts `definition` catch → null).
                 let def = match rpc_once(&sock, &call, 5_000).await {
-                    Ok(v) => serde_json::from_value::<TaskDefinition>(v).ok(),
+                    Ok(v) => serde_json::from_value::<TaskDefinition>(v).ok().map(Box::new),
                     Err(_) => None,
                 };
                 let _ = tx.send(Event::Definition { repo, name, def });
+            });
+        }
+        Cmd::FetchSessions { repo, worktree } => {
+            tokio::spawn(async move {
+                let call = RpcCall {
+                    method: "listSessions".into(),
+                    params: serde_json::json!({ "repo": &repo, "worktree": &worktree }),
+                };
+                // On success, pull `result.sessions` and deserialize the typed
+                // choices; an RPC error OR a shape an old daemon can't produce →
+                // Err(msg) so the picker shows the error and stays usable (the
+                // "New session" row is always selectable).
+                let result = match rpc_once(&sock, &call, 5_000).await {
+                    Ok(v) => serde_json::from_value::<Vec<SessionChoice>>(v["sessions"].clone())
+                        .map_err(|e| e.to_string()),
+                    Err(e) => Err(e),
+                };
+                let _ = tx.send(Event::SessionsLoaded { worktree, result });
             });
         }
         Cmd::FetchSettings => {

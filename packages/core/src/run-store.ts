@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { TaskDefinition } from "./definition.js";
 import type { Redactor } from "./redact.js";
@@ -153,5 +159,30 @@ export class RunStore {
 		} catch {
 			return null;
 		}
+	}
+
+	/** Task ids that have a run dir with data.json (for reverse session lookup). */
+	listRunTaskIds(): string[] {
+		let names: string[];
+		try {
+			names = readdirSync(this.runsDir);
+		} catch {
+			return [];
+		}
+		return names.filter((n) => existsSync(join(this.runsDir, n, "data.json")));
+	}
+
+	/**
+	 * Lenient read of a run's data.json for reverse session lookup: only the
+	 * `session_id` (stamped by finishRun) and the originating task's `prompt`
+	 * matter to callers. Untyped fields are ignored; malformed files → null.
+	 */
+	readRunData(
+		taskId: string,
+	): { session_id?: string | null; task?: { prompt?: string } } | null {
+		return this.readRunMeta(taskId) as {
+			session_id?: string | null;
+			task?: { prompt?: string };
+		} | null;
 	}
 }

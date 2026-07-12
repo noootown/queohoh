@@ -6,12 +6,12 @@ expression: terminal.backend()
 "╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/] filter           ││line 21                                           ▲│" Hidden by multi-width symbols: [(3, " ")]
-"│      Workt…  Prompt     ││line 22                                           ║│"
-"│ ⠯ ⌂  featu…  implement… ││line 23                                           ║│"
-"│ ○    featu…  write doc… ││line 24                                           ║│"
+"│    Worktr…  Prompt      ││line 22                                           ║│"
+"│ ⠯  feature  implement … ││line 23                                           ║│"
+"│ ○  feature  write docs… ││line 24                                           ║│"
 "│ ──────── finished ───── ││line 25                                           ║│"
-"│ ✗    main    flaky mig… ││line 26                                           ║│"
-"│ ●    main    earlier c… ││line 27                                           ║│"
+"│ ✗  main     flaky migr… ││line 26                                           ║│"
+"│ ●  main     earlier cl… ││line 27                                           ║│"
 "│                         ││line 28                                           ║│"
 "│                         ││line 29                                           ║│"
 "╰─────────────────────────╯│line 30                                           ║│"
@@ -20,9 +20,9 @@ expression: terminal.backend()
 "│ no task definitions     ││line 33                                           █│"
 "│                         ││line 34                                           █│"
 "╰─────────────────────────╯│line 35                                           █│"
-"╭🌲 WORKTREES───── [t] [a]╮│line 36                                           █│" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [r] [g] [x]╮│line 36                                           █│" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter           ││line 37                                           █│" Hidden by multi-width symbols: [(3, " ")]
-"│ 2 ⌂ feature  ⏱ 0s       ││line 38                                           █│"
-"│ ●   hotfix              ││line 39                                           ▼│"
+"│ 2 feature  ⏱ 0s         ││line 38                                           █│"
+"│ ● hotfix                ││line 39                                           ▼│"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
 "[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "

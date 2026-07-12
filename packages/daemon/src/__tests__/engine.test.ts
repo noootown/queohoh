@@ -10,10 +10,10 @@ import type {
 	VerifyExecutor,
 } from "@queohoh/core";
 import {
-	MainSessionStore,
 	makeRedactor,
 	QueueStore,
 	RunStore,
+	SessionLineageStore,
 	SessionRegistry,
 } from "@queohoh/core";
 import { describe, expect, it } from "vitest";
@@ -69,7 +69,7 @@ function setup(
 	};
 	const exec: Exec =
 		overrides.exec ?? (async () => ({ stdout: "", exitCode: 0 }));
-	const mainSessions = new MainSessionStore(join(base, "main-sessions.json"));
+	const lineage = new SessionLineageStore(join(base, "session-lineage.json"));
 	const engine = new Engine({
 		store,
 		runStore,
@@ -89,9 +89,9 @@ function setup(
 				output: "",
 			})),
 		redact: makeRedactor(new Map()),
-		mainSessions,
+		lineage,
 	});
-	return { engine, store, base, mainSessions };
+	return { engine, store, base, lineage };
 }
 
 describe("Engine.tick", () => {
@@ -113,8 +113,8 @@ describe("Engine.tick", () => {
 		expect(store.list()[0]?.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
 	});
 
-	it("advances the main-session pointer after a completed main run", async () => {
-		const { engine, store, mainSessions } = setup({
+	it("records a session fork into lineage after a completed pinned run", async () => {
+		const { engine, store, lineage } = setup({
 			claudeResult: { ...okResult, sessionId: "sess-abc" },
 		});
 		store.create({
@@ -122,13 +122,15 @@ describe("Engine.tick", () => {
 			repo: "platform",
 			ref: "worktree:JUS-1",
 			source: "tui",
-			session: "main",
+			resumeSessionId: "pin-1",
 		});
 		await engine.tick(); // resolve
 		await engine.tick(); // start
 		await engine.drain();
 		expect(store.list()[0]?.status).toBe("done");
-		expect(mainSessions.get("platform:JUS-1")).toBe("sess-abc");
+		// The worker resumed the pin's tip and recorded pin-1 → the run's emitted
+		// session id, so following the lineage now lands on the new session.
+		expect(lineage.tip("pin-1")).toBe("sess-abc");
 	});
 
 	it("runs a `repo` ref in the primary checkout via the @repo sentinel", async () => {
@@ -247,7 +249,7 @@ describe("Engine.tick", () => {
 				output: "",
 			}),
 			redact: makeRedactor(new Map()),
-			mainSessions: new MainSessionStore(join(base, "main-sessions.json")),
+			lineage: new SessionLineageStore(join(base, "session-lineage.json")),
 		});
 		store.create({
 			prompt: "p",

@@ -1,8 +1,7 @@
-//! Single-target action menus. One menu per list pane (queue / tasks /
-//! worktrees / session). The menu shape is stable per context (inapplicable rows
-//! are disabled with a reason, never hidden) so rows never jump as status
-//! changes. Each row also carries a one-sentence `description` shown in the
-//! lazyvim-style right pane. Bulk menus mirror the same shape with
+//! Single-target and bulk action menus. The menu shape is stable per context
+//! (inapplicable rows are disabled with a reason, never hidden) so rows never
+//! jump as status changes. Each row also carries a one-sentence `description`
+//! shown in the lazyvim-style right pane. Bulk menus mirror the same shape with
 //! `(<eligible> of <total>)` counts.
 //!
 //! The QUEUE menu holds exactly ONE action — **Resume** (open the task's Claude
@@ -10,9 +9,11 @@
 //! instead: `r` re-queues (see `App::requeue_selected`) and `x` cancels
 //! (skip/stop; see `App::cancel_selected`). The tasks pane has no single-target
 //! menu: Enter on a tasks row runs the highlighted definition directly
-//! (`App::run_selected_task_def`).
+//! (`App::run_selected_task_def`). The WORKTREES pane likewise dropped its
+//! single-target menu — its `r`/`g`/`x` hotkeys (new task / goto tmux / remove)
+//! act on the selected row directly (see `App::new_task_on_worktree` etc.).
 
-use crate::selectors::{QueueRow, WorktreeRow, WtState};
+use crate::selectors::QueueRow;
 
 /// What a chosen menu row does. `execute_menu_action` (app) maps each variant to
 /// a mode transition or an RPC/tmux dispatch. Variants are only ever added.
@@ -21,12 +22,6 @@ pub enum MenuAction {
     /// Resume the task's Claude session in a new tmux pane rooted at `path`
     /// (`tmux split-window -c <path> 'claude --resume <session_id>'`).
     Resume { path: String, session_id: String },
-    /// New adhoc task on this worktree, fresh session → opens `Mode::AddTask`.
-    TaskFresh { worktree: Option<String> },
-    /// New adhoc task on this worktree, main session → opens `Mode::AddTask`.
-    TaskMain { worktree: Option<String> },
-    OpenTmux { path: String },
-    RemoveWorktree { repo: String, name: String, branch: String },
     // --- Bulk actions. Targets are frozen at menu-open time: the eligible
     // ids/names are captured here so a snapshot push that reshuffles rows
     // mid-menu can never retarget the dispatch. (Queue has no bulk menu — its
@@ -71,11 +66,6 @@ pub fn filter_items(items: &[ActionItem], query: &str) -> Vec<usize> {
 }
 
 const RESUME_DESC: &str = "Resume this task's Claude session in a new tmux pane.";
-const TASK_FRESH_DESC: &str = "Queue a new adhoc task on this worktree in a fresh session.";
-const TASK_MAIN_DESC: &str = "Queue a new adhoc task that resumes this worktree's main session.";
-const OPEN_TMUX_DESC: &str = "Open this worktree in a new tmux window.";
-const REMOVE_DESC: &str =
-    "Remove this worktree and delete its local branch (asks for confirmation).";
 
 /// Single-target queue menu: exactly one row, **Resume**. Disabled (with the
 /// most specific reason) when not inside tmux, when the run has recorded no
@@ -103,59 +93,6 @@ pub fn queue_menu(
         ),
     };
     (title, vec![item("Resume", applicable, reason, RESUME_DESC, action)])
-}
-
-/// Single-target worktree menu (or session menu when the row is an interactive
-/// session). `repo` is the active project — needed for `RemoveWorktree`.
-pub fn worktree_menu(repo: &str, row: &WorktreeRow, inside_tmux: bool) -> (String, Vec<ActionItem>) {
-    if row.is_session {
-        return (
-            row.name.clone(),
-            vec![item(
-                "Open in tmux window",
-                inside_tmux,
-                "not inside tmux",
-                OPEN_TMUX_DESC,
-                MenuAction::OpenTmux { path: row.path.clone() },
-            )],
-        );
-    }
-    let busy = matches!(row.state, WtState::Busy);
-    (
-        row.name.clone(),
-        vec![
-            ActionItem {
-                label: "New task (fresh session)".into(),
-                disabled: None,
-                description: TASK_FRESH_DESC.into(),
-                action: MenuAction::TaskFresh { worktree: Some(row.raw_name.clone()) },
-            },
-            ActionItem {
-                label: "New task (main session)".into(),
-                disabled: None,
-                description: TASK_MAIN_DESC.into(),
-                action: MenuAction::TaskMain { worktree: Some(row.raw_name.clone()) },
-            },
-            item(
-                "Open in tmux window",
-                inside_tmux,
-                "not inside tmux",
-                OPEN_TMUX_DESC,
-                MenuAction::OpenTmux { path: row.path.clone() },
-            ),
-            item(
-                "Remove worktree",
-                !busy,
-                "a task is running here",
-                REMOVE_DESC,
-                MenuAction::RemoveWorktree {
-                    repo: repo.to_string(),
-                    name: row.raw_name.clone(),
-                    branch: row.branch.clone(),
-                },
-            ),
-        ],
-    )
 }
 
 /// Pre-resolved bulk selection: eligibility is computed once by the caller at
@@ -209,8 +146,8 @@ mod filter_tests {
     fn sample() -> Vec<ActionItem> {
         vec![
             item("Resume", true, "", RESUME_DESC, MenuAction::Resume { path: "p".into(), session_id: "s".into() }),
-            item("New task (fresh session)", true, "", TASK_FRESH_DESC, MenuAction::TaskFresh { worktree: None }),
-            item("Remove worktree", true, "", REMOVE_DESC, MenuAction::RemoveWorktree { repo: "r".into(), name: "n".into(), branch: "b".into() }),
+            item("Run defs", true, "", BULK_RUN_DESC, MenuAction::BulkRunDefs { repo: "r".into(), names: vec![] }),
+            item("Remove worktrees", true, "", BULK_REMOVE_DESC, MenuAction::BulkRemove { repo: "r".into(), names: vec![] }),
         ]
     }
 
@@ -265,14 +202,13 @@ mod bulk_builder_tests {
 mod builder_tests {
     use super::*;
     use crate::ipc::types::TaskStatus;
-    use crate::selectors::{QueueRow, WorktreeRow, WtState};
+    use crate::selectors::QueueRow;
 
     fn qrow(archived: bool) -> QueueRow {
         QueueRow {
             task_id: "t1".into(),
             glyph: '?',
             running: false,
-            main_session: false,
             worktree: "main".into(),
             def_name: None,
             summary: "do the thing".into(),
@@ -310,58 +246,5 @@ mod builder_tests {
         assert_eq!(no_session[0].disabled.as_deref(), Some("no session yet (task never ran)"));
         let no_path = queue_menu(&qrow(false), Some("s"), None, true).1;
         assert_eq!(no_path[0].disabled.as_deref(), Some("no worktree for this task"));
-    }
-
-    fn wrow(state: WtState, branch: &str, is_session: bool) -> WorktreeRow {
-        WorktreeRow {
-            name: "wt-a".into(),
-            raw_name: "platform.wt-a".into(),
-            path: "/wt/wt-a".into(),
-            branch: branch.into(),
-            state,
-            has_main_session: false,
-            queued: 0,
-            is_session,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn worktree_menu_order_and_all_enabled() {
-        let (title, items) = worktree_menu("platform", &wrow(WtState::Free, "wt-a", false), true);
-        assert_eq!(title, "wt-a");
-        assert_eq!(
-            labels(&items),
-            [
-                "New task (fresh session)",
-                "New task (main session)",
-                "Open in tmux window",
-                "Remove worktree",
-            ]
-        );
-        assert_eq!(enabled(&items), labels(&items));
-    }
-
-    #[test]
-    fn worktree_menu_busy_disables_remove() {
-        let (_t, items) = worktree_menu("platform", &wrow(WtState::Busy, "wt-a", false), true);
-        let by = |lbl: &str| items.iter().find(|i| i.label == lbl).unwrap();
-        assert_eq!(by("Remove worktree").disabled.as_deref(), Some("a task is running here"));
-        assert_eq!(by("New task (fresh session)").disabled, None);
-    }
-
-    #[test]
-    fn worktree_menu_outside_tmux_disables_open() {
-        let (_t, items) = worktree_menu("platform", &wrow(WtState::Free, "wt-a", false), false);
-        let by = |lbl: &str| items.iter().find(|i| i.label == lbl).unwrap();
-        assert_eq!(by("Open in tmux window").disabled.as_deref(), Some("not inside tmux"));
-    }
-
-    #[test]
-    fn session_row_offers_only_tmux_open() {
-        let (title, items) = worktree_menu("platform", &wrow(WtState::You, "", true), true);
-        assert_eq!(title, "wt-a");
-        assert_eq!(labels(&items), ["Open in tmux window"]);
-        assert_eq!(enabled(&items), ["Open in tmux window"]);
     }
 }

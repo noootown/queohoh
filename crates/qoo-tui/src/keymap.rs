@@ -49,18 +49,28 @@ pub enum AppAction {
     /// chip): queued/needs-input → skip, running → stop, terminal → no-op. A
     /// range cancels each eligible member. Routes to `App::cancel_selected`.
     CancelSelected,
+    /// New adhoc task on the selected WORKTREES row (`r`, and the worktrees
+    /// `[r]un` chip): opens the session picker (`Mode::SessionPick`) for the
+    /// worktree, which then leads to the multiline `Mode::AddTask` prompt.
+    /// Session rows can't host a task (status line, no mode change). Routes to
+    /// `App::new_task_on_worktree`.
+    NewTaskOnWorktree,
+    /// Open the selected WORKTREES row in a new tmux window (`g`, and the
+    /// worktrees `[g]oto` chip): works for session rows too. Inert with a status
+    /// line outside tmux. Routes to `App::goto_worktree`.
+    GotoWorktree,
+    /// Remove the selected WORKTREES row (`x`, and the worktrees `[x] remove`
+    /// chip): opens `Mode::ConfirmRemove`. Session rows / busy worktrees are a
+    /// no-op with a status line. Routes to `App::remove_selected_worktree`.
+    RemoveSelectedWorktree,
     Create,
     /// Collapse/expand the focused list pane (`z`). `x` is reserved (unbound).
     ToggleCollapse,
     OpenSearch,
     ClearEsc,
-    /// `g`/`G`: jump the focused list cursor to the first/last row (dir < 0 =
-    /// top, dir > 0 = bottom). In `Mode::List` focus is always a list pane, so
-    /// this always moves the left-side selection.
-    ScrollEdge(i32),
     /// `Home`/`End`: scroll ONLY the detail pane to head/tail (dir < 0 = head,
-    /// dir > 0 = tail). Deliberately distinct from `ScrollEdge`: it never moves
-    /// the list cursor, so Home/End are pure detail-pane controls.
+    /// dir > 0 = tail). It never moves the list cursor, so Home/End are pure
+    /// detail-pane controls.
     DetailScrollEdge(i32),
     SwitchSubTab(usize),
     Help,
@@ -100,26 +110,33 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         // keymap — so this bare arm can't shadow it.
         KeyCode::Char('s') => AppAction::Settings,
         // Pane-action verbs, each gated on the focused pane's chip set:
-        // QUEUE {r,x,a,c,z} · TASKS {r,z} · WORKTREES {t,a,c,z}.
+        // QUEUE {r,x,a,c,z} · TASKS {r,z} · WORKTREES {r,g,x,t,c,z}.
         KeyCode::Char('a') => gated(PaneButton::Actions, AppAction::OpenActionMenu),
         KeyCode::Char('t') => gated(PaneButton::Tasks, AppAction::OpenTaskMenu),
-        // `r` is a Run chip on both QUEUE and TASKS, but means different things:
-        // QUEUE re-queues the selected task(s), TASKS runs the highlighted def.
+        // `r` is a Run chip on all three panes, but means different things:
+        // QUEUE re-queues the selected task(s), TASKS runs the highlighted def,
+        // WORKTREES opens a fresh worktree-targeted new task.
         KeyCode::Char('r') => match focus {
             PaneId::Queue => gated(PaneButton::Run, AppAction::RequeueSelected),
+            PaneId::Worktrees => gated(PaneButton::Run, AppAction::NewTaskOnWorktree),
             _ => gated(PaneButton::Run, AppAction::RunSelectedDef),
         },
-        // `x` (plain) cancels the selected queue task(s) — skip/stop by status;
-        // a QUEUE-only chip, inert elsewhere. (`ctrl+x` above is the sub-tab
-        // cycle, matched first, so it never reaches here.)
-        KeyCode::Char('x') => gated(PaneButton::Cancel, AppAction::CancelSelected),
+        // `g` opens the selected worktree in tmux — a WORKTREES-only chip, inert
+        // elsewhere. (`g`/`G` used to be unbound after the ScrollEdge removal.)
+        KeyCode::Char('g') => gated(PaneButton::Goto, AppAction::GotoWorktree),
+        // `x` (plain) means cancel on QUEUE (skip/stop the selected task) and
+        // remove on WORKTREES (remove the selected worktree); inert on TASKS.
+        // (`ctrl+x` above is the sub-tab cycle, matched first, so it never
+        // reaches here.)
+        KeyCode::Char('x') => match focus {
+            PaneId::Worktrees => gated(PaneButton::Remove, AppAction::RemoveSelectedWorktree),
+            _ => gated(PaneButton::Cancel, AppAction::CancelSelected),
+        },
         KeyCode::Char('c') => gated(PaneButton::Create, AppAction::Create),
         // `z` (plain) toggles collapse.
         KeyCode::Char('z') => AppAction::ToggleCollapse,
-        // g/G jump the list cursor to the first/last row; Home/End scroll ONLY
-        // the detail pane (head/tail) and never touch the list selection.
-        KeyCode::Char('g') => AppAction::ScrollEdge(-1),
-        KeyCode::Char('G') => AppAction::ScrollEdge(1),
+        // Home/End scroll ONLY the detail pane (head/tail) and never touch the
+        // list selection. (`g` is now the worktrees goto verb; `G` stays unbound.)
         KeyCode::Home => AppAction::DetailScrollEdge(-1),
         KeyCode::End => AppAction::DetailScrollEdge(1),
         KeyCode::Esc => AppAction::ClearEsc,
@@ -268,29 +285,49 @@ mod tests {
             assert_eq!(list_mode_action(&k(KeyCode::Esc), f), AppAction::ClearEsc);
             assert_eq!(list_mode_action(&k(KeyCode::Char('/')), f), AppAction::OpenSearch);
         }
-        // `a`/`c` are QUEUE + WORKTREES chips.
+        // `a` is a QUEUE-only chip now (the worktrees `[a]ctions` chip was
+        // retired — its verbs became the `r`/`g`/`x` worktree hotkeys).
+        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Queue), AppAction::OpenActionMenu);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Worktrees), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Tasks), AppAction::None);
+        // `c` (create) is a QUEUE + WORKTREES chip; inert on TASKS (`[r]un [z]`).
         for f in [PaneId::Queue, PaneId::Worktrees] {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('a')), f), AppAction::OpenActionMenu);
             assert_eq!(list_mode_action(&k(KeyCode::Char('c')), f), AppAction::Create);
         }
-        // TASKS shows only `[r]un [z]`, so `a`/`c` are inert there.
-        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Tasks), AppAction::None);
         assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Tasks), AppAction::None);
     }
 
     #[test]
-    fn g_edges() {
-        for f in LISTS {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('g')), f), AppAction::ScrollEdge(-1));
-            assert_eq!(list_mode_action(&sk(KeyCode::Char('G')), f), AppAction::ScrollEdge(1));
+    fn g_gotos_on_worktrees_shift_g_unbound() {
+        // `g` is a WORKTREES chip (goto → open the worktree in tmux); inert on
+        // queue/tasks (no `[g]oto` chip there).
+        assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Worktrees), AppAction::GotoWorktree);
+        for f in [PaneId::Queue, PaneId::Tasks] {
+            assert_eq!(list_mode_action(&k(KeyCode::Char('g')), f), AppAction::None);
         }
+        // Shift+G stays unbound everywhere.
+        for f in LISTS {
+            assert_eq!(list_mode_action(&sk(KeyCode::Char('G')), f), AppAction::None);
+        }
+    }
+
+    #[test]
+    fn worktree_pane_r_g_x_verbs() {
+        // The three worktrees row verbs: `r` opens a fresh worktree-targeted
+        // AddTask, `g` gotos (tmux), `x` removes.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Worktrees), AppAction::GotoWorktree);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Worktrees), AppAction::RemoveSelectedWorktree);
+        // g inert off-worktrees; x still cancels on queue; a inert on worktrees now.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Queue), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Queue), AppAction::CancelSelected);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Worktrees), AppAction::None);
     }
 
     #[test]
     fn home_end_edges() {
         // Home/End are detail-only: they emit DetailScrollEdge (head/tail) on
-        // every focused list pane and never map to ScrollEdge, so they can't
-        // move the left-side list cursor.
+        // every focused list pane and never move the left-side list cursor.
         for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Home), f), AppAction::DetailScrollEdge(-1));
             assert_eq!(list_mode_action(&k(KeyCode::End), f), AppAction::DetailScrollEdge(1));
@@ -305,13 +342,12 @@ mod tests {
     }
 
     #[test]
-    fn x_cancels_only_on_queue_and_ctrl_x_still_cycles() {
-        // Plain `x` cancels on QUEUE (its `[x] cancel` chip); inert on TASKS /
-        // WORKTREES (no cancel chip there).
+    fn x_cancels_on_queue_removes_on_worktrees_ctrl_x_still_cycles() {
+        // Plain `x`: cancel on QUEUE (its `[x] cancel` chip), remove on WORKTREES
+        // (its `[x] remove` chip); inert on TASKS (no `x` chip there).
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Queue), AppAction::CancelSelected);
-        for f in [PaneId::Tasks, PaneId::Worktrees] {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('x')), f), AppAction::None);
-        }
+        assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Worktrees), AppAction::RemoveSelectedWorktree);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Tasks), AppAction::None);
         // ctrl+x remains the forward sub-tab cycle (matched before plain `x`).
         assert_eq!(list_mode_action(&ck(KeyCode::Char('x')), F), AppAction::CycleSubTab(1));
     }
@@ -319,21 +355,21 @@ mod tests {
     #[test]
     fn unbound_keys_are_none() {
         // w/f/m moved to the action menu (parity with the Ink keymap tests). On
-        // the QUEUE pane `t` is inert (a WORKTREES chip, keymap-gated). `r`/`x`
+        // the QUEUE pane `t`/`g` are inert (WORKTREES chips, keymap-gated). `r`/`x`
         // ARE bound on QUEUE now (re-queue / cancel), so they're not in this set.
-        for c in ['w', 'f', 'm', 't'] {
+        for c in ['w', 'f', 'm', 't', 'g'] {
             assert_eq!(list_mode_action(&k(KeyCode::Char(c)), PaneId::Queue), AppAction::None);
         }
     }
 
     #[test]
-    fn r_runs_def_on_tasks_but_requeues_on_queue() {
-        // `r` is a Run chip on both TASKS and QUEUE, meaning different verbs:
-        // TASKS runs the highlighted def; QUEUE re-queues the selected task(s);
-        // WORKTREES has no `[r]un` chip → inert.
+    fn r_runs_def_on_tasks_requeues_on_queue_new_task_on_worktrees() {
+        // `r` is a Run chip on all three panes, meaning different verbs: TASKS
+        // runs the highlighted def; QUEUE re-queues the selected task(s);
+        // WORKTREES opens a fresh worktree-targeted AddTask.
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Tasks), AppAction::RunSelectedDef);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Queue), AppAction::RequeueSelected);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);
     }
 
     #[test]

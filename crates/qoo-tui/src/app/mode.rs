@@ -152,17 +152,10 @@ impl Default for TabUiState {
     }
 }
 
-/// Fresh-vs-main session choice for a new adhoc task (Task 15 consumes it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionMode {
-    Fresh,
-    Main,
-}
-
 /// Subset of the contract `Mode`. Variants are only ever
-/// added. `PartialEq` is intentionally not derived: `AddTask`/`CreateWorktree`
-/// carry a `tui_input::Input`, which is not `PartialEq`; nothing compares
-/// `Mode` by value (tests use `matches!`).
+/// added. `PartialEq` is intentionally not derived: `AddTask` carries a
+/// `MultilineInput` and `CreateWorktree` a `tui_input::Input`, neither of which
+/// is `PartialEq`; nothing compares `Mode` by value (tests use `matches!`).
 #[derive(Debug, Clone, Default)]
 pub enum Mode {
     #[default]
@@ -200,9 +193,16 @@ pub enum Mode {
     /// ("cancel 1 queued task" / "cancel 3 tasks (1 running will be stopped)").
     /// Enter/y confirm (default focus), n/q/esc cancel.
     ConfirmCancel { calls: Vec<crate::event::RpcCall>, summary: String },
-    /// New adhoc-task prompt. Constructed here (Task 14); its key handling and
-    /// render land in Task 15.
-    AddTask { worktree: Option<String>, session: SessionMode, input: tui_input::Input },
+    /// New adhoc-task prompt. Enter submits (enqueue), Shift+Enter inserts a
+    /// newline into the multiline `editor`, Esc cancels.
+    AddTask {
+        worktree: Option<String>,
+        /// Pin: resume this session (lineage-resolved at spawn). None = fresh.
+        resume_session_id: Option<String>,
+        /// Human label of the picked session, for the modal title.
+        resume_label: Option<String>,
+        editor: crate::view::multiline_input::MultilineInput,
+    },
     /// Task menu / def picker over the active repo (opened by `t`). Lazyvim-style
     /// picker: `query` filters `defs` by name (empty = all), `index` is the
     /// highlighted row WITHIN the filtered view (reset to 0 on every query
@@ -226,6 +226,22 @@ pub enum Mode {
     /// `worktree_context::validate_branch`; invalid keeps the modal open with
     /// `error` set, valid dispatches `createWorktree` and closes immediately.
     CreateWorktree { input: tui_input::Input, error: Option<String> },
+    /// Session picker (`r` on a worktree row): pick a resumable Claude session to
+    /// carry into `Mode::AddTask`, or start fresh. Row 0 is ALWAYS the synthetic
+    /// "New session" (fresh task); the loaded `items` follow it. `query` filters
+    /// the loaded session labels only (row 0 stays visible regardless); `index`
+    /// is the highlighted row over the VIEW (`0` = New session, `1..` = filtered
+    /// items). `loading` gates the placeholder row until [`Event::SessionsLoaded`]
+    /// (matched on `worktree`) fills `items`. `repo`/`worktree` are the frozen
+    /// target the fetch and the chosen AddTask carry.
+    SessionPick {
+        repo: String,
+        worktree: String,
+        items: Vec<crate::event::SessionChoice>,
+        loading: bool,
+        index: usize,
+        query: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

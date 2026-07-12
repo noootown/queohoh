@@ -5,10 +5,10 @@ import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
 import {
 	createResolverIO,
 	DEFAULT_MODEL_ALIASES,
-	MainSessionStore,
 	makeRedactor,
 	QueueStore,
 	RunStore,
+	SessionLineageStore,
 	SessionRegistry,
 } from "@queohoh/core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -22,6 +22,16 @@ afterEach(async () => {
 	while (cleanups.length) await cleanups.pop()?.();
 });
 
+const okRunResult: RunResult = {
+	exitCode: 0,
+	timedOut: false,
+	signal: null,
+	sessionId: null,
+	resultText: "ok",
+	stderr: "",
+	usage: { costUsd: 0, turns: 1, durationMs: 1 },
+};
+
 async function setup(opts?: {
 	worktrees?: { name: string; path: string; branch: string }[];
 	execCalls?: { command: string; args: string[] }[];
@@ -29,6 +39,7 @@ async function setup(opts?: {
 	executeClaude?: () => Promise<RunResult>;
 	vars?: Record<string, string>;
 	models?: Record<string, string>;
+	claudeProjectsDir?: string;
 }) {
 	const base = mkdtempSync(join(tmpdir(), "qo-api-"));
 	const repoPath = join(base, "repo");
@@ -78,7 +89,7 @@ async function setup(opts?: {
 		// force-clean → `wt remove` → `git branch -D` command sequence.
 		removeWorktree: createResolverIO(exec).removeWorktree,
 	};
-	const mainSessions = new MainSessionStore(join(base, "main-sessions.json"));
+	const lineage = new SessionLineageStore(join(base, "session-lineage.json"));
 	const engine = new Engine({
 		store,
 		runStore,
@@ -94,7 +105,7 @@ async function setup(opts?: {
 			output: "",
 		}),
 		redact: makeRedactor(new Map()),
-		mainSessions,
+		lineage,
 	});
 	let mutations = 0;
 	const server = new ApiServer({
@@ -103,7 +114,7 @@ async function setup(opts?: {
 		runStore,
 		registry,
 		config,
-		mainSessions,
+		claudeProjectsDir: opts?.claudeProjectsDir,
 		onMutation: () => {
 			mutations += 1;
 		},
@@ -118,8 +129,9 @@ async function setup(opts?: {
 		server,
 		client,
 		store,
+		runStore,
 		engine,
-		mainSessions,
+		lineage,
 		workspace,
 		repoPath,
 		mutations: () => mutations,
@@ -331,19 +343,6 @@ describe("ApiServer", () => {
 		expect(created.map((t) => t.target.ref)).toEqual(["temp", "temp"]);
 	});
 
-	it("state snapshot exposes mainSessions (empty by default, filled after set)", async () => {
-		const { client, mainSessions } = await setup();
-		const empty = (await client.call("state")) as {
-			mainSessions: Record<string, string>;
-		};
-		expect(empty.mainSessions).toEqual({});
-		mainSessions.set("platform:JUS-1", "sess-1");
-		const filled = (await client.call("state")) as {
-			mainSessions: Record<string, string>;
-		};
-		expect(filled.mainSessions).toEqual({ "platform:JUS-1": "sess-1" });
-	});
-
 	it("state snapshot carries a string buildId", async () => {
 		const { client } = await setup();
 		const state = (await client.call("state")) as { buildId: unknown };
@@ -401,14 +400,15 @@ describe("ApiServer", () => {
 		expect(task.target.ref).toBe("worktree:wt-a");
 	});
 
-	it("enqueue with session main sets the task session field", async () => {
-		const { client } = await setup();
-		const task = (await client.call("enqueue", {
-			prompt: "fix it",
+	it("enqueue with session main is deprecated and stored as fresh", async () => {
+		const { client, store } = await setup();
+		await client.call("enqueue", {
+			prompt: "p",
 			repo: "platform",
 			session: "main",
-		})) as { session: string };
-		expect(task.session).toBe("main");
+		});
+		const task = store.list()[0];
+		expect(task?.session).toBe("fresh");
 	});
 
 	it("enqueue defaults session to fresh", async () => {
@@ -873,6 +873,70 @@ describe("ApiServer", () => {
 	it("unknown method errors", async () => {
 		const { client } = await setup();
 		await expect(client.call("nope")).rejects.toThrow("unknown method: nope");
+	});
+
+	it("listSessions returns labeled sessions for a worktree", async () => {
+		const projects = mkdtempSync(join(tmpdir(), "claude-projects-"));
+		const wtPath = "/wt/platform.wt-a";
+		const dir = join(projects, wtPath.replace(/[/.]/g, "-"));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "sess-titled.jsonl"),
+			`${JSON.stringify({ type: "ai-title", aiTitle: "Fix the parser", sessionId: "sess-titled" })}\n`,
+		);
+		writeFileSync(
+			join(dir, "sess-run.jsonl"),
+			`${JSON.stringify({ type: "user", message: { content: "ignored" } })}\n`,
+		);
+		const { client, store, runStore } = await setup({
+			claudeProjectsDir: projects,
+			worktrees: [{ name: "platform.wt-a", path: wtPath, branch: "wt-a" }],
+		});
+		// Seed a run whose data.json maps sess-run → its task prompt.
+		const task = store.create({
+			prompt: "queohoh task prompt\nsecond line",
+			repo: "platform",
+			ref: "worktree:platform.wt-a",
+			source: "mcp",
+		});
+		runStore.writeSnapshot(
+			task.id,
+			{
+				task,
+				definition: null,
+				resolvedWorktree: wtPath,
+				prompt: task.prompt,
+				model: "sonnet",
+			},
+			(s) => s,
+		);
+		runStore.finishRun(
+			task.id,
+			{
+				result: { ...okRunResult, sessionId: "sess-run" },
+				outcome: "done",
+				reason: null,
+			},
+			(s) => s,
+		);
+
+		const res = (await client.call("listSessions", {
+			repo: "platform",
+			worktree: "platform.wt-a",
+		})) as { sessions: { session_id: string; label: string }[] };
+		const byId = Object.fromEntries(
+			res.sessions.map((s) => [s.session_id, s.label]),
+		);
+		expect(byId["sess-run"]).toBe("queohoh task prompt"); // run prompt beats jsonl content
+		expect(byId["sess-titled"]).toBe("Fix the parser"); // ai-title fallback
+		expect(res.sessions.length).toBe(2);
+	});
+
+	it("listSessions errors on an unknown worktree", async () => {
+		const { client } = await setup({ worktrees: [] });
+		await expect(
+			client.call("listSessions", { repo: "platform", worktree: "nope" }),
+		).rejects.toThrow();
 	});
 
 	it("subscribe pushes state on broadcast", async () => {

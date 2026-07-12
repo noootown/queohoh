@@ -7,10 +7,10 @@ import {
 	executeClaude,
 	executeVerify,
 	loadGlobalConfig,
-	MainSessionStore,
 	makeRedactor,
 	QueueStore,
 	RunStore,
+	SessionLineageStore,
 	SessionRegistry,
 } from "@queohoh/core";
 import { ApiServer } from "./api.js";
@@ -18,9 +18,9 @@ import { Engine } from "./engine.js";
 import { acquireLock, releaseLock } from "./lock.js";
 import {
 	configPath,
-	mainSessionsPath,
 	pidPath,
 	runsPath,
+	sessionLineagePath,
 	sessionsPath,
 	socketPath,
 	statePath,
@@ -55,7 +55,7 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 	const store = new QueueStore(state);
 	const runStore = new RunStore(runsPath(state));
 	const registry = new SessionRegistry(sessionsPath(state));
-	const mainSessions = new MainSessionStore(mainSessionsPath(state));
+	const lineage = new SessionLineageStore(sessionLineagePath(state));
 	const redact = makeRedactor(buildSecretMap(process.env));
 	const resolverIO = createResolverIO(defaultExec);
 
@@ -74,7 +74,7 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		executeClaude,
 		executeVerify,
 		redact,
-		mainSessions,
+		lineage,
 		onChange: () => broadcastRef(),
 	});
 
@@ -84,7 +84,6 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		runStore,
 		registry,
 		config,
-		mainSessions,
 		onMutation: () => {
 			void engine.tick().then(() => server.broadcast());
 		},

@@ -1,3 +1,5 @@
+export type { ClaudeSessionInfo } from "./claude-sessions.js";
+export { encodeProjectDir, listClaudeSessions } from "./claude-sessions.js";
 export type { GlobalConfig } from "./config.js";
 export {
 	globalWorkspaceDir,
@@ -22,8 +24,6 @@ export { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
 export { execHook } from "./hooks.js";
 export type { InstantiateDeps, Trigger } from "./instantiate.js";
 export { buildItemFromArgs, instantiateDefinition } from "./instantiate.js";
-export type { MainSessionEntry } from "./main-sessions.js";
-export { MainSessionStore } from "./main-sessions.js";
 export {
 	DEFAULT_MODEL_ALIASES,
 	effectiveModelTable,
@@ -57,6 +57,7 @@ export {
 } from "./runner.js";
 export type { LiveState, ScheduleDecision } from "./scheduler.js";
 export { schedule } from "./scheduler.js";
+export { SessionLineageStore } from "./session-lineage.js";
 export type { SessionEntry } from "./sessions.js";
 export { buildLiveState, SessionRegistry } from "./sessions.js";
 export { qooTempName, slugify } from "./slug.js";

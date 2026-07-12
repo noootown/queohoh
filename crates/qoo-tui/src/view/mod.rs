@@ -4,6 +4,7 @@ pub mod footer;
 pub mod help;
 pub mod menu;
 pub mod modal;
+pub mod multiline_input;
 pub mod panes;
 pub mod settings;
 pub mod tabbar;
@@ -200,23 +201,17 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
         crate::app::Mode::ConfirmCancel { calls, summary } => {
             modal::render_confirm_cancel(frame, &mut hits, calls.len(), summary);
         }
-        crate::app::Mode::AddTask { worktree, session, input } => {
+        crate::app::Mode::AddTask { worktree, resume_label, editor, .. } => {
             let repo = app.active_repo().unwrap_or_default();
             let target = match worktree {
                 Some(w) => format!("{repo}:{}", crate::selectors::strip_repo_prefix(w, &repo)),
                 None => format!("{repo} (adhoc)"),
             };
-            let sess = match session {
-                crate::app::SessionMode::Fresh => "fresh",
-                crate::app::SessionMode::Main => "main",
+            let title = match resume_label {
+                Some(label) => format!("New task — resume: {label} — {target}"),
+                None => format!("New task — {target}"),
             };
-            modal::render_input_modal(
-                frame,
-                &mut hits,
-                &format!("New task — {sess} session — {target}"),
-                "prompt",
-                input,
-            );
+            modal::render_prompt_modal(frame, &mut hits, &p, &title, editor);
         }
         crate::app::Mode::DefPick { defs, index, worktree, branch, query, preview_scroll } => {
             let repo = app.active_repo().unwrap_or_default();
@@ -252,6 +247,15 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
         crate::app::Mode::CreateWorktree { input, error } => {
             let repo = app.active_repo().unwrap_or_default();
             modal::render_create_worktree(frame, &mut hits, &repo, input, error.as_deref());
+        }
+        crate::app::Mode::SessionPick { repo, worktree, items, loading, index, query } => {
+            // Title is the worktree display name (repo prefix stripped). The
+            // relative-age labels read wall-clock now from `now_epoch_s` (→ ms).
+            let title = crate::selectors::strip_repo_prefix(worktree, repo);
+            let now_ms = app.now_epoch_s.saturating_mul(1000);
+            menu::render_session_pick(
+                frame, &mut hits, title, items, *loading, *index, query, now_ms,
+            );
         }
         _ => {}
     }

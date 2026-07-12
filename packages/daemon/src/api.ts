@@ -1,11 +1,11 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type {
 	ArgSpec,
 	ChainStepInput,
 	GlobalConfig,
-	MainSessionStore,
 	QueueStore,
 	RunStore,
 	SessionEntry,
@@ -20,6 +20,7 @@ import {
 	effectiveModelTable,
 	globalWorkspaceDir,
 	instantiateDefinition,
+	listClaudeSessions,
 	listDefinitions,
 	loadProjectGithubId,
 	loadProjectModels,
@@ -49,7 +50,6 @@ export interface StateSnapshot {
 	 */
 	projects: { name: string; githubId?: string }[];
 	worktrees: Record<string, WorktreeInfo[]>;
-	mainSessions: Record<string, string>;
 	/**
 	 * Fingerprint of the daemon's own build (see build-id.ts), computed once at
 	 * startup. The TUI compares it against the on-disk build and self-heals a
@@ -65,7 +65,12 @@ interface ApiDeps {
 	runStore: RunStore;
 	registry: SessionRegistry;
 	config: GlobalConfig;
-	mainSessions: MainSessionStore;
+	/**
+	 * Root of Claude Code's per-project session dirs. Optional — defaults to
+	 * `~/.claude/projects` (resolved once in the constructor). Tests inject a
+	 * temp dir so `listSessions` reads fixture transcripts.
+	 */
+	claudeProjectsDir?: string;
 	onMutation: () => void;
 	/**
 	 * Tears the daemon down so a fresh build can take over. Invoked by the
@@ -94,8 +99,12 @@ export class ApiServer {
 	// startup) — see build-id.ts. A rebuild that does not restart the daemon
 	// leaves this at the old value, which is how the TUI detects staleness.
 	private readonly buildId = currentBuildId();
+	private readonly claudeProjectsDir: string;
 
-	constructor(private readonly deps: ApiDeps) {}
+	constructor(private readonly deps: ApiDeps) {
+		this.claudeProjectsDir =
+			deps.claudeProjectsDir ?? join(homedir(), ".claude", "projects");
+	}
 
 	snapshot(): StateSnapshot {
 		return {
@@ -111,7 +120,6 @@ export class ApiServer {
 				),
 			})),
 			worktrees: this.deps.engine.worktreesByRepo(),
-			mainSessions: this.deps.mainSessions.all(),
 			buildId: this.buildId,
 		};
 	}
@@ -228,6 +236,11 @@ export class ApiServer {
 				const session = SessionModeSchema.default("fresh").parse(
 					params.session,
 				);
+				if (session === "main") {
+					console.warn(
+						'[queohoh] enqueue session:"main" is deprecated and treated as fresh — pass resume_session_id to pin a session',
+					);
+				}
 				const resumeSessionId =
 					typeof params.resume_session_id === "string" &&
 					params.resume_session_id.length > 0
@@ -268,7 +281,7 @@ export class ApiServer {
 					ref,
 					source: "mcp",
 					priority: (params.priority as "low" | "normal" | "high") ?? "normal",
-					session,
+					session: "fresh",
 					resumeSessionId,
 					model,
 					verify,
@@ -633,6 +646,27 @@ export class ApiServer {
 			}
 			case "runMeta":
 				return deps.runStore.readRunMeta(String(params.id));
+			case "listSessions": {
+				const repo = String(params.repo ?? "");
+				const worktree = String(params.worktree ?? "");
+				const path = await deps.engine.worktreeAbsPath(repo, worktree);
+				if (path === null) {
+					throw new Error(`unknown worktree: ${repo}/${worktree}`);
+				}
+				const infos = listClaudeSessions(this.claudeProjectsDir, path, 5);
+				const promptBySession = this.runPromptBySession();
+				return {
+					sessions: infos.map((s) => ({
+						session_id: s.sessionId,
+						mtime_ms: Math.round(s.mtimeMs),
+						label:
+							promptBySession.get(s.sessionId) ??
+							s.aiTitle ??
+							s.firstPrompt ??
+							s.sessionId.slice(0, 8),
+					})),
+				};
+			}
 			case "shutdown": {
 				// Refuse while work is in flight — the caller (TUI self-heal) only asks
 				// when idle, but a task can race in between its check and this call.
@@ -653,5 +687,24 @@ export class ApiServer {
 		const task = this.deps.store.get(id);
 		if (!task) throw new Error(`task not found: ${id}`);
 		return task;
+	}
+
+	/**
+	 * Reverse index: Claude session_id → first line of the task prompt that
+	 * produced it. Built from the run store on demand (no persisted index).
+	 * Used as the top label preference for `listSessions`.
+	 */
+	private runPromptBySession(): Map<string, string> {
+		const map = new Map<string, string>();
+		for (const taskId of this.deps.runStore.listRunTaskIds()) {
+			const data = this.deps.runStore.readRunData(taskId);
+			const sid = data?.session_id;
+			const prompt = data?.task?.prompt;
+			if (typeof sid === "string" && sid !== "" && typeof prompt === "string") {
+				const firstLine = (prompt.split("\n", 1)[0] ?? "").trim();
+				if (firstLine !== "") map.set(sid, firstLine.slice(0, 120));
+			}
+		}
+		return map;
 	}
 }

@@ -7,13 +7,13 @@ expression: terminal.backend()
 "╰─────────────────────────╯│ 1:report  2:transcript  3:prompt  4:info          │"
 "╭⚡TASKS · 0 tasks──── [z]╮│(no report yet)                                    │" Hidden by multi-width symbols: [(2, " ")]
 "╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES───── [t] [a]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [r] [g] [x]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││                                                   │"
 "│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│     Name     Live       ││                                                   │"
-"│ 2 ⌂ feature  ⏱ 0s       ││                                                   │"
-"│ ●   hotfix              ││                                                   │"
-"│ ●   feature             ││                                                   │"
+"│   Name     Live         ││                                                   │"
+"│ 2 feature  ⏱ 0s         ││                                                   │"
+"│ ● hotfix                ││                                                   │"
+"│ ● feature               ││                                                   │"
 "│                         ││                                                   │"
 "│                         ││                                                   │"
 "│                         ││                                                   │"

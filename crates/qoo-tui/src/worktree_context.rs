@@ -179,7 +179,6 @@ mod tests {
             path: format!("/wt/{name}"),
             branch: branch.to_string(),
             state: WtState::Free,
-            has_main_session: false,
             queued: 0,
             is_session,
             ..Default::default()

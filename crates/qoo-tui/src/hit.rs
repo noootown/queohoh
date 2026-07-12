@@ -10,9 +10,12 @@ pub enum ButtonKind {
 
 /// A clickable action chip on a list pane's top border. Clicking one behaves
 /// exactly like pressing its hotkey with that pane focused. `Create` ≡ `c`,
-/// `Tasks` ≡ `t`, `Actions` ≡ `a`, `Run` ≡ `r` (TASKS runs the highlighted def;
-/// QUEUE re-queues the selected task), `Cancel` ≡ `x` (QUEUE only — skip/stop
-/// the selected task), `Collapse` ≡ `z` (labeled collapse/expand by
+/// `Tasks` ≡ `t`, `Actions` ≡ `a` (QUEUE only — Resume menu), `Run` ≡ `r`
+/// (TASKS runs the highlighted def; QUEUE re-queues the selected task;
+/// WORKTREES opens a fresh worktree-targeted new task), `Goto` ≡ `g`
+/// (WORKTREES only — open the worktree in tmux), `Cancel` ≡ `x` (QUEUE only —
+/// skip/stop the selected task), `Remove` ≡ `x` (WORKTREES only — remove the
+/// selected worktree), `Collapse` ≡ `z` (labeled collapse/expand by
 /// expanded/collapsed state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneButton {
@@ -20,7 +23,9 @@ pub enum PaneButton {
     Tasks,
     Actions,
     Run,
+    Goto,
     Cancel,
+    Remove,
     Collapse,
 }
 
@@ -36,7 +41,7 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     match pane {
         PaneId::Queue => &[Run, Cancel, Actions, Create, Collapse],
         PaneId::Tasks => &[Run, Collapse],
-        PaneId::Worktrees => &[Tasks, Actions, Create, Collapse],
+        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Create, Collapse],
         PaneId::Detail => &[],
     }
 }

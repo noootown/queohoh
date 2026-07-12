@@ -1,27 +1,26 @@
 ---
 source: crates/qoo-tui/src/view/mod.rs
-assertion_line: 337
 expression: terminal.backend()
 ---
 " 1:acme                                                                                  ● running 0"
 "╭📋 QUEUE── [r] [x] [a] · [c] [z]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
 "│                                ││ 1:report  2:transcript  3:prompt  4:info                       │"
 "│ 🔍 [/] filter                  ││(no report yet)                                                 │" Hidden by multi-width symbols: [(3, " ")]
-"│      Prompt         Live       ││                                                                │"
-"│ ‼    ipt task                ▲ ││                                                                │"
-"│ ○    que task       #1 in lan█ ││                                                                │"
+"│    Prompt           Live       ││                                                                │"
+"│ ‼  ipt task                  ▲ ││                                                                │"
+"│ ○  que task         #1 in lan█ ││                                                                │"
 "│ ──────── finished ───────────█ ││                                                                │"
-"│ ⊗    vrf task                █ ││                                                                │"
-"│ ⊝    skp task                █ ││                                                                │"
-"│ ✗    fai task                █ ││                                                                │"
-"│ ●    don task                ▼ ││                                                                │"
+"│ ⊗  vrf task                  █ ││                                                                │"
+"│ ⊝  skp task                  █ ││                                                                │"
+"│ ✗  fai task                  █ ││                                                                │"
+"│ ●  don task                  ▼ ││                                                                │"
 "╰────────────────────────────────╯│                                                                │"
 "╭⚡TASKS · 0 tasks───── [r] · [z]╮│                                                                │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter                  ││                                                                │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions            ││                                                                │"
 "│                                ││                                                                │"
 "╰────────────────────────────────╯│                                                                │"
-"╭🌲 WORKTREES── [t] [a] · [c] [z]╮│                                                                │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES──── [r] [g] [x] [t]╮│                                                                │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter                  ││                                                                │" Hidden by multi-width symbols: [(3, " ")]
 "│ no worktrees                   ││                                                                │"
 "│                                ││                                                                │"

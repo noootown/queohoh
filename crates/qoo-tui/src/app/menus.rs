@@ -29,7 +29,7 @@ impl App {
         let snap = self.snapshot.as_ref()?;
         let repo = self.active_repo()?;
         let ui = self.active_ui();
-        let inside_tmux = std::env::var_os("TMUX").is_some();
+        let inside_tmux = self.inside_tmux;
         match ui.last_list_pane {
             ListPane::Queue => {
                 let rows = crate::selectors::queue_rows(snap, &repo, self.now_epoch_s);
@@ -68,14 +68,11 @@ impl App {
             // (`open_actions_or_run` intercepts before calling this); a bulk range
             // is handled by the guard above. Nothing to show here.
             ListPane::Tasks => None,
-            ListPane::Worktrees => {
-                let rows = crate::selectors::worktree_rows(snap, &repo);
-                let vis = crate::selectors::filter_rows(&rows, &ui.search[2], |r| r.name.clone());
-                let cursor = ui.selections[2].cursor.min(vis.len().saturating_sub(1));
-                let row = vis.get(cursor).and_then(|&i| rows.get(i))?;
-                let (title, items) = crate::action_menu::worktree_menu(&repo, row, inside_tmux);
-                Some(Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 })
-            }
+            // Worktrees: no single-target menu — its `r`/`g`/`x` hotkeys act on
+            // the selected row directly (see `App::new_task_on_worktree` etc.);
+            // the `[a]ctions` chip is gone, so `a` is inert here (never reaches
+            // this arm) and a bulk range routes through the guard above.
+            ListPane::Worktrees => None,
         }
     }
 
@@ -305,19 +302,6 @@ impl App {
             M::Resume { path, session_id } => {
                 Update { dirty: true, cmds: vec![Cmd::TmuxResume { path, session_id }] }
             }
-            M::TaskFresh { worktree } => {
-                self.mode = Mode::AddTask { worktree, session: SessionMode::Fresh, input: tui_input::Input::default() };
-                Update { dirty: true, cmds: vec![] }
-            }
-            M::TaskMain { worktree } => {
-                self.mode = Mode::AddTask { worktree, session: SessionMode::Main, input: tui_input::Input::default() };
-                Update { dirty: true, cmds: vec![] }
-            }
-            M::OpenTmux { path } => Update { dirty: true, cmds: vec![Cmd::OpenTmux { path }] },
-            M::RemoveWorktree { repo, name, branch } => {
-                self.mode = Mode::ConfirmRemove { repo, worktree: name, branch };
-                Update { dirty: true, cmds: vec![] }
-            }
             // --- Bulk actions. Range cleared before dispatch; the frozen
             // ids/names ride inside the action. Verbs are past tense to feed
             // `seq_summary` ("started 1", …). Queue bulk (rerun/skip) is gone —
@@ -340,6 +324,154 @@ impl App {
             }
             M::BulkRemove { repo, names } => {
                 self.mode = Mode::ConfirmBulkRemove { repo, names };
+                Update { dirty: true, cmds: vec![] }
+            }
+        }
+    }
+
+    /// `Mode::SessionPick` key handling (mirrors `action_menu_key`). The VIEW is
+    /// row 0 = synthetic "New session" (always present) followed by the query-
+    /// filtered loaded sessions. Esc closes to List; Up/Down (and ctrl+k/j,
+    /// ctrl+p/n) move `index` circularly over the view; printable chars extend the
+    /// filter and Backspace pops it (both auto-highlighting the first matching
+    /// session so Enter resumes it, else falling back to "New session"); Enter
+    /// builds `Mode::AddTask` — row 0 → fresh, a session row → that session pinned.
+    pub(super) fn session_pick_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
+        use crossterm::event::{KeyCode::*, KeyModifiers};
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = ev.modifiers.contains(KeyModifiers::ALT);
+        let Mode::SessionPick { items, index, query, worktree, .. } = &self.mode else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        let filtered = crate::selectors::filter_rows(items, query, |s| s.label.clone());
+        // The view has the "New session" row plus the filtered sessions.
+        let total = filtered.len() + 1;
+        let cur = *index;
+        // Pre-resolve the Enter target as OWNED data so the `&self.mode` borrow
+        // ends before any arm reassigns `self.mode`. `eff` clamps a stale index
+        // (e.g. a filter that emptied the matches) back into the view; `eff == 0`
+        // is the "New session" row, `eff >= 1` a picked session.
+        let worktree = worktree.clone();
+        let eff = cur.min(total - 1);
+        let chosen: Option<(String, String)> = if eff == 0 {
+            None
+        } else {
+            filtered
+                .get(eff - 1)
+                .and_then(|&i| items.get(i))
+                .map(|s| (s.session_id.clone(), s.label.clone()))
+        };
+        match ev.code {
+            Esc => {
+                self.mode = Mode::List;
+                Update { dirty: true, cmds: vec![] }
+            }
+            Up => self.session_pick_move(cur, total, -1),
+            Down => self.session_pick_move(cur, total, 1),
+            Char('k') | Char('p') if ctrl => self.session_pick_move(cur, total, -1),
+            Char('j') | Char('n') if ctrl => self.session_pick_move(cur, total, 1),
+            Enter => {
+                let (resume_session_id, resume_label) = match chosen {
+                    Some((sid, label)) => (Some(sid), Some(label)),
+                    None => (None, None),
+                };
+                self.mode = Mode::AddTask {
+                    worktree: Some(worktree),
+                    resume_session_id,
+                    resume_label,
+                    editor: Default::default(),
+                };
+                Update { dirty: true, cmds: vec![] }
+            }
+            Backspace => {
+                if let Mode::SessionPick { items, query, index, .. } = &mut self.mode {
+                    query.pop();
+                    Self::reset_session_index(items, query, index);
+                }
+                Update { dirty: true, cmds: vec![] }
+            }
+            Char(c) if !ctrl && !alt => {
+                if let Mode::SessionPick { items, query, index, .. } = &mut self.mode {
+                    query.push(c);
+                    Self::reset_session_index(items, query, index);
+                }
+                Update { dirty: true, cmds: vec![] }
+            }
+            _ => Update { dirty: false, cmds: vec![] },
+        }
+    }
+
+    /// After a filter edit, land the highlight on the first matching session
+    /// (view row 1) when the query is non-empty and something matches; otherwise
+    /// the "New session" row (0). So typing to find a session auto-selects it
+    /// (Enter resumes), while an empty/no-match filter defaults to a fresh task.
+    fn reset_session_index(
+        items: &[crate::event::SessionChoice],
+        query: &str,
+        index: &mut usize,
+    ) {
+        let flen = crate::selectors::filter_rows(items, query, |s| s.label.clone()).len();
+        *index = if query.is_empty() || flen == 0 { 0 } else { 1 };
+    }
+
+    /// Move the session-picker highlight circularly over the view (`total` =
+    /// filtered sessions + 1 for the "New session" row).
+    fn session_pick_move(&mut self, cur: usize, total: usize, dir: i32) -> Update {
+        let next = if total == 0 {
+            0
+        } else if dir < 0 {
+            cur.checked_sub(1).unwrap_or(total - 1)
+        } else if cur + 1 >= total {
+            0
+        } else {
+            cur + 1
+        };
+        if let Mode::SessionPick { index, .. } = &mut self.mode {
+            *index = next;
+        }
+        Update { dirty: true, cmds: vec![] }
+    }
+
+    /// Mouse wheel while the session picker is open: over its body (Modal /
+    /// MenuItem) it moves the highlight one row, clamped and non-circular (a
+    /// wheel jump across the wrap edge would disorient); anywhere else inert.
+    pub(super) fn session_pick_wheel(&mut self, target: Option<HitTarget>, delta: i32) -> Update {
+        if !matches!(target, Some(HitTarget::MenuItem(_)) | Some(HitTarget::Modal)) {
+            return Update { dirty: false, cmds: vec![] };
+        }
+        let Mode::SessionPick { items, index, query, .. } = &self.mode else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        let total = crate::selectors::filter_rows(items, query, |s| s.label.clone()).len() + 1;
+        let cur = *index;
+        let next = (cur as i64 + delta as i64).clamp(0, total as i64 - 1) as usize;
+        if next == cur {
+            return Update { dirty: false, cmds: vec![] };
+        }
+        if let Mode::SessionPick { index, .. } = &mut self.mode {
+            *index = next;
+        }
+        Update { dirty: true, cmds: vec![] }
+    }
+
+    /// Route a left-click while the session picker is open: a `MenuItem(i)` (view
+    /// row index) highlights that row and fires the same Enter path (New session /
+    /// resume); the `Modal` body is inert; a click on anything else closes it.
+    pub(super) fn route_session_pick_click(&mut self, target: Option<HitTarget>) -> Update {
+        match target {
+            Some(HitTarget::MenuItem(i)) => {
+                if let Mode::SessionPick { index, .. } = &mut self.mode {
+                    *index = i;
+                }
+                // Reuse the Enter resolution against the freshly-set index.
+                self.session_pick_key(&crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Enter,
+                    crossterm::event::KeyModifiers::NONE,
+                ))
+            }
+            Some(HitTarget::Modal) => Update { dirty: false, cmds: vec![] },
+            _ => {
+                self.mode = Mode::List;
                 Update { dirty: true, cmds: vec![] }
             }
         }

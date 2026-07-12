@@ -206,8 +206,8 @@ impl App {
     /// closes the dropdown only. Dropdown-closed: Tab/Shift-Tab move focus; ↑/↓
     /// move the cursor within a multiline free-text value (moving focus only at
     /// the value's top/bottom line, or on an enum); ←/→ cycle an enum or move the
-    /// cursor in text; Home/End jump within the current line; Shift+Enter /
-    /// Alt+Enter insert a hard newline; plain Enter
+    /// cursor in text; Home/End jump within the current line; Shift+Enter
+    /// inserts a hard newline; plain Enter
     /// opens an enum dropdown or validates+submits; Esc cancels; printable/
     /// Backspace edit at the cursor.
     pub(super) fn def_args_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
@@ -231,9 +231,10 @@ impl App {
         let enum_focus = form.is_enum(form.focus);
         match ev.code {
             Esc => { self.mode = Mode::List; Update { dirty: true, cmds: vec![] } }
-            // Newline chords first — they must win over the plain-Enter run arm.
-            // No-op on enum/fixed rows (nothing to insert into).
-            Enter if shift || alt => { form.insert_newline(); Update { dirty: true, cmds: vec![] } }
+            // Newline chord first — it must win over the plain-Enter run arm.
+            // No-op on enum/fixed rows (nothing to insert into). Only shift+enter
+            // inserts a newline; alt+enter is no longer special (falls through).
+            Enter if shift => { form.insert_newline(); Update { dirty: true, cmds: vec![] } }
             Enter => {
                 if enum_focus && !form.is_fixed(form.focus) {
                     form.open_dropdown(form.focus);

@@ -118,10 +118,10 @@ fn detail_scroll_edge_jumps_head_and_tail() {
 
 #[test]
 fn home_end_scroll_detail_only_never_the_list_cursor() {
-    // Regression: Home/End used to share ScrollEdge with g/G, which — because
-    // a list pane is always focused in Mode::List — jumped the LIST cursor.
-    // DetailScrollEdge must take the detail path unconditionally: the queue
-    // selection stays put while only the detail scroll moves.
+    // Regression: Home/End used to share one edge action with g/G, which —
+    // because a list pane is always focused in Mode::List — jumped the LIST
+    // cursor. DetailScrollEdge must take the detail path unconditionally: the
+    // queue selection stays put while only the detail scroll moves.
     let mut app = crate::test_fixtures::fixture_app();
     // Queue is focused by default; pin the cursor to the first row so the old
     // End→last-row behavior would be observable if it regressed.
@@ -412,11 +412,15 @@ fn queue_range_selection_spans_the_section_divider() {
 }
 
 #[test]
-fn g_and_shift_g_jump_list_cursor_to_edges() {
+fn g_and_shift_g_no_longer_move_the_list_cursor() {
+    // g/G are unbound now (freed for a worktree-pane verb); neither may move the
+    // left-side list cursor. The cursor starts at 0 and must stay there.
     let mut app = crate::test_fixtures::fixture_app();
-    app.update(Event::Key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT)));
-    assert_eq!(app.ui().selections[0].cursor, 3);
-    press(&mut app, KeyCode::Char('g'));
+    let up = app.update(Event::Key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT)));
+    assert!(!up.dirty, "shift+G is a no-op");
+    assert_eq!(app.ui().selections[0].cursor, 0);
+    let up = press(&mut app, KeyCode::Char('g'));
+    assert!(!up.dirty, "g is a no-op");
     assert_eq!(app.ui().selections[0].cursor, 0);
 }
 

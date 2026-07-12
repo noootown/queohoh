@@ -122,7 +122,7 @@ fn reconcile_full_def_fetches_the_selected_def_once_and_caches_on_reply() {
     app.update(Event::Definition {
         repo: "platform".into(),
         name: "pr-ready".into(),
-        def: Some(TaskDefinition::default()),
+        def: Some(Box::new(TaskDefinition::default())),
     });
     assert!(app.full_defs.contains_key("platform/pr-ready"));
     assert!(app.reconcile_full_def().is_none(), "cached def is not refetched");
@@ -276,7 +276,7 @@ fn task_menu_prefetches_highlighted_def_prompt_once() {
     app.update(Event::Definition {
         repo: "platform".into(),
         name: "autotest".into(),
-        def: Some(crate::ipc::types::TaskDefinition { prompt: "hi".into(), ..Default::default() }),
+        def: Some(Box::new(crate::ipc::types::TaskDefinition { prompt: "hi".into(), ..Default::default() })),
     });
     assert!(app.full_defs.contains_key("platform/autotest"));
     assert!(!app.full_defs_inflight.contains("platform/autotest"));
@@ -560,20 +560,57 @@ fn def_args_paste_inserts_multiline_verbatim() {
     }
 }
 
-// Paste into a single-line input collapses newlines/tabs to spaces so a
-// multiline paste can't smuggle a newline into a one-line field.
+// Paste into the multiline AddTask editor keeps newlines verbatim (the prompt
+// is a multiline body now).
 #[test]
-fn paste_into_single_line_input_collapses_control_chars() {
+fn paste_into_add_task_editor_keeps_newlines() {
     let mut app = fixture_app_one_project("platform");
     app.mode = Mode::AddTask {
         worktree: None,
-        session: SessionMode::Fresh,
-        input: tui_input::Input::default(),
+        resume_session_id: None,
+        resume_label: None,
+        editor: crate::view::multiline_input::MultilineInput::default(),
     };
     app.update(Event::Paste("do a\nthen b".into()));
     match &app.mode {
-        Mode::AddTask { input, .. } => assert_eq!(input.value(), "do a then b"),
+        Mode::AddTask { editor, .. } => assert_eq!(editor.text, "do a\nthen b"),
         other => panic!("expected AddTask, got {other:?}"),
+    }
+}
+
+// Paste into the single-line CreateWorktree input collapses newlines/tabs to
+// spaces so a multiline paste can't smuggle a newline into a one-line field.
+#[test]
+fn paste_into_single_line_input_collapses_control_chars() {
+    let mut app = fixture_app_one_project("platform");
+    app.mode = Mode::CreateWorktree { input: tui_input::Input::default(), error: None };
+    app.update(Event::Paste("do a\nthen b".into()));
+    match &app.mode {
+        Mode::CreateWorktree { input, .. } => assert_eq!(input.value(), "do a then b"),
+        other => panic!("expected CreateWorktree, got {other:?}"),
+    }
+}
+
+// alt+enter no longer inserts a newline in the DefArgs form (only shift+enter
+// does). The alt+enter falls through to the plain-Enter arm, which on a
+// required-but-empty free-text field flags the row and blocks submit — proving
+// no '\n' was inserted and that alt+enter is not treated as a newline chord.
+#[test]
+fn alt_enter_does_not_insert_newline_in_def_args_form() {
+    let mut app = def_args_app(
+        vec![ArgSpec { name: "pr".into(), default: None, options: None, description: None }],
+        HashMap::new(),
+        None,
+    );
+    let update = app.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)));
+    // No submit (required + empty), form stays open, value has no newline.
+    assert!(update.cmds.is_empty());
+    match &app.mode {
+        Mode::DefArgs { form } => {
+            assert_eq!(form.error, Some(0), "alt+enter attempted submit, flagging the empty row");
+            assert!(!form.values[0].contains('\n'), "alt+enter must not insert a newline");
+        }
+        other => panic!("expected DefArgs still open, got {other:?}"),
     }
 }
 

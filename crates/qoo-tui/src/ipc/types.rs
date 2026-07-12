@@ -31,8 +31,6 @@ pub struct StateSnapshot {
     pub projects: Vec<Project>,
     #[serde(deserialize_with = "nullable_default")]
     pub worktrees: HashMap<String, Vec<WorktreeInfo>>,
-    #[serde(deserialize_with = "nullable_default")]
-    pub main_sessions: HashMap<String, String>,
     pub build_id: Option<String>,
 }
 
@@ -314,7 +312,6 @@ mod tests {
           "worktrees": {"platform": [{"name": "platform.feat-a", "path": "/wt/platform.feat-a", "branch": "feat-a",
             "dirty": true, "lastCommitEpoch": 1751970000, "lastCommitAuthor": "Kevin O'Shea",
             "lastCommitAuthorEmail": "kevin@justicebid.com"}]},
-          "mainSessions": {"platform:platform.feat-a": "sess-main"},
           "buildId": "1751970000000"
         }"#
     }
@@ -360,7 +357,6 @@ mod tests {
         assert_eq!(wt.last_commit_epoch, Some(1_751_970_000));
         assert_eq!(wt.last_commit_author_email.as_deref(), Some("kevin@justicebid.com"));
         assert_eq!(wt.last_commit_author.as_deref(), Some("Kevin O'Shea"));
-        assert_eq!(s.main_sessions["platform:platform.feat-a"], "sess-main");
         assert_eq!(s.build_id.as_deref(), Some("1751970000000"));
     }
 
@@ -385,7 +381,6 @@ mod tests {
         assert_eq!(s.tasks[0].verify_output, None);
         assert_eq!(s.projects, vec![]);
         assert!(s.worktrees.is_empty());
-        assert!(s.main_sessions.is_empty());
         assert_eq!(s.max_concurrent, None);
         // buildId absent → None means "stale" for self-heal — must NOT default to "".
         assert_eq!(s.build_id, None);

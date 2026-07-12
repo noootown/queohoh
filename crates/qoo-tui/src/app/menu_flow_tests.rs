@@ -1,5 +1,6 @@
 use super::*;
-use crate::ipc::types::{Project, StateSnapshot, TaskInstance, TaskStatus, WorktreeInfo};
+use crate::event::SessionChoice;
+use crate::ipc::types::{Project, SessionEntry, StateSnapshot, TaskInstance, TaskStatus, WorktreeInfo};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 
@@ -15,6 +16,9 @@ fn down() -> Event {
 }
 fn up() -> Event {
     Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+}
+fn esc() -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
 }
 fn shift_down() -> Event {
     Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT))
@@ -62,6 +66,31 @@ fn focus_tasks(a: &mut App) {
 fn focus_worktrees(a: &mut App) {
     tab(a);
     tab(a);
+}
+
+/// Open a synthetic multi-row `ActionMenu` directly. The single-target worktree
+/// menu was retired in Task 9 (its verbs became the `r`/`g`/`x` hotkeys), but
+/// the lazyvim-style picker machinery (navigation, filtering, wheel, click) is
+/// still live for the queue Resume + bulk menus — these generic-nav tests need a
+/// multi-row vehicle. Rows are inert placeholders; execution routes to a
+/// harmless `BulkRunDefs` so a click has an observable effect (returns to List).
+fn open_synthetic_menu(a: &mut App, n: usize) {
+    use crate::action_menu::{ActionItem, MenuAction};
+    let items = (0..n)
+        .map(|i| ActionItem {
+            label: format!("item {i}"),
+            disabled: None,
+            description: String::new(),
+            action: MenuAction::BulkRunDefs { repo: "platform".into(), names: vec![] },
+        })
+        .collect();
+    a.mode = Mode::ActionMenu {
+        title: "menu".into(),
+        items,
+        index: 0,
+        query: String::new(),
+        preview_scroll: 0,
+    };
 }
 
 // --- queue `r` / `x` chip-keys (the queue menu's old verbs are now keys) ------
@@ -267,8 +296,7 @@ fn queue_action_menu_is_single_resume_and_disabled_enter_is_inert() {
 #[test]
 fn menu_arrows_move_highlight() {
     let mut a = app_with(worktree_snapshot());
-    focus_worktrees(&mut a);
-    a.update(key('a')); // worktree menu: 4 items
+    open_synthetic_menu(&mut a, 4); // multi-row picker vehicle
     a.update(down());
     match &a.mode {
         Mode::ActionMenu { index, .. } => assert_eq!(*index, 1),
@@ -284,12 +312,11 @@ fn menu_arrows_move_highlight() {
 #[test]
 fn menu_esc_closes_but_q_types_into_filter() {
     let mut a = app_with(worktree_snapshot());
-    focus_worktrees(&mut a);
-    a.update(key('a'));
+    open_synthetic_menu(&mut a, 2);
     a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert!(matches!(a.mode, Mode::List));
     // Reopen: `q` no longer closes — it types into the label filter.
-    a.update(key('a'));
+    open_synthetic_menu(&mut a, 2);
     a.update(key('q'));
     match &a.mode {
         Mode::ActionMenu { query, index, .. } => {
@@ -301,31 +328,9 @@ fn menu_esc_closes_but_q_types_into_filter() {
 }
 
 #[test]
-fn menu_typing_filters_then_enter_executes_through_filter() {
-    // Filter the worktree menu to "fresh", then Enter opens the fresh-session
-    // AddTask flow — proving Enter resolves the FILTERED highlight.
-    let mut a = app_with(worktree_snapshot());
-    focus_worktrees(&mut a);
-    a.update(key('a'));
-    a.update(key('f'));
-    a.update(key('r')); // "fr" → only "New task (fresh session)"
-    match &a.mode {
-        Mode::ActionMenu { items, index, query, .. } => {
-            assert_eq!(query, "fr");
-            assert_eq!(*index, 0);
-            assert_eq!(items.len(), 4); // filter is a view; items unchanged
-        }
-        other => panic!("{other:?}"),
-    }
-    a.update(enter());
-    assert!(matches!(a.mode, Mode::AddTask { session: SessionMode::Fresh, .. }));
-}
-
-#[test]
 fn menu_backspace_edits_filter() {
     let mut a = app_with(worktree_snapshot());
-    focus_worktrees(&mut a);
-    a.update(key('a'));
+    open_synthetic_menu(&mut a, 2);
     a.update(key('f'));
     a.update(key('z')); // "fz" → no matches
     a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
@@ -377,11 +382,10 @@ fn menu_wheel_scrolls_preview_and_moves_selection() {
     fn wheel(a: &mut App, kind: MouseEventKind, col: u16, row: u16) {
         a.update(Event::Mouse(MouseEvent { kind, column: col, row, modifiers: KeyModifiers::NONE }));
     }
-    // The worktree menu (4 items) so the left-panel wheel can move the selection;
-    // the queue menu is a single Resume row.
+    // A 4-row menu so the left-panel wheel can move the selection (the queue
+    // menu is a single Resume row).
     let mut a = app_with(worktree_snapshot());
-    focus_worktrees(&mut a);
-    a.update(key('a'));
+    open_synthetic_menu(&mut a, 4);
     // Synthetic picker hit map: left panel Modal + right preview region.
     let mut hits = crate::hit::HitMap::new();
     hits.push(ratatui::layout::Rect { x: 5, y: 5, width: 20, height: 10 }, HitTarget::Modal);
@@ -414,64 +418,184 @@ fn menu_wheel_scrolls_preview_and_moves_selection() {
     }
 }
 
-#[test]
-fn worktree_menu_task_fresh_opens_add_task_with_raw_name() {
-    let mut a = app_with(worktree_snapshot());
-    focus_worktrees(&mut a);
-    a.update(key('a')); // open worktree menu, index 0 = New task (fresh)…
-    a.update(enter());
-    match &a.mode {
-        Mode::AddTask { worktree, session, .. } => {
-            assert_eq!(worktree.as_deref(), Some("platform.wt-a"));
-            assert!(matches!(session, SessionMode::Fresh));
-        }
-        other => panic!("{other:?}"),
+// --- worktrees `r`/`g`/`x` hotkeys (replace the retired worktree menu) --------
+
+// --- session picker (`r` on a worktree row) -----------------------------------
+
+/// Two newest-first loaded sessions for `worktree`, mirroring the `listSessions`
+/// reply shape.
+fn loaded(worktree: &str) -> Event {
+    Event::SessionsLoaded {
+        worktree: worktree.into(),
+        result: Ok(vec![
+            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000 },
+            SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 1_000 },
+        ]),
     }
 }
 
 #[test]
-fn worktree_menu_remove_opens_confirm_remove() {
+fn r_on_worktree_opens_session_pick_and_fetches() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('a'));
-    for _ in 0..3 {
-        a.update(down());
-    } // -> Remove worktree (index 3 in the trimmed menu)
-    a.update(enter());
-    match &a.mode {
-        Mode::ConfirmRemove { repo, worktree, branch } => {
-            assert_eq!(repo, "platform");
-            assert_eq!(worktree, "platform.wt-a"); // raw name for removal
-            assert_eq!(branch, "wt-a");
-        }
-        other => panic!("{other:?}"),
-    }
+    let up = a.update(key('r'));
+    assert!(matches!(&a.mode, Mode::SessionPick { worktree, loading: true, items, .. }
+        if worktree == "platform.wt-a" && items.is_empty()));
+    assert!(matches!(&up.cmds[..], [Cmd::FetchSessions { repo, worktree }]
+        if repo == "platform" && worktree == "platform.wt-a"));
 }
 
 #[test]
-fn confirm_remove_y_dispatches_and_n_cancels() {
+fn sessions_loaded_fills_items_and_enter_on_first_row_is_new_session() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('a'));
-    for _ in 0..3 {
-        a.update(down());
+    a.update(key('r'));
+    a.update(loaded("platform.wt-a"));
+    // Loaded items fill and loading clears.
+    assert!(matches!(&a.mode, Mode::SessionPick { items, loading: false, .. } if items.len() == 2));
+    // Row 0 is the synthetic "New session"; loaded sessions follow.
+    a.update(enter());
+    assert!(matches!(&a.mode, Mode::AddTask { resume_session_id: None, worktree: Some(w), .. } if w == "platform.wt-a"));
+}
+
+#[test]
+fn picking_a_session_pins_it() {
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    a.update(key('r'));
+    a.update(loaded("platform.wt-a"));
+    a.update(down());
+    a.update(enter());
+    assert!(matches!(&a.mode, Mode::AddTask { resume_session_id: Some(s), resume_label: Some(l), .. }
+        if s == "sess-1" && l == "Fix the parser"));
+}
+
+#[test]
+fn session_pick_type_to_filter_matches_labels() {
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    a.update(key('r'));
+    a.update(loaded("platform.wt-a"));
+    for c in "redesign".chars() {
+        a.update(key(c));
     }
-    a.update(enter()); // ConfirmRemove
-    let u = a.update(key('y'));
+    a.update(enter());
+    assert!(matches!(&a.mode, Mode::AddTask { resume_session_id: Some(s), .. } if s == "sess-2"));
+}
+
+#[test]
+fn stale_sessions_loaded_for_other_worktree_is_ignored_and_esc_cancels() {
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    a.update(key('r'));
+    a.update(loaded("platform.other"));
+    assert!(matches!(&a.mode, Mode::SessionPick { loading: true, .. }));
+    a.update(esc());
     assert!(matches!(a.mode, Mode::List));
-    assert!(u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+}
+
+#[test]
+fn session_pick_load_error_keeps_modal_and_sets_status() {
+    // An Err reply clears loading, keeps the picker open (New session still
+    // selectable), and surfaces the error on the status line.
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    a.update(key('r'));
+    a.update(Event::SessionsLoaded {
+        worktree: "platform.wt-a".into(),
+        result: Err("boom".into()),
+    });
+    assert!(matches!(&a.mode, Mode::SessionPick { loading: false, items, .. } if items.is_empty()));
+    assert!(a.status_line.as_deref().unwrap_or("").contains("boom"), "status: {:?}", a.status_line);
+    // "New session" (row 0) is still selectable → Enter opens a fresh AddTask.
+    a.update(enter());
+    assert!(matches!(&a.mode, Mode::AddTask { resume_session_id: None, worktree: Some(w), .. } if w == "platform.wt-a"));
+}
+
+#[test]
+fn x_on_worktree_row_opens_confirm_remove_and_y_dispatches_rpc() {
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    a.update(key('x'));
+    assert!(matches!(&a.mode, Mode::ConfirmRemove { .. }));
+    let up = a.update(key('y'));
+    assert!(matches!(&up.cmds[..], [Cmd::Rpc { call, .. }]
         if call.method == "removeWorktree"
-            && call.params == serde_json::json!({ "repo": "platform", "name": "platform.wt-a" }))));
+        && call.params == serde_json::json!({"repo": "platform", "name": "platform.wt-a"})));
+}
 
-    // n cancels without a cmd
+#[test]
+fn g_on_worktree_row_opens_tmux_when_inside_tmux() {
+    let mut a = app_with(worktree_snapshot());
+    a.inside_tmux = true;
+    focus_worktrees(&mut a);
+    let up = a.update(key('g'));
+    assert!(matches!(&up.cmds[..], [Cmd::OpenTmux { path }] if path == "/wt/wt-a"));
+}
+
+#[test]
+fn g_on_worktree_row_noop_outside_tmux_sets_status() {
+    let mut a = app_with(worktree_snapshot());
+    a.inside_tmux = false;
+    focus_worktrees(&mut a);
+    let up = a.update(key('g'));
+    assert!(up.cmds.is_empty(), "no tmux → no OpenTmux");
+    assert!(a.status_line.as_deref().unwrap_or("").contains("tmux"), "status: {:?}", a.status_line);
+}
+
+#[test]
+fn r_and_x_are_noops_on_session_rows_but_g_works() {
+    // A snapshot with one real worktree and one interactive session whose cwd is
+    // inside it. The session row is appended after the worktree row, so moving
+    // the cursor down once selects it.
+    let mut wts = HashMap::new();
+    wts.insert(
+        "platform".into(),
+        vec![WorktreeInfo { name: "platform.wt-a".into(), path: "/wt/wt-a".into(), branch: "wt-a".into(), ..Default::default() }],
+    );
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        worktrees: wts,
+        sessions: vec![SessionEntry {
+            kind: "interactive".into(),
+            key: "s1".into(),
+            lane: None,
+            cwd: Some("/wt/wt-a/nested".into()),
+            pid: None,
+            started_at: String::new(),
+            heartbeat_at: String::new(),
+        }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.inside_tmux = true;
+    focus_worktrees(&mut a);
+    a.update(down()); // select the appended session row (index 1)
+
+    // `r`: no mode change, a status line explaining sessions can't host a task.
+    let ru = a.update(key('r'));
+    assert!(matches!(a.mode, Mode::List), "r must not open AddTask on a session row");
+    assert!(ru.cmds.is_empty());
+    assert!(a.status_line.as_deref().unwrap_or("").contains("session"), "status: {:?}", a.status_line);
+
+    // `x`: no mode change, a status line (a session is not a worktree).
+    a.status_line = None;
+    let xu = a.update(key('x'));
+    assert!(matches!(a.mode, Mode::List), "x must not confirm-remove a session row");
+    assert!(xu.cmds.is_empty());
+    assert!(a.status_line.is_some(), "x sets a status line on a session row");
+
+    // `g`: opens the session's cwd in tmux (works for session rows too).
+    let gu = a.update(key('g'));
+    assert!(matches!(&gu.cmds[..], [Cmd::OpenTmux { path }] if path == "/wt/wt-a/nested"));
+}
+
+#[test]
+fn a_no_longer_opens_a_menu_on_worktrees() {
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
     a.update(key('a'));
-    for _ in 0..3 {
-        a.update(down());
-    }
-    a.update(enter());
-    let u2 = a.update(key('n'));
     assert!(matches!(a.mode, Mode::List));
-    assert!(u2.cmds.is_empty());
 }
 
 #[test]
@@ -509,11 +633,10 @@ fn click_menu_item_executes() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend};
 
-    // Use the WORKTREE menu (multiple enabled items) so a row click executes a
+    // A synthetic multi-row menu (all rows enabled) so a row click executes a
     // real action — the queue menu is a single (often disabled) Resume row.
     let mut a = app_with(worktree_snapshot());
-    focus_worktrees(&mut a);
-    a.update(key('a')); // open menu; row 0 = "New task (fresh session)" (enabled)
+    open_synthetic_menu(&mut a, 4); // row 0 = enabled BulkRunDefs
     assert!(matches!(a.mode, Mode::ActionMenu { .. }));
 
     // Render the open menu so the real hit map carries its MenuItem regions.
@@ -535,16 +658,18 @@ fn click_menu_item_executes() {
         }
     }
     let (mx, my) = pos.expect("MenuItem(0) region present after render");
-    a.update(Event::Mouse(MouseEvent {
+    let u = a.update(Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: mx,
         row: my,
         modifiers: KeyModifiers::NONE,
     }));
-    // Clicking the enabled row 0 executes it — the fresh-session AddTask flow.
+    // Clicking the enabled row 0 executes it — the menu closes (→ List) and the
+    // action fires (the BulkRunDefs vehicle dispatches an RpcSeq).
+    assert!(matches!(a.mode, Mode::List), "clicking an enabled row closes the menu, got {:?}", a.mode);
     assert!(
-        matches!(a.mode, Mode::AddTask { session: SessionMode::Fresh, .. }),
-        "clicking 'New task (fresh session)' opens the fresh AddTask, got {:?}", a.mode,
+        u.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { .. })),
+        "clicking the enabled row executes its action, got {:?}", u.cmds,
     );
 }
 

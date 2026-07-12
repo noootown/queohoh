@@ -37,8 +37,8 @@ src/
   models.ts          Model-alias table (DEFAULT_MODEL_ALIASES, resolveModel,
                      effectiveModelTable). Unknown names pass through.
   sessions.ts        SessionRegistry (interactive/worker sessions) + buildLiveState.
-  main-sessions.ts   MainSessionStore: lane → session-id pointer for main/resume
-                     chaining (a follow-up run resumes the previous run's session).
+  session-lineage.ts SessionLineageStore: parent→child session fork map; tip()
+                     follows the chain so a pinned resume lands on the newest run.
   run-store.ts       Per-run artifacts on disk (see "run-store" below).
   dedup.ts           filterNewItems (discovery dedup modes).
   discovery.ts       Run a definition's discovery command → items.

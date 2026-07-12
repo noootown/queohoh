@@ -155,6 +155,11 @@ pub struct App {
     pub heal_enabled: bool,
     pub sock_path: PathBuf,
     pub runs_dir: PathBuf,
+    /// Whether the TUI is running inside a tmux session (`$TMUX` present at
+    /// startup). Gates the tmux-only verbs (`g` goto / queue Resume): the daemon
+    /// opens new panes/windows via tmux, so they are inert outside it. Read from
+    /// the environment once in `new`; tests set it directly.
+    pub inside_tmux: bool,
 }
 
 fn now_epoch_s() -> u64 {
@@ -217,6 +222,7 @@ impl App {
             heal_enabled: true,
             sock_path,
             runs_dir,
+            inside_tmux: std::env::var_os("TMUX").is_some(),
         }
     }
 

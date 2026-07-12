@@ -17,8 +17,6 @@ pub struct QueueRow {
     pub glyph: char,
     /// drives the animated throbber in place of the static ▶
     pub running: bool,
-    /// ⛓ marker: task resumes the lane's main session
-    pub main_session: bool,
     /// worktree name only (the `<repo>:` lane prefix dropped)
     pub worktree: String,
     /// task definition name; None for ad-hoc prompts
@@ -58,7 +56,6 @@ pub struct WorktreeRow {
     /// "" for session rows (no real worktree)
     pub branch: String,
     pub state: WtState,
-    pub has_main_session: bool,
     pub queued: usize,
     pub is_session: bool,
     /// creation epoch of the task RUNNING on this lane, if any — the pane formats
@@ -250,7 +247,6 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
             task_id: task.id.clone(),
             glyph: status_glyph(task.status),
             running: task.status == TaskStatus::Running,
-            main_session: task.session == "main",
             worktree: strip_repo_prefix(
                 task.target.worktree.as_deref().unwrap_or(&task.target.git_ref),
                 &task.target.repo,
@@ -277,7 +273,6 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
             task_id: task.id.clone(),
             glyph: status_glyph(task.status),
             running: false,
-            main_session: task.session == "main",
             worktree: strip_repo_prefix(
                 task.target.worktree.as_deref().unwrap_or(&task.target.git_ref),
                 &task.target.repo,
@@ -503,7 +498,6 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 path: wt.path.clone(),
                 branch: wt.branch.clone(),
                 state: worktree_state(snapshot, &lane),
-                has_main_session: snapshot.main_sessions.contains_key(&lane),
                 queued: queued_on_lane(snapshot, &lane),
                 is_session: false,
                 running_elapsed: running_elapsed_on_lane(snapshot, &lane),
@@ -551,7 +545,6 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
             path: cwd.to_string(),
             branch: String::new(),
             state: WtState::You,
-            has_main_session: false,
             queued: 0,
             is_session: true,
             // A session is not a real worktree: no lane tasks, no git enrichment.
@@ -1098,7 +1091,6 @@ const WT_LAST_MIN: usize = 12;
 /// is actually on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueColLayout {
-    pub has_chain: bool,
     pub worktree_w: usize,
     pub def_w: usize,
     pub summary_w: usize,
@@ -1120,18 +1112,13 @@ pub struct QueueColLayout {
 /// then live — so the summary keeps at least `SUMMARY_MIN` cells; only if that
 /// still isn't enough does def drop and then worktree shrink.
 pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> QueueColLayout {
-    // The ⌂ slot is ALWAYS reserved (user request): gating it on visible-row data
-    // made the whole row shift whenever scroll/data changed the answer.
-    let has_chain = !rows.is_empty();
     let worktree_w = capped_max(rows.iter().map(|r| r.worktree.as_str()), WORKTREE_CAP);
     let mut def_w = capped_max(rows.iter().filter_map(|r| r.def_name.as_deref()), DEF_CAP);
 
-    let chain_cost = if has_chain { 2 } else { 0 }; // separator + 1-cell ⛓
-    // Non-flex prefix width: glyph(1) + chain + worktree(+gutter) + def(+gutter)
-    // + the gutter before the summary. The summary itself is the remainder.
+    // Non-flex prefix width: glyph(1) + worktree(+gutter) + def(+gutter) + the
+    // gutter before the summary. The summary itself is the remainder.
     let prefix = |worktree_w: usize, def_w: usize| -> usize {
-        1 + chain_cost
-            + if worktree_w > 0 { COL_GAP + worktree_w } else { 0 }
+        1 + if worktree_w > 0 { COL_GAP + worktree_w } else { 0 }
             + if def_w > 0 { COL_GAP + def_w } else { 0 }
             + COL_GAP
     };
@@ -1179,7 +1166,7 @@ pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> Q
     }
     let summary_w = summary_of(worktree_w, def_w, show_timestamp, age_w, live_w).max(0) as usize;
 
-    QueueColLayout { has_chain, worktree_w, def_w, summary_w, show_timestamp, age_w, live_w }
+    QueueColLayout { worktree_w, def_w, summary_w, show_timestamp, age_w, live_w }
 }
 
 /// Minimum name column the worktree detail lane-task rows keep before a trailing
@@ -1336,11 +1323,11 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 }
 
 /// Resolved per-frame column widths for the WORKTREES pane. A width of `0` means
-/// the column is omitted this frame; `has_chain` reserves the front ⌂ slot.
+/// the column is omitted this frame.
 ///
 /// Columns, left→right (identity → content → time → live):
-///   `● ⌂ ± name` (anchor; the ⌂ main-session and `±` dirty markers are
-///   single-cell front slots after the dot, per user request),
+///   `● ± name` (anchor; the `±` dirty marker is a single-cell front slot after
+///   the dot, per user request),
 ///   last-finished (FILL), PR `#<n>` (fixed `PR_W`), last-commit author
 ///   (fixed `AUTHOR_W`), last-commit age (fixed `COMMIT_AGE_W`),
 ///   `next: <name>` (fixed `WT_QUEUED_W`), live `⏱` (fixed `TIMER_W`,
@@ -1354,7 +1341,7 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 /// value never shifts any column; `name_w` stays content-capped and `last_w` is
 /// the FILL column (absorbs the remaining width, like the queue pane's summary
 /// — per user request the last task's description gets the slack). The front
-/// `⌂`/`±` marker slots and the live timer are ALWAYS reserved when the ladder
+/// `±` marker slot and the live timer are ALWAYS reserved when the ladder
 /// keeps them (per user request — data-gated slots made the name column shift
 /// as scroll/data changed); pr/queued/author/commit-age stay pane-gated
 /// (reserved only while some visible row carries the value).
@@ -1373,7 +1360,6 @@ pub struct WtColLayout {
     pub pr_w: usize,
     pub author_w: usize,
     pub commit_age_w: usize,
-    pub has_chain: bool,
 }
 
 impl WtColLayout {
@@ -1381,14 +1367,11 @@ impl WtColLayout {
     /// the SINGLE source of truth shared by `worktree_line` (which lays the cell
     /// out) and `render_rows` (which registers the click rect), so the two can
     /// never drift. Mirrors the span widths `worktree_line` pushes before the PR
-    /// cell: the anchor (`● ` + the ⌂/± front slots + the name), then the
+    /// cell: the anchor (`● ` + the `±` front slot + the name), then the
     /// last-task FILL when present, then the `COL_GAP` before the PR column.
     /// Meaningless when `pr_w == 0` (the column is absent); callers gate on that.
     pub fn pr_col_x(&self) -> usize {
-        let anchor = 2
-            + if self.has_chain { 2 } else { 0 }
-            + if self.dirty_w > 0 { 2 } else { 0 }
-            + self.name_w;
+        let anchor = 2 + if self.dirty_w > 0 { 2 } else { 0 } + self.name_w;
         let after_last = if self.last_w > 0 { COL_GAP + self.last_w } else { 0 };
         anchor + after_last + COL_GAP
     }
@@ -1400,7 +1383,7 @@ impl WtColLayout {
 /// commit-age columns stay gated on whole-pane data availability.
 pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     let name_w0 = capped_max(rows.iter().map(|r| r.name.as_str()), NAME_CAP);
-    // Fixed marker/time widths. The ⌂/± front slots and the live timer are
+    // Fixed marker/time widths. The `±` front slot and the live timer are
     // statically reserved (blank when a row has no value); queued/author/
     // commit-age stay gated on whole-pane data availability.
     // STATICALLY reserved (user request): gating this slot on visible-row data
@@ -1421,15 +1404,11 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // row carries an open PR number. It survives author/commit-age dropping (it
     // drops third, after them) — an open PR is the more actionable signal.
     let pr_w0 = if rows.iter().any(|r| r.pr_number.is_some()) { PR_W } else { 0 };
-    // Same static reservation as `dirty_w0` — the ⌂ slot never flexes with data.
-    let has_chain = !rows.is_empty();
 
-    // Anchor width: `● ` (dot + space) + the front marker cluster — `⌂ ` (main
-    // session) and `± ` (dirty), each a single cell + space when present — then
-    // the name. The markers sit up front per user request, not as mid-row columns.
-    let anchor = |name_w: usize, dirty: bool| {
-        2 + if has_chain { 2 } else { 0 } + if dirty { 2 } else { 0 } + name_w
-    };
+    // Anchor width: `● ` (dot + space) + the `± ` (dirty) front marker — a single
+    // cell + space when present — then the name. The marker sits up front per
+    // user request, not as a mid-row column.
+    let anchor = |name_w: usize, dirty: bool| 2 + if dirty { 2 } else { 0 } + name_w;
     // Used cells for a set of column widths and whether the last-task FILL is
     // reserved (at its `WT_LAST_MIN` floor — the actual fill absorbs the slack).
     // cols = [queued, author, commit]; `pr` is the fixed PR column and `elapsed`
@@ -1483,7 +1462,7 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
             Drop::Elapsed => elapsed_w = 0,
         }
     }
-    // Still too wide with only `● ⌂ ± name` left → shrink the name column.
+    // Still too wide with only `● ± name` left → shrink the name column.
     let mut name_w = name_w0;
     let u = used(name_w, dirty, cols, pr_w, elapsed_w, last);
     if u > avail {
@@ -1510,7 +1489,6 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         pr_w,
         author_w: cols[1],
         commit_age_w: cols[2],
-        has_chain,
     }
 }
 
@@ -1742,19 +1720,6 @@ mod tests {
         // FINISHED section falls back to id-desc, so the newest (t14) leads.
         assert_eq!(rows[0].task_id, "t14");
         assert_eq!(rows[9].task_id, "t05");
-    }
-
-    #[test]
-    fn queue_rows_mark_main_session_tasks_live_and_archived() {
-        let mut main_task = task_on(TaskStatus::Running, "t1", "platform", Some("wt-a"));
-        main_task.session = "main".into();
-        let fresh = task_on(TaskStatus::Queued, "t2", "platform", Some("wt-a"));
-        let mut archived_main = task_on(TaskStatus::Done, "t3", "platform", Some("wt-a"));
-        archived_main.session = "main".into();
-        let rows = queue_rows(&snap(vec![main_task, fresh], vec![archived_main]), "platform", now());
-        assert!(rows[0].main_session);
-        assert!(!rows[1].main_session);
-        assert!(rows[2].main_session);
     }
 
     #[test]
@@ -2137,17 +2102,17 @@ mod tests {
             vec![
                 WorktreeRow {
                     name: "wt-a".into(), raw_name: "wt-a".into(), path: "/wt/wt-a".into(),
-                    branch: "feat/a".into(), state: WtState::Free, has_main_session: false,
+                    branch: "feat/a".into(), state: WtState::Free,
                     queued: 0, is_session: false, ..Default::default()
                 },
                 WorktreeRow {
                     name: "wt-b".into(), raw_name: "wt-b".into(), path: "/wt/wt-b".into(),
-                    branch: "feat/b".into(), state: WtState::Free, has_main_session: false,
+                    branch: "feat/b".into(), state: WtState::Free,
                     queued: 0, is_session: false, ..Default::default()
                 },
                 WorktreeRow {
                     name: "wt-c".into(), raw_name: "wt-c".into(), path: "/wt/wt-c".into(),
-                    branch: "feat/c".into(), state: WtState::Free, has_main_session: false,
+                    branch: "feat/c".into(), state: WtState::Free,
                     queued: 0, is_session: false, ..Default::default()
                 },
             ]
@@ -2321,16 +2286,6 @@ mod tests {
         let names: Vec<String> =
             worktree_rows(&s, "platform").into_iter().map(|r| r.name).collect();
         assert_eq!(names, vec!["mine-email", "mine-name", "fresh"]);
-    }
-
-    #[test]
-    fn worktree_flags_main_session_lanes() {
-        let mut s = snap(vec![], vec![]);
-        s.worktrees = platform_worktrees();
-        s.main_sessions = HashMap::from([("platform:wt-b".to_string(), "sess-main".to_string())]);
-        let rows = worktree_rows(&s, "platform");
-        assert!(!rows.iter().find(|r| r.name == "wt-a").unwrap().has_main_session);
-        assert!(rows.iter().find(|r| r.name == "wt-b").unwrap().has_main_session);
     }
 
     #[test]
@@ -2638,12 +2593,11 @@ mod tests {
         assert_eq!(pad_clip("", 3), "   ");
     }
 
-    fn qrow(worktree: &str, def: Option<&str>, summary: &str, main: bool) -> QueueRow {
+    fn qrow(worktree: &str, def: Option<&str>, summary: &str) -> QueueRow {
         QueueRow {
             task_id: "t".into(),
             glyph: '○',
             running: false,
-            main_session: main,
             worktree: worktree.into(),
             def_name: def.map(str::to_string),
             summary: summary.into(),
@@ -2659,12 +2613,11 @@ mod tests {
     #[test]
     fn queue_col_layout_wide_shows_all_columns_sized_to_visible_max() {
         let rows = vec![
-            qrow("feature", Some("squash-merge"), "implement the widget cache", true),
-            qrow("main", None, "flaky migration", false),
+            qrow("feature", Some("squash-merge"), "implement the widget cache"),
+            qrow("main", None, "flaky migration"),
         ];
         // Wide pane: every column present, summary flexes to fill the slack.
         let l = queue_col_layout(&rows, 100, 0);
-        assert!(l.has_chain); // one row has a main session
         assert_eq!(l.worktree_w, 7); // "feature"
         assert_eq!(l.def_w, 12); // "squash-merge"
         assert!(l.show_timestamp);
@@ -2675,18 +2628,18 @@ mod tests {
     #[test]
     fn queue_col_layout_narrow_degrades_trailing_then_def_keeping_summary_floor() {
         let rows = vec![
-            qrow("feature", Some("squash-merge"), "implement the widget cache", true),
-            qrow("main", None, "flaky migration", false),
+            qrow("feature", Some("squash-merge"), "implement the widget cache"),
+            qrow("main", None, "flaky migration"),
         ];
         // 23 inner cells (the 80x24 default left pane): timestamp/age/detail drop,
-        // then def drops, and the COL_GAP gutters cost one more cell than the
-        // old single spaces — so "feature" shrinks by 1 to hold the summary floor.
+        // then def drops. With the main-session chain column gone the prefix is 2
+        // cells lighter, so "feature" keeps its full 7 and still holds the floor.
         let l = queue_col_layout(&rows, 23, 0);
         assert!(!l.show_timestamp);
         assert_eq!(l.age_w, 0);
         assert_eq!(l.live_w, 0);
         assert_eq!(l.def_w, 0);
-        assert_eq!(l.worktree_w, 6);
+        assert_eq!(l.worktree_w, 7);
         assert!(l.summary_w >= SUMMARY_MIN, "summary keeps its floor (got {})", l.summary_w);
     }
 
@@ -2696,7 +2649,6 @@ mod tests {
             "a-very-long-worktree-name-indeed",
             Some("a-very-long-definition-name"),
             "s",
-            false,
         )];
         let l = queue_col_layout(&rows, 200, 0);
         assert_eq!(l.worktree_w, WORKTREE_CAP);
@@ -2716,11 +2668,9 @@ mod tests {
 
         let mut s = snap(vec![], vec![]);
         s.worktrees = platform_worktrees();
-        s.main_sessions = HashMap::from([("platform:wt-b".to_string(), "sess".to_string())]);
         let rows = worktree_rows(&s, "platform");
         let l = wt_col_layout(&rows, 80);
         assert_eq!(l.name_w, 4); // "wt-a"/"wt-b"/"wt-c"
-        assert!(l.has_chain); // wt-b has a main session
     }
 
     #[test]
@@ -2823,16 +2773,15 @@ mod tests {
 
     #[test]
     fn wt_col_layout_degrades_columns_from_the_right() {
-        // One fully-loaded row: every optional column populated + main session.
+        // One fully-loaded row: every optional column populated.
         // Fixed widths: dirty=1, last-min=12, author=AUTHOR_W(14), commit=8,
-        // live=8; anchor = `● ⌂ ± name` = 2+2+2+9 = 15. Full reserved =
-        // anchor(15) + queued(2+30) + author(2+14) + commit(2+8) + last-min(2+12)
-        // + live(2+8) = 97.
+        // live=8; anchor = `● ± name` = 2+2+9 = 13. Full reserved =
+        // anchor(13) + queued(2+30) + author(2+14) + commit(2+8) + last-min(2+12)
+        // + live(2+8) = 95.
         let row = WorktreeRow {
             name: "feature-x".into(), // 9 cells
             raw_name: "feature-x".into(),
             state: WtState::Busy,
-            has_main_session: true,
             queued: 2,
             running_elapsed: Some(now() - 192),     // "⏱ 3m12s"
             next_name: Some("pr-review".into()),
@@ -2847,30 +2796,28 @@ mod tests {
         // (dirty, live, queued, last, author, commit) presence tuple.
         let present = |a: usize| {
             let l = wt_col_layout(&rows, a);
-            assert!(l.has_chain, "⛓ is exempt from degradation");
             (l.dirty_w > 0, l.elapsed_w > 0, l.queued_w > 0, l.last_w > 0, l.author_w > 0, l.commit_age_w > 0)
         };
         // Wide: everything shown, name at full width. All reserved widths sum to
-        // 97; at 120 the last-task FILL absorbs the slack.
-        assert_eq!(present(97), (true, true, true, true, true, true));
+        // 95; at 120 the last-task FILL absorbs the slack.
+        assert_eq!(present(95), (true, true, true, true, true, true));
         assert_eq!(wt_col_layout(&rows, 120).name_w, 9);
-        assert_eq!(wt_col_layout(&rows, 120).last_w, 35, "last-task fill absorbs the slack");
+        assert_eq!(wt_col_layout(&rows, 120).last_w, 37, "last-task fill absorbs the slack");
         assert_eq!(wt_col_layout(&rows, 120).queued_w, 30, "queued is a fixed slot");
         // Drop in ladder order: commit → author → queued → dirty → last →
         // live. The last-task fill outlives queued/dirty (it is the summary-
         // equivalent), the live timer is the last optional to go, and only after
         // everything drops does the name column shrink.
-        assert_eq!(present(96), (true, true, true, true, true, false)); // commit dropped (< 97)
-        assert_eq!(present(86), (true, true, true, true, false, false)); // author dropped (< 87)
-        assert_eq!(present(70), (true, true, false, true, false, false)); // queued dropped (< 71)
-        assert_eq!(present(38), (false, true, false, true, false, false)); // dirty dropped (< 39)
-        assert_eq!(present(36), (false, true, false, false, false, false)); // last dropped (< 37)
-        // Only ⏱ + `● ⌂ name` remain; the timer is the last optional to go.
-        assert_eq!(present(22), (false, false, false, false, false, false)); // live dropped (< 23)
-        assert_eq!(wt_col_layout(&rows, 22).name_w, 9);
-        // Below that, the name column shrinks (anchor `● ⌂ name` = 4 + name_w).
-        assert_eq!(wt_col_layout(&rows, 10).name_w, 6);
-        assert!(wt_col_layout(&rows, 10).has_chain);
+        assert_eq!(present(94), (true, true, true, true, true, false)); // commit dropped (< 95)
+        assert_eq!(present(84), (true, true, true, true, false, false)); // author dropped (< 85)
+        assert_eq!(present(68), (true, true, false, true, false, false)); // queued dropped (< 69)
+        assert_eq!(present(36), (false, true, false, true, false, false)); // dirty dropped (< 37)
+        assert_eq!(present(34), (false, true, false, false, false, false)); // last dropped (< 35)
+        // Only ⏱ + `● name` remain; the timer is the last optional to go.
+        assert_eq!(present(20), (false, false, false, false, false, false)); // live dropped (< 21)
+        assert_eq!(wt_col_layout(&rows, 20).name_w, 9);
+        // Below that, the name column shrinks (anchor `● name` = 2 + name_w).
+        assert_eq!(wt_col_layout(&rows, 10).name_w, 8);
     }
 
     #[test]
@@ -2879,7 +2826,6 @@ mod tests {
             name: "feature-x".into(),
             raw_name: "feature-x".into(),
             state: WtState::Busy,
-            has_main_session: true,
             last: Some(('✓', "pr-ready".into(), now() - 7200, true)),
             dirty: Some(true),
             last_commit_author: Some("koshea".into()),
@@ -2947,7 +2893,6 @@ mod tests {
             task_id: "t".into(),
             glyph,
             running,
-            main_session: false,
             worktree: "feature".into(),
             def_name: Some("squash-merge".into()),
             summary: "implement the widget cache".into(),
@@ -2958,8 +2903,8 @@ mod tests {
             priority: "normal".into(),
             finished_epoch_s: None,
         };
-        let before = vec![finished("", false, '✓'), qrow("main", None, "flaky migration", false)];
-        let after = vec![finished("⏱ 5m03s", true, '▶'), qrow("main", None, "flaky migration", false)];
+        let before = vec![finished("", false, '✓'), qrow("main", None, "flaky migration")];
+        let after = vec![finished("⏱ 5m03s", true, '▶'), qrow("main", None, "flaky migration")];
         assert_eq!(queue_col_layout(&before, 100, 0), queue_col_layout(&after, 100, 0));
     }
 

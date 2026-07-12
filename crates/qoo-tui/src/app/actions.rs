@@ -138,18 +138,9 @@ impl App {
                 }
                 None => false,
             },
-            A::ScrollEdge(dir) => match self.focused_list() {
-                // Lists: g/G jump the cursor to the first/last row.
-                Some(pane) => {
-                    let len = self.visible_len(pane);
-                    let target = if dir < 0 { 0 } else { len.saturating_sub(1) };
-                    self.set_cursor(pane, target, &mut cmds)
-                }
-                None => self.detail_scroll_edge(dir),
-            },
             // Home/End scroll the detail pane unconditionally — no list branch,
             // so the left-side cursor never moves even though a list pane is
-            // focused. This is the deliberate split from `ScrollEdge` (g/G).
+            // focused.
             A::DetailScrollEdge(dir) => self.detail_scroll_edge(dir),
             A::SwitchSubTab(i) => self.set_sub_tab_clamped(i, &mut cmds),
             A::CycleSubTab(d) => {
@@ -196,8 +187,9 @@ impl App {
                     ListPane::Queue => {
                         self.mode = Mode::AddTask {
                             worktree: None,
-                            session: SessionMode::Fresh,
-                            input: tui_input::Input::default(),
+                            resume_session_id: None,
+                            resume_label: None,
+                            editor: Default::default(),
                         };
                     }
                     ListPane::Worktrees => {
@@ -236,6 +228,24 @@ impl App {
             // `x` on QUEUE: cancel (skip/stop by status) the selected task(s).
             A::CancelSelected => {
                 let u = self.cancel_selected();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
+            // `r` on WORKTREES: open the session picker for a new task on the worktree.
+            A::NewTaskOnWorktree => {
+                let u = self.new_task_on_worktree();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
+            // `g` on WORKTREES: open the selected worktree/session in tmux.
+            A::GotoWorktree => {
+                let u = self.goto_worktree();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
+            // `x` on WORKTREES: confirm removing the selected worktree.
+            A::RemoveSelectedWorktree => {
+                let u = self.remove_selected_worktree();
                 cmds.extend(u.cmds);
                 u.dirty
             }
@@ -544,6 +554,108 @@ impl App {
             .map(|ui| ui.selections[ListPane::Worktrees.idx()].cursor)
             .unwrap_or(0);
         rows.into_iter().nth(cursor)
+    }
+
+    /// The WORKTREES row under the cursor in the CURRENT (search-filtered) view —
+    /// the exact row the `r`/`g`/`x` verbs act on. Mirrors the resolution the
+    /// retired worktree action menu used (`open_action_menu`'s worktrees arm):
+    /// cursor is an index into the FILTERED rows, mapped back to the full set.
+    fn selected_worktree_row_filtered(&self) -> Option<crate::selectors::WorktreeRow> {
+        let snap = self.snapshot.as_ref()?;
+        let repo = self.active_repo()?;
+        let ui = self.active_ui();
+        let rows = crate::selectors::worktree_rows(snap, &repo);
+        let vis = crate::selectors::filter_rows(&rows, &ui.search[ListPane::Worktrees.idx()], |r| {
+            r.name.clone()
+        });
+        let cursor = ui.selections[ListPane::Worktrees.idx()].cursor.min(vis.len().saturating_sub(1));
+        vis.get(cursor).and_then(|&i| rows.get(i)).cloned()
+    }
+
+    /// `r` on WORKTREES (and the `[r]un` chip there): open the session picker
+    /// (`Mode::SessionPick`) for the selected worktree and kick off the
+    /// `listSessions` fetch. The picker's Enter carries the chosen session (or a
+    /// fresh `Mode::AddTask`) into the worktree-targeted new-task flow. Session
+    /// rows are interactive sessions, not worktrees, so they can't host a task →
+    /// status line, no mode change.
+    pub(super) fn new_task_on_worktree(&mut self) -> Update {
+        let Some(repo) = self.active_repo() else {
+            return Update::default();
+        };
+        let Some(row) = self.selected_worktree_row_filtered() else {
+            self.status_line = Some("no worktree selected".into());
+            return Update { dirty: true, cmds: vec![] };
+        };
+        if row.is_session {
+            self.status_line = Some("tasks target worktrees, not sessions".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let worktree = row.raw_name.clone();
+        self.mode = Mode::SessionPick {
+            repo: repo.clone(),
+            worktree: worktree.clone(),
+            items: Vec::new(),
+            loading: true,
+            index: 0,
+            query: String::new(),
+        };
+        Update { dirty: true, cmds: vec![Cmd::FetchSessions { repo, worktree }] }
+    }
+
+    /// `g` on WORKTREES (and the `[g]oto` chip): open the selected worktree (or
+    /// session) in a new tmux window. The daemon drives tmux, so it is inert with
+    /// a status line outside tmux. Session rows resolve to their cwd path.
+    pub(super) fn goto_worktree(&mut self) -> Update {
+        if !self.inside_tmux {
+            self.status_line = Some("not inside tmux".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let Some(row) = self.selected_worktree_row_filtered() else {
+            self.status_line = Some("no worktree selected".into());
+            return Update { dirty: true, cmds: vec![] };
+        };
+        Update { dirty: true, cmds: vec![Cmd::OpenTmux { path: row.path.clone() }] }
+    }
+
+    /// `x` on WORKTREES (and the `[x] remove` chip): selection-aware, mirroring
+    /// the tasks pane's `r`. A multi-row range opens the bulk remove menu
+    /// (eligibility frozen at open time via [`Self::open_bulk_menu`]); a single
+    /// row confirms removing just that worktree (opens `Mode::ConfirmRemove`; the
+    /// `y` handler dispatches the `removeWorktree` RPC). A session row isn't a
+    /// worktree and a busy worktree has a task running → status line, no confirm.
+    pub(super) fn remove_selected_worktree(&mut self) -> Update {
+        let Some(repo) = self.active_repo() else {
+            return Update::default();
+        };
+        // A multi-row range opens the bulk remove menu (the worktrees pane dropped
+        // its `[a]ctions` chip, so `x` carries the bulk affordance now).
+        let (start, end) =
+            crate::view::selection_range(&self.active_ui().selections[ListPane::Worktrees.idx()]);
+        if end > start {
+            match self.open_bulk_menu(ListPane::Worktrees, start, end) {
+                Some(mode) => self.mode = mode,
+                None => self.status_line = Some("nothing selected".into()),
+            }
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let Some(row) = self.selected_worktree_row_filtered() else {
+            self.status_line = Some("no worktree selected".into());
+            return Update { dirty: true, cmds: vec![] };
+        };
+        if row.is_session {
+            self.status_line = Some("not a worktree".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        if matches!(row.state, crate::selectors::WtState::Busy) {
+            self.status_line = Some("a task is running here".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        self.mode = Mode::ConfirmRemove {
+            repo,
+            worktree: row.raw_name.clone(),
+            branch: row.branch.clone(),
+        };
+        Update { dirty: true, cmds: vec![] }
     }
 
     /// `(task_id, is_running)` when the current detail context is a Run.

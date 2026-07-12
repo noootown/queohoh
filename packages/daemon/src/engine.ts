@@ -2,11 +2,11 @@ import type {
 	ClaudeExecutor,
 	Exec,
 	GlobalConfig,
-	MainSessionStore,
 	QueueStore,
 	Redactor,
 	ResolverIO,
 	RunStore,
+	SessionLineageStore,
 	SessionRegistry,
 	TaskInstance,
 	VerifyExecutor,
@@ -64,7 +64,7 @@ export interface EngineDeps {
 	executeClaude: ClaudeExecutor;
 	executeVerify: VerifyExecutor;
 	redact: Redactor;
-	mainSessions: MainSessionStore;
+	lineage: SessionLineageStore;
 	onChange?: () => void;
 }
 
@@ -209,6 +209,24 @@ export class Engine {
 
 	private repoPath(repo: string): string | null {
 		return this.deps.config.projects.find((p) => p.name === repo)?.path ?? null;
+	}
+
+	/**
+	 * Resolve a `(repo, worktree)` pair to its absolute checkout path — the same
+	 * resolution the worker uses (incl. the `@repo` sentinel → primary checkout).
+	 * Returns null for an unknown repo or worktree. Public so the `listSessions`
+	 * RPC and the worker's `worktreePath` closure share one implementation.
+	 */
+	async worktreeAbsPath(
+		repo: string,
+		worktree: string,
+	): Promise<string | null> {
+		const path = this.repoPath(repo);
+		if (!path) return null;
+		// The `@repo` sentinel resolves to the project's primary checkout.
+		if (worktree === REPO_SENTINEL) return path;
+		const list = await this.deps.resolverIO.listWorktrees(path);
+		return list.find((w) => w.name === worktree)?.path ?? null;
 	}
 
 	async tick(): Promise<void> {
@@ -599,7 +617,7 @@ export class Engine {
 			executeClaude: deps.executeClaude,
 			executeVerify: deps.executeVerify,
 			redact: deps.redact,
-			mainSessions: deps.mainSessions,
+			lineage: deps.lineage,
 			// Builtin vars sit below explicit config vars (which spread last and can
 			// override them); hooks rendered by the worker see them too.
 			globalVars: {
@@ -622,14 +640,7 @@ export class Engine {
 					return null;
 				}
 			},
-			worktreePath: async (repo, worktree) => {
-				const path = this.repoPath(repo);
-				if (!path) return null;
-				// The `@repo` sentinel resolves to the project's primary checkout.
-				if (worktree === REPO_SENTINEL) return path;
-				const list = await deps.resolverIO.listWorktrees(path);
-				return list.find((w) => w.name === worktree)?.path ?? null;
-			},
+			worktreePath: (repo, worktree) => this.worktreeAbsPath(repo, worktree),
 			defaults: { model: "sonnet", timeoutMs: 1_800_000 },
 		})
 			.catch((err) => {

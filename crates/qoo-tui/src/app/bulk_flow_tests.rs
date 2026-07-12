@@ -115,7 +115,7 @@ fn bulk_remove_confirms_then_rpcseq_removes_each() {
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → tasks
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → worktrees
     a.update(shift_down()); a.update(shift_down()); // 3-row range
-    a.update(key('a'));
+    a.update(key('x')); // worktrees `x` on a range opens the bulk remove menu
     a.update(enter()); // Remove worktrees… → ConfirmBulkRemove
     match &a.mode { Mode::ConfirmBulkRemove { names, .. } => assert_eq!(names.len(), 3), other => panic!("{other:?}") }
     let u = a.update(key('y'));
@@ -138,7 +138,7 @@ fn bulk_remove_n_cancels_without_cmd() {
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     a.update(shift_down());
-    a.update(key('a'));
+    a.update(key('x')); // worktrees `x` on a range opens the bulk remove menu
     a.update(enter());
     let u = a.update(key('n'));
     assert!(matches!(a.mode, Mode::List));

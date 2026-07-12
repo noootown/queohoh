@@ -1,11 +1,11 @@
 import type { TaskDefinition } from "./definition.js";
 import { execHook } from "./hooks.js";
-import type { MainSessionStore } from "./main-sessions.js";
 import { resolveModel } from "./models.js";
 import type { Redactor } from "./redact.js";
 import type { Exec } from "./resolver-io.js";
 import type { RunStore } from "./run-store.js";
 import type { executeClaude, executeVerify, RunResult } from "./runner.js";
+import type { SessionLineageStore } from "./session-lineage.js";
 import type { QueueStore } from "./store.js";
 import type { TaskInstance } from "./task.js";
 import { laneKey } from "./task.js";
@@ -35,7 +35,7 @@ export interface WorkerDeps {
 	/** Effective alias→id table for the task's repo; absent = no resolution
 	 * (old callers). Already merged (defaults ⊕ global ⊕ project). */
 	modelTable?: Record<string, string>;
-	mainSessions?: MainSessionStore;
+	lineage?: SessionLineageStore;
 	// Reports the spawned claude child's pid so the engine can track it for a
 	// Stop action. Fires once per run, right after spawn.
 	onSpawned?: (taskId: string, pid: number) => void;
@@ -178,22 +178,16 @@ export async function runTask(
 		}
 	}
 
-	// Resume resolution at SPAWN time. A pinned task (resume_session_id set)
-	// resumes its pin — unless a later run in this lane already advanced the
-	// pointer after the task was created (chain-advance): queueing several
-	// follow-ups from one session makes each resume the previous run's
-	// resulting session. laneKey is null only when the worktree is unresolved
-	// (guarded above).
-	const lane = laneKey(task);
+	// Resume resolution at SPAWN time. A pinned task resumes the TIP of its
+	// pin's lineage: each headless resume of X mints a new session id (the
+	// fork is recorded after the run below), so following the chain makes
+	// queued follow-ups stack — without hijacking a task pinned to a
+	// different session in the same lane. `session: "main"` is deprecated
+	// and intentionally resolves nothing (fresh).
 	let resumeSessionId: string | undefined;
 	if (task.resumeSessionId !== null) {
-		const ptr = lane !== null ? (deps.mainSessions?.entry(lane) ?? null) : null;
 		resumeSessionId =
-			ptr !== null && ptr.updatedAt > task.created
-				? ptr.sessionId
-				: task.resumeSessionId;
-	} else if (task.session === "main" && deps.mainSessions && lane !== null) {
-		resumeSessionId = deps.mainSessions.get(lane) ?? undefined;
+			deps.lineage?.tip(task.resumeSessionId) ?? task.resumeSessionId;
 	}
 
 	// claude
@@ -283,16 +277,17 @@ export async function runTask(
 		}
 	}
 
-	// Advance the pointer after any outcome (done OR failed) when a main or
-	// pinned run captured a sessionId; runs with a null sessionId leave it
-	// unchanged.
+	// Record the fork after any outcome (done OR failed): resuming
+	// `resumeSessionId` produced `result.sessionId`, so future pins anywhere
+	// on this chain resolve to the new tip. Fresh runs record nothing —
+	// their session becomes a lineage root for future picks.
 	if (
-		(task.session === "main" || task.resumeSessionId !== null) &&
-		deps.mainSessions &&
-		lane !== null &&
-		result.sessionId !== null
+		resumeSessionId !== undefined &&
+		deps.lineage &&
+		result.sessionId !== null &&
+		result.sessionId !== resumeSessionId
 	) {
-		deps.mainSessions.set(lane, result.sessionId);
+		deps.lineage.recordFork(resumeSessionId, result.sessionId);
 	}
 
 	deps.runStore.finishRun(

@@ -133,18 +133,14 @@ fn create_worktree_outside_click_cancels_and_keys_stay_out_of_field() {
     assert!(matches!(app.mode, Mode::List));
 }
 
-// --- busy worktree menu eligibility (regression) ---
+// --- busy worktree remove eligibility (regression) ---
 #[test]
-fn busy_worktree_remove_menu_row_is_disabled() {
+fn busy_worktree_remove_is_blocked_with_status() {
+    // The worktree action menu was retired; `x` (remove) now acts on the row
+    // directly. A busy worktree can't be removed → status line, no ConfirmRemove.
     let mut app = fixture_app_busy_worktree("platform", "wt-a");
-    app.apply_action(AppAction::OpenActionMenu); // select busy worktree, open menu
-    let items = match &app.mode {
-        Mode::ActionMenu { items, .. } => items.clone(),
-        other => panic!("expected ActionMenu, got {other:?}"),
-    };
-    let remove = items
-        .iter()
-        .find(|it| it.label.starts_with("Remove worktree"))
-        .expect("remove row present");
-    assert_eq!(remove.disabled.as_deref(), Some("a task is running here"));
+    let u = app.apply_action(AppAction::RemoveSelectedWorktree);
+    assert!(matches!(app.mode, Mode::List), "busy worktree must not open ConfirmRemove");
+    assert!(u.cmds.is_empty());
+    assert_eq!(app.status_line.as_deref(), Some("a task is running here"));
 }

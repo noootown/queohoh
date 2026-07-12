@@ -26,10 +26,6 @@ pub const GLYPH_SKIPPED: char = '⊝';
 /// red because both are failures needing attention.
 pub const GLYPH_VERIFY_FAILED: char = '⊗';
 pub const GLYPH_RUNNING: char = '▶';
-/// Lane has/resumes a main session — used in both the queue rows and the
-/// worktree rows, so the two surfaces read as one marker. `⌂` (house): "the
-/// main session lives here" (replaced ⛓, which read poorly; single-width).
-pub const GLYPH_MAIN_SESSION: char = '⌂';
 pub const GLYPH_DISCOVERY: char = '⏰';
 /// Worktree has uncommitted changes (git status --porcelain non-empty).
 pub const GLYPH_DIRTY: char = '±';
@@ -64,7 +60,9 @@ pub const BTN_LABEL_CREATE: &str = "create";
 pub const BTN_LABEL_TASKS: &str = "tasks";
 pub const BTN_LABEL_ACTIONS: &str = "actions";
 pub const BTN_LABEL_RUN: &str = "run";
+pub const BTN_LABEL_GOTO: &str = "goto";
 pub const BTN_LABEL_CANCEL: &str = "cancel";
+pub const BTN_LABEL_REMOVE: &str = "remove";
 pub const BTN_LABEL_COLLAPSE: &str = "collapse";
 pub const BTN_LABEL_EXPAND: &str = "expand";
 
@@ -91,7 +89,7 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// | `mauve`          | task / definition NAME | QUEUE def column; TASKS name column; WORKTREES `next: <name>` and last-task name WHEN a def |
 /// | `accent` (blue)  | worktree IDENTITY      | QUEUE worktree column; WORKTREES name column                                                |
 /// | `info` (teal)    | TIMESTAMPS only        | QUEUE timestamp + age; TASKS `⏰` schedule; WORKTREES commit-age, last-task age             |
-/// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; `⌂` marker; search query; settings values |
+/// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
 /// | `fg`             | prose / summaries      | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
 /// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗`)                                            |

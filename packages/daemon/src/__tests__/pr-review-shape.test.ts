@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
 import {
-	MainSessionStore,
 	makeRedactor,
 	QueueStore,
 	RunStore,
+	SessionLineageStore,
 	SessionRegistry,
 } from "@queohoh/core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -60,7 +60,7 @@ async function setup() {
 	const store = new QueueStore(join(base, "state"));
 	const runStore = new RunStore(join(base, "runs"));
 	const registry = new SessionRegistry(join(base, "sessions.json"));
-	const mainSessions = new MainSessionStore(join(base, "main-sessions.json"));
+	const lineage = new SessionLineageStore(join(base, "session-lineage.json"));
 	const config: GlobalConfig = {
 		projects: [{ name: "platform", path: repoPath }],
 		workspace: join(base, "ws"),
@@ -104,7 +104,7 @@ async function setup() {
 			output: "",
 		}),
 		redact: makeRedactor(new Map()),
-		mainSessions,
+		lineage,
 	});
 	const server = new ApiServer({
 		engine,
@@ -112,7 +112,6 @@ async function setup() {
 		runStore,
 		registry,
 		config,
-		mainSessions,
 		onMutation: () => {},
 	});
 	const sock = join(base, "d.sock");

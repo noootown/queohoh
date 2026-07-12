@@ -17,9 +17,9 @@ use crate::selectors::{
 };
 use crate::view::theme::{
     BTN_LABEL_ACTIONS, BTN_LABEL_CANCEL, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
-    BTN_LABEL_RUN, BTN_LABEL_TASKS,
+    BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RUN, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
-    GLYPH_DIRTY, GLYPH_DISCOVERY, GLYPH_DOT, GLYPH_MAIN_SESSION, GLYPH_SEARCH, Palette, RULE_CHAR,
+    GLYPH_DIRTY, GLYPH_DISCOVERY, GLYPH_DOT, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
 
@@ -35,7 +35,7 @@ use crate::view::theme::{
 // of the corresponding `pane_buttons` arm.
 const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x] cancel [a]ctions · [c]reate [z]
 const TASKS_ROW_SCOPED: usize = 1; // [r]un · [z]
-const WORKTREE_ROW_SCOPED: usize = 2; // [t]asks [a]ctions · [c]reate [z]
+const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x] remove [t]asks · [c]reate [z]
 
 /// Scope divider drawn between the row-scoped and pane-scoped chip groups (the
 /// TUI's `·` separator convention). It REPLACES the normal single-space gap
@@ -86,7 +86,9 @@ fn button_chip(b: PaneButton, collapsed: bool, labeled: bool, p: &Palette) -> (V
         PaneButton::Tasks => ('t', BTN_LABEL_TASKS),
         PaneButton::Actions => ('a', BTN_LABEL_ACTIONS),
         PaneButton::Run => ('r', BTN_LABEL_RUN),
+        PaneButton::Goto => ('g', BTN_LABEL_GOTO),
         PaneButton::Cancel => ('x', BTN_LABEL_CANCEL),
+        PaneButton::Remove => ('x', BTN_LABEL_REMOVE),
         PaneButton::Collapse => {
             ('z', if collapsed { BTN_LABEL_EXPAND } else { BTN_LABEL_COLLAPSE })
         }
@@ -362,15 +364,6 @@ fn queue_line(
     } else {
         spans.push(Span::styled(row.glyph.to_string(), glyph_style(row.glyph, p)));
     }
-    // Chain column (fixed slot when any visible row resumes its main session).
-    if layout.has_chain {
-        spans.push(Span::raw(" "));
-        if row.main_session {
-            spans.push(Span::styled(GLYPH_MAIN_SESSION.to_string(), Style::default().fg(p.meta)));
-        } else {
-            spans.push(Span::raw(" "));
-        }
-    }
     let gap = " ".repeat(crate::selectors::COL_GAP);
     if layout.worktree_w > 0 {
         spans.push(Span::raw(gap.clone()));
@@ -425,9 +418,6 @@ fn header_col(spans: &mut Vec<Span<'static>>, label: &str, w: usize, p: &Palette
 /// cell so every label sits over its column.
 fn queue_header(layout: &QueueColLayout, p: &Palette) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")]; // status-glyph slot
-    if layout.has_chain {
-        spans.push(Span::raw("  ")); // separator + ⌂ slot
-    }
     if layout.worktree_w > 0 {
         header_col(&mut spans, "Worktree", layout.worktree_w, p);
     }
@@ -465,12 +455,9 @@ fn def_header(layout: &DefColLayout, p: &Palette) -> Line<'static> {
 }
 
 /// WORKTREES column-header row, mirroring `worktree_line`'s span structure
-/// (the lead indicator and ⌂/± marker slots stay blank).
+/// (the lead indicator and `±` marker slot stay blank).
 fn wt_header(layout: &WtColLayout, p: &Palette) -> Line<'static> {
     let mut spans = vec![Span::raw("  ")]; // lead indicator + separator
-    if layout.has_chain {
-        spans.push(Span::raw("  ")); // ⌂ slot + separator
-    }
     if layout.dirty_w > 0 {
         spans.push(Span::raw("  ")); // ± slot + separator
     }
@@ -525,19 +512,10 @@ fn worktree_line(
     let warn = Style::default().fg(p.warn);
     let mauve = Style::default().fg(p.mauve);
     let fg = Style::default().fg(p.fg);
-    // Anchor: the lead indicator + space, then the front marker cluster — the ⌂
-    // main-session marker and the `±` uncommitted-changes marker (single-cell
-    // slots, statically reserved) — then the accent-colored worktree identity
-    // name.
+    // Anchor: the lead indicator + space, then the front marker — the `±`
+    // uncommitted-changes marker (single-cell slot, statically reserved) — then
+    // the accent-colored worktree identity name.
     let mut spans = vec![lead, Span::raw(" ")];
-    if layout.has_chain {
-        if row.has_main_session {
-            spans.push(Span::styled(GLYPH_MAIN_SESSION.to_string(), meta));
-        } else {
-            spans.push(Span::raw(" "));
-        }
-        spans.push(Span::raw(" "));
-    }
     if layout.dirty_w > 0 {
         if row.dirty == Some(true) {
             spans.push(Span::styled(GLYPH_DIRTY.to_string(), warn));
@@ -1272,19 +1250,24 @@ mod tests {
     }
 
     #[test]
-    fn build_header_worktrees_includes_tasks_chip() {
+    fn build_header_worktrees_includes_row_verbs_and_tasks_chip() {
         let p = Palette::default();
-        // Wide enough for the labeled form: the worktrees strip carries all four
-        // chips in scope order — row-scoped [t]asks [a]ctions, then the `·`
-        // divider, then pane-scoped [c]reate [z].
-        let area = Rect { x: 0, y: 0, width: 80, height: 8 };
+        // Wide enough for the labeled form: the worktrees strip carries all six
+        // chips in scope order — row-scoped [r]un [g]oto [x] remove [t]asks, then
+        // the `·` divider, then pane-scoped [c]reate [z].
+        let area = Rect { x: 0, y: 0, width: 100, height: 8 };
         let (line, rects) =
             build_header(area, "WORKTREES", None, false, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, &p);
-        assert_eq!(rects.len(), 4);
-        assert_eq!(rects[0].1, PaneButton::Tasks);
-        assert_eq!(rects[1].1, PaneButton::Actions);
-        assert_eq!(rects[2].1, PaneButton::Create);
+        assert_eq!(rects.len(), 6);
+        assert_eq!(rects[0].1, PaneButton::Run);
+        assert_eq!(rects[1].1, PaneButton::Goto);
+        assert_eq!(rects[2].1, PaneButton::Remove);
+        assert_eq!(rects[3].1, PaneButton::Tasks);
+        assert_eq!(rects[4].1, PaneButton::Create);
+        assert_eq!(rects[5].1, PaneButton::Collapse);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
+        assert!(text.contains("[g]oto"), "labeled goto chip renders: {text}");
+        assert!(text.contains("[x] remove"), "labeled remove chip renders: {text}");
         assert!(text.contains("[t]asks"), "labeled tasks chip renders: {text}");
     }
 

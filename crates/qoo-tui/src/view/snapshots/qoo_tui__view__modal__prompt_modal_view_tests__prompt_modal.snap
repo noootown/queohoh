@@ -1,6 +1,5 @@
 ---
 source: crates/qoo-tui/src/view/modal.rs
-assertion_line: 174
 expression: s
 ---
                                                             
@@ -8,8 +7,8 @@ expression: s
                                                             
                                                             
                                                             
-    ╭ New task — fresh session — platform (adhoc) ─────╮    
-    │ prompt> run this now█                            │    
-    │ enter submit · esc cancel                        │    
-    │ [ OK ] [ Cancel ]                                │    
+    ╭ New task — platform (adhoc) ─────────────────────╮    
+    │run this now                                      │    
+    │and a second line                                 │    
+    │ enter submit · shift+enter newline · esc cancel  │    
     ╰──────────────────────────────────────────────────╯

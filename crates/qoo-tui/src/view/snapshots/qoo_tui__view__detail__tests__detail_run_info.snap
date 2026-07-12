@@ -6,8 +6,8 @@ expression: terminal.backend()
 "╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/] filter           ││Run                                                │" Hidden by multi-width symbols: [(3, " ")]
-"│      Workt…  Prompt     ││  id           01RUN                               │"
-"│ ● ⌂  featu…  implement… ││  definition   squash-merge                        │"
+"│    Worktr…  Prompt      ││  id           01RUN                               │"
+"│ ●  feature  implement … ││  definition   squash-merge                        │"
 "│                         ││  status       done                                │"
 "│                         ││                                                   │"
 "│                         ││Timing                                             │"
@@ -27,12 +27,12 @@ expression: terminal.backend()
 "│                         ││Config                                             │"
 "│                         ││  description  Squash-merge the branch.            │"
 "╰─────────────────────────╯│  worktree     auto                                │"
-"╭🌲 WORKTREES───── [t] [a]╮│  dedup        none                                │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [r] [g] [x]╮│  dedup        none                                │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││  timeout      30m                                 │"
 "│ 🔍 [/] filter           ││  priority     normal                              │" Hidden by multi-width symbols: [(3, " ")]
-"│     Name     Live       ││  cron         30 13 * * *                         │"
-"│ ● ⌂ feature             ││                                                   │"
-"│ ●   hotfix              ││                                                   │"
-"│ ●   feature             ││                                                   │"
+"│   Name     Live         ││  cron         30 13 * * *                         │"
+"│ ● feature               ││                                                   │"
+"│ ● hotfix                ││                                                   │"
+"│ ● feature               ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
 "[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "

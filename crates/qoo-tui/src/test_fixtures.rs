@@ -124,9 +124,6 @@ pub fn fixture_snapshot() -> StateSnapshot {
             },
         ],
     );
-    let mut main_sessions: HashMap<String, String> = HashMap::new();
-    main_sessions.insert("acme:acme.feature".to_string(), "sess-abc".to_string());
-
     StateSnapshot {
         tasks,
         archived_recent: archived,
@@ -146,7 +143,6 @@ pub fn fixture_snapshot() -> StateSnapshot {
             github_id: None,
         }],
         worktrees,
-        main_sessions,
         build_id: Some("build-1".to_string()),
     }
 }
