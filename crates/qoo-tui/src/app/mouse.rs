@@ -245,28 +245,6 @@ impl App {
         use crossterm::event::{
             KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind as K,
         };
-        // Pointer-shape hover tracking, handled before ANY mode-specific routing
-        // (Moved never interacts with modes, and the input-modal early-return
-        // below would otherwise swallow it). A PrLink only counts as hoverable
-        // in Mode::List — every overlay owns clicks while open, so a link behind
-        // one is not clickable and must not read as such. Emits SetPointerShape
-        // ONLY on the enter/leave transition — never per motion event — and
-        // never dirties (no buffer cell changes on hover, so a redraw per mouse
-        // move would be pure churn). Accepted staleness: an overlay OPENING over
-        // a hovered link (or the link vanishing under a stationary mouse) keeps
-        // the hand cursor until the next Moved re-hit-tests; teardown resets the
-        // shape unconditionally so it can never outlive the process.
-        if matches!(m.kind, K::Moved) {
-            let hovering = matches!(self.mode, Mode::List)
-                && matches!(self.hit.hit(m.column, m.row), Some(HitTarget::PrLink(_)));
-            let cmds = if hovering != self.hovering_link {
-                self.hovering_link = hovering;
-                vec![Cmd::SetPointerShape { pointer: hovering }]
-            } else {
-                vec![]
-            };
-            return Update { dirty: false, cmds };
-        }
         // Text-input modals own the mouse: only a left-click routes (Confirm ≡
         // Enter, Cancel ≡ Esc, outside ≡ cancel); every other mouse kind is inert
         // so a move/drag never disturbs the field or closes the popup. Handling
@@ -354,13 +332,6 @@ impl App {
                     return self.apply_action(crate::keymap::AppAction::SwitchTab(i));
                 }
                 Some(HitTarget::SubTab(i)) => self.set_sub_tab_clamped(i, &mut cmds),
-                Some(HitTarget::PrLink(url)) => {
-                    // A PR link wins its sub-rect over the row/detail-body beneath
-                    // it (registered later). Open it in the browser and change no
-                    // UI state — no focus steal, no selection, no redraw.
-                    cmds.push(Cmd::OpenUrl { url });
-                    false
-                }
                 Some(HitTarget::PaneBody(p)) => {
                     // Detail is display-only: clicking its body must not steal
                     // focus (wheel scrolling over it still works — that routes by

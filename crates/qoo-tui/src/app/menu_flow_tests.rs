@@ -335,9 +335,6 @@ fn menu_backspace_edits_filter() {
     }
 }
 
-fn ctrl(c: char) -> Event {
-    Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
-}
 fn menu_preview_scroll(a: &App) -> usize {
     match &a.mode {
         Mode::ActionMenu { preview_scroll, .. } => *preview_scroll,

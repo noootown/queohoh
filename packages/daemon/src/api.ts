@@ -592,12 +592,14 @@ export class ApiServer {
 				return true;
 			}
 			case "createWorktree": {
-				await deps.engine.createWorktree(
+				const path = await deps.engine.createWorktree(
 					String(params.repo ?? ""),
 					String(params.name ?? ""),
 				);
 				deps.onMutation();
-				return true;
+				// `path` lets the TUI open a tmux window in the new worktree; old
+				// clients that expected `true` treat any non-error reply as success.
+				return { path };
 			}
 			case "heartbeatInteractive": {
 				deps.registry.upsertInteractive(

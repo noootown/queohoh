@@ -46,7 +46,7 @@ pub struct App {
     pub ui_by_tab: HashMap<String, TabUiState>,
     pub mode: Mode,
     pub status_line: Option<String>,
-    pub run_files: Option<(String, RunFiles)>,
+    pub run_files: Option<(String, Box<RunFiles>)>,
     pub defs_by_project: HashMap<String, Vec<DefinitionSummary>>,
     /// Model-alias settings backing the `s` overlay, lazily fetched on first
     /// open. Three-state: `None` = never fetched (fetch is in flight → overlay
@@ -109,14 +109,6 @@ pub struct App {
     /// target (scrollbar thumb/track, a pane divider, a detail text-selection)
     /// and the matching `Up`.
     pub drag: Option<DragKind>,
-    /// Whether the mouse currently hovers a clickable PR link (`HitTarget::
-    /// PrLink`). Tracked so `Moved` routing emits [`Cmd::SetPointerShape`] ONLY
-    /// on the enter/leave transition — never per motion event — and hover never
-    /// dirties a frame (no buffer cell changes on hover). Best-effort terminal
-    /// state: it can go briefly stale when the link disappears under a
-    /// stationary mouse (overlay opens, rows resort); the next `Moved`
-    /// re-hit-tests and corrects it.
-    pub hovering_link: bool,
     /// Current DETAIL-pane text selection (tmux-style copy-on-drag). `Some`
     /// while dragging and briefly after release (a 1s post-copy fade); anchored
     /// to absolute wrapped-line indices so scrolling keeps the same text
@@ -202,7 +194,6 @@ impl App {
             detail_wrapped_len: std::cell::Cell::new(0),
             menu_preview_max_scroll: std::cell::Cell::new(0),
             drag: None,
-            hovering_link: false,
             detail_selection: None,
             selection_epoch: 0,
             detail_geom: std::cell::RefCell::new(DetailGeom::default()),
@@ -356,10 +347,9 @@ impl App {
     /// timeout-ok (discovery can outlive the client; the push sub re-syncs).
     // First callers: `execute_menu_action` and the ConfirmRemove handler (Task 14).
     fn dispatch_rpc(&mut self, label: impl Into<String>, method: &str, params: serde_json::Value, opts: RpcOpts) -> Cmd {
-        let timeout_ms = opts.timeout_ms.unwrap_or(match method {
-            "createWorktree" => 600_000,
-            _ => 5_000,
-        });
+        // createWorktree no longer routes through here — it has a dedicated Cmd
+        // (its 10-minute budget lives in the event handler).
+        let timeout_ms = opts.timeout_ms.unwrap_or(5_000);
         let timeout_is_ok = opts.timeout_is_ok || method == "runDefinition";
         Cmd::Rpc {
             label: label.into(),

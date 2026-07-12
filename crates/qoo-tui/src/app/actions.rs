@@ -512,21 +512,11 @@ impl App {
         }
     }
 
-    /// Build the fire-and-forget `createWorktree` command. A 10-minute budget
-    /// (post-create `wt.toml` hooks routinely run for minutes) and a real
-    /// timeout (`timeout_is_ok: false`) so a stall surfaces on the status line
-    /// rather than silently "succeeding". No def cache to invalidate.
+    /// Build the fire-and-forget create command. The dedicated Cmd (not the
+    /// generic Rpc) so its handler can read the reply's `path` and auto-open a
+    /// tmux window in the new worktree; budget/error semantics live there.
     pub(super) fn create_worktree_cmd(repo: &str, name: &str) -> Cmd {
-        Cmd::Rpc {
-            label: format!("create worktree {name}"),
-            call: RpcCall {
-                method: "createWorktree".into(),
-                params: serde_json::json!({ "repo": repo, "name": name }),
-            },
-            timeout_ms: 600_000,
-            timeout_is_ok: false,
-            invalidate_defs_for: None,
-        }
+        Cmd::CreateWorktree { repo: repo.to_string(), name: name.to_string() }
     }
 
     /// Active project's worktree rows (unfiltered), used for ambient overlays.

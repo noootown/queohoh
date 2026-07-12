@@ -22,12 +22,8 @@ fn dispatch_rpc_applies_per_method_defaults() {
         other => panic!("expected Cmd::Rpc, got {other:?}"),
     }
 
-    // createWorktree: 10-minute budget for post-create hooks.
-    let cmd = a.dispatch_rpc("create worktree", "createWorktree", json!({ "repo": "p", "name": "b" }), RpcOpts::default());
-    match cmd {
-        Cmd::Rpc { timeout_ms, .. } => assert_eq!(timeout_ms, 600_000),
-        other => panic!("expected Cmd::Rpc, got {other:?}"),
-    }
+    // (createWorktree no longer routes through dispatch_rpc — it has a
+    // dedicated Cmd whose 10-minute budget lives in the event handler.)
 
     // runDefinition: client timeout is success; invalidation passed by caller.
     let cmd = a.dispatch_rpc(

@@ -392,6 +392,20 @@ pub(crate) fn lane_task_display(task: &TaskInstance) -> (char, String, bool, u64
     (status_glyph(task.status), name, is_def, parse_iso_epoch_s(&task.created))
 }
 
+/// The "Live" cell for a lane task in the worktree detail list, mirroring the
+/// QUEUE pane's live slot: `⏱ <elapsed>` for a running task, `#N in lane` for a
+/// queued task, empty for any other status. `queue_pos` is the task's 1-based
+/// position among the lane's queued tasks in creation order — the caller counts
+/// queued tasks as it walks the (creation-ordered) list; it is only read for a
+/// Queued task.
+pub(crate) fn lane_task_live(task: &TaskInstance, now_epoch_s: u64, queue_pos: usize) -> String {
+    match task.status {
+        TaskStatus::Running => elapsed_label(parse_iso_epoch_s(&task.created), now_epoch_s),
+        TaskStatus::Queued => format!("#{queue_pos} in lane"),
+        _ => String::new(),
+    }
+}
+
 /// ACTIVE-vs-finished ordering rank for the worktree detail task list: running
 /// first, then needs-input, then queued, then everything finished. Finished
 /// tasks then sort newest-first at the call site (by id, descending).
@@ -1161,6 +1175,52 @@ pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> Q
     QueueColLayout { has_chain, worktree_w, def_w, summary_w, show_timestamp, age_w, live_w }
 }
 
+/// Minimum name column the worktree detail lane-task rows keep before a trailing
+/// column is dropped to make room.
+const LANE_NAME_MIN: usize = 6;
+
+/// Resolved column widths for one worktree-detail lane-task row: the flex `Task`
+/// name (`name_w`) after the `<glyph> ` prefix, then the fixed trailing columns
+/// `Created` (`TIMESTAMP_W`), `Age` (`AGE_W`), `Live` (`QUEUE_LIVE_W`) — the same
+/// widths and `COL_GAP` gutters the QUEUE pane uses. A width of `0` omits that
+/// column. Shared by the row and header stylers so the two align cell-for-cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LaneTaskCols {
+    pub name_w: usize,
+    pub created_w: usize,
+    pub age_w: usize,
+    pub live_w: usize,
+}
+
+/// Fit a lane-task row into `width` cells. The trailing columns are fixed-width
+/// (never sized from row data) and degrade in a fixed order — Live, then Created,
+/// then Age — so the `Task` name keeps at least [`LANE_NAME_MIN`] cells; the name
+/// is the flex remainder. Pure over `width` (the ideal unit-test target).
+pub(crate) fn lane_task_cols(width: usize) -> LaneTaskCols {
+    const PREFIX: usize = 2; // `<glyph> ` (glyph + one space)
+    let mut created_w = TIMESTAMP_W;
+    let mut age_w = AGE_W;
+    let mut live_w = QUEUE_LIVE_W;
+    let trailing = |c: usize, a: usize, l: usize| {
+        (if c > 0 { COL_GAP + c } else { 0 })
+            + (if a > 0 { COL_GAP + a } else { 0 })
+            + (if l > 0 { COL_GAP + l } else { 0 })
+    };
+    // Drop trailing columns (live → created → age) until the name floor fits.
+    for op in 0..3 {
+        if PREFIX + LANE_NAME_MIN + trailing(created_w, age_w, live_w) <= width {
+            break;
+        }
+        match op {
+            0 => live_w = 0,
+            1 => created_w = 0,
+            _ => age_w = 0,
+        }
+    }
+    let name_w = width.saturating_sub(PREFIX + trailing(created_w, age_w, live_w));
+    LaneTaskCols { name_w, created_w, age_w, live_w }
+}
+
 /// Resolved column widths for the TASKS pane: `name | model | description |
 /// ⏰ schedule`. `name_w`/`model_w` are content-capped columns; `desc_w` is the
 /// FILL (the remainder, like the queue pane's summary — prose gets the slack),
@@ -1894,6 +1954,51 @@ mod tests {
         assert_eq!(queue_divider_after(&rows), Some(0)); // after the single active row
     }
 
+    // ---- lane_task_live / lane_task_cols (worktree detail lane list) ----
+
+    #[test]
+    fn lane_task_live_running_queued_and_terminal() {
+        // Running → elapsed against `now` (created default is 3m12s before now).
+        let running = task_on(TaskStatus::Running, "t1", "platform", Some("wt-a"));
+        assert_eq!(lane_task_live(&running, now(), 0), "⏱ 3m12s");
+        // Queued → `#N in lane` using the caller-supplied 1-based position (the
+        // elapsed clock is never consulted for a queued row).
+        let queued = task_on(TaskStatus::Queued, "t2", "platform", Some("wt-a"));
+        assert_eq!(lane_task_live(&queued, now(), 1), "#1 in lane");
+        assert_eq!(lane_task_live(&queued, now(), 3), "#3 in lane");
+        // Every terminal / non-live status → empty (the glyph carries the state).
+        for status in
+            [TaskStatus::Done, TaskStatus::Failed, TaskStatus::Cancelled, TaskStatus::NeedsInput]
+        {
+            let t = task_on(status, "t3", "platform", Some("wt-a"));
+            assert_eq!(lane_task_live(&t, now(), 0), "", "{status:?} has no live text");
+        }
+    }
+
+    #[test]
+    fn lane_task_cols_full_width_and_narrow_degradation() {
+        // Wide: all trailing columns kept at their fixed widths, name is the flex
+        // remainder = width − 2 (glyph) − 3×(COL_GAP + col).
+        let wide = lane_task_cols(60);
+        assert_eq!(wide.created_w, TIMESTAMP_W);
+        assert_eq!(wide.age_w, AGE_W);
+        assert_eq!(wide.live_w, QUEUE_LIVE_W);
+        let trailing = 3 * COL_GAP + TIMESTAMP_W + AGE_W + QUEUE_LIVE_W;
+        assert_eq!(wide.name_w, 60 - 2 - trailing);
+        // Degradation order is Live first, then Created, then Age — each drops only
+        // once the name floor no longer fits.
+        let drop_live = lane_task_cols(2 + LANE_NAME_MIN + (COL_GAP + TIMESTAMP_W) + (COL_GAP + AGE_W));
+        assert_eq!(drop_live.live_w, 0);
+        assert_eq!(drop_live.created_w, TIMESTAMP_W);
+        assert_eq!(drop_live.age_w, AGE_W);
+        assert!(drop_live.name_w >= LANE_NAME_MIN);
+        // Very narrow: created also drops, age is the last trailing column kept.
+        let narrow = lane_task_cols(2 + LANE_NAME_MIN + (COL_GAP + AGE_W));
+        assert_eq!(narrow.live_w, 0);
+        assert_eq!(narrow.created_w, 0);
+        assert_eq!(narrow.age_w, AGE_W);
+    }
+
     // ---- elapsed_label / prompt_summary / strip_repo_prefix / lane_key / arg_summary ----
 
     #[test]
@@ -2165,7 +2270,7 @@ mod tests {
         let a = wtrow("a");
         let b = wtrow("b");
         assert_eq!(cmp_worktree_rows(&a, &b, None), Ordering::Equal);
-        let mut rows = vec![wtrow("first"), wtrow("second"), wtrow("third")];
+        let mut rows = [wtrow("first"), wtrow("second"), wtrow("third")];
         rows.sort_by(|x, y| cmp_worktree_rows(x, y, None));
         assert_eq!(
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),

@@ -97,15 +97,11 @@ fn create_worktree_valid_dispatches_and_closes_immediately() {
     assert!(matches!(app.mode, Mode::List)); // closes immediately (fires async)
     assert_eq!(app.status_line.as_deref(), Some("creating worktree feature-x…"));
     match &update.cmds[0] {
-        Cmd::Rpc { call, timeout_ms, timeout_is_ok, invalidate_defs_for, .. } => {
-            assert_eq!(call.method, "createWorktree");
-            assert_eq!(call.params["repo"], "platform");
-            assert_eq!(call.params["name"], "feature-x");
-            assert_eq!(*timeout_ms, 600_000);
-            assert!(!*timeout_is_ok);
-            assert!(invalidate_defs_for.is_none());
+        Cmd::CreateWorktree { repo, name } => {
+            assert_eq!(repo, "platform");
+            assert_eq!(name, "feature-x");
         }
-        other => panic!("expected createWorktree, got {other:?}"),
+        other => panic!("expected CreateWorktree, got {other:?}"),
     }
 }
 

@@ -911,15 +911,17 @@ describe("ApiServer", () => {
 	});
 
 	describe("createWorktree", () => {
-		it("delegates to the engine and reports mutation", async () => {
+		it("delegates to the engine, returns the path, and reports mutation", async () => {
 			const { client, mutations } = await setup();
 			const before = mutations();
+			// The reply carries the created worktree's path so the TUI can open
+			// a tmux window there.
 			expect(
 				await client.call("createWorktree", {
 					repo: "platform",
 					name: "feature-x",
 				}),
-			).toBe(true);
+			).toEqual({ path: "/wt/feature-x" });
 			expect(mutations()).toBe(before + 1);
 		});
 

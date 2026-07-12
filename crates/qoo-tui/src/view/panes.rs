@@ -821,12 +821,11 @@ fn render_list_pane<T, C>(
     // Real-row index after which to splice an inert section divider (the QUEUE
     // ACTIVE/FINISHED break). `None` → no divider (tasks/worktrees always pass it).
     divider_after: Option<usize>,
-    // Per-row EXTRA hit registration, invoked with the row, its on-screen rect,
-    // and the resolved column ctx so a pane can register sub-rects the generic
-    // loop can't know about (the WORKTREES PR-link cell). Called AFTER the row's
-    // `Row` hit so an extra rect wins the reverse hit scan over the row beneath
-    // it. Queue/tasks pass a no-op.
-    extra_row_hits: impl Fn(&T, Rect, &C, &mut HitMap),
+    // Per-row POST-RENDER buffer decoration, invoked with the row, its on-screen
+    // rect, and the resolved column ctx so a pane can rewrite the freshly-drawn
+    // glyph cells the generic loop can't know about (the WORKTREES PR-cell OSC 8
+    // hyperlink). Called AFTER the paragraph paints. Queue/tasks pass a no-op.
+    decorate_row: impl Fn(&T, Rect, &C, &mut ratatui::buffer::Buffer),
 ) {
     let title = pane_title(title_base, sel);
     let (mut header, rects) =
@@ -957,7 +956,6 @@ fn render_list_pane<T, C>(
                 lines.push(line);
                 let row_rect = Rect { x: rows_area.x, y, width: rows_area.width, height: 1 };
                 hits.push(row_rect, HitTarget::Row(list_pane, idx));
-                extra_row_hits(&rows[idx], row_rect, &ctx, hits);
             }
             DisplayRow::Divider => {
                 // Inert: no hit target and no cursor position.
@@ -971,6 +969,21 @@ fn render_list_pane<T, C>(
         }
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), rows_area);
+
+    // Post-render row decoration (the WORKTREES PR-cell OSC 8 hyperlink). Runs
+    // AFTER the paragraph paints so it can rewrite the freshly-drawn glyph
+    // cells' symbols; queue/tasks pass a no-op. Scoped so the `buffer_mut`
+    // borrow is released before the throbber/scrollbar frame renders below.
+    {
+        let buf = frame.buffer_mut();
+        for vd in 0..visible {
+            if let DisplayRow::Row(idx) = &display[offset + vd] {
+                let row_rect =
+                    Rect { x: rows_area.x, y: rows_area.y + vd as u16, width: rows_area.width, height: 1 };
+                decorate_row(&rows[*idx], row_rect, &ctx, buf);
+            }
+        }
+    }
 
     // Throbbers over running rows (seeded from the wall clock so they animate on
     // the 1 s tick without App holding throbber state). Panes with no running
@@ -1162,24 +1175,18 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             spotlight && !c.searching[2],
             None, // worktrees pane has no section divider
             // PR-link cell: when the PR column is present and the row has BOTH a
-            // number and its url, register the `#<n>` sub-rect as a PrLink. The
-            // x comes from the shared `pr_col_x` (so it tracks the exact cell the
-            // line builder drew); the width is the visible `#<n>` glyph count.
-            |row, rect, layout, hits| {
+            // number and its url, wrap the painted `#<n>` glyphs in an OSC 8
+            // terminal hyperlink so cmd+click opens it (handled by the terminal,
+            // not the app). The x comes from the shared `pr_col_x` so it tracks
+            // the exact cell the line builder drew; the width is the visible
+            // `#<n>` glyph count. Rows without a url render an inert plain chip.
+            |row, rect, layout, buf| {
                 if layout.pr_w == 0 {
                     return;
                 }
-                if let (Some(n), Some(url)) = (row.pr_number, row.pr_url.clone()) {
+                if let (Some(n), Some(url)) = (row.pr_number, row.pr_url.as_deref()) {
                     let w = crate::selectors::clip(&format!("#{n}"), layout.pr_w).chars().count();
-                    hits.push(
-                        Rect {
-                            x: rect.x + layout.pr_col_x() as u16,
-                            y: rect.y,
-                            width: w as u16,
-                            height: 1,
-                        },
-                        HitTarget::PrLink(url),
-                    );
+                    crate::view::apply_osc8(buf, rect.x + layout.pr_col_x() as u16, rect.y, w as u16, url);
                 }
             },
         );

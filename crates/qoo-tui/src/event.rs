@@ -22,7 +22,9 @@ pub enum Event {
     Snapshot(StateSnapshot),
     Disconnected,
     Tick,
-    RunFiles { task_id: String, files: RunFiles },
+    /// Boxed: `RunFiles` carries the parsed run meta (~700 bytes), which would
+    /// otherwise dominate every `Event` (clippy::large_enum_variant).
+    RunFiles { task_id: String, files: Box<RunFiles> },
     Definitions { repo: String, defs: Vec<DefinitionSummary> },
     Definition { repo: String, name: String, def: Option<TaskDefinition> },
     /// Result of the on-demand `settings` RPC that backs the `s` overlay.
@@ -64,6 +66,12 @@ pub enum Cmd {
     /// [`Event::Settings`].
     FetchSettings,
     ReadRunFiles { task_id: String, tail_lines: usize, delay_ms: u64 },
+    /// Create a worktree via the `createWorktree` RPC (10-minute budget —
+    /// post-create `wt.toml` hooks routinely run for minutes), then, inside
+    /// tmux, auto-open a tmux window in the returned path (user request: no
+    /// manual open after a create). Outside tmux, or against an old daemon
+    /// whose reply carries no path, the open is silently skipped.
+    CreateWorktree { repo: String, name: String },
     OpenTmux { path: String },
     /// Resume a task's Claude session in a NEW tmux pane rooted at its worktree:
     /// `tmux split-window -c <path> 'claude --resume <session_id>'`. Fired by the
@@ -77,20 +85,6 @@ pub enum Cmd {
     /// synchronously on the UI thread before the next redraw, plus a best-effort
     /// `pbcopy` pipe on macOS. Fire-and-forget.
     CopyClipboard { text: String },
-    /// Open `url` in the user's default browser via the platform opener
-    /// (`open` on macOS, `xdg-open` elsewhere), spawned off the UI thread.
-    /// Fire-and-forget — a failed open is silently tolerated (mirrors the
-    /// `pbcopy` fallback in [`Cmd::CopyClipboard`]). Fired by a click on a PR
-    /// link ([`crate::hit::HitTarget::PrLink`]).
-    OpenUrl { url: String },
-    /// Set the terminal's mouse pointer shape: the hand cursor (`pointer:
-    /// true`, entering a clickable PR link — CSS `cursor: pointer`) or back to
-    /// the terminal default (leaving it). Best-effort OSC 22: xterm, kitty,
-    /// Ghostty and WezTerm honor it; a terminal without the extension (iTerm2,
-    /// today) ignores the sequence silently, which is fine — the link is still
-    /// underlined. Emitted by `Moved` routing ONLY on hover enter/leave
-    /// transitions, never per motion event.
-    SetPointerShape { pointer: bool },
     /// Arm the post-copy selection fade: after `delay_ms`, deliver
     /// [`Event::SelectionExpired`] carrying `epoch` so a selection started in
     /// the meantime survives (its epoch is newer).
@@ -219,22 +213,6 @@ pub async fn run_event_loop<B: ratatui::backend::Backend>(
     }
 }
 
-/// Write the OSC 22 pointer-shape escape: `pointer` → the hand cursor,
-/// `false` → the terminal's default arrow. Same BEL-terminated OSC framing
-/// (and same synchronous stdout write + flush) as the OSC 52 clipboard write
-/// in [`execute`]. Best-effort — unsupported terminals (iTerm2, today) drop
-/// the sequence silently. Public so terminal teardown (main's TerminalGuard
-/// and its panic hook) can force `default` on every exit path: the shape is
-/// terminal-GLOBAL state that outlives the process, and quitting mid-hover
-/// must never leave the user's shell with a hand cursor.
-pub fn write_pointer_shape(pointer: bool) {
-    use std::io::Write;
-    let shape = if pointer { "pointer" } else { "default" };
-    let mut out = std::io::stdout().lock();
-    let _ = write!(out, "\x1b]22;{shape}\x07");
-    let _ = out.flush();
-}
-
 /// Minimal standard base64 (RFC 4648, `+`/`/` alphabet, `=` padded) for the
 /// clipboard OSC 52 payload — kept local so the copy path pulls in no new crate.
 fn base64_encode(input: &[u8]) -> String {
@@ -266,6 +244,21 @@ async fn rpc_once(sock: &Path, call: &RpcCall, timeout_ms: u64) -> Result<serde_
     client
         .call(&call.method, call.params.clone(), Duration::from_millis(timeout_ms))
         .await
+}
+
+/// Open a tmux window rooted at `path`. Returns the status-line error text on
+/// failure, `None` on success — shared by the worktree menu's "Open in tmux
+/// window" action and the post-create auto-open.
+async fn open_tmux_window(path: &str) -> Option<String> {
+    let result = tokio::process::Command::new("tmux")
+        .args(["new-window", "-c", path])
+        .output()
+        .await;
+    match result {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim())),
+        Err(e) => Some(format!("tmux: {e}")),
+    }
 }
 
 /// Perform one Cmd on a detached tokio task; results come back as Events.
@@ -350,25 +343,46 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 // Task 10 lands the real tail/report reader.
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 let files = crate::runfiles::read_run_files(&runs_dir, &task_id, tail_lines).await;
-                let _ = tx.send(Event::RunFiles { task_id, files });
+                let _ = tx.send(Event::RunFiles { task_id, files: Box::new(files) });
+            });
+        }
+        Cmd::CreateWorktree { repo, name } => {
+            tokio::spawn(async move {
+                let call = RpcCall {
+                    method: "createWorktree".into(),
+                    params: serde_json::json!({ "repo": repo, "name": name }),
+                };
+                let result = rpc_once(&sock, &call, 600_000).await;
+                let status = match &result {
+                    Ok(_) => None,
+                    Err(e) => Some(format!("create worktree {name}: {e}")),
+                };
+                let failed = status.is_some();
+                let _ = tx.send(Event::ActionResult { status, invalidate_defs_for: None });
+                if failed || std::env::var_os("TMUX").is_none() {
+                    return; // outside tmux: same silent gate as the menu action
+                }
+                let Some(path) = result
+                    .ok()
+                    .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(str::to_string))
+                else {
+                    return; // old daemon replied `true` — no path to open
+                };
+                if let Some(status) = open_tmux_window(&path).await {
+                    let _ = tx.send(Event::ActionResult {
+                        status: Some(status),
+                        invalidate_defs_for: None,
+                    });
+                }
             });
         }
         Cmd::OpenTmux { path } => {
             tokio::spawn(async move {
-                let result = tokio::process::Command::new("tmux")
-                    .args(["new-window", "-c", &path])
-                    .output()
-                    .await;
-                let status = match result {
-                    Ok(out) if out.status.success() => None,
-                    Ok(out) => Some(format!(
-                        "tmux: {}",
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    )),
-                    Err(e) => Some(format!("tmux: {e}")),
-                };
-                if status.is_some() {
-                    let _ = tx.send(Event::ActionResult { status, invalidate_defs_for: None });
+                if let Some(status) = open_tmux_window(&path).await {
+                    let _ = tx.send(Event::ActionResult {
+                        status: Some(status),
+                        invalidate_defs_for: None,
+                    });
                 }
             });
         }
@@ -433,23 +447,6 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                     let _ = child.wait().await;
                 }
             });
-        }
-        Cmd::OpenUrl { url } => {
-            // Hand the URL to the platform opener off-thread — `open` on macOS,
-            // `xdg-open` on every other target. Best-effort like the `pbcopy`
-            // fallback above: a missing opener or non-zero exit is dropped (no UI
-            // surface), so a click never blocks or errors the pane.
-            tokio::spawn(async move {
-                let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-                let _ = tokio::process::Command::new(opener).arg(&url).output().await;
-            });
-        }
-        Cmd::SetPointerShape { pointer } => {
-            // Written on the calling (UI) thread, not a spawned task, for the
-            // same reason as the OSC 52 clipboard write above: execute() runs
-            // before the frame redraw, so the escape lands cleanly between
-            // crossterm's draw bytes rather than interleaving with them.
-            write_pointer_shape(pointer);
         }
         Cmd::ExpireSelection { epoch, delay_ms } => {
             // The 1s post-copy fade: sleep off-thread, then hand the epoch back

@@ -29,12 +29,19 @@ pub enum LineCtx {
     Config { key_col: usize },
     /// A queue-style task row in the worktree detail's lane-task list. The line
     /// text is the task's display NAME (def name or prompt summary); the ctx
-    /// carries the pieces the styler needs to render a `glyph name … age` row
-    /// like the queue pane: `glyph` (status, colored by `glyph_style`), `is_def`
-    /// (mauve name vs fg summary), the right-pinned relative `age`, and whether
-    /// this is the detail row cursor (`selected` → the whole row inverts with the
-    /// palette selection style). See [`style_lane_task_line`].
-    LaneTask { glyph: char, is_def: bool, age: String, selected: bool },
+    /// carries the pieces the styler needs to render a
+    /// `glyph name … Created Age Live` row like the queue pane: `glyph` (status,
+    /// colored by `glyph_style`), `is_def` (mauve name vs fg summary), the fixed
+    /// right-aligned `created` (absolute local time) / `age` (relative) / `live`
+    /// (elapsed for running, `#N in lane` for queued, else empty) columns, and
+    /// whether this is the detail row cursor (`selected` → the whole row inverts
+    /// with the palette selection style). See [`style_lane_task_line`].
+    LaneTask { glyph: char, is_def: bool, created: String, age: String, live: String, selected: bool },
+    /// The column-header row above the worktree detail's lane-task list —
+    /// `Task Created Age Live` in the pane's de-emphasis dim, aligned cell-for-cell
+    /// with [`LineCtx::LaneTask`] (no header over the leading glyph slot). Chrome,
+    /// never a cursor row. See [`style_lane_header_line`].
+    LaneHeader,
 }
 
 /// One cheap pass over the full transcript classifying each line. A line whose
@@ -148,7 +155,8 @@ pub fn wrap_lines(lines: &[String], ctxs: &[LineCtx], width: usize) -> Vec<Displ
         // Fence delimiters, lane-task rows (self-truncating in the styler), and
         // already-fitting/empty lines pass through as one segment. `str_width("")
         // == 0 <= width` folds the empty case in here.
-        if matches!(ctx, LineCtx::Fence { .. } | LineCtx::LaneTask { .. }) || str_width(line) <= width
+        if matches!(ctx, LineCtx::Fence { .. } | LineCtx::LaneTask { .. } | LineCtx::LaneHeader)
+            || str_width(line) <= width
         {
             out.push(DisplayLine { text: line.clone(), ctx: ctx.clone(), is_continuation: false });
             continue;
@@ -275,25 +283,32 @@ pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette)
         LineCtx::Fence { lang } => fence_rule(lang.as_deref(), width, p),
         LineCtx::Fenced { lang } => apply_jinja(style_fenced(line, lang, p), p),
         LineCtx::Config { key_col } => style_config_line(line, *key_col, p),
-        LineCtx::LaneTask { glyph, is_def, age, selected } => {
-            style_lane_task_line(line, *glyph, *is_def, age, *selected, width, p)
+        LineCtx::LaneTask { glyph, is_def, created, age, live, selected } => {
+            style_lane_task_line(line, *glyph, *is_def, created, age, live, *selected, width, p)
         }
+        LineCtx::LaneHeader => style_lane_header_line(width, p),
     }
 }
 
 /// Style a queue-style lane-task row (see [`LineCtx::LaneTask`]): a status glyph
 /// (colored by [`crate::view::theme::glyph_style`]), the task NAME (`line`) in
-/// mauve for a definition or fg for a prompt summary, and the relative `age`
-/// right-pinned in `info`. The name is clipped so the glyph + name + age always
-/// fit `width` (the age is never pushed off-screen). When `selected` the whole
-/// row inverts with the palette selection style — the detail row cursor. Every
-/// char lands in exactly one contiguous span so the cell-column selection patch
-/// keeps working. `width == 0` yields an empty line.
+/// mauve for a definition or fg for a prompt summary, then the fixed right-aligned
+/// `created` / `age` columns (both `info` teal, like the queue pane's timestamp
+/// and age) and the `live` column (warn, the "now" slot — `⏱ <elapsed>` for a
+/// running task, `#N in lane` for a queued one, blank otherwise). Columns fit
+/// `width` via [`crate::selectors::lane_task_cols`], degrading trailing columns
+/// before the name so nothing is pushed off-screen. When `selected` the whole row
+/// inverts with the palette selection style — the detail row cursor. Every char
+/// lands in exactly one contiguous span so the cell-column selection patch keeps
+/// working. `width == 0` yields an empty line.
+#[allow(clippy::too_many_arguments)]
 fn style_lane_task_line(
     name: &str,
     glyph: char,
     is_def: bool,
+    created: &str,
     age: &str,
+    live: &str,
     selected: bool,
     width: u16,
     p: &Palette,
@@ -302,26 +317,76 @@ fn style_lane_task_line(
     if width == 0 {
         return Line::from(String::new());
     }
+    let cols = crate::selectors::lane_task_cols(width);
     let name_style = Style::default().fg(if is_def { p.mauve } else { p.fg });
-    let age_w = str_width(age);
-    // After the 2-cell `glyph ` prefix, reserve the age column + a 1-cell gap; the
-    // name fills whatever remains (clipped/padded to that exact width).
-    let avail = width.saturating_sub(2);
-    let name_col = avail.saturating_sub(age_w + 1);
+    let gap = " ".repeat(crate::selectors::COL_GAP);
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled(glyph.to_string(), crate::view::theme::glyph_style(glyph, p)),
         Span::raw(" "),
     ];
-    if name_col > 0 {
-        spans.push(Span::styled(crate::selectors::pad_clip(name, name_col), name_style));
-        spans.push(Span::raw(" "));
+    if cols.name_w > 0 {
+        spans.push(Span::styled(crate::selectors::pad_clip(name, cols.name_w), name_style));
     }
-    spans.push(Span::styled(age.to_string(), Style::default().fg(p.info)));
+    if cols.created_w > 0 {
+        spans.push(Span::raw(gap.clone()));
+        spans.push(Span::styled(
+            crate::selectors::pad_clip(created, cols.created_w),
+            Style::default().fg(p.info),
+        ));
+    }
+    if cols.age_w > 0 {
+        spans.push(Span::raw(gap.clone()));
+        spans.push(Span::styled(
+            crate::selectors::pad_clip(age, cols.age_w),
+            Style::default().fg(p.info),
+        ));
+    }
+    if cols.live_w > 0 {
+        spans.push(Span::raw(gap));
+        // Blank live cells render as raw padding so the reserved column stays
+        // aligned but reads as absent (not a warn-colored empty run).
+        let style = if live.is_empty() { Style::default() } else { Style::default().fg(p.warn) };
+        spans.push(Span::styled(crate::selectors::pad_clip(live, cols.live_w), style));
+    }
     if selected {
         let sel = p.selection();
         for span in spans.iter_mut() {
             span.style = span.style.patch(sel);
         }
+    }
+    Line::from(spans)
+}
+
+/// Style the lane-task list's column-header row (see [`LineCtx::LaneHeader`]):
+/// `Task Created Age Live` in the pane's de-emphasis dim, laid out with the SAME
+/// [`crate::selectors::lane_task_cols`] widths as [`style_lane_task_line`] so the
+/// labels sit over their columns (no label over the leading glyph slot). Never
+/// selected-style — it is chrome, not a cursor row. `width == 0` yields an empty
+/// line.
+fn style_lane_header_line(width: u16, p: &Palette) -> Line<'static> {
+    let width = width as usize;
+    if width == 0 {
+        return Line::from(String::new());
+    }
+    let cols = crate::selectors::lane_task_cols(width);
+    let gap = " ".repeat(crate::selectors::COL_GAP);
+    let dim = p.dim_style();
+    // Two-cell glyph slot (glyph + space), no header text over it.
+    let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+    if cols.name_w > 0 {
+        spans.push(Span::styled(crate::selectors::pad_clip("Task", cols.name_w), dim));
+    }
+    if cols.created_w > 0 {
+        spans.push(Span::raw(gap.clone()));
+        spans.push(Span::styled(crate::selectors::pad_clip("Created", cols.created_w), dim));
+    }
+    if cols.age_w > 0 {
+        spans.push(Span::raw(gap.clone()));
+        spans.push(Span::styled(crate::selectors::pad_clip("Age", cols.age_w), dim));
+    }
+    if cols.live_w > 0 {
+        spans.push(Span::raw(gap));
+        spans.push(Span::styled(crate::selectors::pad_clip("Live", cols.live_w), dim));
     }
     Line::from(spans)
 }
@@ -1566,5 +1631,152 @@ mod tests {
             &p,
         ));
         assert_eq!(got, vec![("fn main() {}".into(), plain())]);
+    }
+
+    // ---- lane-task rows + header (worktree detail list) --------------------
+
+    /// Concatenated text of every span, so column alignment can be asserted by
+    /// substring/offset without depending on exact span boundaries.
+    fn flat(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn info(p: &Palette) -> Style {
+        Style::default().fg(p.info)
+    }
+    fn dim(p: &Palette) -> Style {
+        p.dim_style()
+    }
+
+    #[test]
+    fn lane_task_row_lays_out_name_created_age_and_live_columns() {
+        let p = Palette::default();
+        let line = style_transcript_line(
+            "squash-merge",
+            &LineCtx::LaneTask {
+                glyph: '▶',
+                is_def: true,
+                created: "07/09 07:00".into(),
+                age: "just now".into(),
+                live: "⏱ 3m12s".into(),
+                selected: false,
+            },
+            60,
+            &p,
+        );
+        let got = flat(&line);
+        // Glyph leads; def name is mauve; created/age read teal; live reads warn.
+        assert!(got.starts_with("▶ squash-merge"), "glyph + name lead: {got:?}");
+        assert!(got.contains("07/09 07:00"), "created column present");
+        assert!(got.contains("just now"), "age column present");
+        assert!(got.contains("⏱ 3m12s"), "live column present");
+        let styled: Vec<(String, Style)> = parts(&line);
+        assert!(styled.iter().any(|(t, s)| t.starts_with("squash-merge") && *s == mauve(&p)));
+        assert!(styled.iter().any(|(t, s)| t.contains("07/09 07:00") && *s == info(&p)));
+        assert!(styled.iter().any(|(t, s)| t.contains("just now") && *s == info(&p)));
+        assert!(styled.iter().any(|(t, s)| t.contains("⏱ 3m12s") && *s == warn(&p)));
+    }
+
+    #[test]
+    fn lane_task_row_blank_live_is_plain_not_warn() {
+        let p = Palette::default();
+        // A finished task has an empty live cell — it must render as raw padding
+        // (plain), never a warn-colored blank run.
+        let line = style_transcript_line(
+            "flaky migration",
+            &LineCtx::LaneTask {
+                glyph: '✗',
+                is_def: false,
+                created: "07/09 07:00".into(),
+                age: "3d ago".into(),
+                live: String::new(),
+                selected: false,
+            },
+            60,
+            &p,
+        );
+        let styled = parts(&line);
+        assert!(
+            !styled.iter().any(|(_, s)| *s == warn(&p)),
+            "no warn span when the live cell is empty"
+        );
+        // Non-def name is fg, not mauve.
+        let fg = Style::default().fg(p.fg);
+        assert!(styled.iter().any(|(t, s)| t.starts_with("flaky migration") && *s == fg));
+    }
+
+    #[test]
+    fn lane_task_row_selected_inverts_every_span() {
+        let p = Palette::default();
+        let sel = p.selection();
+        let line = style_transcript_line(
+            "squash-merge",
+            &LineCtx::LaneTask {
+                glyph: '○',
+                is_def: true,
+                created: "07/09 07:04".into(),
+                age: "just now".into(),
+                live: "#1 in lane".into(),
+                selected: true,
+            },
+            60,
+            &p,
+        );
+        // Every span carries the selection patch (the whole row inverts).
+        for span in &line.spans {
+            assert_eq!(span.style, span.style.patch(sel), "span {:?} not selected", span.content);
+        }
+    }
+
+    #[test]
+    fn lane_header_row_labels_columns_in_dim_over_the_glyph_slot() {
+        let p = Palette::default();
+        let line = style_transcript_line("Task", &LineCtx::LaneHeader, 60, &p);
+        let got = flat(&line);
+        // No label over the 2-cell glyph slot; the four labels sit over columns.
+        assert!(got.starts_with("  Task"), "glyph slot is blank, Task leads: {got:?}");
+        for label in ["Task", "Created", "Age", "Live"] {
+            assert!(got.contains(label), "{label} header present");
+        }
+        // Header labels are chrome → dim; nothing renders selected.
+        let styled = parts(&line);
+        assert!(styled.iter().any(|(t, s)| t.contains("Created") && *s == dim(&p)));
+        assert!(styled.iter().any(|(t, s)| t.contains("Live") && *s == dim(&p)));
+    }
+
+    #[test]
+    fn lane_header_aligns_cell_for_cell_with_a_row() {
+        // The header's column starts must equal the row's — same `lane_task_cols`
+        // width drives both. Assert the `Created`/`Age`/`Live` labels begin at the
+        // exact cell offsets the row's values begin at.
+        let p = Palette::default();
+        let width = 60;
+        let header = flat(&style_transcript_line("Task", &LineCtx::LaneHeader, width, &p));
+        let row = flat(&style_transcript_line(
+            "squash-merge",
+            &LineCtx::LaneTask {
+                glyph: '▶',
+                is_def: true,
+                created: "07/09 07:00".into(),
+                age: "just now".into(),
+                live: "#1 in lane".into(),
+                selected: false,
+            },
+            width,
+            &p,
+        ));
+        let cols = crate::selectors::lane_task_cols(width as usize);
+        // Column start offsets (in chars, all ASCII here): glyph slot(2) + name +
+        // gap, then +created+gap, then +age+gap.
+        let created_at = 2 + cols.name_w + crate::selectors::COL_GAP;
+        let age_at = created_at + cols.created_w + crate::selectors::COL_GAP;
+        let live_at = age_at + cols.age_w + crate::selectors::COL_GAP;
+        let at = |s: &str, n: usize| s.chars().skip(n).collect::<String>();
+        assert!(at(&header, created_at).starts_with("Created"));
+        assert!(at(&row, created_at).starts_with("07/09 07:00"));
+        assert!(at(&header, age_at).starts_with("Age"));
+        assert!(at(&row, age_at).starts_with("just now"));
+        assert!(at(&header, live_at).starts_with("Live"));
+        assert!(at(&row, live_at).starts_with("#1 in lane"));
     }
 }

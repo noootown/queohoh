@@ -206,12 +206,12 @@ fn wants_tick_false_with_only_queued_tasks() {
 // -- Task 10: run-file wiring --------------------------------------------
 use crate::runfiles::RunFiles;
 
-fn run_files_fixture() -> RunFiles {
-    RunFiles {
+fn run_files_fixture() -> Box<RunFiles> {
+    Box::new(RunFiles {
         transcript_tail: (0..5).map(|i| format!("line {i}")).collect(),
         report: vec!["# ok".to_string()],
         ..Default::default()
-    }
+    })
 }
 
 #[test]
@@ -255,7 +255,7 @@ fn identical_run_files_do_not_dirty_but_still_repoll() {
 #[test]
 fn changed_run_files_dirty_and_commit() {
     let mut app = crate::test_fixtures::fixture_app();
-    app.run_files = Some(("01RUN".to_string(), RunFiles::default()));
+    app.run_files = Some(("01RUN".to_string(), Box::default()));
     let up = app.update(Event::RunFiles {
         task_id: "01RUN".into(),
         files: run_files_fixture(),
@@ -1143,59 +1143,6 @@ fn scrollbar_drag_up_does_not_emit_save() {
     let up = app.update(mouse(MouseEventKind::Up(MouseButton::Left), 30, 5));
     assert_eq!(app.drag, None);
     assert!(!up.cmds.iter().any(|c| matches!(c, Cmd::SaveLayout { .. })));
-}
-
-#[test]
-fn moved_over_pr_link_sets_pointer_shape_on_transitions_only() {
-    // Synthetic hit map: one PrLink rect. Hover routing must emit
-    // SetPointerShape exactly once per enter/leave TRANSITION — never per
-    // motion event — and a hover transition never dirties (no cell changes).
-    let mut app = crate::test_fixtures::fixture_app();
-    let mut hits = crate::hit::HitMap::new();
-    hits.push(
-        Rect { x: 5, y: 3, width: 4, height: 1 },
-        HitTarget::PrLink("https://github.com/o/r/pull/7".into()),
-    );
-    app.hit = hits;
-
-    // Enter the link: exactly one pointer:true, no redraw.
-    let u = app.update(mouse(MouseEventKind::Moved, 6, 3));
-    assert!(!u.dirty, "hover transitions never redraw");
-    assert_eq!(u.cmds, vec![Cmd::SetPointerShape { pointer: true }]);
-    assert!(app.hovering_link);
-    // Further motion WITHIN the link: silent (no per-motion spam).
-    let u = app.update(mouse(MouseEventKind::Moved, 7, 3));
-    assert!(!u.dirty);
-    assert!(u.cmds.is_empty(), "no Cmd while hover state is unchanged");
-    // Leave the link: exactly one pointer:false.
-    let u = app.update(mouse(MouseEventKind::Moved, 0, 0));
-    assert!(!u.dirty);
-    assert_eq!(u.cmds, vec![Cmd::SetPointerShape { pointer: false }]);
-    assert!(!app.hovering_link);
-    // Motion while off the link: silent.
-    let u = app.update(mouse(MouseEventKind::Moved, 1, 0));
-    assert!(u.cmds.is_empty());
-}
-
-#[test]
-fn moved_over_pr_link_ignored_while_an_overlay_is_open() {
-    // Overlays own clicks, so a link behind one is not clickable and must not
-    // read as such: Moved over the PrLink rect in a non-List mode stays
-    // default-pointer. The next Moved AFTER the overlay closes re-enters.
-    let mut app = crate::test_fixtures::fixture_app();
-    let mut hits = crate::hit::HitMap::new();
-    hits.push(
-        Rect { x: 5, y: 3, width: 4, height: 1 },
-        HitTarget::PrLink("https://github.com/o/r/pull/7".into()),
-    );
-    app.hit = hits;
-    app.mode = Mode::Help;
-    let u = app.update(mouse(MouseEventKind::Moved, 6, 3));
-    assert!(u.cmds.is_empty(), "no hand cursor while an overlay is open");
-    assert!(!app.hovering_link);
-    app.mode = Mode::List;
-    let u = app.update(mouse(MouseEventKind::Moved, 6, 3));
-    assert_eq!(u.cmds, vec![Cmd::SetPointerShape { pointer: true }]);
 }
 
 #[test]

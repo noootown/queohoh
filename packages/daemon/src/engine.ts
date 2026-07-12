@@ -47,8 +47,11 @@ interface GitEnrichment {
  * (they're per-repo facts, fetched once per sweep, not per worktree). */
 type GitCommitFacts = Omit<GitEnrichment, "prNumber" | "prUrl">;
 
-/** Serve last-known enrichment for a worktree this long before re-shelling git. */
-const GIT_ENRICH_TTL_MS = 60_000;
+/** Serve last-known enrichment for a worktree this long before re-shelling git.
+ * 10s keeps the dirty marker near-live (user request; was 60s) — the sweep is
+ * single-flighted and two cheap git commands per worktree, so the churn is
+ * negligible at a dozen worktrees. */
+const GIT_ENRICH_TTL_MS = 10_000;
 
 export interface EngineDeps {
 	store: QueueStore;
@@ -188,15 +191,18 @@ export class Engine {
 	 * resolver IO (`wt switch -c`) and invalidates the cache so the next snapshot
 	 * lists it. No busy-guard — creation can't collide with a running task.
 	 */
-	async createWorktree(repo: string, name: string): Promise<void> {
+	/** Returns the created worktree's absolute path (the TUI opens a tmux
+	 * window there after a create). */
+	async createWorktree(repo: string, name: string): Promise<string> {
 		const repoPath = this.repoPath(repo);
 		if (repoPath === null) throw new Error(`unknown repo: ${repo}`);
 		const list = await this.deps.resolverIO.listWorktrees(repoPath);
 		if (list.some((w) => w.branch === name || w.name === `${repo}.${name}`)) {
 			throw new Error(`worktree already exists: ${name}`);
 		}
-		await this.deps.resolverIO.spawnWorktree(repoPath, name);
+		const spawned = await this.deps.resolverIO.spawnWorktree(repoPath, name);
 		this.worktreeCache.delete(repo);
+		return spawned.path;
 	}
 
 	private repoPath(repo: string): string | null {

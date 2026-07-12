@@ -9,7 +9,8 @@ pub mod settings;
 pub mod tabbar;
 pub mod theme;
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
@@ -274,6 +275,55 @@ pub(crate) fn window_start(len: usize, cursor: usize, capacity: usize) -> usize 
     crate::selectors::window_rows(len, cursor, capacity).0
 }
 
+/// Wrap the `width` glyph cells beginning at `(x, y)` in an [OSC 8] terminal
+/// hyperlink to `url`. The visible glyphs are unchanged; the emitted byte
+/// stream gains a zero-width opener before them and a closer after, so a
+/// terminal that supports OSC 8 (Ghostty, iTerm2, kitty, WezTerm) turns the
+/// chip into a real link. cmd+hover (pointer cursor) and cmd+click (open) are
+/// the TERMINAL's job — handled natively even while mouse reporting is on,
+/// because cmd bypasses the app's mouse capture and the cmd modifier is not
+/// even representable in the xterm mouse protocol. The app therefore never sees
+/// these clicks; a plain (no-cmd) click falls through to normal row selection.
+///
+/// Call this AFTER the cells are painted — it reads their symbols and rewrites
+/// them. Technique: a terminal prints a cell's symbol verbatim, so the whole
+/// link (opener + every glyph + closer) is folded into the FIRST cell's symbol
+/// and the remaining glyph cells are `set_skip`ped. The explicit skips are
+/// required because `Buffer::diff` only skips ONE cell after a wide symbol (its
+/// `to_skip` resets each iteration); without them the later glyph cells would
+/// re-print at the wrong column. The next real cell after the chip is
+/// non-consecutive, so the backend re-anchors it with an absolute MoveTo and
+/// the columns to the right are unaffected.
+///
+/// [OSC 8]: https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
+pub fn apply_osc8(buf: &mut Buffer, x: u16, y: u16, width: u16, url: &str) {
+    if width == 0 {
+        return;
+    }
+    // The glyphs already painted into the chip cells — wrap exactly what shows.
+    let mut text = String::new();
+    for i in 0..width {
+        if let Some(cell) = buf.cell(Position { x: x.saturating_add(i), y }) {
+            text.push_str(cell.symbol());
+        }
+    }
+    if text.is_empty() {
+        return;
+    }
+    // OSC 8 opener `ESC ] 8 ; ; URL ST`, the glyphs, then the closer
+    // `ESC ] 8 ; ; ST`, where ST is `ESC \`. All folded into the first cell.
+    let link = format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\");
+    if let Some(cell) = buf.cell_mut(Position { x, y }) {
+        cell.set_symbol(&link);
+    }
+    // Hide the remaining glyph cells so they are never re-emitted (see doc).
+    for i in 1..width {
+        if let Some(cell) = buf.cell_mut(Position { x: x.saturating_add(i), y }) {
+            cell.set_skip(true);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +343,29 @@ mod tests {
             })
             .unwrap();
         (terminal, hits)
+    }
+
+    #[test]
+    fn apply_osc8_folds_link_into_first_cell_and_skips_the_rest() {
+        const URL: &str = "https://github.com/acme/acme/pull/77";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+        // Paint "#77" starting at x=2, one glyph per cell.
+        for (i, ch) in "#77".chars().enumerate() {
+            buf[(2 + i as u16, 0)].set_symbol(&ch.to_string());
+        }
+        apply_osc8(&mut buf, 2, 0, 3, URL);
+        // (a) first cell carries the full OSC 8 wrap around the glyphs.
+        let s = buf[(2, 0)].symbol();
+        assert!(s.starts_with(&format!("\x1b]8;;{URL}\x1b\\")), "opener present: {s:?}");
+        assert!(s.contains("#77"), "glyphs preserved: {s:?}");
+        assert!(s.ends_with("\x1b]8;;\x1b\\"), "closer present: {s:?}");
+        // (b) the following two glyph cells are skipped so they never re-emit.
+        assert!(buf[(3, 0)].skip, "second glyph cell skipped");
+        assert!(buf[(4, 0)].skip, "third glyph cell skipped");
+        // (c) width == 0 is inert — an untouched cell keeps its symbol.
+        let before = buf[(6, 0)].symbol().to_string();
+        apply_osc8(&mut buf, 6, 0, 0, URL);
+        assert_eq!(buf[(6, 0)].symbol(), before, "zero width leaves the cell untouched");
     }
 
     #[test]
@@ -525,10 +598,11 @@ mod tests {
     }
 
     #[test]
-    fn worktrees_pane_pr_cell_registers_link_where_it_renders() {
-        // A worktree with BOTH a PR number and its url gets a clickable `#<n>`
-        // cell in the WORKTREES PR column; the hit rect lands on the rendered
-        // text. A wide left column keeps the PR column past the width ladder.
+    fn worktrees_pane_pr_cell_is_an_osc8_link() {
+        // A worktree with BOTH a PR number and its url gets its `#<n>` PR cell
+        // wrapped in an OSC 8 terminal hyperlink (the app no longer registers a
+        // click target for it — the terminal handles cmd+click). A wide left
+        // column keeps the PR column past the width ladder.
         let mut app = fixture_app();
         let url = "https://github.com/acme/acme/pull/77".to_string();
         if let Some(w) = app
@@ -542,26 +616,37 @@ mod tests {
         }
         app.left_cols = Some(110);
         let (terminal, hits) = render_at(&app, 140, 30);
-        let (rect, target) = hits
-            .iter()
-            .find(|(_, t)| matches!(t, HitTarget::PrLink(_)))
-            .expect("PR link registered in the worktrees pane");
-        assert_eq!(*target, HitTarget::PrLink(url));
-        assert_eq!(rect.width, 3, "#77 is three glyphs");
-        // The hit's first cell is the `#` of `#77` as actually painted, and the
-        // clickable cell reads as a link (underlined — the same affordance as
-        // the detail info tab's pr value); the pad past `#77` stays bare.
         let buf = terminal.backend().buffer();
-        assert_eq!(buf[(rect.x, rect.y)].symbol(), "#", "hit lands on the rendered #77");
+        let opener = format!("\x1b]8;;{url}\x1b\\");
+        // Exactly one cell carries the OSC 8 link (folded into the first glyph).
+        let mut found: Option<(u16, u16)> = None;
+        let mut count = 0usize;
+        for y in buf.area.y..buf.area.bottom() {
+            for x in buf.area.x..buf.area.right() {
+                if buf[(x, y)].symbol().contains(&opener) {
+                    count += 1;
+                    found = Some((x, y));
+                }
+            }
+        }
+        assert_eq!(count, 1, "exactly one OSC 8 link cell in the pane");
+        let (x, y) = found.expect("OSC 8 link cell present");
+        let sym = buf[(x, y)].symbol();
+        assert!(sym.contains("#77"), "the wrapped glyphs are #77: {sym:?}");
+        assert!(sym.ends_with("\x1b]8;;\x1b\\"), "closer present: {sym:?}");
+        // The link affordance (underline) is preserved on the first cell.
         assert!(
-            buf[(rect.x, rect.y)].modifier.contains(ratatui::style::Modifier::UNDERLINED),
-            "clickable #77 is underlined"
+            buf[(x, y)].modifier.contains(ratatui::style::Modifier::UNDERLINED),
+            "the #77 link cell is underlined"
         );
+        // A plain (no-cmd) click falls through to row selection: a Worktrees Row
+        // hit still covers that cell.
         assert!(
-            !buf[(rect.x + rect.width, rect.y)]
-                .modifier
-                .contains(ratatui::style::Modifier::UNDERLINED),
-            "the pad cell past #77 is not underlined"
+            hits.iter().any(|(rect, t)| matches!(
+                t,
+                HitTarget::Row(crate::app::ListPane::Worktrees, _)
+            ) && rect.contains(ratatui::layout::Position { x, y })),
+            "a Worktrees Row hit covers the PR cell so a plain click selects the row"
         );
     }
 

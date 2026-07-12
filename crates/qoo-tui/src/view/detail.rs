@@ -259,7 +259,7 @@ fn run_info_lines(
 /// locate its (in-practice-unwrapped) display segment by an exact match — a
 /// wrap simply declines the link. `value_col` is the shared aligned value
 /// column; `value_len` the `#<n>` char width (the clickable span).
-struct PrLink {
+struct PrLinkGeom {
     line_text: String,
     value_col: usize,
     value_len: usize,
@@ -270,13 +270,13 @@ fn worktree_pr_link(
     row: &crate::selectors::WorktreeRow,
     now_epoch_s: u64,
     tz_offset_s: i32,
-) -> Option<PrLink> {
+) -> Option<PrLinkGeom> {
     let number = row.pr_number?;
     let url = row.pr_url.clone().filter(|u| !u.is_empty())?;
     let rows = worktree_rows(row, now_epoch_s, tz_offset_s);
     let idx = rows.iter().position(|(k, _)| *k == "pr")?;
     let (lines, key_col) = align_kv(&rows);
-    Some(PrLink {
+    Some(PrLinkGeom {
         line_text: lines.get(idx)?.clone(),
         value_col: key_col,
         value_len: format!("#{number}").chars().count(),
@@ -344,18 +344,38 @@ pub(crate) fn content_for(
                 lines.push("(none)".to_string());
                 ctxs.push(LineCtx::Text);
             } else {
+                // Dim column-header row above the list (chrome, never a cursor
+                // row). Its line text is a non-empty placeholder — the styler
+                // regenerates the whole header from the width — because an empty
+                // line short-circuits to a blank row in the renderer.
+                lines.push("Task".to_string());
+                ctxs.push(LineCtx::LaneHeader);
                 // The row cursor always renders selected-style; clamp it so a
                 // shrunk list still shows a highlighted row (design choice: the
                 // detail pane has no separate focus concept, so the cursor row is
-                // always visibly selected in the worktree view).
+                // always visibly selected in the worktree view). `detail_row`
+                // indexes `lane_tasks`, so the header line above does not shift it.
                 let sel = detail_row.min(lane_tasks.len() - 1);
+                // `#N in lane` counts queued tasks in creation order; `lane_tasks`
+                // is already creation-ordered within the queued rank (ascending
+                // id), so a running counter over the list yields each queued task's
+                // position — matching the queue pane's snapshot-order count.
+                let mut queued_seen = 0usize;
                 for (i, t) in lane_tasks.iter().enumerate() {
                     let (glyph, name, is_def, epoch) = crate::selectors::lane_task_display(t);
+                    let queue_pos = if t.status == TaskStatus::Queued {
+                        queued_seen += 1;
+                        queued_seen
+                    } else {
+                        0
+                    };
                     lines.push(name);
                     ctxs.push(LineCtx::LaneTask {
                         glyph,
                         is_def,
+                        created: crate::selectors::absolute_local_label(epoch, tz_offset_s),
                         age: crate::selectors::relative_age_label(epoch, now_epoch_s),
+                        live: crate::selectors::lane_task_live(t, now_epoch_s, queue_pos),
                         selected: i == sel,
                     });
                 }
@@ -551,7 +571,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     };
     let run_files = match &ctx {
         DetailContext::Run { task } => {
-            app.run_files.as_ref().filter(|(id, _)| id == &task.id).map(|(_, f)| f)
+            app.run_files.as_ref().filter(|(id, _)| id == &task.id).map(|(_, f)| f.as_ref())
         }
         _ => None,
     };
@@ -613,9 +633,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     // Worktree info block: the `pr #<n>` value is a clickable browser link when
     // the row carries an open PR and its url. Locate the pr line among the
     // (unwrapped-in-practice) Config display segments by an exact text match — a
-    // wrap declines the link — underline the `#<n>` in link teal, and register a
-    // PrLink hit ONLY while the line sits inside the visible window. Registered
-    // after the detail `PaneBody` so it wins the reverse hit scan.
+    // wrap declines the link — underline the `#<n>` in link teal (pre-render),
+    // and stash its geometry+url for a post-render OSC 8 injection ONLY while the
+    // line sits inside the visible window.
+    let mut pr_osc8: Option<(u16, u16, u16, String)> = None;
     if let DetailContext::Worktree { row, .. } = &ctx
         && let Some(link) = worktree_pr_link(row, app.now_epoch_s, tz_offset)
         && let Some(seg) = display
@@ -632,15 +653,12 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         let hi = link.value_col + link.value_len - 1;
         let link_style = Style::default().fg(p.info).add_modifier(Modifier::UNDERLINED);
         styled[vis] = patch_line_cols(&styled[vis], lo, hi, link_style);
-        hits.push(
-            Rect {
-                x: content_area.x + link.value_col as u16,
-                y: content_area.y + vis as u16,
-                width: link.value_len as u16,
-                height: 1,
-            },
-            HitTarget::PrLink(link.url),
-        );
+        pr_osc8 = Some((
+            content_area.x + link.value_col as u16,
+            content_area.y + vis as u16,
+            link.value_len as u16,
+            link.url,
+        ));
     }
     // Overlay the mouse text selection (anchored to ABSOLUTE display-line indices,
     // so it stays put as the window scrolls) with the palette selection style.
@@ -666,6 +684,13 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         lines: display.iter().map(|d| d.text.clone()).collect(),
     });
     frame.render_widget(Paragraph::new(Text::from(styled)), content_area);
+
+    // Wrap the freshly-painted `#<n>` pr value in an OSC 8 terminal hyperlink
+    // (cmd+click opens it — the terminal handles it, not the app). Must run
+    // after the paragraph paints so it rewrites the drawn glyph cells.
+    if let Some((x, y, w, url)) = pr_osc8 {
+        crate::view::apply_osc8(frame.buffer_mut(), x, y, w, &url);
+    }
 
     // Scrollbar over the content region.
     if has_scrollbar {
@@ -714,7 +739,7 @@ mod tests {
         let mut app = fixture_app();
         app.run_files = Some((
             "01RUN".to_string(),
-            RunFiles { transcript_tail: transcript, report: vec![], ..Default::default() },
+            Box::new(RunFiles { transcript_tail: transcript, report: vec![], ..Default::default() }),
         ));
         let mut ui = TabUiState::default();
         ui.focus = PaneId::Detail;
@@ -907,7 +932,7 @@ mod tests {
         }
         app.run_files = Some((
             "01RUN".to_string(),
-            RunFiles {
+            Box::new(RunFiles {
                 session_id: Some("sess-abc123".to_string()),
                 worktree_path: Some("/repos/acme.feature".to_string()),
                 meta: Some(RunMeta {
@@ -937,7 +962,7 @@ mod tests {
                     }),
                 }),
                 ..Default::default()
-            },
+            }),
         ));
         let mut ui = TabUiState::default();
         ui.focus = PaneId::Detail;
@@ -1064,18 +1089,21 @@ mod tests {
     }
 
     #[test]
-    fn detail_worktree_pr_registers_link_only_with_a_url() {
+    fn detail_worktree_pr_is_an_osc8_link_only_with_a_url() {
         // The base fixture sets pr_number but no pr_url → the `#42` value is plain
-        // text (the em-dash-style fallback for a link), no PrLink registered.
-        let (_t, hits) = render_at(&detail_worktree_app(), 80, 24);
-        assert!(
-            !hits.iter().any(|(_, t)| matches!(t, HitTarget::PrLink(_))),
-            "pr number without a url is not a clickable link"
-        );
+        // text: no OSC 8 opener anywhere in the rendered buffer.
+        let (terminal, _hits) = render_at(&detail_worktree_app(), 80, 24);
+        let buf = terminal.backend().buffer();
+        let has_opener = |buf: &ratatui::buffer::Buffer| {
+            (buf.area.y..buf.area.bottom()).any(|y| {
+                (buf.area.x..buf.area.right()).any(|x| buf[(x, y)].symbol().contains("\x1b]8;;"))
+            })
+        };
+        assert!(!has_opener(buf), "pr number without a url gets no OSC 8 link");
 
-        // Add the url: the `#42` value becomes a clickable PrLink carrying it, the
-        // hit's first cell is the `#` as actually rendered, and it reads as a link
-        // (underlined). Width is the `#42` glyph count.
+        // Add the url: the `#42` value is wrapped in an OSC 8 terminal hyperlink
+        // carrying it (folded into the first glyph cell), and reads as a link
+        // (underlined). The terminal — not the app — handles cmd+click.
         let mut app = detail_worktree_app();
         let url = "https://github.com/acme/acme/pull/42".to_string();
         if let Some(w) = app
@@ -1086,18 +1114,27 @@ mod tests {
         {
             w.pr_url = Some(url.clone());
         }
-        let (terminal, hits) = render_at(&app, 80, 24);
-        let (rect, target) = hits
-            .iter()
-            .find(|(_, t)| matches!(t, HitTarget::PrLink(_)))
-            .expect("PR link registered when the row has a url");
-        assert_eq!(*target, HitTarget::PrLink(url));
-        assert_eq!(rect.width, 3, "#42 is three glyphs");
+        let (terminal, _hits) = render_at(&app, 80, 24);
         let buf = terminal.backend().buffer();
-        assert_eq!(buf[(rect.x, rect.y)].symbol(), "#", "hit lands on the rendered #42");
+        let opener = format!("\x1b]8;;{url}\x1b\\");
+        let mut found: Option<(u16, u16)> = None;
+        let mut count = 0usize;
+        for y in buf.area.y..buf.area.bottom() {
+            for x in buf.area.x..buf.area.right() {
+                if buf[(x, y)].symbol().contains(&opener) {
+                    count += 1;
+                    found = Some((x, y));
+                }
+            }
+        }
+        assert_eq!(count, 1, "exactly one OSC 8 link cell");
+        let (x, y) = found.expect("OSC 8 link cell present");
+        let sym = buf[(x, y)].symbol();
+        assert!(sym.contains("#42"), "the wrapped glyphs are #42: {sym:?}");
+        assert!(sym.ends_with("\x1b]8;;\x1b\\"), "closer present: {sym:?}");
         assert!(
-            buf[(rect.x, rect.y)].modifier.contains(Modifier::UNDERLINED),
-            "the #42 value reads as an underlined link"
+            buf[(x, y)].modifier.contains(Modifier::UNDERLINED),
+            "the #42 link cell is underlined"
         );
     }
 

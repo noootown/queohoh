@@ -68,12 +68,6 @@ pub enum HitTarget {
     /// `Modal`); the mouse wheel over it scrolls the preview instead of moving
     /// the list selection.
     MenuPreview,
-    /// A clickable open-PR link — the `#<n>` chip in the DETAIL worktree info tab
-    /// and the WORKTREES pane's PR column. The payload is the PR's full web URL;
-    /// a left-click emits [`crate::event::Cmd::OpenUrl`] to open it in a browser.
-    /// Registered AFTER the owning `Row` (and after the detail `PaneBody`) so it
-    /// wins the reverse hit scan over the row/selection beneath it.
-    PrLink(String),
     Modal,
 }
 
