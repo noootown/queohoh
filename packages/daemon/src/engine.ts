@@ -9,6 +9,7 @@ import type {
 	RunStore,
 	SessionRegistry,
 	TaskInstance,
+	VerifyExecutor,
 	WorktreeInfo,
 } from "@queohoh/core";
 import {
@@ -61,6 +62,7 @@ export interface EngineDeps {
 	resolverIO: ResolverIO;
 	exec: Exec;
 	executeClaude: ClaudeExecutor;
+	executeVerify: VerifyExecutor;
 	redact: Redactor;
 	mainSessions: MainSessionStore;
 	onChange?: () => void;
@@ -595,6 +597,7 @@ export class Engine {
 			runStore: deps.runStore,
 			exec: deps.exec,
 			executeClaude: deps.executeClaude,
+			executeVerify: deps.executeVerify,
 			redact: deps.redact,
 			mainSessions: deps.mainSessions,
 			// Builtin vars sit below explicit config vars (which spread last and can

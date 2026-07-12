@@ -44,10 +44,17 @@ export {
 export { RunStore } from "./run-store.js";
 export type {
 	ExecuteClaudeOptions,
+	ExecuteVerifyOptions,
 	RunResult,
 	RunUsage,
+	VerifyResult,
 } from "./runner.js";
-export { executeClaude, formatEventToMarkdown } from "./runner.js";
+export {
+	executeClaude,
+	executeVerify,
+	formatEventToMarkdown,
+	VERIFY_OUTPUT_LIMIT,
+} from "./runner.js";
 export type { LiveState, ScheduleDecision } from "./scheduler.js";
 export { schedule } from "./scheduler.js";
 export type { SessionEntry } from "./sessions.js";
@@ -76,6 +83,6 @@ export {
 	TaskStatusSchema,
 } from "./task.js";
 export { render } from "./template.js";
-export type { ClaudeExecutor, WorkerDeps } from "./worker.js";
-export { runTask } from "./worker.js";
+export type { ClaudeExecutor, VerifyExecutor, WorkerDeps } from "./worker.js";
+export { runTask, VERIFY_TIMEOUT_MS } from "./worker.js";
 export { contextArgValues, extractTicket } from "./worktree-context.js";

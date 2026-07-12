@@ -45,6 +45,11 @@ const DefinitionConfigSchema = z
 		worktree: z.string().default("temp"),
 		pre_run: z.string().optional(),
 		post_run: z.string().optional(),
+		// Done-condition command. The framework runs it after the worker claims
+		// success (and the tree is clean); a non-zero exit or timeout lands the task
+		// `verify-failed`. Interpolated with the same `{{var}}` context as the prompt
+		// and the pre/post_run hooks.
+		verify: z.string().optional(),
 		model: z.string().default("sonnet"),
 		timeout: z.string().default("30m"),
 		priority: PrioritySchema.default("normal"),
@@ -62,6 +67,7 @@ export interface TaskDefinition {
 	worktree: string;
 	preRun: string | null;
 	postRun: string | null;
+	verify: string | null;
 	model: string;
 	timeoutMs: number;
 	priority: Priority;
@@ -135,6 +141,7 @@ export function loadDefinition(
 		worktree: config.worktree,
 		preRun: config.pre_run ?? null,
 		postRun: config.post_run ?? null,
+		verify: config.verify ?? null,
 		model: config.model,
 		timeoutMs: parseDuration(config.timeout),
 		priority: config.priority,

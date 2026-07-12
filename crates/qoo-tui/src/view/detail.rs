@@ -121,6 +121,7 @@ fn status_label(status: TaskStatus) -> &'static str {
         TaskStatus::Failed => "failed",
         TaskStatus::Cancelled => "cancelled",
         TaskStatus::Skipped => "skipped",
+        TaskStatus::VerifyFailed => "verify-failed",
         TaskStatus::Unknown => "unknown",
     }
 }

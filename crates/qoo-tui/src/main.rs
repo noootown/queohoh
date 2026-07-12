@@ -89,6 +89,12 @@ async fn main() -> io::Result<()> {
     let mut terminal: Terminal<CrosstermBackend<Stdout>> =
         Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut app = qoo_tui::app::App::new(runs, sock);
+    // Attach-only mode: never restart a daemon owned by another checkout. The
+    // self-heal keys on THIS checkout's packages/daemon/dist fingerprint, so two
+    // worktrees' TUIs would otherwise restart the shared daemon back and forth.
+    if std::env::args().any(|a| a == "--no-heal") {
+        app.heal_enabled = false;
+    }
     app.load_layout(); // per-project pane layout from <state_dir>/tui-layout.json
     let size = terminal.size()?;
     app.size = (size.width, size.height);

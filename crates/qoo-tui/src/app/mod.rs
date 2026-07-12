@@ -149,6 +149,10 @@ pub struct App {
     // self-heal effect state (mirror heal.ts App refs: `healing`, `healStatusShown`)
     healing: bool,
     heal_status_shown: bool,
+    /// False in attach-only mode (`--no-heal`): the daemon belongs to another
+    /// checkout, so a build-id mismatch is expected and must never trigger a
+    /// restart (two TUIs from different worktrees would fight over it).
+    pub heal_enabled: bool,
     pub sock_path: PathBuf,
     pub runs_dir: PathBuf,
 }
@@ -210,6 +214,7 @@ impl App {
             last_healed_build_id: None,
             healing: false,
             heal_status_shown: false,
+            heal_enabled: true,
             sock_path,
             runs_dir,
         }
@@ -297,6 +302,9 @@ impl App {
     /// Compare the daemon build to disk and act. Called on every Snapshot. Returns
     /// the commands to run (a `Cmd::Heal` only on restart-now). Mirrors heal.ts App effect.
     fn heal_on_snapshot(&mut self) -> Vec<Cmd> {
+        if !self.heal_enabled {
+            return Vec::new();
+        }
         let (build_id, running) = match &self.snapshot {
             Some(s) => (s.build_id.clone(), s.running.len()),
             None => return Vec::new(),

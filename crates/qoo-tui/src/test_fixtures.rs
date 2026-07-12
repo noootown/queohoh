@@ -43,6 +43,10 @@ fn task(
         resume_session_id: None,
         model: None,
         prompt: prompt.to_string(),
+        verify: None,
+        verified: None,
+        verify_exit_code: None,
+        verify_output: None,
     }
 }
 

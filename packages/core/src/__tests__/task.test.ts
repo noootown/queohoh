@@ -21,6 +21,10 @@ const sample: TaskInstance = {
 	prompt: "Reply to review comments on PR #1423.\n",
 	chainId: null,
 	chainSeq: null,
+	verify: null,
+	verified: null,
+	verifyExitCode: null,
+	verifyOutput: null,
 };
 
 describe("task file", () => {
@@ -164,6 +168,54 @@ describe("chain_id and chain_seq fields", () => {
 			"chain_seq: -1",
 		);
 		expect(() => parseTaskFile(bad)).toThrow();
+	});
+});
+
+describe("verify fields", () => {
+	it("default to null when absent (legacy task files)", () => {
+		const legacy = serializeTaskFile(sample)
+			.replace(/^verify: .*\n/m, "")
+			.replace(/^verified: .*\n/m, "")
+			.replace(/^verify_exit_code: .*\n/m, "")
+			.replace(/^verify_output: .*\n/m, "");
+		expect(legacy).not.toContain("verify:");
+		const task = parseTaskFile(legacy);
+		expect(task.verify).toBeNull();
+		expect(task.verified).toBeNull();
+		expect(task.verifyExitCode).toBeNull();
+		expect(task.verifyOutput).toBeNull();
+	});
+
+	it("round-trips a verify-failed task with its verdict", () => {
+		const verifyFailed: TaskInstance = {
+			...sample,
+			status: "verify-failed",
+			error: "verify failed (exit 2)",
+			verify:
+				"gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review",
+			verified: false,
+			verifyExitCode: 2,
+			verifyOutput: "checking labels...\nno match\n",
+		};
+		const reparsed = parseTaskFile(serializeTaskFile(verifyFailed));
+		expect(reparsed).toEqual(verifyFailed);
+		expect(reparsed.status).toBe("verify-failed");
+		expect(reparsed.verified).toBe(false);
+		expect(reparsed.verifyExitCode).toBe(2);
+	});
+
+	it("round-trips a passed verify (verified true, no output)", () => {
+		const passed: TaskInstance = {
+			...sample,
+			status: "done",
+			verify: "test -f dist/cli.js",
+			verified: true,
+			verifyExitCode: 0,
+			verifyOutput: "",
+		};
+		const reparsed = parseTaskFile(serializeTaskFile(passed));
+		expect(reparsed.verified).toBe(true);
+		expect(reparsed.verifyExitCode).toBe(0);
 	});
 });
 

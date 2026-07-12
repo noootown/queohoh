@@ -1,5 +1,6 @@
 ---
 source: crates/qoo-tui/src/view/mod.rs
+assertion_line: 337
 expression: terminal.backend()
 ---
 " 1:acme                                                                                  ● running 0"
@@ -7,13 +8,13 @@ expression: terminal.backend()
 "│                                ││ 1:report  2:transcript  3:prompt  4:info                       │"
 "│ 🔍 [/] filter                  ││(no report yet)                                                 │" Hidden by multi-width symbols: [(3, " ")]
 "│      Prompt         Live       ││                                                                │"
-"│ ‼    ipt task                  ││                                                                │"
-"│ ○    que task       #1 in lane ││                                                                │"
-"│ ──────── finished ──────────── ││                                                                │"
-"│ ⊝    skp task                  ││                                                                │"
-"│ ✗    fai task                  ││                                                                │"
-"│ ●    don task                  ││                                                                │"
-"│ ⊘    can task                  ││                                                                │"
+"│ ‼    ipt task                ▲ ││                                                                │"
+"│ ○    que task       #1 in lan█ ││                                                                │"
+"│ ──────── finished ───────────█ ││                                                                │"
+"│ ⊗    vrf task                █ ││                                                                │"
+"│ ⊝    skp task                █ ││                                                                │"
+"│ ✗    fai task                █ ││                                                                │"
+"│ ●    don task                ▼ ││                                                                │"
 "╰────────────────────────────────╯│                                                                │"
 "╭⚡TASKS · 0 tasks───── [r] · [z]╮│                                                                │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter                  ││                                                                │" Hidden by multi-width symbols: [(3, " ")]

@@ -217,3 +217,114 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 		});
 	});
 }
+
+/** Trailing-output cap (chars) retained from a verify command's combined
+ * stdout+stderr. The buffer is trimmed to this many trailing characters as it
+ * streams, so a chatty check cannot balloon the daemon's memory; the caller
+ * persists whatever tail is returned (~4 KB). */
+export const VERIFY_OUTPUT_LIMIT = 4096;
+
+export interface ExecuteVerifyOptions {
+	command: string;
+	cwd: string;
+	timeoutMs: number;
+	/** Retained trailing-output cap; defaults to [`VERIFY_OUTPUT_LIMIT`]. */
+	outputLimit?: number;
+}
+
+export interface VerifyResult {
+	exitCode: number;
+	timedOut: boolean;
+	/** Signal that killed the child (e.g. "SIGTERM" on the timeout path), else null. */
+	signal: string | null;
+	/** Combined stdout+stderr in arrival order, trimmed to the trailing
+	 * `outputLimit` characters. */
+	output: string;
+}
+
+/**
+ * Run a done-condition (`verify`) command via `/bin/bash -lc` in `cwd`, mirroring
+ * [`executeClaude`]'s timeout→SIGTERM→SIGKILL detached-group kill. stdout and
+ * stderr fold into ONE tail-bounded buffer (a verify is meant to be a short
+ * check; a runaway one must not OOM the daemon). Never rejects — a spawn failure
+ * resolves as a non-zero exit so the caller lands `verify-failed` instead of
+ * crashing the worker. This is the sanctioned process spawn (see AGENTS.md: the
+ * child spawn lives in runner.ts).
+ */
+export function executeVerify(
+	opts: ExecuteVerifyOptions,
+): Promise<VerifyResult> {
+	const timeoutMs = Math.max(1000, opts.timeoutMs);
+	const limit = opts.outputLimit ?? VERIFY_OUTPUT_LIMIT;
+	return new Promise((resolve) => {
+		let child: ChildProcess;
+		try {
+			child = spawn("/bin/bash", ["-lc", opts.command], {
+				cwd: opts.cwd,
+				stdio: ["ignore", "pipe", "pipe"],
+				detached: true,
+			});
+		} catch (err) {
+			resolve({
+				exitCode: 1,
+				timedOut: false,
+				signal: null,
+				output: err instanceof Error ? err.message : String(err),
+			});
+			return;
+		}
+
+		let output = "";
+		let timedOut = false;
+		let killTimer: ReturnType<typeof setTimeout> | null = null;
+		const append = (chunk: Buffer) => {
+			output += chunk.toString();
+			// Keep only the trailing window so a noisy command stays bounded.
+			if (output.length > limit) output = output.slice(-limit);
+		};
+
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			if (child.pid) {
+				try {
+					process.kill(-child.pid, "SIGTERM");
+				} catch {
+					child.kill("SIGTERM");
+				}
+			}
+			killTimer = setTimeout(() => {
+				if (child.pid) {
+					try {
+						process.kill(-child.pid, "SIGKILL");
+					} catch {}
+				}
+			}, 5000);
+			killTimer.unref();
+		}, timeoutMs);
+
+		child.stdout?.on("data", append);
+		child.stderr?.on("data", append);
+
+		child.on("close", (code, signal) => {
+			clearTimeout(timeout);
+			if (killTimer) clearTimeout(killTimer);
+			resolve({
+				exitCode: code ?? 1,
+				timedOut,
+				signal: signal ?? null,
+				output,
+			});
+		});
+
+		child.on("error", () => {
+			clearTimeout(timeout);
+			if (killTimer) clearTimeout(killTimer);
+			resolve({
+				exitCode: 1,
+				timedOut,
+				signal: null,
+				output: output || "Failed to spawn verify process",
+			});
+		});
+	});
+}

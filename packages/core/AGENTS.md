@@ -16,10 +16,14 @@ src/
   scheduler.ts       schedule(): PURE decision fn → {start, resolve, skip}. All
                      gating + chain ordering. No side effects.
   worker.ts          runTask(): the full single-run lifecycle (resolve cwd →
-                     render → pre_run → claude → dirty-tree check → post_run →
-                     terminal status). Reads injected deps only.
-  runner.ts          executeClaude(): the ONLY process spawn in core. stream-json
-                     parse, timeout→SIGTERM→SIGKILL, returns RunResult.
+                     render → pre_run → claude → dirty-tree check → verify
+                     (done-condition gate) → post_run → terminal status). Reads
+                     injected deps only.
+  runner.ts          executeClaude() + executeVerify(): the ONLY process spawns
+                     in core. executeClaude: stream-json parse,
+                     timeout→SIGTERM→SIGKILL, returns RunResult. executeVerify:
+                     `/bin/bash -lc` the verify cmd, same kill escalation,
+                     tail-bounded combined output → VerifyResult.
   resolver.ts        TargetRef→worktree resolution (resolveTarget), WorktreeInfo,
                      ResolverIO interface, REPO_SENTINEL.
   resolver-io.ts     Concrete ResolverIO (git/`wt` shell) + defaultExec (Exec).
@@ -54,7 +58,7 @@ src/
 - **`schedule()` is pure.** It returns decisions (`start`/`resolve`/`skip`); the engine performs the writes. Keep side effects out — skip carries a `reason` string the engine stamps.
 - **Chains** (`chainId` + `chainSeq`, head = seq 0). The chain resolves its worktree ONCE (at the head); tails inherit it and must never re-resolve (a `temp` chain would otherwise spawn N worktrees). A tail is eligible only when its predecessor is `done`; a predecessor in `failed`/`skipped`/`cancelled`/ `needs-input` (or missing) skips the tail (cascades in one pass).
 - **`skipped` vs `cancelled` are distinct and must stay so.** `skipped` = a chain member that never ran because its predecessor didn't succeed. `cancelled` = a human stopped it (stop/skip RPC). Never collapse them into `failed`.
-- **Status lifecycle.** Non-terminal: `queued`, `needs-input`, `running`. Terminal: `done`, `failed`, `cancelled`, `skipped`. `store.update` stamps `finishedAt` on ANY terminal transition (all four) and clears it on a re-run.
+- **Status lifecycle.** Non-terminal: `queued`, `needs-input`, `running`. Terminal: `done`, `failed`, `cancelled`, `skipped`, `verify-failed` (worker claimed success but the `verify` done-condition disagreed — see worker.ts). `store.update` stamps `finishedAt` on ANY terminal transition (all five) and clears it on a re-run.
 - **TargetRef resolution rules** (`resolveTarget`): `worktree:<name>` never spawns (must already exist, else needs-input); `ticket:<id>` and `temp` spawn; `pr:<N>` reuses a matching branch/worktree or spawns one; the `@repo` sentinel resolves to the project's primary checkout and never spawns.
 - **ref precedence** (in `instantiate`/daemon): `cwd > worktree > ref > definition's worktree:`. `refOverride` always wins over a `worktree: auto` def, which extracts the first PR/ticket URL from arg values — the escape hatch for when such a URL is reference material, not the destination.
 - **vars.yaml reserved keys.** `models:` and `github_id:` are read as SETTINGS (via `loadProjectModels`/`loadProjectGithubId`), not exposed as `{{template}}` vars. Every other key becomes a template var.

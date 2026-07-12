@@ -72,8 +72,16 @@ export class RunStore {
 		taskId: string,
 		data: {
 			result: RunResult;
-			outcome: "done" | "failed" | "cancelled";
+			outcome: "done" | "failed" | "cancelled" | "verify-failed";
 			reason: string | null;
+			// The done-condition (`verify`) outcome, when the gate ran. `output` is
+			// the raw combined-output tail — redacted here on the way to disk.
+			verify?: {
+				command: string;
+				verified: boolean;
+				exitCode: number | null;
+				output: string;
+			} | null;
 		},
 		redact: Redactor,
 	): void {
@@ -94,11 +102,19 @@ export class RunStore {
 			timed_out: data.result.timedOut,
 			session_id: data.result.sessionId,
 			usage: data.result.usage,
+			// Verify verdict (snake_case, like the rest of data.json) when the gate
+			// ran; absent otherwise.
+			...(data.verify && {
+				verify_command: data.verify.command,
+				verified: data.verify.verified,
+				verify_exit_code: data.verify.exitCode,
+				verify_output: data.verify.output,
+			}),
 		};
 		writeFileSync(dataPath, redact(JSON.stringify(merged, null, 2)));
 
 		const { usage } = data.result;
-		const report = [
+		const lines = [
 			"# Result",
 			"",
 			data.result.resultText || "(no result text)",
@@ -110,8 +126,23 @@ export class RunStore {
 			`- turns: ${usage.turns ?? "n/a"}`,
 			`- duration: ${usage.durationMs === null ? "n/a" : `${Math.round(usage.durationMs / 1000)}s`}`,
 			"",
-		].join("\n");
-		writeFileSync(join(dir, "report.md"), redact(report));
+		];
+		// Done-condition section — mirrors the Stats block's error-display pattern so
+		// the detail pane's report tab shows what was checked and its output tail.
+		if (data.verify) {
+			lines.push(
+				"## Verify",
+				`- result: ${data.verify.verified ? "passed" : "failed"}`,
+				`- exit: ${data.verify.exitCode ?? "timed out"}`,
+				`- command: ${data.verify.command}`,
+				"",
+				"```",
+				data.verify.output.trim() || "(no output)",
+				"```",
+				"",
+			);
+		}
+		writeFileSync(join(dir, "report.md"), redact(lines.join("\n")));
 	}
 
 	readRunMeta(taskId: string): Record<string, unknown> | null {

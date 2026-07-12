@@ -22,6 +22,7 @@ fn status_kebab(s: TaskStatus) -> &'static str {
         TaskStatus::Failed => "failed",
         TaskStatus::Cancelled => "cancelled",
         TaskStatus::Skipped => "skipped",
+        TaskStatus::VerifyFailed => "verify-failed",
         TaskStatus::Unknown => "unknown",
     }
 }
@@ -279,7 +280,14 @@ impl App {
     /// familiar "requeued N" count feedback.
     pub(super) fn requeue_selected(&mut self) -> Update {
         let requeue_ok = |s: TaskStatus| {
-            matches!(s, TaskStatus::Failed | TaskStatus::NeedsInput | TaskStatus::Done | TaskStatus::Unknown)
+            matches!(
+                s,
+                TaskStatus::Failed
+                    | TaskStatus::VerifyFailed
+                    | TaskStatus::NeedsInput
+                    | TaskStatus::Done
+                    | TaskStatus::Unknown
+            )
         };
         let Some((rows, is_range)) = self.queue_selection_rows() else {
             return Update::default();

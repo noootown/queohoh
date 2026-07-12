@@ -237,6 +237,10 @@ export class ApiServer {
 					typeof params.model === "string" && params.model.length > 0
 						? params.model
 						: undefined;
+				const verify =
+					typeof params.verify === "string" && params.verify.length > 0
+						? params.verify
+						: undefined;
 				const cwd =
 					typeof params.cwd === "string" && params.cwd.length > 0
 						? params.cwd
@@ -267,6 +271,7 @@ export class ApiServer {
 					session,
 					resumeSessionId,
 					model,
+					verify,
 				});
 				deps.onMutation();
 				return task;
@@ -327,7 +332,14 @@ export class ApiServer {
 						definition?: unknown;
 						args?: unknown;
 						prompt?: unknown;
+						verify?: unknown;
 					};
+					// Per-step done-condition; a definition step's own `verify` still
+					// wins at spawn (worker precedence), matching how `model` behaves.
+					const verify =
+						typeof s.verify === "string" && s.verify.length > 0
+							? s.verify
+							: undefined;
 					if (typeof s.definition === "string" && s.definition.length > 0) {
 						const def = resolveDefinition(deps.config, repo, s.definition);
 						const values = Array.isArray(s.args) ? s.args.map(String) : [];
@@ -341,10 +353,11 @@ export class ApiServer {
 							// run_task_definition. Priority is the chain's (shared), applied
 							// uniformly by createChain so members schedule together.
 							model,
+							verify,
 						};
 					}
 					if (typeof s.prompt === "string" && s.prompt.length > 0) {
-						return { prompt: s.prompt, model };
+						return { prompt: s.prompt, model, verify };
 					}
 					throw new Error(
 						`chain step ${i}: must have either 'definition' or 'prompt'`,
@@ -526,7 +539,13 @@ export class ApiServer {
 			}
 			case "retry": {
 				const task = this.mustGet(String(params.id));
-				if (task.status !== "failed" && task.status !== "needs-input") {
+				// `verify-failed` re-queues like `failed` — both are non-success
+				// terminal outcomes a user may want to re-run after a fix.
+				if (
+					task.status !== "failed" &&
+					task.status !== "verify-failed" &&
+					task.status !== "needs-input"
+				) {
 					throw new Error(`cannot retry task in status ${task.status}`);
 				}
 				const updated = deps.store.update(task.id, {
@@ -550,7 +569,11 @@ export class ApiServer {
 					deps.onMutation();
 					return updated;
 				}
-				if (["failed", "done", "skipped", "cancelled"].includes(task.status)) {
+				if (
+					["failed", "verify-failed", "done", "skipped", "cancelled"].includes(
+						task.status,
+					)
+				) {
 					deps.store.archive(task.id);
 					deps.onMutation();
 					return true;

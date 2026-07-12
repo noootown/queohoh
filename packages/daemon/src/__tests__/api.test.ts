@@ -87,6 +87,12 @@ async function setup(opts?: {
 		resolverIO,
 		exec,
 		executeClaude: opts?.executeClaude ?? (async () => okResult),
+		executeVerify: async () => ({
+			exitCode: 0,
+			timedOut: false,
+			signal: null,
+			output: "",
+		}),
 		redact: makeRedactor(new Map()),
 		mainSessions,
 	});
@@ -218,6 +224,30 @@ describe("ApiServer", () => {
 		});
 		expect(head?.priority).toBe("high");
 		expect(tail?.priority).toBe("high");
+	});
+
+	it("enqueue carries a verify command onto the task", async () => {
+		const { client } = await setup();
+		const task = (await client.call("enqueue", {
+			prompt: "fix it",
+			repo: "platform",
+			verify: "test -f dist/cli.js",
+		})) as { verify: string | null };
+		expect(task.verify).toBe("test -f dist/cli.js");
+	});
+
+	it("enqueue_chain threads per-step verify onto each member", async () => {
+		const { client } = await setup();
+		const created = (await client.call("enqueue_chain", {
+			repo: "platform",
+			ref: "temp",
+			steps: [
+				{ prompt: "build\n", verify: "test -f dist/cli.js" },
+				{ prompt: "no check\n" },
+			],
+		})) as { verify: string | null }[];
+		expect(created[0]?.verify).toBe("test -f dist/cli.js");
+		expect(created[1]?.verify).toBeNull();
 	});
 
 	it("enqueue_chain rejects a step lacking both definition and prompt", async () => {
@@ -692,6 +722,27 @@ describe("ApiServer", () => {
 		};
 		expect(retried.status).toBe("queued");
 		store.update(t.id, { status: "failed", error: "boom again" });
+		await client.call("skip", { id: t.id });
+		expect(store.list()).toEqual([]);
+	});
+
+	it("retry re-queues a verify-failed task; skip archives it (parity with failed)", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "verify-failed",
+			error: "verify failed (exit 2)",
+		});
+		const retried = (await client.call("retry", { id: t.id })) as {
+			status: string;
+		};
+		expect(retried.status).toBe("queued");
+		store.update(t.id, { status: "verify-failed", error: "again" });
 		await client.call("skip", { id: t.id });
 		expect(store.list()).toEqual([]);
 	});

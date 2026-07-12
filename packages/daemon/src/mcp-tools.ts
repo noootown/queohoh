@@ -47,6 +47,7 @@ export function mcpEnqueueTask(
 		priority?: "low" | "normal" | "high";
 		resume_session_id?: string;
 		model?: string;
+		verify?: string;
 	},
 ): Promise<ToolResult> {
 	return withPort(caller, (port) =>
@@ -58,6 +59,7 @@ export function mcpEnqueueTask(
 			priority: args.priority,
 			resume_session_id: args.resume_session_id,
 			model: args.model,
+			verify: args.verify,
 		}),
 	);
 }
@@ -65,7 +67,12 @@ export function mcpEnqueueTask(
 export function mcpEnqueueChain(
 	caller: McpCaller,
 	args: {
-		steps: { definition?: string; args?: string[]; prompt?: string }[];
+		steps: {
+			definition?: string;
+			args?: string[];
+			prompt?: string;
+			verify?: string;
+		}[];
 		repo?: string;
 		cwd?: string;
 		ref?: string;

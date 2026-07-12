@@ -21,6 +21,10 @@ pub const GLYPH_CANCELLED: char = '⊘';
 /// Chain-skipped — `⊝` (circled dash), single-width, dim (a passive non-run,
 /// unlike the deliberate `⊘` cancel).
 pub const GLYPH_SKIPPED: char = '⊝';
+/// Verify-failed — `⊗` (circled times), single-width, in error red. Distinct
+/// glyph from the worker `✗` so the two failure modes read apart, but the same
+/// red because both are failures needing attention.
+pub const GLYPH_VERIFY_FAILED: char = '⊗';
 pub const GLYPH_RUNNING: char = '▶';
 /// Lane has/resumes a main session — used in both the queue rows and the
 /// worktree rows, so the two surfaces read as one marker. `⌂` (house): "the
@@ -90,7 +94,7 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; `⌂` marker; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
 /// | `fg`             | prose / summaries      | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
-/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝`)                                              |
+/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗`)                                            |
 ///
 /// `info` is deliberately reserved for timestamp-related text (user request);
 /// every other informational column reads in `meta`.
@@ -201,12 +205,14 @@ impl Palette {
     }
 }
 
-/// Status-glyph color: done→ok, failed→error, running/needs-input→warn,
-/// everything else→dim. The single place a glyph maps to a color.
+/// Status-glyph color: done→ok, failed/verify-failed→error, running/needs-input→
+/// warn, everything else→dim. The single place a glyph maps to a color.
 pub fn glyph_style(glyph: char, p: &Palette) -> Style {
     match glyph {
         GLYPH_DONE => Style::default().fg(p.ok),
         GLYPH_FAILED => Style::default().fg(p.error),
+        // A failed done-condition is a failure too — same red, distinct glyph.
+        GLYPH_VERIFY_FAILED => Style::default().fg(p.error),
         GLYPH_RUNNING => Style::default().fg(p.warn),
         // Needs-input is bold so the `‼` reads as urgent (also the graceful
         // degradation if a terminal renders it plainer than intended).
@@ -229,6 +235,7 @@ mod tests {
         // skipped/queued dim. Needs-input is additionally bold (urgent `‼`).
         assert_eq!(glyph_style(GLYPH_DONE, &p), Style::default().fg(p.ok));
         assert_eq!(glyph_style(GLYPH_FAILED, &p), Style::default().fg(p.error));
+        assert_eq!(glyph_style(GLYPH_VERIFY_FAILED, &p), Style::default().fg(p.error));
         assert_eq!(glyph_style(GLYPH_RUNNING, &p), Style::default().fg(p.warn));
         assert_eq!(glyph_style(GLYPH_CANCELLED, &p), Style::default().fg(p.warn));
         assert_eq!(glyph_style(GLYPH_SKIPPED, &p), Style::default().fg(p.dim));
@@ -240,12 +247,16 @@ mod tests {
         // Cancelled and skipped use DISTINCT glyphs (glyph_style keys on the char,
         // so they must differ to color differently).
         assert_ne!(GLYPH_CANCELLED, GLYPH_SKIPPED);
+        // Verify-failed shares the error color with failed but MUST be a distinct
+        // glyph so the two failure modes read apart in the queue.
+        assert_ne!(GLYPH_VERIFY_FAILED, GLYPH_FAILED);
     }
 
     #[test]
     fn new_status_glyphs_are_single_width() {
         use unicode_width::UnicodeWidthChar;
-        for g in [GLYPH_NEEDS_INPUT, GLYPH_CANCELLED, GLYPH_SKIPPED, GLYPH_DONE] {
+        for g in [GLYPH_NEEDS_INPUT, GLYPH_CANCELLED, GLYPH_SKIPPED, GLYPH_VERIFY_FAILED, GLYPH_DONE]
+        {
             assert_eq!(UnicodeWidthChar::width(g), Some(1), "glyph {g:?} must be single-width");
         }
     }

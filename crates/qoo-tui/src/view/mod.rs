@@ -377,10 +377,11 @@ mod tests {
     #[test]
     fn snapshot_all_status_glyphs() {
         // One queue task per status pins the glyph set AND their WIDTHS: queued ○,
-        // needs-input ‼, done ●, failed ✗, cancelled ⊘, skipped ⊝ (running uses
-        // the throbber). A glyph that renders double-width would surface in a
-        // "Hidden by multi-width symbols" annotation and break column alignment —
-        // this snapshot is the width check for the new `‼`/`⊘`/`⊝`/`●` glyphs.
+        // needs-input ‼, done ●, failed ✗, cancelled ⊘, skipped ⊝, verify-failed ⊗
+        // (running uses the throbber). A glyph that renders double-width would
+        // surface in a "Hidden by multi-width symbols" annotation and break column
+        // alignment — this snapshot is the width check for the `‼`/`⊘`/`⊝`/`⊗`/`●`
+        // glyphs.
         use crate::ipc::types::{Project, StateSnapshot, TaskInstance, TaskStatus};
         let mk = |id: &str, status: TaskStatus, created: &str| {
             let mut t = TaskInstance::default();
@@ -400,6 +401,7 @@ mod tests {
                 mk("fai", TaskStatus::Failed, "2026-07-09T11:01:00.000Z"),
                 mk("can", TaskStatus::Cancelled, "2026-07-09T11:02:00.000Z"),
                 mk("skp", TaskStatus::Skipped, "2026-07-09T11:03:00.000Z"),
+                mk("vrf", TaskStatus::VerifyFailed, "2026-07-09T11:04:00.000Z"),
             ],
             projects: vec![Project { name: "acme".into(), github_id: None }],
             ..Default::default()

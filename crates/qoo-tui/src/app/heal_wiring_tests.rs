@@ -98,6 +98,23 @@ fn healthy_snapshot_resets_guard_and_clears_heal_status() {
 }
 
 #[test]
+#[serial]
+fn heal_disabled_stale_snapshot_is_silent_no_op() {
+    let dist = dist_with_js();
+    unsafe { std::env::set_var("QUEOHOH_DAEMON_DIST", dist.path()) };
+
+    let mut app = app();
+    app.heal_enabled = false; // attach-only mode (`--no-heal`)
+    let upd = app.update(Event::Snapshot(snap(Some("stale-build"), vec![])));
+
+    // Never restarts a foreign daemon, never nags — another checkout owns it.
+    assert!(app.status_line.is_none());
+    assert!(app.last_healed_build_id.is_none());
+    assert!(!upd.cmds.iter().any(|c| matches!(c, Cmd::Heal)));
+    unsafe { std::env::remove_var("QUEOHOH_DAEMON_DIST") };
+}
+
+#[test]
 fn action_result_during_heal_resets_healing_and_owns_status() {
     let mut app = app();
     app.healing = true; // a Cmd::Heal is in flight

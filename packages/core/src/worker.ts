@@ -5,7 +5,7 @@ import { resolveModel } from "./models.js";
 import type { Redactor } from "./redact.js";
 import type { Exec } from "./resolver-io.js";
 import type { RunStore } from "./run-store.js";
-import type { executeClaude, RunResult } from "./runner.js";
+import type { executeClaude, executeVerify, RunResult } from "./runner.js";
 import type { QueueStore } from "./store.js";
 import type { TaskInstance } from "./task.js";
 import { laneKey } from "./task.js";
@@ -13,6 +13,13 @@ import { render } from "./template.js";
 import { extractTicket } from "./worktree-context.js";
 
 export type ClaudeExecutor = typeof executeClaude;
+export type VerifyExecutor = typeof executeVerify;
+
+/** Default ceiling for a `verify` (done-condition) command: 10 minutes. A check
+ * is meant to be quick; this only guards a wedged one (it lands `verify-failed`).
+ * A constant rather than a per-definition knob — no definition has needed to
+ * override it, and the run's own `timeout` already bounds the worker itself. */
+export const VERIFY_TIMEOUT_MS = 600_000;
 
 export interface WorkerDeps {
 	store: QueueStore;
@@ -36,6 +43,11 @@ export interface WorkerDeps {
 	// signal settles as `cancelled` (user-intentional) rather than `failed`. A
 	// signal WITHOUT this flag (e.g. an external/OOM kill) still means failed.
 	isCancelled?: (taskId: string) => boolean;
+	// Runs the task's done-condition (`verify`) command after a successful run.
+	// Optional (like mainSessions/onSpawned): absent = the gate is skipped even
+	// when a verify command is configured, so a caller that never wires it keeps
+	// today's behavior. The daemon always injects it.
+	executeVerify?: VerifyExecutor;
 }
 
 const EMPTY_RESULT: RunResult = {
@@ -54,7 +66,16 @@ export async function runTask(
 ): Promise<TaskInstance> {
 	const task = deps.store.get(taskId);
 	if (!task) throw new Error(`task not found: ${taskId}`);
-	deps.store.update(taskId, { status: "running", error: null });
+	// A (re-)run clears the previous verify verdict; it is re-stamped only if this
+	// run reaches the verify gate below. `verify` (the configured command) is left
+	// untouched — it is configuration, not a per-run result.
+	deps.store.update(taskId, {
+		status: "running",
+		error: null,
+		verified: null,
+		verifyExitCode: null,
+		verifyOutput: null,
+	});
 
 	// Item vars ARE available at run time; precedence global < repo < item.
 	const globalVars = deps.globalVars ?? {};
@@ -133,9 +154,17 @@ export async function runTask(
 	);
 	deps.runStore.writeWorkerPid(taskId, process.pid);
 
-	let outcome: "done" | "failed" | "cancelled" = "done";
+	let outcome: "done" | "failed" | "cancelled" | "verify-failed" = "done";
 	let reason: string | null = null;
 	let result: RunResult = EMPTY_RESULT;
+	// Populated only when the verify gate below actually runs; drives both the
+	// persisted task fields and the run-store report/data.
+	let verifyRun: {
+		command: string;
+		verified: boolean;
+		exitCode: number | null;
+		output: string;
+	} | null = null;
 
 	// pre_run
 	let preRunOk = true;
@@ -211,6 +240,36 @@ export async function runTask(
 				reason = "tree left dirty";
 			}
 		}
+
+		// Done-condition (`verify`) gate — the framework's own success check, a
+		// generalization of the dirty-tree guard above. Runs ONLY when the run
+		// otherwise succeeded (still `done`). The command comes from the definition
+		// (read live, like model/timeout/hooks) or the task's own `verify`
+		// (ad-hoc/chain step), rendered with the same context as the hooks. A
+		// non-zero exit or a timeout lands `verify-failed` — distinct from `failed`
+		// so "the worker errored" reads differently from "the worker claimed
+		// success but the check disagreed".
+		const verifyCmd = def?.verify ?? task.verify ?? null;
+		if (outcome === "done" && verifyCmd !== null && deps.executeVerify) {
+			const v = await deps.executeVerify({
+				command: renderHook(verifyCmd),
+				cwd,
+				timeoutMs: VERIFY_TIMEOUT_MS,
+			});
+			const passed = !v.timedOut && v.exitCode === 0;
+			verifyRun = {
+				command: verifyCmd,
+				verified: passed,
+				exitCode: v.timedOut ? null : v.exitCode,
+				output: v.output,
+			};
+			if (!passed) {
+				outcome = "verify-failed";
+				reason = v.timedOut
+					? "verify timed out"
+					: `verify failed (exit ${v.exitCode})`;
+			}
+		}
 	}
 
 	// post_run — always attempted; its failure never flips a done outcome
@@ -236,11 +295,25 @@ export async function runTask(
 		deps.mainSessions.set(lane, result.sessionId);
 	}
 
-	deps.runStore.finishRun(taskId, { result, outcome, reason }, deps.redact);
+	deps.runStore.finishRun(
+		taskId,
+		{ result, outcome, reason, verify: verifyRun },
+		deps.redact,
+	);
 	return deps.store.update(taskId, {
 		status: outcome,
-		// `done` clears the error; failed AND cancelled carry their reason (the
-		// detail pane shows "stopped by user" for a cancel).
+		// `done` clears the error; failed/cancelled/verify-failed carry their reason
+		// (the detail pane shows "stopped by user" for a cancel).
 		error: outcome === "done" ? null : reason,
+		// Stamp the verify verdict when the gate ran. `verify` records the command
+		// that was checked (for a definition task this stamps the definition's
+		// command onto the record); the output tail is redacted before it lands in
+		// the task file (which is not otherwise passed through the redactor).
+		...(verifyRun && {
+			verify: verifyRun.command,
+			verified: verifyRun.verified,
+			verifyExitCode: verifyRun.exitCode,
+			verifyOutput: deps.redact(verifyRun.output),
+		}),
 	});
 }

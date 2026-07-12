@@ -15,6 +15,12 @@ export const TaskStatusSchema = z.enum([
 	// or stop RPC on a running one). Distinct from `failed` so a deliberate cancel
 	// doesn't read as a genuine failure. Same old-TUI tolerance as `skipped`.
 	"cancelled",
+	// Terminal: the worker exited claiming success (and left a clean tree), but the
+	// task's `verify` (done-condition) command disagreed — non-zero exit or timeout.
+	// Distinct from `failed` so "the worker errored" reads differently from "the
+	// worker claimed success but the check said otherwise". Kebab-cased like
+	// `needs-input`; old TUIs fall back to Unknown via serde `#[serde(other)]`.
+	"verify-failed",
 ]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
@@ -58,6 +64,17 @@ const TaskMetaSchema = z
 		// 0). A non-chain task has both null.
 		chain_id: z.string().nullable().default(null),
 		chain_seq: z.number().int().nonnegative().nullable().default(null),
+		// Done-condition (`verify`) fields (additive; absent on legacy files → null).
+		// `verify` is the configured shell command the framework runs after the
+		// worker claims success (from an ad-hoc/chain-step input, or stamped from the
+		// definition when a definition task runs its verify). The rest record the
+		// LAST verify attempt: `verified` true/false (null = never verified),
+		// `verify_exit_code` (null when it timed out — no exit), and a bounded tail
+		// (~4 KB) of the command's combined stdout+stderr in `verify_output`.
+		verify: z.string().nullable().default(null),
+		verified: z.boolean().nullable().default(null),
+		verify_exit_code: z.number().int().nullable().default(null),
+		verify_output: z.string().nullable().default(null),
 	})
 	.strict();
 
@@ -83,6 +100,18 @@ export interface TaskInstance {
 	chainId?: string | null;
 	/** 0-based position within the chain (head = 0); null for a standalone task. */
 	chainSeq?: number | null;
+	/** Configured done-condition command run after the worker claims success; null
+	 * when unset. For a definition task it is stamped from the definition when the
+	 * verify runs. Optional so pre-verify callers and test literals need not set it. */
+	verify?: string | null;
+	/** Result of the last verify: true (passed), false (failed/timed out), or null
+	 * (never verified). */
+	verified?: boolean | null;
+	/** Exit code of the last verify command; null when it timed out or never ran. */
+	verifyExitCode?: number | null;
+	/** Bounded (~4 KB) tail of the last verify command's combined output; null when
+	 * it never ran. */
+	verifyOutput?: string | null;
 }
 
 export function parseTaskFile(content: string): TaskInstance {
@@ -107,6 +136,10 @@ export function parseTaskFile(content: string): TaskInstance {
 		prompt: body,
 		chainId: m.chain_id,
 		chainSeq: m.chain_seq,
+		verify: m.verify,
+		verified: m.verified,
+		verifyExitCode: m.verify_exit_code,
+		verifyOutput: m.verify_output,
 	};
 }
 
@@ -129,6 +162,10 @@ export function serializeTaskFile(task: TaskInstance): string {
 		model: task.model,
 		chain_id: task.chainId ?? null,
 		chain_seq: task.chainSeq ?? null,
+		verify: task.verify ?? null,
+		verified: task.verified ?? null,
+		verify_exit_code: task.verifyExitCode ?? null,
+		verify_output: task.verifyOutput ?? null,
 	};
 	return stringifyFrontmatter(meta, task.prompt);
 }

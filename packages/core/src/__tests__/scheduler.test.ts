@@ -198,6 +198,26 @@ describe("schedule — task chains", () => {
 		expect(decision.skip[0]?.reason).toContain("failed");
 	});
 
+	it("skips a tail when its predecessor is verify-failed (the check disagreed)", () => {
+		const head = task({
+			id: "01C1",
+			status: "verify-failed",
+			worktree: "wt-c",
+			chainId: "c1",
+			chainSeq: 0,
+		});
+		const tail = task({
+			id: "01C2",
+			worktree: "wt-c",
+			chainId: "c1",
+			chainSeq: 1,
+		});
+		const decision = schedule([head, tail], idle, { maxConcurrent: 3 });
+		expect(decision.start).toEqual([]);
+		expect(decision.skip.map((s) => s.task.id)).toEqual(["01C2"]);
+		expect(decision.skip[0]?.reason).toContain("verify-failed");
+	});
+
 	it("skips a tail when its predecessor was cancelled (user stop/skip)", () => {
 		const head = task({
 			id: "01C1",

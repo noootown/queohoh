@@ -56,11 +56,33 @@ describe("loadDefinition", () => {
 			worktree: "pr:{{number}}",
 			preRun: "mise run setup",
 			postRun: null,
+			verify: null,
 			model: "opus",
 			timeoutMs: 2_700_000,
 			priority: "high",
 			prompt: "Review PR {{number}}.\n",
 		});
+	});
+
+	it("loads a verify (done-condition) command", () => {
+		const projectDir = makeRepo({
+			"pr-ready": {
+				config:
+					"verify: gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review",
+				prompt: "Flip the PR to ready.\n",
+			},
+		});
+		const def = loadDefinition(projectDir, "platform", "pr-ready");
+		expect(def.verify).toBe(
+			"gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review",
+		);
+	});
+
+	it("defaults verify to null when absent", () => {
+		const projectDir = makeRepo({
+			tidy: { config: "{}", prompt: "Tidy up.\n" },
+		});
+		expect(loadDefinition(projectDir, "platform", "tidy").verify).toBeNull();
 	});
 
 	it("applies defaults for a minimal config", () => {

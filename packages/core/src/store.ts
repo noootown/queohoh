@@ -27,6 +27,9 @@ export interface NewTaskInput {
 	session?: SessionMode;
 	resumeSessionId?: string;
 	model?: string;
+	/** Done-condition command run after the worker claims success; a definition
+	 * task leaves this unset and uses the definition's own `verify` at run time. */
+	verify?: string;
 }
 
 /** One step of a task chain. `definition` steps carry a rendered prompt plus the
@@ -40,6 +43,9 @@ export interface ChainStepInput {
 	itemKey?: string;
 	model?: string;
 	priority?: Priority;
+	/** Per-step done-condition command (a definition step's own `verify` still
+	 * wins at run time, mirroring `model`). */
+	verify?: string;
 }
 
 /** Target + provenance shared by every member of a chain. `resumeSessionId`
@@ -92,6 +98,10 @@ export class QueueStore {
 			prompt: input.prompt,
 			chainId: null,
 			chainSeq: null,
+			verify: input.verify ?? null,
+			verified: null,
+			verifyExitCode: null,
+			verifyOutput: null,
 		};
 		this.write(task);
 		return task;
@@ -132,6 +142,10 @@ export class QueueStore {
 				prompt: step.prompt,
 				chainId,
 				chainSeq: i,
+				verify: step.verify ?? null,
+				verified: null,
+				verifyExitCode: null,
+				verifyOutput: null,
 			};
 			this.write(task);
 			return task;
@@ -176,7 +190,8 @@ export class QueueStore {
 				patch.status === "done" ||
 				patch.status === "failed" ||
 				patch.status === "cancelled" ||
-				patch.status === "skipped";
+				patch.status === "skipped" ||
+				patch.status === "verify-failed";
 			next.finishedAt = terminal
 				? (current.finishedAt ?? new Date().toISOString())
 				: null;

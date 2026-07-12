@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -59,6 +59,22 @@ const enqueue = (store: QueueStore, definition?: string) =>
 		item: definition ? { number: "1" } : undefined,
 		itemKey: definition ? "1" : undefined,
 	});
+
+/** A verify executor recording each invocation and returning a scripted result. */
+function fakeVerify(
+	result: { exitCode: number; timedOut?: boolean; output?: string },
+	calls: string[] = [],
+) {
+	return async (opts: { command: string }) => {
+		calls.push(opts.command);
+		return {
+			exitCode: result.exitCode,
+			timedOut: result.timedOut ?? false,
+			signal: null,
+			output: result.output ?? "",
+		};
+	};
+}
 
 function withWorktree(store: QueueStore, id: string) {
 	return store.update(id, {
@@ -188,6 +204,7 @@ describe("runTask", () => {
 			args: [{ name: "number" }],
 			dedup: "none",
 			worktree: "temp",
+			verify: null,
 			preRun: "mise run setup",
 			postRun: "echo done",
 			model: "opus",
@@ -222,6 +239,7 @@ describe("runTask", () => {
 			args: [{ name: "number" }],
 			dedup: "none",
 			worktree: "temp",
+			verify: null,
 			preRun: "setup.sh {{number}} {{repo_slug}}",
 			postRun: null,
 			model: "opus",
@@ -258,6 +276,7 @@ describe("runTask", () => {
 			args: [],
 			dedup: "none",
 			worktree: "temp",
+			verify: null,
 			preRun: "bad-setup",
 			postRun: "cleanup",
 			model: "opus",
@@ -379,6 +398,7 @@ describe("runTask", () => {
 			args: [],
 			dedup: "none",
 			worktree: "temp",
+			verify: null,
 			preRun: "run {{ticket}} {{branch}} {{worktree}}",
 			postRun: null,
 			model: "opus",
@@ -420,6 +440,7 @@ describe("runTask", () => {
 			args: [],
 			dedup: "none",
 			worktree: "temp",
+			verify: null,
 			preRun: null,
 			postRun: "cleanup",
 			model: "opus",
@@ -719,6 +740,7 @@ describe("runTask pinned resume (resume_session_id)", () => {
 			args: [],
 			dedup: "none",
 			worktree: "temp",
+			verify: null,
 			preRun: null,
 			postRun: null,
 			model: "opus",
@@ -747,5 +769,157 @@ describe("runTask pinned resume (resume_session_id)", () => {
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
 		expect(seenModel).toBe("opus");
+	});
+});
+
+describe("runTask verify (done-condition)", () => {
+	const enqueueVerify = (store: QueueStore, verify: string) =>
+		store.create({
+			prompt: "do it\n",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+			verify,
+		});
+
+	it("verify passes → task stays done and records verified:true", async () => {
+		const calls: string[] = [];
+		const { deps, store, runStore } = makeDeps({
+			executeVerify: fakeVerify({ exitCode: 0, output: "ok\n" }, calls),
+		});
+		const t = enqueueVerify(store, "test -f dist/cli.js");
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		expect(result.error).toBeNull();
+		expect(result.verified).toBe(true);
+		expect(result.verifyExitCode).toBe(0);
+		expect(result.verify).toBe("test -f dist/cli.js");
+		expect(calls).toEqual(["test -f dist/cli.js"]);
+		// Persisted to the run-store data.json too.
+		const meta = runStore.readRunMeta(t.id);
+		expect(meta?.outcome).toBe("done");
+		expect(meta?.verified).toBe(true);
+	});
+
+	it("verify exits non-zero → verify-failed, output captured, reason set", async () => {
+		const { deps, store, runStore } = makeDeps({
+			executeVerify: fakeVerify({ exitCode: 2, output: "label missing\n" }),
+		});
+		const t = enqueueVerify(store, "check-label.sh");
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("verify-failed");
+		expect(result.error).toBe("verify failed (exit 2)");
+		expect(result.verified).toBe(false);
+		expect(result.verifyExitCode).toBe(2);
+		expect(result.verifyOutput).toBe("label missing\n");
+		// The report tab (report.md) surfaces the verdict + output tail.
+		const report = readFileSync(
+			join(runStore.runsDir, t.id, "report.md"),
+			"utf-8",
+		);
+		expect(report).toContain("## Verify");
+		expect(report).toContain("label missing");
+		expect(runStore.readRunMeta(t.id)?.outcome).toBe("verify-failed");
+	});
+
+	it("verify times out → verify-failed with a timed-out reason and null exit", async () => {
+		const { deps, store } = makeDeps({
+			executeVerify: fakeVerify({
+				exitCode: 1,
+				timedOut: true,
+				output: "still running...",
+			}),
+		});
+		const t = enqueueVerify(store, "sleep 999");
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("verify-failed");
+		expect(result.error).toBe("verify timed out");
+		expect(result.verified).toBe(false);
+		expect(result.verifyExitCode).toBeNull();
+	});
+
+	it("no verify command → behavior unchanged, executor never called", async () => {
+		const calls: string[] = [];
+		const { deps, store } = makeDeps({
+			executeVerify: fakeVerify({ exitCode: 1 }, calls),
+		});
+		const t = enqueue(store); // no verify configured
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		expect(result.verified).toBeNull();
+		expect(calls).toEqual([]);
+	});
+
+	it("does NOT run verify when the run already failed", async () => {
+		const calls: string[] = [];
+		const { deps, store } = makeDeps({
+			executeClaude: async () => ({ ...okResult, exitCode: 3 }),
+			executeVerify: fakeVerify({ exitCode: 0 }, calls),
+		});
+		const t = enqueueVerify(store, "should-not-run");
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("failed");
+		expect(result.error).toBe("exit code 3");
+		expect(calls).toEqual([]);
+		expect(result.verified).toBeNull();
+	});
+
+	it("uses the definition's verify (live) and renders worktree context", async () => {
+		const def: TaskDefinition = {
+			name: "pr-ready",
+			repo: "platform",
+			discovery: null,
+			description: null,
+			cron: null,
+			args: [],
+			dedup: "none",
+			worktree: "temp",
+			preRun: null,
+			postRun: null,
+			verify: "check {{ticket}} {{worktree}}",
+			model: "opus",
+			timeoutMs: 60_000,
+			priority: "normal",
+			prompt: "p",
+		};
+		const calls: string[] = [];
+		const exec: Exec = async (cmd, args) => {
+			if (cmd === "git" && args.join(" ").includes("rev-parse"))
+				return { stdout: "jus-42-x\n", exitCode: 0 };
+			return { stdout: "", exitCode: 0 };
+		};
+		const { deps, store } = makeDeps({
+			exec,
+			loadDef: () => def,
+			executeVerify: fakeVerify({ exitCode: 0 }, calls),
+		});
+		const t = enqueue(store, "platform/pr-ready");
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		// worktree name is "tmp-x" (withWorktree); ticket derived from the branch.
+		expect(calls).toEqual(["check JUS-42 tmp-x"]);
+		// The definition's command is stamped onto the task record.
+		expect(result.verify).toBe("check {{ticket}} {{worktree}}");
+	});
+
+	it("redacts secrets in the persisted verify output", async () => {
+		const { deps, store } = makeDeps({
+			redact: makeRedactor(new Map([["sk-secret-123", "API_TOKEN"]])),
+			executeVerify: fakeVerify({
+				exitCode: 2,
+				output: "auth failed with token sk-secret-123\n",
+			}),
+		});
+		const t = enqueueVerify(store, "deploy-check.sh");
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("verify-failed");
+		expect(result.verifyOutput).not.toContain("sk-secret-123");
 	});
 });

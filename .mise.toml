@@ -79,12 +79,17 @@ description = "Print daemon state JSON via the unix socket"
 run = "node packages/daemon/dist/cli.js status"
 
 [tasks.tui]
-description = "Launch the qoo-tui cockpit (ratatui; builds the release binary, self-heals the daemon)"
-depends = ["daemon:ensure"]
+description = "Launch the qoo-tui cockpit (ratatui; builds the release binary, self-heals the daemon unless --no-daemon)"
+usage = 'flag "--no-daemon" help="Attach-only: skip building/ensuring the daemon AND disable the TUI self-heal, so this TUI never restarts a daemon owned by another checkout"'
 run = [
+	# Skipping the daemon also skips the TS build it depends on — UI-only
+	# worktrees just need the release binary.
+	'if [ "${usage_no_daemon:-false}" != "true" ]; then mise run daemon:ensure; fi',
 	"cargo build --release -p qoo-tui",
 	# The binary lands in the shared CARGO_TARGET_DIR (see [env]), not ./target.
-	'"${CARGO_TARGET_DIR:-./target}/release/qoo-tui"',
+	# --no-heal: without it the TUI compares the daemon build to THIS worktree's
+	# packages/daemon/dist and restarts on mismatch — two worktrees would fight.
+	'extra=""; [ "${usage_no_daemon:-false}" = "true" ] && extra="--no-heal"; exec "${CARGO_TARGET_DIR:-./target}/release/qoo-tui" $extra',
 ]
 
 # --- integrations ---

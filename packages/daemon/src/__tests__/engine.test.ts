@@ -7,6 +7,7 @@ import type {
 	GlobalConfig,
 	ResolverIO,
 	RunResult,
+	VerifyExecutor,
 } from "@queohoh/core";
 import {
 	MainSessionStore,
@@ -35,6 +36,7 @@ function setup(
 		claudeResult?: RunResult;
 		exec?: Exec;
 		executeClaude?: ClaudeExecutor;
+		executeVerify?: VerifyExecutor;
 	} = {},
 ) {
 	const base = mkdtempSync(join(tmpdir(), "qo-engine-"));
@@ -78,6 +80,14 @@ function setup(
 		executeClaude:
 			overrides.executeClaude ??
 			(async () => overrides.claudeResult ?? okResult),
+		executeVerify:
+			overrides.executeVerify ??
+			(async () => ({
+				exitCode: 0,
+				timedOut: false,
+				signal: null,
+				output: "",
+			})),
 		redact: makeRedactor(new Map()),
 		mainSessions,
 	});
@@ -230,6 +240,12 @@ describe("Engine.tick", () => {
 				claudeRan = true;
 				return okResult;
 			},
+			executeVerify: async () => ({
+				exitCode: 0,
+				timedOut: false,
+				signal: null,
+				output: "",
+			}),
 			redact: makeRedactor(new Map()),
 			mainSessions: new MainSessionStore(join(base, "main-sessions.json")),
 		});

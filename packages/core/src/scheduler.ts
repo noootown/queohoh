@@ -25,14 +25,17 @@ function isChainTail(t: TaskInstance): boolean {
 
 /**
  * Statuses that mean a chain predecessor will never succeed, so its successor is
- * skipped rather than left waiting: an outright failure, a user cancel (stop →
- * cancelled, or a queued/needs-input skip → cancelled), a predecessor already
- * skipped (cascade), or a predecessor parked in needs-input (its shared worktree
- * never resolved, so the chain can't proceed).
+ * skipped rather than left waiting: an outright failure, a failed done-condition
+ * (`verify-failed` — the worker claimed success but the check disagreed, so the
+ * chain must not build on it), a user cancel (stop → cancelled, or a
+ * queued/needs-input skip → cancelled), a predecessor already skipped (cascade),
+ * or a predecessor parked in needs-input (its shared worktree never resolved, so
+ * the chain can't proceed).
  */
 function isTerminalNonSuccess(status: TaskInstance["status"]): boolean {
 	return (
 		status === "failed" ||
+		status === "verify-failed" ||
 		status === "needs-input" ||
 		status === "skipped" ||
 		status === "cancelled"

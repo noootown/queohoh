@@ -69,6 +69,12 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.describe(
 					"Model for the run (e.g. claude-fable-5); defaults to the daemon default",
 				),
+			verify: z
+				.string()
+				.optional()
+				.describe(
+					"Done-condition shell command run (in the worktree) AFTER the task claims success. Exit 0 → done; non-zero or timeout → the task lands 'verify-failed'. The framework owns this check — the worker cannot fake it. E.g. \"gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review\".",
+				),
 		},
 		async (args) => toCallResult(mcpEnqueueTask(caller, args)),
 	);
@@ -94,6 +100,12 @@ export function createMcpServer(caller: McpCaller): McpServer {
 							.string()
 							.optional()
 							.describe("Ad-hoc prompt (mutually exclusive with definition)"),
+						verify: z
+							.string()
+							.optional()
+							.describe(
+								"Per-step done-condition shell command; non-zero/timeout lands the step 'verify-failed' and skips the rest of the chain (a definition step's own verify still wins)",
+							),
 					}),
 				)
 				.min(1)

@@ -19,6 +19,7 @@ function def(overrides: Partial<TaskDefinition> = {}): TaskDefinition {
 		worktree: "pr:{{number}}",
 		preRun: null,
 		postRun: null,
+		verify: null,
 		model: "opus",
 		timeoutMs: 1_800_000,
 		priority: "high",

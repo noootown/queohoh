@@ -133,6 +133,7 @@ fn status_glyph(status: TaskStatus) -> char {
         TaskStatus::Failed => '✗',
         TaskStatus::Cancelled => '⊘',
         TaskStatus::Skipped => '⊝',
+        TaskStatus::VerifyFailed => '⊗', // circled ✕ — the done-condition disagreed
         TaskStatus::Unknown => '·', // no TS counterpart (old-daemon statuses only)
     }
 }
@@ -175,6 +176,7 @@ pub fn queue_row_finished(row: &QueueRow) -> bool {
             row.status,
             TaskStatus::Done
                 | TaskStatus::Failed
+                | TaskStatus::VerifyFailed
                 | TaskStatus::Cancelled
                 | TaskStatus::Skipped
                 | TaskStatus::Unknown
@@ -325,7 +327,12 @@ fn worktree_state(snapshot: &StateSnapshot, lane: &str) -> WtState {
     }
     // newest by id — ULIDs sort chronologically
     match on_lane.iter().max_by(|a, b| a.id.cmp(&b.id)) {
-        Some(t) if t.status == TaskStatus::Failed => WtState::Failed,
+        // A failed done-condition reads as a failed lane, same as a worker failure.
+        Some(t)
+            if matches!(t.status, TaskStatus::Failed | TaskStatus::VerifyFailed) =>
+        {
+            WtState::Failed
+        }
         _ => WtState::Free,
     }
 }
@@ -1536,6 +1543,10 @@ mod tests {
             resume_session_id: None,
             model: None,
             prompt: "fix the flaky test\nmore context\n".into(),
+            verify: None,
+            verified: None,
+            verify_exit_code: None,
+            verify_output: None,
         }
     }
 

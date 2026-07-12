@@ -32,7 +32,7 @@ Task definitions live in the workspace, one directory per project: `<workspace>/
 
 ### Builtin vars
 
-Prompts and `pre_run`/`post_run` hooks can reference these `{{var}}` placeholders without declaring them as args. Any explicitly configured var (global `vars`, project `vars.yaml`, or an arg of the same name) overrides the builtin.
+Prompts, `pre_run`/`post_run` hooks, and the `verify` command (see below) can reference these `{{var}}` placeholders without declaring them as args. Any explicitly configured var (global `vars`, project `vars.yaml`, or an arg of the same name) overrides the builtin.
 
 Resolved at **instantiate time** (definition → task):
 
@@ -45,6 +45,41 @@ Resolved at **execution time** (in the task's actual worktree), via a second ren
 - `{{worktree_path}}` — its absolute path.
 - `{{branch}}` — `git rev-parse --abbrev-ref HEAD` in that worktree (empty if it can't be read).
 - `{{ticket}}` — the ticket id derived from the branch name (convention: the branch is named after its ticket, so `jus-1008-fix-thing` → `JUS-1008`; empty when the branch has no ticket-shaped token).
+
+### Done conditions (`verify`)
+
+Headless workers confidently report success. A `verify` command lets the
+**framework** — not the worker — decide whether a task really succeeded. After
+the worker exits claiming success and the tree is clean, the daemon runs
+`verify` in the task's worktree (10-minute cap). Exit `0` → the task is `done`
+and records `verified: true`; a non-zero exit or a timeout lands the task in a
+distinct terminal status, **`verify-failed`** (kept separate from `failed` so
+"the worker errored" reads differently from "the worker claimed success but the
+check disagreed"). The verify command, its exit code, and a bounded (~4 KB) tail
+of its combined output are persisted on the task and shown in the TUI. In a
+chain, a `verify-failed` step skips the rest, exactly like a failure.
+
+Set it three ways, all interpolated with the builtin vars above:
+
+- **Per definition** — a `verify:` key in the task's `config.yaml`:
+
+  ```yaml
+  # <workspace>/platform/tasks/pr-ready/config.yaml
+  description: Flip a PR from WIP to ready-for-review.
+  worktree: auto
+  model: opus
+  verify: gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review
+  ```
+
+  A definition step in a chain reads its `verify` live from the definition (it
+  wins over any per-step override, matching how `model` behaves).
+
+- **Ad-hoc** — `enqueue_task`'s `verify` argument.
+- **Per chain step** — a `verify` field on any `enqueue_chain` step.
+
+The full `config.yaml` key set alongside `verify`: `description`, `discovery`,
+`cron`, `args`, `dedup`, `worktree`, `pre_run`, `post_run`, `model`, `timeout`,
+`priority`.
 
 ## 3. Run the daemon
 
@@ -97,6 +132,6 @@ pnpm -r build          # compile the daemon
 mise run tui           # builds the release binary, self-heals the daemon, launches
 ```
 
-`mise run tui` is the one-shot path; it also rebuilds `qoo-tui` and ensures the daemon is up. To iterate on the TUI unoptimized, use `mise run tui:rs:dev`.
+`mise run tui` is the one-shot path; it also rebuilds `qoo-tui` and ensures the daemon is up. Pass `--no-daemon` for attach-only mode: it skips the daemon (and its TS build) *and* launches the TUI with `--no-heal`, so it never restarts a daemon owned by another checkout. Without that, the TUI's self-heal compares the daemon's build id to its own worktree's `packages/daemon/dist` and two worktrees' TUIs restart the shared daemon back and forth. Use it in secondary worktrees where the daemon runs from the main checkout. To iterate on the TUI unoptimized, use `mise run tui:rs:dev`.
 
 Run it in tmux tab 0 and leave it open — queue left, cron/worktrees right, `a` to add, `enter` for the live transcript, `q` to quit.

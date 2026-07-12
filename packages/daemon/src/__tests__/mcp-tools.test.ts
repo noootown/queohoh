@@ -78,6 +78,16 @@ describe("mcpEnqueueTask", () => {
 		});
 	});
 
+	it("forwards a verify command to the enqueue RPC", async () => {
+		const { caller, calls } = fakeCaller(() => ({ id: "01V" }));
+		await mcpEnqueueTask(caller, {
+			prompt: "fix it",
+			repo: "platform",
+			verify: "test -f dist/cli.js",
+		});
+		expect(calls[0]?.params?.verify).toBe("test -f dist/cli.js");
+	});
+
 	it("maps failures to isError result and still closes", async () => {
 		const { caller, closedCount } = fakeCaller(() => {
 			throw new Error("daemon not reachable");

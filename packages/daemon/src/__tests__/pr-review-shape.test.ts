@@ -97,6 +97,12 @@ async function setup() {
 		resolverIO,
 		exec,
 		executeClaude: async () => okResult,
+		executeVerify: async () => ({
+			exitCode: 0,
+			timedOut: false,
+			signal: null,
+			output: "",
+		}),
 		redact: makeRedactor(new Map()),
 		mainSessions,
 	});

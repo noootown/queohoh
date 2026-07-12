@@ -63,6 +63,11 @@ pub enum TaskStatus {
     /// Skipped by a chain (an earlier step failed, so this one never ran). Wire
     /// value `skipped`; rendered dim, distinct from `cancelled`.
     Skipped,
+    /// The worker claimed success (clean tree) but the task's `verify`
+    /// (done-condition) command disagreed — non-zero exit or timeout. Wire value
+    /// `verify-failed` (kebab, like `needs-input`). Rendered with its own glyph in
+    /// error red, distinct from a worker `failed`.
+    VerifyFailed,
     #[default]
     #[serde(other)]
     Unknown,
@@ -90,6 +95,16 @@ pub struct TaskInstance {
     pub resume_session_id: Option<String>,
     pub model: Option<String>,
     pub prompt: String,
+    /// Done-condition (`verify`) fields (additive; all `None` on an old daemon
+    /// that omits them, via the container `default`). `verify` is the configured
+    /// command; `verified` is the last verdict (true/false, `None` = never run);
+    /// `verify_exit_code` is the command's exit (`None` on timeout / never run);
+    /// `verify_output` is a bounded (~4 KB) tail of its combined output. The
+    /// distinct `verify-failed` status carries the headline; these detail it.
+    pub verify: Option<String>,
+    pub verified: Option<bool>,
+    pub verify_exit_code: Option<i64>,
+    pub verify_output: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -281,7 +296,11 @@ mod tests {
             "session": "main",
             "resumeSessionId": "sess-1",
             "model": "opus",
-            "prompt": "do the thing\n"
+            "prompt": "do the thing\n",
+            "verify": "gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review",
+            "verified": false,
+            "verifyExitCode": 1,
+            "verifyOutput": "checking labels...\nno match\n"
           }],
           "archivedRecent": [],
           "sessions": [{
@@ -319,6 +338,12 @@ mod tests {
         assert_eq!(t.model.as_deref(), Some("opus"));
         assert_eq!(t.prompt, "do the thing\n");
         assert_eq!(t.finished_at.as_deref(), Some("2026-07-08T10:05:00.000Z"));
+        assert_eq!(t.verify.as_deref(), Some(
+            "gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review",
+        ));
+        assert_eq!(t.verified, Some(false));
+        assert_eq!(t.verify_exit_code, Some(1));
+        assert_eq!(t.verify_output.as_deref(), Some("checking labels...\nno match\n"));
         assert_eq!(s.sessions[0].kind, "interactive");
         assert_eq!(s.sessions[0].pid, Some(4242));
         assert_eq!(s.max_concurrent, Some(3));
@@ -353,6 +378,11 @@ mod tests {
         assert_eq!(s.tasks[0].target.worktree, None);
         // finishedAt absent on an old daemon → None (additive field).
         assert_eq!(s.tasks[0].finished_at, None);
+        // verify fields absent on an old daemon → None (additive fields).
+        assert_eq!(s.tasks[0].verify, None);
+        assert_eq!(s.tasks[0].verified, None);
+        assert_eq!(s.tasks[0].verify_exit_code, None);
+        assert_eq!(s.tasks[0].verify_output, None);
         assert_eq!(s.projects, vec![]);
         assert!(s.worktrees.is_empty());
         assert!(s.main_sessions.is_empty());
@@ -454,6 +484,15 @@ mod tests {
         let t: TaskInstance =
             serde_json::from_str(r#"{"id": "x", "status": "needs-input"}"#).unwrap();
         assert_eq!(t.status, TaskStatus::NeedsInput);
+    }
+
+    #[test]
+    fn kebab_status_verify_failed_round_trips() {
+        // The wire value is `verify-failed` (kebab, via rename_all), NOT the
+        // Unknown fallback — a modern TUI renders it with its own glyph.
+        let t: TaskInstance =
+            serde_json::from_str(r#"{"id": "x", "status": "verify-failed"}"#).unwrap();
+        assert_eq!(t.status, TaskStatus::VerifyFailed);
     }
 
     #[test]
