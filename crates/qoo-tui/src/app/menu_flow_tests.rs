@@ -127,11 +127,11 @@ fn queue_x_confirms_then_stops_a_running_task() {
     let opened = a.update(key('x'));
     assert!(opened.cmds.is_empty(), "x opens the dialog, dispatches nothing yet");
     match &a.mode {
-        Mode::ConfirmCancel { calls, .. } => {
+        Mode::Confirm { action: ConfirmAction::CancelTasks { calls }, .. } => {
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].method, "stop");
         }
-        other => panic!("expected ConfirmCancel, got {other:?}"),
+        other => panic!("expected cancel confirm, got {other:?}"),
     }
     let u = a.update(enter()); // confirm
     assert!(matches!(a.mode, Mode::List));
@@ -151,7 +151,7 @@ fn queue_x_confirms_then_skips_a_queued_task() {
     snap.tasks[0].status = TaskStatus::Queued;
     let mut a = app_with(snap);
     a.update(key('x'));
-    assert!(matches!(a.mode, Mode::ConfirmCancel { .. }));
+    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::CancelTasks { .. }, .. }));
     let u = a.update(enter());
     assert!(u.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { calls, .. }
         if calls[0].method == "skip" && calls[0].params == serde_json::json!({ "id": "t1" }))));
@@ -163,7 +163,7 @@ fn queue_x_esc_dismisses_the_confirm_without_dispatch() {
     snap.tasks[0].status = TaskStatus::Running;
     let mut a = app_with(snap);
     a.update(key('x'));
-    assert!(matches!(a.mode, Mode::ConfirmCancel { .. }));
+    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::CancelTasks { .. }, .. }));
     let u = a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert!(matches!(a.mode, Mode::List), "esc dismisses");
     assert!(u.cmds.is_empty(), "esc dispatches nothing");
@@ -194,7 +194,7 @@ fn queue_needs_input_is_requeueable_and_cancellable_via_skip() {
     snap2.tasks[0].status = TaskStatus::NeedsInput;
     let mut b = app_with(snap2);
     b.update(key('x'));
-    assert!(matches!(b.mode, Mode::ConfirmCancel { .. }));
+    assert!(matches!(b.mode, Mode::Confirm { action: ConfirmAction::CancelTasks { .. }, .. }));
     let xu = b.update(enter());
     assert!(xu.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { calls, .. } if calls[0].method == "skip")));
 }
@@ -241,7 +241,9 @@ fn queue_range_cancel_all_running_stops_each() {
     a.update(shift_down());
     a.update(key('x')); // opens confirm
     match &a.mode {
-        Mode::ConfirmCancel { summary, .. } => assert!(summary.contains("2 tasks") && summary.contains("stopped")),
+        Mode::Confirm { body, action: ConfirmAction::CancelTasks { .. }, .. } => {
+            assert!(body[0].contains("2 tasks") && body[0].contains("stopped"))
+        }
         other => panic!("{other:?}"),
     }
     let u = a.update(enter());
@@ -517,7 +519,7 @@ fn x_on_worktree_row_opens_confirm_remove_and_y_dispatches_rpc() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
     a.update(key('x'));
-    assert!(matches!(&a.mode, Mode::ConfirmRemove { .. }));
+    assert!(matches!(&a.mode, Mode::Confirm { action: ConfirmAction::RemoveWorktree { .. }, .. }));
     let up = a.update(key('y'));
     assert!(matches!(&up.cmds[..], [Cmd::Rpc { call, .. }]
         if call.method == "removeWorktree"

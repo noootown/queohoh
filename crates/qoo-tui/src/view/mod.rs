@@ -179,6 +179,13 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
         crate::hit::HitTarget::PaneDividerV,
     );
 
+    // Backdrop: any overlay mutes the ENTIRE frame behind it so the popup reads
+    // as the only live surface. Runs before the overlay renders — the overlay
+    // Clears + redraws its own rect, so it stays at full color on top.
+    if !matches!(app.mode, crate::app::Mode::List | crate::app::Mode::Search { .. }) {
+        dim_backdrop(frame.buffer_mut(), &p);
+    }
+
     // Overlays render last so their rects register topmost in the hit map.
     match &app.mode {
         crate::app::Mode::Help => help::render(frame, area, &mut hits, &p),
@@ -192,14 +199,8 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
             // Render-feedback for wheel clamping (see the App fields).
             app.menu_preview_max_scroll.set(m.max_scroll);
         }
-        crate::app::Mode::ConfirmRemove { worktree, branch, .. } => {
-            menu::render_confirm_remove(frame, &mut hits, worktree, branch);
-        }
-        crate::app::Mode::ConfirmBulkRemove { names, .. } => {
-            modal::render_confirm_bulk_remove(frame, &mut hits, names);
-        }
-        crate::app::Mode::ConfirmCancel { calls, summary } => {
-            modal::render_confirm_cancel(frame, &mut hits, calls.len(), summary);
+        crate::app::Mode::Confirm { title, body, confirm_label, focus, .. } => {
+            modal::render_confirm(frame, &mut hits, title, body, confirm_label, *focus);
         }
         crate::app::Mode::AddTask { worktree, resume_label, editor, .. } => {
             let repo = app.active_repo().unwrap_or_default();
@@ -328,6 +329,27 @@ pub fn apply_osc8(buf: &mut Buffer, x: u16, y: u16, width: u16, url: &str) {
     }
 }
 
+/// Mute every cell of the frame so an overlay reads as the only live surface:
+/// fg remapped to the palette's dim color, highlight bg dropped, and the
+/// emphasis modifiers stripped. Deliberately an explicit color remap and NOT
+/// the terminal `DIM` attribute (grey-on-grey is unreadable on this theme).
+/// Style-only — symbols are never touched, so [`apply_osc8`]'s embedded
+/// hyperlink escapes survive.
+pub fn dim_backdrop(buf: &mut Buffer, p: &Palette) {
+    use ratatui::style::{Color, Modifier};
+    let area = buf.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut(Position { x, y }) {
+                cell.fg = p.dim;
+                cell.bg = Color::Reset;
+                cell.modifier
+                    .remove(Modifier::BOLD | Modifier::REVERSED | Modifier::UNDERLINED);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +392,26 @@ mod tests {
         let before = buf[(6, 0)].symbol().to_string();
         apply_osc8(&mut buf, 6, 0, 0, URL);
         assert_eq!(buf[(6, 0)].symbol(), before, "zero width leaves the cell untouched");
+    }
+
+    #[test]
+    fn dim_backdrop_mutes_styles_but_never_symbols() {
+        use ratatui::style::{Color, Modifier, Style};
+        let p = Palette::default();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
+        buf[(0, 0)].set_symbol("x").set_style(
+            Style::default().fg(Color::Green).bg(Color::Blue).add_modifier(Modifier::BOLD),
+        );
+        // An OSC 8-wrapped cell: the symbol must survive verbatim.
+        buf[(1, 0)].set_symbol("\x1b]8;;https://x\x1b\\#7\x1b]8;;\x1b\\");
+        buf[(1, 0)].modifier.insert(Modifier::UNDERLINED | Modifier::REVERSED);
+        dim_backdrop(&mut buf, &p);
+        assert_eq!(buf[(0, 0)].fg, p.dim);
+        assert_eq!(buf[(0, 0)].bg, Color::Reset);
+        assert!(!buf[(0, 0)].modifier.contains(Modifier::BOLD));
+        assert!(!buf[(1, 0)].modifier.intersects(Modifier::UNDERLINED | Modifier::REVERSED));
+        assert_eq!(buf[(1, 0)].symbol(), "\x1b]8;;https://x\x1b\\#7\x1b]8;;\x1b\\");
+        assert_eq!(buf[(0, 0)].symbol(), "x");
     }
 
     #[test]

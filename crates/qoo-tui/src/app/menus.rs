@@ -323,7 +323,22 @@ impl App {
                 }] }
             }
             M::BulkRemove { repo, names } => {
-                self.mode = Mode::ConfirmBulkRemove { repo, names };
+                // Body mirrors the old bulk-remove dialog: a warning line, up to 8
+                // names, then "…and N more" when the range exceeds 8.
+                let extra = names.len().saturating_sub(8);
+                let mut body =
+                    vec!["discards uncommitted changes and deletes each local branch".to_string()];
+                body.extend(names.iter().take(8).map(|name| format!("  {name}")));
+                if extra > 0 {
+                    body.push(format!("  …and {extra} more"));
+                }
+                self.mode = Mode::Confirm {
+                    title: format!("Remove {} worktrees", names.len()),
+                    body,
+                    confirm_label: "Remove".into(),
+                    action: ConfirmAction::BulkRemoveWorktrees { repo, names },
+                    focus: crate::hit::ButtonKind::Confirm,
+                };
                 Update { dirty: true, cmds: vec![] }
             }
         }

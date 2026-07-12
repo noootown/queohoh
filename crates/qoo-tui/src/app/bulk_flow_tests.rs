@@ -52,7 +52,7 @@ fn queue_range_cancel_via_x_mixes_stop_and_skip_per_row() {
     let mut a = app_with(snap);
     a.update(shift_down());
     a.update(key('x')); // opens the confirm dialog (freezing the calls)
-    assert!(matches!(a.mode, Mode::ConfirmCancel { .. }));
+    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::CancelTasks { .. }, .. }));
     let u = a.update(enter()); // confirm
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { verb, calls, invalidate_defs_for } => {
@@ -116,8 +116,8 @@ fn bulk_remove_confirms_then_rpcseq_removes_each() {
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → worktrees
     a.update(shift_down()); a.update(shift_down()); // 3-row range
     a.update(key('x')); // worktrees `x` on a range opens the bulk remove menu
-    a.update(enter()); // Remove worktrees… → ConfirmBulkRemove
-    match &a.mode { Mode::ConfirmBulkRemove { names, .. } => assert_eq!(names.len(), 3), other => panic!("{other:?}") }
+    a.update(enter()); // Remove worktrees… → confirm dialog (bulk remove)
+    match &a.mode { Mode::Confirm { action: ConfirmAction::BulkRemoveWorktrees { names, .. }, .. } => assert_eq!(names.len(), 3), other => panic!("{other:?}") }
     let u = a.update(key('y'));
     assert!(matches!(a.mode, Mode::List));
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {

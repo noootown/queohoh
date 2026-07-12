@@ -339,7 +339,7 @@ impl App {
 
     /// `x` on QUEUE (and the `[x] cancel` chip). Cancel ALWAYS confirms first: it
     /// freezes the per-task skip/stop RPCs (queued/needs-input → `skip`, running →
-    /// `stop`; terminal/archived rows are ineligible) and opens `ConfirmCancel`.
+    /// `stop`; terminal/archived rows are ineligible) and opens `Mode::Confirm`.
     /// Enter/y in that dialog dispatches (see `update`); a selection with nothing
     /// cancellable never opens the dialog — it sets a status line instead.
     pub(super) fn cancel_selected(&mut self) -> Update {
@@ -379,7 +379,13 @@ impl App {
                 params: serde_json::json!({ "id": id }),
             })
             .collect();
-        self.mode = Mode::ConfirmCancel { calls, summary };
+        self.mode = Mode::Confirm {
+            title: format!("Cancel {n} task{}", if n == 1 { "" } else { "s" }),
+            body: vec![summary],
+            confirm_label: "Cancel tasks".into(),
+            action: ConfirmAction::CancelTasks { calls },
+            focus: crate::hit::ButtonKind::Confirm,
+        };
         Update { dirty: true, cmds: vec![] }
     }
 
@@ -620,7 +626,7 @@ impl App {
     /// `x` on WORKTREES (and the `[x] remove` chip): selection-aware, mirroring
     /// the tasks pane's `r`. A multi-row range opens the bulk remove menu
     /// (eligibility frozen at open time via [`Self::open_bulk_menu`]); a single
-    /// row confirms removing just that worktree (opens `Mode::ConfirmRemove`; the
+    /// row confirms removing just that worktree (opens `Mode::Confirm`; the
     /// `y` handler dispatches the `removeWorktree` RPC). A session row isn't a
     /// worktree and a busy worktree has a task running → status line, no confirm.
     pub(super) fn remove_selected_worktree(&mut self) -> Update {
@@ -650,10 +656,20 @@ impl App {
             self.status_line = Some("a task is running here".into());
             return Update { dirty: true, cmds: vec![] };
         }
-        self.mode = Mode::ConfirmRemove {
-            repo,
-            worktree: row.raw_name.clone(),
-            branch: row.branch.clone(),
+        let worktree = row.raw_name.clone();
+        let branch = row.branch.clone();
+        let branch_line =
+            if branch.is_empty() { String::new() } else { format!(" on branch {branch}") };
+        self.mode = Mode::Confirm {
+            title: "Remove worktree".into(),
+            // No leading spaces — the modal's interior padding provides the inset.
+            body: vec![
+                format!("Remove {worktree}{branch_line}?"),
+                "This discards uncommitted changes and deletes the local branch.".into(),
+            ],
+            confirm_label: "Remove".into(),
+            action: ConfirmAction::RemoveWorktree { repo, worktree },
+            focus: crate::hit::ButtonKind::Confirm,
         };
         Update { dirty: true, cmds: vec![] }
     }

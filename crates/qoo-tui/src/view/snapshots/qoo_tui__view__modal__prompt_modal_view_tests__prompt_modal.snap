@@ -6,9 +6,10 @@ expression: s
                                                             
                                                             
                                                             
-                                                            
     ╭ New task — platform (adhoc) ─────────────────────╮    
-    │run this now                                      │    
-    │and a second line                                 │    
-    │ enter submit · shift+enter newline · esc cancel  │    
+    │                                                  │    
+    │  run this now                                    │    
+    │  and a second line                               │    
+    │  enter submit · shift+enter newline              │    
+    │                                                  │    
     ╰──────────────────────────────────────────────────╯

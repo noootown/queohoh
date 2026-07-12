@@ -1,0 +1,22 @@
+---
+source: crates/qoo-tui/src/view/modal.rs
+expression: s
+---
+                                                                                
+                                                                                
+        ╭ Remove 10 worktrees ─────────────────────────────────────────╮        
+        │                                                              │        
+        │  discards uncommitted changes and deletes each local branch  │        
+        │    wt-0                                                      │        
+        │    wt-1                                                      │        
+        │    wt-2                                                      │        
+        │    wt-3                                                      │        
+        │    wt-4                                                      │        
+        │    wt-5                                                      │        
+        │    wt-6                                                      │        
+        │    wt-7                                                      │        
+        │    …and 2 more                                               │        
+        │                                                              │        
+        │  [ Remove ]  [ Cancel ]                                      │        
+        │                                                              │        
+        ╰──────────────────────────────────────────────────────────────╯

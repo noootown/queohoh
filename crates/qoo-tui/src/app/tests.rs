@@ -594,7 +594,7 @@ fn cycle_sub_tab_wraps_within_kind() {
 }
 
 // -- Task 12: mouse routing ----------------------------------------------------
-use crate::hit::HitTarget;
+use crate::hit::{ButtonKind, HitTarget};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
@@ -1246,19 +1246,84 @@ fn assert_overlay_owns_clicks(make_mode: impl Fn() -> Mode) {
 
 #[test]
 fn confirm_remove_overlay_owns_clicks() {
-    assert_overlay_owns_clicks(|| Mode::ConfirmRemove {
-        repo: "acme".into(),
-        worktree: "acme.feature".into(),
-        branch: "feature/x".into(),
+    assert_overlay_owns_clicks(|| Mode::Confirm {
+        title: "Remove worktree".into(),
+        body: vec![" Remove acme.feature on branch feature/x?".into()],
+        confirm_label: "Remove".into(),
+        action: ConfirmAction::RemoveWorktree {
+            repo: "acme".into(),
+            worktree: "acme.feature".into(),
+        },
+        focus: ButtonKind::Confirm,
     });
 }
 
 #[test]
 fn confirm_bulk_remove_overlay_owns_clicks() {
-    assert_overlay_owns_clicks(|| Mode::ConfirmBulkRemove {
-        repo: "acme".into(),
-        names: vec!["acme.feature".into(), "acme.hotfix".into()],
+    assert_overlay_owns_clicks(|| Mode::Confirm {
+        title: "Remove 2 worktrees".into(),
+        body: vec!["discards uncommitted changes and deletes each local branch".into()],
+        confirm_label: "Remove".into(),
+        action: ConfirmAction::BulkRemoveWorktrees {
+            repo: "acme".into(),
+            names: vec!["acme.feature".into(), "acme.hotfix".into()],
+        },
+        focus: ButtonKind::Confirm,
     });
+}
+
+#[test]
+fn confirm_button_click_fires_the_action() {
+    // Clicking the Confirm button routes as Enter → fires the frozen action.
+    let mut app = app_with_hits();
+    app.hit.push(Rect { x: 40, y: 10, width: 10, height: 1 }, HitTarget::Button(ButtonKind::Confirm));
+    app.mode = Mode::Confirm {
+        title: "Cancel 1 task".into(),
+        body: vec!["cancel 1 running task".into()],
+        confirm_label: "Cancel tasks".into(),
+        action: ConfirmAction::CancelTasks {
+            calls: vec![RpcCall { method: "stop".into(), params: serde_json::json!({ "id": "t1" }) }],
+        },
+        focus: ButtonKind::Confirm,
+    };
+    let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 42, 10));
+    assert!(matches!(app.mode, Mode::List), "confirm returns to List");
+    assert!(up.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { verb, .. } if verb == "cancelled")));
+}
+
+#[test]
+fn confirm_cancel_button_click_dismisses_without_dispatch() {
+    let mut app = app_with_hits();
+    app.hit.push(Rect { x: 40, y: 10, width: 14, height: 1 }, HitTarget::Button(ButtonKind::Cancel));
+    app.mode = Mode::Confirm {
+        title: "Remove worktree".into(),
+        body: vec![" Remove acme.feature?".into()],
+        confirm_label: "Remove".into(),
+        action: ConfirmAction::RemoveWorktree { repo: "acme".into(), worktree: "acme.feature".into() },
+        focus: ButtonKind::Confirm,
+    };
+    let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 42, 10));
+    assert!(matches!(app.mode, Mode::List), "cancel button dismisses");
+    assert!(up.cmds.is_empty(), "cancel button dispatches nothing");
+}
+
+#[test]
+fn enter_confirms_remove_worktree() {
+    // Behavior unified: Enter now confirms a remove-worktree dialog (previously
+    // only `y` did).
+    let mut app = app_with_hits();
+    app.mode = Mode::Confirm {
+        title: "Remove worktree".into(),
+        body: vec![" Remove acme.feature?".into()],
+        confirm_label: "Remove".into(),
+        action: ConfirmAction::RemoveWorktree { repo: "acme".into(), worktree: "acme.feature".into() },
+        focus: ButtonKind::Confirm,
+    };
+    let up = app.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(matches!(app.mode, Mode::List));
+    assert!(matches!(&up.cmds[..], [Cmd::Rpc { call, .. }]
+        if call.method == "removeWorktree"
+        && call.params == serde_json::json!({ "repo": "acme", "name": "acme.feature" })));
 }
 
 #[test]

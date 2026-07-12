@@ -182,17 +182,23 @@ pub enum Mode {
         query: String,
         preview_scroll: usize,
     },
-    /// Destructive-confirm for `Remove worktree…`: y removes, n/q/esc cancel.
-    ConfirmRemove { repo: String, worktree: String, branch: String },
-    /// Destructive-confirm for a bulk `Remove worktrees…`: y removes each,
-    /// n/q/esc cancel. `names` are the frozen raw worktree names (Task 16).
-    ConfirmBulkRemove { repo: String, names: Vec<String> },
-    /// Confirm for the queue `x` cancel action (single or range). `calls` are the
-    /// frozen per-task skip/stop RPCs to fire on confirm (frozen at open time so a
-    /// mid-dialog snapshot can't retarget); `summary` is the one-line dialog body
-    /// ("cancel 1 queued task" / "cancel 3 tasks (1 running will be stopped)").
-    /// Enter/y confirm (default focus), n/q/esc cancel.
-    ConfirmCancel { calls: Vec<crate::event::RpcCall>, summary: String },
+    /// Unified destructive-confirmation dialog (remove worktree, bulk remove,
+    /// queue cancel). `title` names the verb; `body` are the message lines (built
+    /// per-verb at open time — the branch/warning lines, the truncated name list,
+    /// the running-will-be-stopped summary); `confirm_label` is the Confirm
+    /// button's verb; `action` is the frozen payload fired on confirm. `focus`
+    /// is the highlighted button (defaults to Confirm on open): Left/Right/Tab
+    /// move it; Enter activates the focused button; `y`/`n` are always-on
+    /// accelerators; Esc dismisses (unadvertised). A click on either button acts
+    /// regardless of focus; a click inside the body is inert; an outside click
+    /// dismisses.
+    Confirm {
+        title: String,
+        body: Vec<String>,
+        confirm_label: String,
+        action: ConfirmAction,
+        focus: crate::hit::ButtonKind,
+    },
     /// New adhoc-task prompt. Enter submits (enqueue), Shift+Enter inserts a
     /// newline into the multiline `editor`, Esc cancels.
     AddTask {
@@ -242,6 +248,21 @@ pub enum Mode {
         index: usize,
         query: String,
     },
+}
+
+/// The frozen payload a [`Mode::Confirm`] fires when confirmed. Each variant
+/// reproduces exactly the `Cmd`s its former dedicated mode produced; the display
+/// text lives in `Mode::Confirm.body`, so nothing here is render-only.
+#[derive(Debug, Clone)]
+pub enum ConfirmAction {
+    /// Single `removeWorktree` (one `Cmd::Rpc`, no range to clear).
+    RemoveWorktree { repo: String, worktree: String },
+    /// One `removeWorktree` per name in an `RpcSeq` (verb "removed"); clears the
+    /// WORKTREES range first. `names` are the frozen raw worktree names.
+    BulkRemoveWorktrees { repo: String, names: Vec<String> },
+    /// The frozen per-task skip/stop RPCs in one `RpcSeq` (verb "cancelled");
+    /// clears the QUEUE range first.
+    CancelTasks { calls: Vec<crate::event::RpcCall> },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

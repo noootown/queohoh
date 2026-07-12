@@ -770,55 +770,6 @@ pub fn render_def_pick(
     }
 }
 
-/// Destructive-confirm popup for `Remove worktree`. Warns that removal discards
-/// uncommitted changes and deletes the local branch, then waits for y / n. Like
-/// the menu it registers a `Modal` target so body clicks are inert (a click
-/// outside closes it — handled in `on_mouse`).
-pub fn render_confirm_remove(
-    frame: &mut ratatui::Frame,
-    hit: &mut HitMap,
-    worktree: &str,
-    branch: &str,
-) {
-    let p = Palette::default();
-    let area = frame.area();
-    let width = area.width.saturating_sub(8).clamp(28, 72);
-    let height = 7u16.min(area.height);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let rect = Rect { x, y, width, height };
-
-    frame.render_widget(Clear, rect);
-    hit.push(rect, HitTarget::Modal);
-
-    let block = Block::default()
-        .title(Span::styled(
-            " remove worktree ",
-            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(p.warn));
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-
-    let branch_line = if branch.is_empty() {
-        String::new()
-    } else {
-        format!(" on branch {branch}")
-    };
-    let lines = vec![
-        Line::from(Span::styled(format!(" Remove {worktree}{branch_line}?"), Style::default().fg(p.fg))),
-        Line::from(Span::styled(
-            " This discards uncommitted changes and deletes the local branch.",
-            p.dim_style(),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(" y confirm · n cancel", p.dim_style())),
-    ];
-    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
-}
-
 #[cfg(test)]
 mod menu_view_tests {
     use super::*;
@@ -1075,21 +1026,6 @@ mod menu_view_tests {
         insta::assert_snapshot!("action_menu_open", s);
     }
 
-    fn draw_confirm(cols: u16, rows: u16) -> (String, HitMap) {
-        let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
-        let mut hit = HitMap::default();
-        term.draw(|f| render_confirm_remove(f, &mut hit, "platform.wt-a", "wt-a")).unwrap();
-        let buf = term.backend().buffer().clone();
-        let mut s = String::new();
-        for y in 0..rows {
-            for x in 0..cols {
-                s.push_str(buf[(x, y)].symbol());
-            }
-            s.push('\n');
-        }
-        (s, hit)
-    }
-
     #[test]
     fn relative_age_formats_seconds_minutes_hours_days() {
         // Saturating (future/equal → 0s), and the m/h/d thresholds from the brief.
@@ -1189,19 +1125,4 @@ mod menu_view_tests {
         assert!(s.contains("1/2"), "count is filtered/total sessions");
     }
 
-    #[test]
-    fn confirm_remove_warns_and_registers_modal() {
-        let (s, hit) = draw_confirm(80, 20);
-        assert!(s.contains("discards uncommitted changes and deletes the local branch"));
-        assert!(s.contains("platform.wt-a"));
-        let mut saw_modal = false;
-        for y in 0..20 {
-            for x in 0..80 {
-                if let Some(HitTarget::Modal) = hit.hit(x, y) {
-                    saw_modal = true;
-                }
-            }
-        }
-        assert!(saw_modal, "confirm popup registers a Modal body region");
-    }
 }

@@ -28,7 +28,7 @@ pub enum MenuAction {
     // `r`/`x` chips carry the bulk verbs.) ---
     /// Run each zero-arg definition on this repo.
     BulkRunDefs { repo: String, names: Vec<String> },
-    /// Remove each non-busy worktree (routes through `Mode::ConfirmBulkRemove`).
+    /// Remove each non-busy worktree (routes through `Mode::Confirm`).
     BulkRemove { repo: String, names: Vec<String> },
 }
 

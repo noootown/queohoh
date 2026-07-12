@@ -299,17 +299,30 @@ impl App {
                     }
                 };
             }
-            // Confirm/Help overlays own every click too: a click inside the
-            // modal is inert; anything else (including outside → None) dismisses,
-            // same as esc — Confirm cancels with no dispatch, Help closes.
+            // The unified confirm dialog owns every click: the Confirm button
+            // fires the frozen action, the Cancel button and any outside click
+            // dismiss, a click inside the body is inert. Both buttons act
+            // regardless of which one has keyboard focus.
+            K::Down(MouseButton::Left) if matches!(self.mode, Mode::Confirm { .. }) => {
+                return match target {
+                    Some(HitTarget::Button(crate::hit::ButtonKind::Confirm)) => {
+                        self.confirm_dialog_fire()
+                    }
+                    Some(HitTarget::Button(crate::hit::ButtonKind::Cancel)) => {
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    Some(HitTarget::Modal) => Update { dirty: false, cmds: vec![] },
+                    _ => {
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                };
+            }
+            // Help/settings overlays own every click too: a click inside the modal
+            // is inert; anything else (including outside → None) dismisses.
             K::Down(MouseButton::Left)
-                if matches!(
-                    self.mode,
-                    Mode::ConfirmRemove { .. }
-                        | Mode::ConfirmBulkRemove { .. }
-                        | Mode::Help
-                        | Mode::Settings
-                ) =>
+                if matches!(self.mode, Mode::Help | Mode::Settings) =>
             {
                 return match target {
                     Some(HitTarget::Modal) => Update { dirty: false, cmds: vec![] },

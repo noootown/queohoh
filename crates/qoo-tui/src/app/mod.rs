@@ -359,7 +359,7 @@ impl App {
     /// baked in: 5s default timeout, a 10-minute budget for `createWorktree`
     /// (post-create hooks run for minutes), and `runDefinition` treated as
     /// timeout-ok (discovery can outlive the client; the push sub re-syncs).
-    // First callers: `execute_menu_action` and the ConfirmRemove handler (Task 14).
+    // First callers: `execute_menu_action` and the confirm-dialog handler (Task 14).
     fn dispatch_rpc(&mut self, label: impl Into<String>, method: &str, params: serde_json::Value, opts: RpcOpts) -> Cmd {
         // createWorktree no longer routes through here — it has a dedicated Cmd
         // (its 10-minute budget lives in the event handler).

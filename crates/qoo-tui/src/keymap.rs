@@ -60,7 +60,7 @@ pub enum AppAction {
     /// line outside tmux. Routes to `App::goto_worktree`.
     GotoWorktree,
     /// Remove the selected WORKTREES row (`x`, and the worktrees `[x] remove`
-    /// chip): opens `Mode::ConfirmRemove`. Session rows / busy worktrees are a
+    /// chip): opens `Mode::Confirm`. Session rows / busy worktrees are a
     /// no-op with a status line. Routes to `App::remove_selected_worktree`.
     RemoveSelectedWorktree,
     Create,

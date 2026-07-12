@@ -89,93 +89,31 @@ impl App {
             {
                 self.action_menu_key(&k)
             }
+            // Unified destructive-confirm. Left/Right/Tab move focus between the
+            // two buttons; Enter activates the FOCUSED one; `y`/`n` are always-on
+            // accelerators; Esc dismisses (unadvertised — the button row is the
+            // only hint).
             Event::Key(k)
-                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ConfirmRemove { .. }) =>
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::Confirm { .. }) =>
             {
+                use crate::hit::ButtonKind;
                 use crossterm::event::KeyCode::*;
                 match k.code {
-                    Char('y') => {
-                        let (repo, worktree) =
-                            if let Mode::ConfirmRemove { repo, worktree, .. } = &self.mode {
-                                (repo.clone(), worktree.clone())
-                            } else {
-                                unreachable!()
+                    Left | Right | Tab | BackTab => {
+                        if let Mode::Confirm { focus, .. } = &mut self.mode {
+                            *focus = match *focus {
+                                ButtonKind::Confirm => ButtonKind::Cancel,
+                                ButtonKind::Cancel => ButtonKind::Confirm,
                             };
-                        self.mode = Mode::List;
-                        let cmd = self.dispatch_rpc(
-                            "remove worktree",
-                            "removeWorktree",
-                            serde_json::json!({ "repo": repo, "name": worktree }),
-                            RpcOpts::default(),
-                        );
-                        Update { dirty: true, cmds: vec![cmd] }
-                    }
-                    Char('n') | Char('q') | Esc => {
-                        self.mode = Mode::List;
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    _ => Update { dirty: false, cmds: vec![] },
-                }
-            }
-            Event::Key(k)
-                if k.kind == KeyEventKind::Press
-                    && matches!(self.mode, Mode::ConfirmBulkRemove { .. }) =>
-            {
-                use crossterm::event::KeyCode::*;
-                match k.code {
-                    Char('y') => {
-                        let (repo, names) =
-                            if let Mode::ConfirmBulkRemove { repo, names } = &self.mode {
-                                (repo.clone(), names.clone())
-                            } else {
-                                unreachable!()
-                            };
-                        self.clear_range(ListPane::Worktrees);
-                        self.mode = Mode::List;
-                        Update { dirty: true, cmds: vec![Cmd::RpcSeq {
-                            verb: "removed".into(),
-                            calls: names
-                                .into_iter()
-                                .map(|name| RpcCall {
-                                    method: "removeWorktree".into(),
-                                    params: serde_json::json!({ "repo": repo, "name": name }),
-                                })
-                                .collect(),
-                            invalidate_defs_for: None,
-                        }] }
-                    }
-                    Char('n') | Char('q') | Esc => {
-                        self.mode = Mode::List;
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    _ => Update { dirty: false, cmds: vec![] },
-                }
-            }
-            Event::Key(k)
-                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ConfirmCancel { .. }) =>
-            {
-                use crossterm::event::KeyCode::*;
-                match k.code {
-                    // Default focus is confirm: Enter (and y) fire the frozen
-                    // skip/stop calls in one `RpcSeq` (verb "cancelled").
-                    Enter | Char('y') => {
-                        let calls = if let Mode::ConfirmCancel { calls, .. } = &self.mode {
-                            calls.clone()
-                        } else {
-                            unreachable!()
-                        };
-                        self.clear_range(ListPane::Queue);
-                        self.mode = Mode::List;
-                        Update {
-                            dirty: true,
-                            cmds: vec![Cmd::RpcSeq {
-                                verb: "cancelled".into(),
-                                calls,
-                                invalidate_defs_for: None,
-                            }],
                         }
+                        Update { dirty: true, cmds: vec![] }
                     }
-                    Char('n') | Char('q') | Esc => {
+                    Char('y') => self.confirm_dialog_fire(),
+                    Enter if matches!(self.mode, Mode::Confirm { focus: ButtonKind::Confirm, .. }) => {
+                        self.confirm_dialog_fire()
+                    }
+                    // Enter-on-Cancel joins the dismiss accelerators.
+                    Char('n') | Char('q') | Esc | Enter => {
                         self.mode = Mode::List;
                         Update { dirty: true, cmds: vec![] }
                     }
@@ -381,7 +319,7 @@ impl App {
                         up.dirty = up.dirty || had_status;
                         up
                     }
-                    // ActionMenu/ConfirmRemove only reach here on key-release
+                    // ActionMenu/Confirm only reach here on key-release
                     // (their Press events are handled by the guarded arms above).
                     _ => Update { dirty: false, cmds: vec![] },
                 }
@@ -528,6 +466,52 @@ impl App {
                     }
                     None => Update { dirty: false, cmds: vec![] },
                 }
+            }
+        }
+    }
+
+    /// Fire the open confirm dialog's frozen action and close it. Shared by the
+    /// keyboard confirm path and the Confirm-button click (which acts regardless
+    /// of button focus, so it can't route through the focus-dependent Enter).
+    pub(super) fn confirm_dialog_fire(&mut self) -> Update {
+        let action = if let Mode::Confirm { action, .. } = &self.mode {
+            action.clone()
+        } else {
+            unreachable!()
+        };
+        self.mode = Mode::List;
+        let cmds = self.run_confirm_action(action);
+        Update { dirty: true, cmds }
+    }
+
+    /// Dispatch a confirmed [`ConfirmAction`]. Each arm produces exactly the
+    /// `Cmd`s its former dedicated confirm mode produced (single `Cmd::Rpc` for a
+    /// remove; a range-clearing `RpcSeq` for bulk remove and cancel).
+    fn run_confirm_action(&mut self, action: ConfirmAction) -> Vec<Cmd> {
+        match action {
+            ConfirmAction::RemoveWorktree { repo, worktree } => vec![self.dispatch_rpc(
+                "remove worktree",
+                "removeWorktree",
+                serde_json::json!({ "repo": repo, "name": worktree }),
+                RpcOpts::default(),
+            )],
+            ConfirmAction::BulkRemoveWorktrees { repo, names } => {
+                self.clear_range(ListPane::Worktrees);
+                vec![Cmd::RpcSeq {
+                    verb: "removed".into(),
+                    calls: names
+                        .into_iter()
+                        .map(|name| RpcCall {
+                            method: "removeWorktree".into(),
+                            params: serde_json::json!({ "repo": repo, "name": name }),
+                        })
+                        .collect(),
+                    invalidate_defs_for: None,
+                }]
+            }
+            ConfirmAction::CancelTasks { calls } => {
+                self.clear_range(ListPane::Queue);
+                vec![Cmd::RpcSeq { verb: "cancelled".into(), calls, invalidate_defs_for: None }]
             }
         }
     }
