@@ -207,9 +207,8 @@ export async function runTask(
 			onSpawned: (pid) => deps.onSpawned?.(taskId, pid),
 		});
 		// Reason precedence: a timeout is its own outcome; else a signal (a Stop
-		// kills the process group) wins over exit code AND the dirty-tree check,
-		// since a stopped run usually leaves the tree dirty and the signal is the
-		// truer cause; else a non-zero exit; else a dirty tree.
+		// kills the process group) wins over exit code, since a stopped run's
+		// signal is the truer cause; else a non-zero exit.
 		if (result.timedOut) {
 			outcome = "failed";
 			reason = "timed out";
@@ -227,22 +226,18 @@ export async function runTask(
 		} else if (result.exitCode !== 0) {
 			outcome = "failed";
 			reason = `exit code ${result.exitCode}`;
-		} else {
-			const status = await deps.exec("git", ["status", "--porcelain"], { cwd });
-			if (status.exitCode !== 0 || status.stdout.trim() !== "") {
-				outcome = "failed";
-				reason = "tree left dirty";
-			}
 		}
 
-		// Done-condition (`verify`) gate — the framework's own success check, a
-		// generalization of the dirty-tree guard above. Runs ONLY when the run
-		// otherwise succeeded (still `done`). The command comes from the definition
-		// (read live, like model/timeout/hooks) or the task's own `verify`
-		// (ad-hoc/chain step), rendered with the same context as the hooks. A
-		// non-zero exit or a timeout lands `verify-failed` — distinct from `failed`
-		// so "the worker errored" reads differently from "the worker claimed
-		// success but the check disagreed".
+		// Done-condition (`verify`) gate — the framework's own success check.
+		// Runs ONLY when the run otherwise succeeded (still `done`). The command
+		// comes from the definition (read live, like model/timeout/hooks) or the
+		// task's own `verify` (ad-hoc/chain step), rendered with the same context
+		// as the hooks. A non-zero exit or a timeout lands `verify-failed` —
+		// distinct from `failed` so "the worker errored" reads differently from
+		// "the worker claimed success but the check disagreed". There is
+		// deliberately NO universal dirty-tree check anymore: it punished
+		// `worktree: repo` tasks for pre-existing dirt in the user's own checkout;
+		// defs that want it (autofix, pr-ready) declare it as their `verify`.
 		const verifyCmd = def?.verify ?? task.verify ?? null;
 		if (outcome === "done" && verifyCmd !== null && deps.executeVerify) {
 			const v = await deps.executeVerify({

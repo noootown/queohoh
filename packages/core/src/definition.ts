@@ -46,9 +46,11 @@ const DefinitionConfigSchema = z
 		pre_run: z.string().optional(),
 		post_run: z.string().optional(),
 		// Done-condition command. The framework runs it after the worker claims
-		// success (and the tree is clean); a non-zero exit or timeout lands the task
-		// `verify-failed`. Interpolated with the same `{{var}}` context as the prompt
-		// and the pre/post_run hooks.
+		// success; a non-zero exit or timeout lands the task `verify-failed`.
+		// Interpolated with the same `{{var}}` context as the prompt and the
+		// pre/post_run hooks. A clean-tree requirement is expressed here too
+		// (e.g. `[ -z "$(git status --porcelain)" ]`) — there is no universal
+		// dirty-tree check.
 		verify: z.string().optional(),
 		model: z.string().default("sonnet"),
 		timeout: z.string().default("30m"),

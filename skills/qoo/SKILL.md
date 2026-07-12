@@ -59,7 +59,7 @@ The run resumes this session — it already has the full conversation. The promp
 - Restate the concrete deliverable and its done-condition as agreed in the conversation. Fold the user's /qoo arguments in verbatim.
 - Add verification steps only if the task has a runnable check (tests, build, lint).
 - If $DIRTY was non-empty, add: "The tree already has uncommitted changes; fold them into your commits or commit them separately first."
-- Always end with: "Commit all work when done — a run that leaves the tree dirty is marked failed."
+- Always end with: "Commit all work when done — do not leave the tree dirty."
 
 Then `enqueue_task(prompt, model=<your model id>, ...)` with the step-1b target: `cwd=$TOPLEVEL` + `resume_session_id=<id>` from a non-primary worktree; `ref=<derived>`, no cwd, no resume, from the primary checkout.
 

@@ -129,7 +129,10 @@ describe("runTask", () => {
 		expect((await runTask(t.id, deps)).error).toBe("timed out");
 	});
 
-	it("dirty tree → failed with tree left dirty", async () => {
+	it("dirty tree alone no longer fails a run (dirty-check moved to per-def verify)", async () => {
+		// Policy change: the universal dirty-tree guard punished `worktree: repo`
+		// tasks for pre-existing dirt in the user's own checkout. Defs that want
+		// the guard declare it as their `verify` command.
 		const dirtyGit: Exec = async (_c, args) =>
 			args.join(" ").includes("status")
 				? { stdout: " M src/x.ts\n", exitCode: 0 }
@@ -137,18 +140,15 @@ describe("runTask", () => {
 		const { deps, store } = makeDeps({ exec: dirtyGit });
 		const t = enqueue(store);
 		withWorktree(store, t.id);
-		expect((await runTask(t.id, deps)).error).toBe("tree left dirty");
+		const done = await runTask(t.id, deps);
+		expect(done.status).toBe("done");
+		expect(done.error).toBeNull();
 	});
 
-	it("signal → failed with stopped reason, winning over exit code and a dirty tree", async () => {
-		// A stopped run: killed by SIGTERM, non-zero exit, and it left the tree
-		// dirty. The signal reason must win over both.
-		const dirtyGit: Exec = async (_c, args) =>
-			args.join(" ").includes("status")
-				? { stdout: " M src/x.ts\n", exitCode: 0 }
-				: { stdout: "", exitCode: 0 };
+	it("signal → failed with stopped reason, winning over exit code", async () => {
+		// A stopped run: killed by SIGTERM with a non-zero exit. The signal
+		// reason must win over the exit code.
 		const { deps, store } = makeDeps({
-			exec: dirtyGit,
 			executeClaude: async () => ({
 				...okResult,
 				exitCode: 143,
