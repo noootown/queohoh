@@ -475,6 +475,22 @@ impl App {
             if pane == ListPane::Worktrees {
                 self.ui().detail_row = 0;
             }
+            // A different QUEUE selection re-defaults the Run sub-tab: a still-
+            // running task has nothing in its report yet, so land on the live
+            // transcript instead; otherwise the report is the useful summary.
+            // Only a genuinely NEW row resets this — manual ctrl+x/z navigation
+            // while viewing the SAME row is never overridden.
+            if pane == ListPane::Queue {
+                let running = crate::view::compute(self)
+                    .queue
+                    .get(next)
+                    .is_some_and(|r| r.running);
+                self.ui().sub_tab[DetailKind::Run as usize] = if running {
+                    crate::detail::RUN_TAB_TRANSCRIPT
+                } else {
+                    crate::detail::RUN_TAB_REPORT
+                };
+            }
             self.schedule_run_read(cmds, 120);
         }
         changed

@@ -332,11 +332,11 @@ impl App {
         }
     }
 
-    /// `x` on QUEUE (and the `[x] cancel` chip). Cancel ALWAYS confirms first: it
+    /// `x` on QUEUE (and the `[x] stop` chip). Stop ALWAYS confirms first: it
     /// freezes the per-task skip/stop RPCs (queued/needs-input → `skip`, running →
     /// `stop`; terminal/archived rows are ineligible) and opens `Mode::Confirm`.
     /// Enter/y in that dialog dispatches (see `update`); a selection with nothing
-    /// cancellable never opens the dialog — it sets a status line instead.
+    /// stoppable never opens the dialog — it sets a status line instead.
     pub(super) fn cancel_selected(&mut self) -> Update {
         // The RPC method for a cancellable status, or None when it can't cancel.
         let cancel_method = |s: TaskStatus| match s {
@@ -355,17 +355,17 @@ impl App {
             .filter_map(|(id, s, _)| cancel_method(s).map(|_| (id, s)))
             .collect();
         if eligible.is_empty() {
-            self.status_line = Some("nothing to cancel in selection".into());
+            self.status_line = Some("nothing to stop in selection".into());
             return Update { dirty: true, cmds: vec![] };
         }
         let stops = eligible.iter().filter(|(_, s)| matches!(s, TaskStatus::Running)).count();
         let n = eligible.len();
         let summary = if n == 1 {
-            format!("cancel 1 {} task", status_kebab(eligible[0].1))
+            format!("stop 1 {} task", status_kebab(eligible[0].1))
         } else if stops > 0 {
-            format!("cancel {n} tasks ({stops} running will be stopped)")
+            format!("stop {n} tasks ({stops} running will be stopped)")
         } else {
-            format!("cancel {n} tasks")
+            format!("stop {n} tasks")
         };
         let calls: Vec<RpcCall> = eligible
             .into_iter()
@@ -375,9 +375,9 @@ impl App {
             })
             .collect();
         self.mode = Mode::Confirm {
-            title: format!("Cancel {n} task{}", if n == 1 { "" } else { "s" }),
+            title: format!("Stop {n} task{}", if n == 1 { "" } else { "s" }),
             body: vec![summary],
-            confirm_label: "Cancel tasks".into(),
+            confirm_label: "Stop tasks".into(),
             action: ConfirmAction::CancelTasks { calls },
             focus: crate::hit::ButtonKind::Confirm,
         };
@@ -427,10 +427,10 @@ impl App {
             Some(qi) => {
                 let mut cmds = Vec::new();
                 // Focus + select the queue row (last_list_pane → Queue drives the
-                // detail to Run), then pin the transcript sub-tab.
+                // detail to Run). `set_cursor` itself picks the Run sub-tab
+                // default (transcript while running, report otherwise).
                 self.set_focus(PaneId::Queue);
                 self.set_cursor(ListPane::Queue, qi, &mut cmds);
-                self.ui().sub_tab[DetailKind::Run as usize] = 0;
                 self.schedule_run_read(&mut cmds, 120);
                 Update { dirty: true, cmds }
             }

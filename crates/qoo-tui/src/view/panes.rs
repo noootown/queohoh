@@ -16,8 +16,8 @@ use crate::selectors::{
     wt_author_text, wt_col_layout,
 };
 use crate::view::theme::{
-    BTN_LABEL_ACTIONS, BTN_LABEL_CANCEL, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
-    BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RUN, BTN_LABEL_TASKS,
+    BTN_LABEL_ACTIONS, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
+    BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DISCOVERY, GLYPH_DOT, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
@@ -33,7 +33,7 @@ use crate::view::theme::{
 // shows only while chips from BOTH groups remain (see [`build_header`]);
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
-const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x] cancel [a]ctions · [c]reate [z]
+const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x] stop [a]ctions · [c]reate [z]
 const TASKS_ROW_SCOPED: usize = 1; // [r]un · [z]
 const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x] remove [t]asks · [c]reate [z]
 
@@ -85,7 +85,7 @@ fn button_chip(b: PaneButton, collapsed: bool, labeled: bool, p: &Palette) -> (V
         PaneButton::Actions => ('a', BTN_LABEL_ACTIONS),
         PaneButton::Run => ('r', BTN_LABEL_RUN),
         PaneButton::Goto => ('g', BTN_LABEL_GOTO),
-        PaneButton::Cancel => ('x', BTN_LABEL_CANCEL),
+        PaneButton::Cancel => ('x', BTN_LABEL_STOP),
         PaneButton::Remove => ('x', BTN_LABEL_REMOVE),
         PaneButton::Collapse => {
             ('z', if collapsed { BTN_LABEL_EXPAND } else { BTN_LABEL_COLLAPSE })

@@ -383,18 +383,63 @@ fn clicking_a_worktree_detail_lane_task_selects_it() {
 #[test]
 fn enter_on_lane_task_jumps_to_its_queue_detail() {
     let mut app = crate::test_fixtures::fixture_app();
+    // 01RUN (running) sorts first in the queue, i.e. already at cursor 0 — move
+    // the queue cursor off it first (arrow keys move the list cursor; j/k
+    // address the detail pane) so jumping back via Enter below is a genuine
+    // selection change (set_cursor's re-default logic is gated on `changed`,
+    // matching the detail_row-reset precedent).
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Tab); // focus worktrees (acme.feature lane)
     // detail_row 0 = the running task (running sorts first in the lane list).
     let u = press(&mut app, KeyCode::Enter);
     assert!(u.dirty);
-    // Focus + selection jumped to the queue; the detail is now the Run context on
-    // its transcript sub-tab (mirrors clicking that queue row).
+    // Focus + selection jumped to the queue; the detail defaults to the live
+    // transcript sub-tab — 01RUN is still running, so its report is empty
+    // (mirrors clicking that queue row).
     assert_eq!(app.ui().focus, PaneId::Queue);
     assert_eq!(app.ui().last_list_pane, ListPane::Queue);
-    assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], 0);
+    assert_eq!(
+        app.ui().sub_tab[DetailKind::Run as usize],
+        crate::detail::RUN_TAB_TRANSCRIPT
+    );
     let c = crate::view::compute(&app);
     assert_eq!(c.queue[app.ui().selections[0].cursor].task_id, "01RUN");
+}
+
+#[test]
+fn selecting_a_finished_queue_task_defaults_to_report() {
+    // The mirror case: a DONE/FAILED task has a real report, so the default
+    // sub-tab should be report, not transcript.
+    let mut app = crate::test_fixtures::fixture_app();
+    let c = crate::view::compute(&app);
+    let target = c
+        .queue
+        .iter()
+        .position(|r| !r.running && r.task_id != c.queue[0].task_id)
+        .expect("fixture has a non-running row other than the initial cursor");
+    let mut cmds = Vec::new();
+    app.set_cursor(ListPane::Queue, target, &mut cmds);
+    assert_eq!(
+        app.ui().sub_tab[DetailKind::Run as usize],
+        crate::detail::RUN_TAB_REPORT
+    );
+}
+
+#[test]
+fn selecting_a_running_queue_task_defaults_to_transcript() {
+    let mut app = crate::test_fixtures::fixture_app();
+    // Start elsewhere so moving to the running row is a genuine change.
+    let mut cmds = Vec::new();
+    app.set_cursor(ListPane::Queue, 5, &mut cmds);
+    let c = crate::view::compute(&app);
+    let running_idx = c.queue.iter().position(|r| r.running).expect("fixture has a running row");
+    cmds.clear();
+    app.set_cursor(ListPane::Queue, running_idx, &mut cmds);
+    assert_eq!(
+        app.ui().sub_tab[DetailKind::Run as usize],
+        crate::detail::RUN_TAB_TRANSCRIPT
+    );
 }
 
 #[test]
@@ -1267,9 +1312,9 @@ fn confirm_button_click_fires_the_action() {
     let mut app = app_with_hits();
     app.hit.push(Rect { x: 40, y: 10, width: 10, height: 1 }, HitTarget::Button(ButtonKind::Confirm));
     app.mode = Mode::Confirm {
-        title: "Cancel 1 task".into(),
-        body: vec!["cancel 1 running task".into()],
-        confirm_label: "Cancel tasks".into(),
+        title: "Stop 1 task".into(),
+        body: vec!["stop 1 running task".into()],
+        confirm_label: "Stop tasks".into(),
         action: ConfirmAction::CancelTasks {
             calls: vec![RpcCall { method: "stop".into(), params: serde_json::json!({ "id": "t1" }) }],
         },

@@ -26,6 +26,12 @@ const DEF_TABS: &[&str] = &["prompt", "config"];
 const WT_TABS: &[&str] = &["info"];
 const NO_TABS: &[&str] = &[];
 
+/// `RUN_TABS` indices, named so callers picking the default sub-tab (report vs
+/// transcript, by whether the task is still running) never hardcode a bare
+/// number.
+pub const RUN_TAB_REPORT: usize = 0;
+pub const RUN_TAB_TRANSCRIPT: usize = 1;
+
 pub fn sub_tab_names(kind: DetailKind) -> &'static [&'static str] {
     match kind {
         DetailKind::Run => RUN_TABS,
@@ -44,8 +50,8 @@ pub fn clamp_sub_tab(idx: usize, kind: DetailKind) -> usize {
 }
 
 pub fn bottom_anchored(kind: DetailKind, sub_tab: usize) -> bool {
-    // Only the transcript tail-anchors; it now sits at index 1 (report is first).
-    matches!(kind, DetailKind::Run) && sub_tab == 1
+    // Only the transcript tail-anchors.
+    matches!(kind, DetailKind::Run) && sub_tab == RUN_TAB_TRANSCRIPT
 }
 
 /// `(start, end_exclusive)` slice into `total` lines for a `height`-tall window

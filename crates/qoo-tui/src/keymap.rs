@@ -45,9 +45,9 @@ pub enum AppAction {
     /// chip): terminal / needs-input tasks re-run; queued/running are a no-op. A
     /// range re-queues every eligible member. Routes to `App::requeue_selected`.
     RequeueSelected,
-    /// Cancel the QUEUE pane's selected task(s) (`x`, and the queue's `[x] cancel`
+    /// Stop the QUEUE pane's selected task(s) (`x`, and the queue's `[x] stop`
     /// chip): queued/needs-input → skip, running → stop, terminal → no-op. A
-    /// range cancels each eligible member. Routes to `App::cancel_selected`.
+    /// range stops each eligible member. Routes to `App::cancel_selected`.
     CancelSelected,
     /// New adhoc task on the selected WORKTREES row (`r`, and the worktrees
     /// `[r]un` chip): opens the session picker (`Mode::SessionPick`) for the
@@ -124,7 +124,7 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         // `g` opens the selected worktree in tmux — a WORKTREES-only chip, inert
         // elsewhere. (`g`/`G` used to be unbound after the ScrollEdge removal.)
         KeyCode::Char('g') => gated(PaneButton::Goto, AppAction::GotoWorktree),
-        // `x` (plain) means cancel on QUEUE (skip/stop the selected task) and
+        // `x` (plain) means stop on QUEUE (skip/stop the selected task) and
         // remove on WORKTREES (remove the selected worktree); inert on TASKS.
         // (`ctrl+x` above is the sub-tab cycle, matched first, so it never
         // reaches here.)
@@ -343,8 +343,8 @@ mod tests {
     }
 
     #[test]
-    fn x_cancels_on_queue_removes_on_worktrees_ctrl_x_still_cycles() {
-        // Plain `x`: cancel on QUEUE (its `[x] cancel` chip), remove on WORKTREES
+    fn x_stops_on_queue_removes_on_worktrees_ctrl_x_still_cycles() {
+        // Plain `x`: stop on QUEUE (its `[x] stop` chip), remove on WORKTREES
         // (its `[x] remove` chip); inert on TASKS (no `x` chip there).
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Queue), AppAction::CancelSelected);
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Worktrees), AppAction::RemoveSelectedWorktree);

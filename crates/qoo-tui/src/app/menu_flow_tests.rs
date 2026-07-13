@@ -171,14 +171,14 @@ fn queue_x_esc_dismisses_the_confirm_without_dispatch() {
 
 #[test]
 fn queue_x_noop_on_terminal_sets_status_line_without_dialog() {
-    // A done (terminal) task can't be cancelled: status line, no dialog, no cmd.
+    // A done (terminal) task can't be stopped: status line, no dialog, no cmd.
     let mut snap = failed_task_snapshot();
     snap.tasks[0].status = TaskStatus::Done;
     let mut a = app_with(snap);
     let u = a.update(key('x'));
-    assert!(matches!(a.mode, Mode::List), "no dialog when nothing is cancellable");
+    assert!(matches!(a.mode, Mode::List), "no dialog when nothing is stoppable");
     assert!(u.cmds.is_empty());
-    assert!(a.status_line.as_deref().unwrap_or("").contains("cancel"), "status: {:?}", a.status_line);
+    assert!(a.status_line.as_deref().unwrap_or("").contains("stop"), "status: {:?}", a.status_line);
 }
 
 #[test]
@@ -260,16 +260,16 @@ fn queue_range_cancel_all_running_stops_each() {
 
 #[test]
 fn queue_range_cancel_with_no_eligible_sets_status_line() {
-    // A range of only terminal rows has nothing to cancel.
+    // A range of only terminal rows has nothing to stop.
     let mut t0 = TaskInstance::default(); t0.id = "t0".into(); t0.status = TaskStatus::Done; t0.target.repo = "platform".into();
     let mut t1 = TaskInstance::default(); t1.id = "t1".into(); t1.status = TaskStatus::Failed; t1.target.repo = "platform".into();
     let snap = StateSnapshot { tasks: vec![t0, t1], projects: vec![Project { name: "platform".into(), github_id: None }], ..Default::default() };
     let mut a = app_with(snap);
     a.update(shift_down());
     let u = a.update(key('x'));
-    assert!(matches!(a.mode, Mode::List), "no dialog when nothing is cancellable");
+    assert!(matches!(a.mode, Mode::List), "no dialog when nothing is stoppable");
     assert!(u.cmds.is_empty());
-    assert!(a.status_line.as_deref().unwrap_or("").contains("cancel"), "status: {:?}", a.status_line);
+    assert!(a.status_line.as_deref().unwrap_or("").contains("stop"), "status: {:?}", a.status_line);
 }
 
 #[test]
