@@ -6,6 +6,7 @@ import type { GlobalConfig } from "../config.js";
 import {
 	globalWorkspaceDir,
 	loadGlobalConfig,
+	loadProjectDefaultModel,
 	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectVars,
@@ -180,6 +181,50 @@ describe("loadProjectVars", () => {
 			"ticket: JUS-1\ngithub_id: noootown\n",
 		);
 		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+	});
+
+	it("skips the reserved default_model key instead of exposing it as a var", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"ticket: JUS-1\ndefault_model: opus\n",
+		);
+		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+	});
+});
+
+describe("loadProjectDefaultModel", () => {
+	it("reads a string default_model from vars.yaml", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
+		writeFileSync(join(dir, "vars.yaml"), "default_model: opus\ngithub_id: noootown\n");
+		expect(loadProjectDefaultModel(dir)).toBe("opus");
+	});
+
+	it("returns undefined for absent file, absent key, empty string, or non-string", () => {
+		const absent = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
+		expect(loadProjectDefaultModel(absent)).toBeUndefined();
+
+		const noKey = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		expect(loadProjectDefaultModel(noKey)).toBeUndefined();
+
+		const blank = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
+		writeFileSync(join(blank, "vars.yaml"), "default_model: ''\n");
+		expect(loadProjectDefaultModel(blank)).toBeUndefined();
+
+		const nested = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
+		writeFileSync(join(nested, "vars.yaml"), "default_model:\n  a: b\n");
+		expect(loadProjectDefaultModel(nested)).toBeUndefined();
+	});
+
+	it("coexists with a models: override block", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"default_model: opus\nmodels:\n  opus: claude-opus-4-8\n",
+		);
+		expect(loadProjectDefaultModel(dir)).toBe("opus");
+		expect(loadProjectModels(dir)).toEqual({ opus: "claude-opus-4-8" });
 	});
 });
 

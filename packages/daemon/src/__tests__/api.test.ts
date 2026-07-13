@@ -905,6 +905,7 @@ describe("ApiServer", () => {
 				task,
 				definition: null,
 				resolvedWorktree: wtPath,
+				resolvedWorktreePath: wtPath,
 				prompt: task.prompt,
 				model: "sonnet",
 			},

@@ -37,6 +37,16 @@ pub const GLYPH_SEARCH: char = '🔍';
 /// Block cursor at the end of the live search query in the hint row.
 pub const GLYPH_CURSOR: char = '█';
 
+/// Launcher entry markers — distinguish the two synthetic rows (New session /
+/// Create Worktree) from resumable-session rows. Single-width glyphs from the
+/// same family as the status glyphs (`⊘ ⊝ ⊗`) so column alignment holds across
+/// terminals (unlike the double-width emoji dropped from the pane chips).
+pub const GLYPH_NEW_SESSION: char = '✦';
+pub const GLYPH_CREATE_WORKTREE: char = '⊕';
+
+/// Dropdown affordance — a down chevron on the right of a closed select field.
+pub const GLYPH_CHEVRON_DOWN: char = '▾';
+
 /// Global-scope marker trailing a def-pick row (project-local defs render blank).
 pub const MARKER_GLOBAL: &str = "(g)";
 
@@ -87,7 +97,8 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// | Color            | Concept                | Surfaces                                                                                   |
 /// |------------------|------------------------|--------------------------------------------------------------------------------------------|
 /// | `mauve`          | task / definition NAME | QUEUE def column; TASKS name column; WORKTREES `next: <name>` and last-task name WHEN a def |
-/// | `accent` (blue)  | worktree IDENTITY      | QUEUE worktree column; WORKTREES name column                                                |
+/// | `worktree`       | worktree IDENTITY NAME | QUEUE worktree column; WORKTREES name column                                                |
+/// | `accent`         | generic UI accent      | selection bar; focused borders; active tab; dialog/menu borders; filter `>`; footer keys    |
 /// | `info` (teal)    | TIMESTAMPS only        | QUEUE timestamp + age; TASKS `⏰` schedule; WORKTREES commit-age, last-task age             |
 /// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
@@ -106,6 +117,10 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub accent: Color,
+    /// Worktree-identity NAME columns only (QUEUE `worktree`, WORKTREES `name`).
+    /// Split out from `accent` so it can be themed independently of the generic
+    /// UI accent (selection bar, focused borders, tabs, prompts).
+    pub worktree: Color,
     pub border: Color,
     pub border_focused: Color,
     pub dim: Color,
@@ -127,6 +142,7 @@ pub struct Palette {
 /// RGB.
 pub const MOCHA: Palette = Palette {
     accent: Color::Rgb(137, 180, 250),       // blue
+    worktree: Color::Rgb(137, 180, 250),     // worktree names = accent (no split)
     border: Color::Rgb(69, 71, 90),          // surface1
     border_focused: Color::Rgb(137, 180, 250),
     dim: Color::Rgb(147, 153, 178),          // overlay2 — brightest overlay; DIM
@@ -153,6 +169,7 @@ pub const MOCHA: Palette = Palette {
 /// to subtext0 while `fg` goes near-white.
 pub const MOCHA_BRIGHT: Palette = Palette {
     accent: Color::Rgb(166, 204, 255),       // blue, lightened
+    worktree: Color::Rgb(166, 204, 255),     // worktree names = accent (no split)
     border: Color::Rgb(108, 112, 134),       // overlay0 — brighter frame
     border_focused: Color::Rgb(166, 204, 255),
     dim: Color::Rgb(166, 173, 200),          // subtext0 — brighter, still dim vs fg
@@ -168,10 +185,83 @@ pub const MOCHA_BRIGHT: Palette = Palette {
     selection_bg: Color::Rgb(166, 204, 255), // blue, lightened with accent
 };
 
+/// Prism — a high-contrast rainbow profile (user pick), warm-leaning: light-orange
+/// worktree NAME columns, spring-green task/def names, gold metadata, and pink
+/// markdown headings are the warm slots; teal timestamps and the blue generic-UI
+/// `accent` (selection bar, focused borders, tabs, prompts) are the cool anchors.
+/// `fg` (near-white) is reserved for actions/tabs/chrome — prose and summaries
+/// render in the terminal's default grey. The three status slots
+/// (`ok`/`warn`/`error`) stay raw ANSI green/yellow/red (user: "keep the status
+/// colors, those are already great"); names use a lighter spring green so they
+/// never read as the "done" status dot.
+pub const PRISM: Palette = Palette {
+    accent: Color::Rgb(77, 166, 255),        // electric blue — generic UI accent
+    worktree: Color::Rgb(255, 158, 92),      // light warm orange — worktree NAME columns only
+    border: Color::Rgb(58, 63, 90),
+    border_focused: Color::Rgb(77, 166, 255),
+    dim: Color::Rgb(123, 131, 166),          // still clearly dimmer than fg
+    error: Color::Red,                        // ANSI — status (kept)
+    ok: Color::Green,                         // ANSI — status (kept)
+    warn: Color::Yellow,                      // ANSI — status (kept)
+    info: Color::Rgb(47, 230, 200),           // teal — timestamps ONLY (cool anchor)
+    meta: Color::Rgb(230, 195, 74),           // gold — non-time metadata
+    fg: Color::Rgb(238, 241, 255),            // near-white — reserved for actions/tabs/chrome
+    // `mauve` is the legacy field name; PRISM colors task/def names spring GREEN
+    // (a warm slot, distinct from the pure ANSI "done" green).
+    mauve: Color::Rgb(123, 216, 143),         // spring green — task / def names
+    heading: Color::Rgb(244, 114, 182),       // pink — markdown headings
+    selection_fg: Color::Rgb(10, 10, 16),     // near-black text on the bright bar
+    selection_bg: Color::Rgb(77, 166, 255),   // accent blue bar
+};
+
+/// Neon Ice — the coldest, highest-contrast rainbow profile (user pick):
+/// electric cyan worktree identity, indigo task/def names, sky-blue timestamps,
+/// light-cyan metadata, and hot-pink headings over a near-black terminal. Same
+/// status rule as [`PRISM`] — `ok`/`warn`/`error` stay raw ANSI green/yellow/red.
+pub const NEON_ICE: Palette = Palette {
+    accent: Color::Rgb(34, 211, 238),        // electric cyan
+    worktree: Color::Rgb(34, 211, 238),      // worktree names = accent (no split)
+    border: Color::Rgb(43, 53, 80),
+    border_focused: Color::Rgb(34, 211, 238),
+    dim: Color::Rgb(111, 123, 160),          // still clearly dimmer than fg
+    error: Color::Red,                        // ANSI — status (kept)
+    ok: Color::Green,                         // ANSI — status (kept)
+    warn: Color::Yellow,                      // ANSI — status (kept)
+    info: Color::Rgb(56, 189, 248),           // sky — timestamps ONLY
+    meta: Color::Rgb(103, 232, 249),          // light cyan — non-time metadata
+    fg: Color::Rgb(242, 247, 255),            // near-white text
+    mauve: Color::Rgb(129, 140, 248),         // indigo — task / def names
+    heading: Color::Rgb(244, 114, 182),       // hot pink — markdown headings
+    selection_fg: Color::Rgb(5, 8, 15),       // near-black text on the bright bar
+    selection_bg: Color::Rgb(34, 211, 238),   // accent cyan bar
+};
+
+/// Synthwave — magenta + cyan accents on a deep-purple base (user pick): magenta
+/// worktree identity, purple task/def names, teal timestamps, lavender metadata,
+/// and cyan headings. Moodier/warmer than [`NEON_ICE`]; same status rule —
+/// `ok`/`warn`/`error` stay raw ANSI green/yellow/red.
+pub const SYNTHWAVE: Palette = Palette {
+    accent: Color::Rgb(255, 95, 210),        // magenta
+    worktree: Color::Rgb(255, 95, 210),      // worktree names = accent (no split)
+    border: Color::Rgb(74, 58, 106),
+    border_focused: Color::Rgb(255, 95, 210),
+    dim: Color::Rgb(139, 123, 166),          // still clearly dimmer than fg
+    error: Color::Red,                        // ANSI — status (kept)
+    ok: Color::Green,                         // ANSI — status (kept)
+    warn: Color::Yellow,                      // ANSI — status (kept)
+    info: Color::Rgb(45, 212, 191),           // teal — timestamps ONLY
+    meta: Color::Rgb(196, 181, 253),          // lavender — non-time metadata
+    fg: Color::Rgb(253, 240, 255),            // near-white text (warm)
+    mauve: Color::Rgb(167, 139, 250),         // purple — task / def names
+    heading: Color::Rgb(34, 211, 238),        // cyan — markdown headings
+    selection_fg: Color::Rgb(20, 10, 31),     // deep-purple-black text on the bar
+    selection_bg: Color::Rgb(255, 95, 210),   // accent magenta bar
+};
+
 /// The active theme profile. Re-theming the whole TUI = pointing this at a
 /// different profile const (or adding a new one above) — nothing else names
 /// colors.
-pub const THEME: Palette = MOCHA_BRIGHT;
+pub const THEME: Palette = PRISM;
 
 impl Default for Palette {
     fn default() -> Self {
@@ -248,6 +338,17 @@ mod tests {
         // Verify-failed shares the error color with failed but MUST be a distinct
         // glyph so the two failure modes read apart in the queue.
         assert_ne!(GLYPH_VERIFY_FAILED, GLYPH_FAILED);
+    }
+
+    #[test]
+    fn active_theme_keeps_ansi_status_colors() {
+        // Invariant (user requirement): whatever the active profile, the three
+        // status slots stay the raw ANSI green/yellow/red — a theme swap must not
+        // silently recolor task status.
+        let p = Palette::default();
+        assert_eq!(p.ok, Color::Green);
+        assert_eq!(p.warn, Color::Yellow);
+        assert_eq!(p.error, Color::Red);
     }
 
     #[test]

@@ -455,9 +455,12 @@ fn sessions_loaded_fills_items_and_enter_on_first_row_is_new_session() {
     a.update(loaded("platform.wt-a"));
     // Loaded items fill and loading clears.
     assert!(matches!(&a.mode, Mode::SessionPick { items, loading: false, .. } if items.len() == 2));
-    // Row 0 is the synthetic "New session"; loaded sessions follow.
+    // Row 0 is the synthetic "New session"; loaded sessions follow. Enter opens
+    // the launch form (model + prompt) targeting the worktree, no session pinned.
     a.update(enter());
-    assert!(matches!(&a.mode, Mode::AddTask { resume_session_id: None, worktree: Some(w), .. } if w == "platform.wt-a"));
+    assert!(matches!(&a.mode,
+        Mode::Form { action: FormAction::NewSession { resume_session_id: None, worktree: w, .. }, .. }
+        if w == "platform.wt-a"));
 }
 
 #[test]
@@ -466,10 +469,46 @@ fn picking_a_session_pins_it() {
     focus_worktrees(&mut a);
     a.update(key('r'));
     a.update(loaded("platform.wt-a"));
+    // Rows: New(0), Create Worktree(1), sessions(2..) — two downs reach sess-1.
+    a.update(down());
     a.update(down());
     a.update(enter());
-    assert!(matches!(&a.mode, Mode::AddTask { resume_session_id: Some(s), resume_label: Some(l), .. }
-        if s == "sess-1" && l == "Fix the parser"));
+    // The launch form pins the session; the label rides in the form title.
+    match &a.mode {
+        Mode::Form { state, action: FormAction::NewSession { resume_session_id: Some(s), .. } } => {
+            assert_eq!(s, "sess-1");
+            assert!(state.title.contains("Fix the parser"), "title: {}", state.title);
+        }
+        other => panic!("expected NewSession resume form, got {other:?}"),
+    }
+}
+
+#[test]
+fn launcher_tab_focuses_cancel_and_enter_closes() {
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    a.update(key('r'));
+    a.update(loaded("platform.wt-a"));
+    // Tab moves focus onto Cancel; Enter then closes the launcher.
+    tab(&mut a);
+    assert!(matches!(&a.mode, Mode::SessionPick { focus: crate::hit::ButtonKind::Cancel, .. }));
+    a.update(enter());
+    assert!(matches!(&a.mode, Mode::List));
+}
+
+#[test]
+fn launcher_create_worktree_row_opens_the_form() {
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    a.update(key('r'));
+    a.update(loaded("platform.wt-a"));
+    // Row 1 = Create Worktree; Enter opens the create-worktree launch form
+    // (branch/name + model + prompt) for the active repo.
+    a.update(down());
+    a.update(enter());
+    assert!(matches!(&a.mode,
+        Mode::Form { state, action: FormAction::CreateWorktree { repo } }
+        if repo == "platform" && state.fields.len() == 3));
 }
 
 #[test]
@@ -482,7 +521,9 @@ fn session_pick_type_to_filter_matches_labels() {
         a.update(key(c));
     }
     a.update(enter());
-    assert!(matches!(&a.mode, Mode::AddTask { resume_session_id: Some(s), .. } if s == "sess-2"));
+    assert!(matches!(&a.mode,
+        Mode::Form { action: FormAction::NewSession { resume_session_id: Some(s), .. }, .. }
+        if s == "sess-2"));
 }
 
 #[test]
@@ -509,9 +550,11 @@ fn session_pick_load_error_keeps_modal_and_sets_status() {
     });
     assert!(matches!(&a.mode, Mode::SessionPick { loading: false, items, .. } if items.is_empty()));
     assert!(a.status_line.as_deref().unwrap_or("").contains("boom"), "status: {:?}", a.status_line);
-    // "New session" (row 0) is still selectable → Enter opens a fresh AddTask.
+    // "New session" (row 0) is still selectable → Enter opens the launch form.
     a.update(enter());
-    assert!(matches!(&a.mode, Mode::AddTask { resume_session_id: None, worktree: Some(w), .. } if w == "platform.wt-a"));
+    assert!(matches!(&a.mode,
+        Mode::Form { action: FormAction::NewSession { resume_session_id: None, worktree: w, .. }, .. }
+        if w == "platform.wt-a"));
 }
 
 #[test]

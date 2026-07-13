@@ -4,6 +4,7 @@ export type { GlobalConfig } from "./config.js";
 export {
 	globalWorkspaceDir,
 	loadGlobalConfig,
+	loadProjectDefaultModel,
 	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectVars,

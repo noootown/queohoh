@@ -1,28 +1,29 @@
 ---
 source: crates/qoo-tui/src/view/mod.rs
+assertion_line: 547
 expression: terminal.backend()
 ---
 " 1:acme ╭ keymap ──────────────────────────────────────────────────────╮ning 1/3"
-"╭📋 QUEU│ Tab / Shift+Tab cycle focus: queue → tasks → worktrees       │───────╮" Hidden by multi-width symbols: [(2, " ")]
-"│       │ 1–9 / 0         switch project tab (0 = 10th)                │       │"
-"│ 🔍 [/]│ ctrl+s then n/p next / previous project tab                  │       │" Hidden by multi-width symbols: [(3, " ")]
-"│    Wor│ arrows          move list cursor (shift: extend selection)   │       │"
-"│ ⠯  fea│ j / k           detail: move lane-task row · else scroll     │       │"
-"│ ○  fea│ h / l           detail: previous / next sub-tab              │       │"
-"│ ──────│ ctrl+x / ctrl+z detail sub-tab (alias of l / h)              │       │"
-"│ ✗  mai│ enter           open selected lane task (worktrees)          │       │"
-"│ ●  mai│ a               action menu (queue: resume)                  │       │"
-"│       │ r               run: new task on worktree (worktrees) · re-qu│       │"
-"│       │ g               goto: open worktree in tmux (worktrees)      │       │"
-"╰───────│ x               cancel (queue) · remove worktree (worktrees) │       │"
-"╭⚡TASKS│ c               create (queue: adhoc task · worktrees: worktr│       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ t               task menu (worktrees)                        │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no tas│ z               collapse / expand focused list pane          │       │"
-"│       │ /               filter focused pane                          │       │"
-"╰───────│ esc             clear range → clear filter → close overlay   │       │"
-"╭🌲 WORK│ Home/End        detail pane top / bottom                     │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ s               settings — model table                       │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ 2 feat│ ?               this help                                    │       │"
-"│ ● hotf│ q               quit                                         │       │"
+"╭📋 QUEU│                                                              │───────╮" Hidden by multi-width symbols: [(2, " ")]
+"│       │   Tab / Shift+Tab cycle focus: queue → tasks → worktrees     │       │"
+"│ 🔍 [/]│   1–9 / 0         switch project tab (0 = 10th)              │       │" Hidden by multi-width symbols: [(3, " ")]
+"│    Wor│   ctrl+s then n/p next / previous project tab                │       │"
+"│ ⠯  fea│   arrows          move list cursor (shift: extend selection  │       │"
+"│ ○  fea│   j / k           detail: move lane-task row · else scroll   │       │"
+"│ ──────│   h / l           detail: previous / next sub-tab            │       │"
+"│ ✗  mai│   ctrl+x / ctrl+z detail sub-tab (alias of l / h)            │       │"
+"│ ●  mai│   enter           open selected lane task (worktrees)        │       │"
+"│       │   a               action menu (queue: resume)                │       │"
+"│       │   r               run: new task on worktree (worktrees) · r  │       │"
+"╰───────│   g               goto: open worktree in tmux (worktrees)    │       │"
+"╭⚡TASKS│   x               cancel (queue) · remove worktree (worktre  │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│   c               create (queue: adhoc task · worktrees: wo  │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no tas│   t               task menu (worktrees)                      │       │"
+"│       │   z               collapse / expand focused list pane        │       │"
+"╰───────│   /               filter focused pane                        │       │"
+"╭🌲 WORK│   esc             clear range → clear filter → close overla  │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│   Home/End        detail pane top / bottom                   │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ 2 feat│                                                              │       │"
+"│ ● hotf│  [ Back ]                                                    │       │"
 "╰───────│                                                              │───────╯"
 "[1-9/0 ·╰──────────────────────────────────────────────────────────────╯        "

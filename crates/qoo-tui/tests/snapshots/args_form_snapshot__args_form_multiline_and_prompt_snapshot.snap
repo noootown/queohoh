@@ -1,10 +1,11 @@
 ---
 source: crates/qoo-tui/tests/args_form_snapshot.rs
+assertion_line: 62
 expression: term.backend()
 ---
 "                                                            daemon unreachable — retrying… running 0"
 "╭📋 QUEUE── [r] [x] [a] · [c] [z]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
-"│                                ││(nothing selected)                                              │"
+"│                                ││                                                                │"
 "│ 🔍 [/] f╭ pr-ready args ───────────────────╮╭ pr-ready ────────────────────────────────╮         │" Hidden by multi-width symbols: [(3, " ")]
 "│         │ pr  PR number                    ││Flip the PR from WIP to ready-for-review. │         │"
 "│ queue em│  first line of the report        ││                                          │         │"

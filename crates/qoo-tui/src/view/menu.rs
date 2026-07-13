@@ -18,11 +18,15 @@ use ratatui::widgets::{
 
 use crate::action_menu::{filter_items, ActionItem};
 use crate::event::SessionChoice;
-use crate::hit::{HitMap, HitTarget};
+use crate::hit::{ButtonKind, HitMap, HitTarget};
 use crate::ipc::types::{DefinitionSummary, TaskDefinition};
 use crate::markup::{fence_states, style_transcript_line, wrap_lines, LineCtx};
-use crate::selectors::{absolute_local_label, arg_summary, filter_rows, pad_clip};
-use crate::view::theme::{GLYPH_CURSOR, GLYPH_DISCOVERY, MARKER_GLOBAL, Palette, RULE_CHAR};
+use crate::selectors::{absolute_local_label, arg_summary, clip, filter_rows, pad_clip};
+use crate::view::modal::{render_button_row, DIALOG_WIDTH, MODAL_PADDING};
+use crate::view::theme::{
+    GLYPH_CREATE_WORKTREE, GLYPH_CURSOR, GLYPH_DISCOVERY, GLYPH_NEW_SESSION, MARKER_GLOBAL, Palette,
+    RULE_CHAR,
+};
 
 const MENU_HINT: &str = " type to filter · ↑/↓ move · enter run · esc close ";
 
@@ -524,14 +528,18 @@ pub fn relative_age(mtime_ms: u64, now_ms: u64) -> String {
     }
 }
 
-/// Compact session picker popup (mirrors [`render_menu`]'s single-panel shell).
-/// Row 0 is ALWAYS the synthetic "New session"; the query-filtered loaded
-/// sessions follow it as `"{label} · {relative_age}"`. While `loading`, a dim
-/// `loading sessions…` placeholder stands in for the (not-yet-arrived) session
-/// rows. Under a thin rule, pinned to the bottom, the highlighted row's
-/// description: a hint for "New session", or the full session id + absolute time
-/// for a session row. Registers `Modal` over the body and one `MenuItem(view_ix)`
-/// per selectable row (`0` = New session), so clicks route through
+/// Compact launcher popup (session picker + worktree creation). Row 0 is the
+/// synthetic `✦ New session`, row 1 the `⊕ Create Worktree…` entry; a thin rule
+/// separates them from the query-filtered loaded sessions, each rendered as
+/// `{clipped label} · {relative_age}` — the age is ALWAYS shown (the label is
+/// clipped to fit, never the suffix). While `loading`, a dim `loading sessions…`
+/// placeholder stands in for the (not-yet-arrived) session rows. Under a thin
+/// rule near the bottom sits the highlighted row's description; the last
+/// interior line is the `[ Next ] [ Cancel ]` button row (`focus` picks the
+/// highlighted button). Accent border + `MODAL_PADDING` (yellow is reserved for
+/// destructive confirms). Registers `Modal` over the body, one
+/// `MenuItem(view_ix)` per selectable row (`0` = New session, `1` = Create
+/// Worktree, `2..` = sessions), and the two `Button` targets; all route through
 /// `App::route_session_pick_click`. `now_ms` feeds the relative-age labels.
 #[allow(clippy::too_many_arguments)]
 pub fn render_session_pick(
@@ -543,36 +551,29 @@ pub fn render_session_pick(
     index: usize,
     query: &str,
     now_ms: u64,
+    focus: ButtonKind,
 ) {
     let p = Palette::default();
     let filtered = filter_rows(items, query, |s| s.label.clone());
     let area = frame.area();
 
-    // View rows below the search prompt: the always-present "New session" plus
-    // either a loading placeholder or the filtered session labels. Only real,
-    // selectable rows carry a `MenuItem` (the placeholder does not).
     const NEW_SESSION: &str = "New session";
-    let session_rows: Vec<(usize, String)> = if loading {
-        Vec::new()
-    } else {
-        filtered
-            .iter()
-            .map(|&i| (i, format!("{} · {}", items[i].label, relative_age(items[i].mtime_ms, now_ms))))
-            .collect()
-    };
-    // Total selectable view rows (New session + loaded sessions); the highlight
-    // clamps into this. The loading placeholder is not counted (inert).
-    let selectable = 1 + session_rows.len();
+    const CREATE_WT: &str = "Create Worktree…";
+
+    // Selectable view rows: New session (0), Create Worktree (1), then the loaded
+    // sessions (2..). Row 0/1 are always selectable; the loading placeholder is
+    // inert. The highlight clamps into `selectable`.
+    let selectable = 2 + if loading { 0 } else { filtered.len() };
     let index = index.min(selectable - 1);
 
-    // Width: content-driven (longest row text / the title), clamped to [44, 72].
-    let row_w = session_rows.iter().map(|(_, t)| t.chars().count()).max().unwrap_or(0);
-    let content_w = row_w.max(NEW_SESSION.chars().count()).max(title.chars().count()).max(28);
-    let width = ((content_w + 6) as u16).clamp(44, 72).min(area.width.max(1));
-    let inner_w = width.saturating_sub(2).max(1) as usize;
+    // Fixed width (shared with the form) so the launcher never resizes with its
+    // content — the same dialog whether the filter matches 5 rows or none.
+    // inner_w = width − border(2) − padding(4).
+    let width = DIALOG_WIDTH.clamp(50.min(area.width.max(1)), area.width.saturating_sub(4).max(1));
+    let inner_w = width.saturating_sub(6).max(1) as usize;
 
     // Bottom description for the highlighted row (dim, under a thin rule): a hint
-    // for the New-session row, else the picked session's id + absolute time.
+    // for New session / Create Worktree, else the picked session's id + time.
     let mut desc: Vec<Line<'static>> = Vec::new();
     {
         let body: Vec<Line<'static>> = if index == 0 {
@@ -580,8 +581,13 @@ pub fn render_session_pick(
                 &[("Start a fresh Claude session in this worktree.".into(), p.dim_style())],
                 inner_w,
             )
-        } else if let Some((i, _)) = session_rows.get(index - 1) {
-            let s = &items[*i];
+        } else if index == 1 {
+            wrap_styled(
+                &[("Create a new worktree, then run a task in it.".into(), p.dim_style())],
+                inner_w,
+            )
+        } else if let Some(&i) = filtered.get(index - 2) {
+            let s = &items[i];
             let when = absolute_local_label(s.mtime_ms / 1000, 0);
             wrap_styled(&[(format!("{}  ·  {when}", s.session_id), p.dim_style())], inner_w)
         } else {
@@ -596,11 +602,13 @@ pub fn render_session_pick(
         }
     }
 
-    // Height: borders(2) + search(1) + rows + description. Rows = New session +
-    // (loading placeholder | session rows), clamped to the frame.
-    let display_rows = 1 + if loading { 1 } else { session_rows.len() };
-    let want = 2 + 1 + display_rows + desc.len();
-    let height = (want as u16).min(area.height.max(1));
+    // Height: search(1) + rows + desc + blank(1) + button(1), plus the border
+    // ring(2) + vertical padding(2), clamped to the frame. Rows = New + Create +
+    // rule + (loading placeholder | sessions).
+    let session_display = if loading { 1 } else { filtered.len() };
+    let display_rows = 2 + 1 + session_display;
+    let want_inner = 1 + display_rows + desc.len() + 2;
+    let height = ((want_inner + 4) as u16).min(area.height.max(1));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let rect = Rect { x, y, width, height };
@@ -613,18 +621,18 @@ pub fn render_session_pick(
             format!(" {title} "),
             Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
         ))
-        .title_bottom(Line::from(Span::styled(MENU_HINT, p.dim_style())))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(p.accent));
+        .border_style(Style::default().fg(p.accent))
+        .padding(MODAL_PADDING);
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
 
-    // Search prompt (same shape as render_menu): `> query█` + right-aligned
-    // `{filtered}/{total}` session count (the New-session row is not counted).
+    // Search prompt: `> query█` + right-aligned `{filtered}/{total}` session count
+    // (the New-session / Create-Worktree rows are not counted).
     let mut spans = vec![
         Span::styled("> ", Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
         Span::styled(query.to_string(), Style::default().fg(p.fg)),
@@ -642,25 +650,60 @@ pub fn render_session_pick(
         Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
     );
 
-    // Rows fill between the search prompt and the bottom-pinned description.
-    let desc_h = (desc.len() as u16).min(inner.height.saturating_sub(1));
+    // Button row on the last interior line; description block pinned just above
+    // it with one blank separator line between.
+    let btn_y = inner.y + inner.height.saturating_sub(1);
+    render_button_row(
+        frame,
+        hit,
+        Rect { x: inner.x, y: btn_y, width: inner.width, height: 1 },
+        "Next",
+        Some(focus),
+        p.accent,
+    );
+    let desc_h = (desc.len() as u16).min(inner.height.saturating_sub(2));
+    if desc_h > 0 {
+        let desc_area = Rect {
+            x: inner.x,
+            y: btn_y.saturating_sub(1 + desc_h),
+            width: inner.width,
+            height: desc_h,
+        };
+        frame.render_widget(Paragraph::new(Text::from(desc)), desc_area);
+    }
+
+    // Rows fill between the search prompt and the desc/blank/button bottom block.
+    let bottom_block = desc_h + 2; // desc + blank + button row
     let rows_area = Rect {
         x: inner.x,
         y: inner.y + 1,
         width: inner.width,
-        height: inner.height.saturating_sub(1 + desc_h),
+        height: inner.height.saturating_sub(1 + bottom_block),
     };
-    // Build the (optional MenuItem view-index, text, style) for every display row.
-    let mut lines: Vec<(Option<usize>, String, Style)> = Vec::new();
-    let new_style = if index == 0 { p.selection() } else { Style::default().fg(p.fg) };
-    lines.push((Some(0), format!(" {NEW_SESSION}"), new_style));
+
+    // Display rows: (optional MenuItem view-index, text, style). Rows 0/1 carry an
+    // icon; a dim rule separates them from the sessions; only real rows carry a
+    // `MenuItem` (rule + loading placeholder are inert).
+    let sel = |vix: usize| if vix == index { p.selection() } else { Style::default().fg(p.fg) };
+    let mut lines: Vec<(Option<usize>, String, Style)> = vec![
+        (Some(0), format!("{GLYPH_NEW_SESSION} {NEW_SESSION}"), sel(0)),
+        (Some(1), format!("{GLYPH_CREATE_WORKTREE} {CREATE_WT}"), sel(1)),
+        (None, RULE_CHAR.to_string().repeat(inner_w), Style::default().fg(p.border)),
+    ];
     if loading {
-        lines.push((None, " loading sessions…".into(), p.dim_style()));
+        lines.push((None, "loading sessions…".into(), p.dim_style()));
     } else {
-        for (view_ix, (_, text)) in session_rows.iter().enumerate() {
-            let vix = view_ix + 1; // row 0 is New session
-            let style = if vix == index { p.selection() } else { Style::default().fg(p.fg) };
-            lines.push((Some(vix), format!(" {text}"), style));
+        for (n, &i) in filtered.iter().enumerate() {
+            let vix = n + 2;
+            let age = relative_age(items[i].mtime_ms, now_ms);
+            // Float the age to the right edge as its own column: clip the label to
+            // leave room for the age + a 2-col gap, then pad the gap so the age
+            // ends flush right.
+            let age_w = age.chars().count();
+            let label = clip(&items[i].label, inner_w.saturating_sub(age_w + 2));
+            let gap = inner_w.saturating_sub(label.chars().count() + age_w);
+            let text = format!("{label}{}{age}", " ".repeat(gap));
+            lines.push((Some(vix), text, sel(vix)));
         }
     }
     for (row, (menu_ix, text, style)) in lines.iter().enumerate() {
@@ -679,17 +722,6 @@ pub fn render_session_pick(
             ))),
             row_rect,
         );
-    }
-
-    // Description block, pinned flush to the bottom interior row.
-    if desc_h > 0 {
-        let desc_area = Rect {
-            x: inner.x,
-            y: inner.y + inner.height - desc_h,
-            width: inner.width,
-            height: desc_h,
-        };
-        frame.render_widget(Paragraph::new(Text::from(desc)), desc_area);
     }
 }
 
@@ -1053,7 +1085,17 @@ mod menu_view_tests {
         let mut hit = HitMap::default();
         // now_ms far ahead so ages render as days.
         term.draw(|f| {
-            render_session_pick(f, &mut hit, "wt-a", &items, loading, index, query, 5 * 86_400_000);
+            render_session_pick(
+                f,
+                &mut hit,
+                "wt-a",
+                &items,
+                loading,
+                index,
+                query,
+                5 * 86_400_000,
+                ButtonKind::Confirm,
+            );
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
@@ -1067,62 +1109,136 @@ mod menu_view_tests {
         (s, hit)
     }
 
+    /// Width (in columns) of the bordered popup = span between the top border's
+    /// corners. Counts chars, not bytes (box-drawing glyphs are multi-byte).
+    fn popup_width(s: &str) -> usize {
+        let top = s.lines().find(|l| l.contains('╭')).expect("top border");
+        let cols: Vec<char> = top.chars().collect();
+        let l = cols.iter().position(|&c| c == '╭').unwrap();
+        let r = cols.iter().rposition(|&c| c == '╮').unwrap();
+        r - l + 1
+    }
+
     #[test]
-    fn session_pick_renders_new_session_rows_and_hit_targets() {
-        let (s, hit) = draw_session_pick(80, 20, false, 1, "");
+    fn session_pick_uses_a_fixed_dialog_width() {
+        // The launcher is a fixed width, not content-driven — it must not resize
+        // as the filter narrows or labels change length.
+        let (s, _) = draw_session_pick(120, 24, false, 1, "");
+        assert_eq!(popup_width(&s), 60, "launcher uses the fixed DIALOG_WIDTH");
+        // Same width when the filter matches nothing.
+        let (s2, _) = draw_session_pick(120, 24, false, 0, "zzz");
+        assert_eq!(popup_width(&s2), 60);
+    }
+
+    #[test]
+    fn session_pick_floats_age_to_the_right_edge() {
+        // The relative age is right-aligned as its own column, not trailing the
+        // label with a "· " separator.
+        let (s, _) = draw_session_pick(120, 24, false, 2, "");
+        let row = s.lines().find(|l| l.contains("Fix the parser")).expect("session row");
+        assert!(row.contains("5d ago"));
+        assert!(!row.contains('·'), "no '·' separator — the age floats as its own column: {row:?}");
+        let label_end = row.find("Fix the parser").unwrap() + "Fix the parser".len();
+        let age_start = row.rfind("5d ago").unwrap();
+        assert!(age_start - label_end >= 5, "wide gap floats the age right: {row:?}");
+    }
+
+    #[test]
+    fn launcher_renders_entries_sessions_and_hit_targets() {
+        // index 2 = the first session (New=0, Create Worktree=1, sessions 2..).
+        let (s, hit) = draw_session_pick(80, 20, false, 2, "");
         assert!(s.contains(" wt-a "), "popup titled with the worktree display name");
         assert!(s.contains("New session"), "row 0 is the synthetic New session");
+        assert!(s.contains("Create Worktree"), "row 1 is Create Worktree");
         assert!(s.contains("Fix the parser"), "loaded session label renders");
         assert!(s.contains("Redesign TUI"));
         assert!(s.contains("ago"), "session rows carry a relative age");
-        // Highlighted session row (index 1) shows its id + absolute time below.
+        assert!(s.contains("[ Next ]") && s.contains("[ Cancel ]"), "button row present");
+        assert!(!s.contains("type to filter"), "the MENU_HINT legend is removed");
+        // Highlighted session row (view index 2 = sess-1) shows its id below.
         assert!(s.contains("sess-1"), "highlighted session's id in the description");
-        // New session (0) + two session rows (1,2) each register a MenuItem.
-        let (mut m0, mut m1, mut m2, mut modal) = (false, false, false, false);
+        // New(0) + Create(1) + two session rows (2,3) each register a MenuItem.
+        let (mut m0, mut m1, mut m2, mut m3, mut modal) = (false, false, false, false, false);
         for y in 0..20 {
             for x in 0..80 {
                 match hit.hit(x, y) {
                     Some(HitTarget::MenuItem(0)) => m0 = true,
                     Some(HitTarget::MenuItem(1)) => m1 = true,
                     Some(HitTarget::MenuItem(2)) => m2 = true,
+                    Some(HitTarget::MenuItem(3)) => m3 = true,
                     Some(HitTarget::Modal) => modal = true,
                     _ => {}
                 }
             }
         }
-        assert!(m0 && m1 && m2, "New session + both session rows register MenuItems");
+        assert!(m0 && m1 && m2 && m3, "New + Create + both session rows register MenuItems");
         assert!(modal, "popup body registers a Modal region");
     }
 
     #[test]
-    fn session_pick_loading_shows_placeholder_and_only_new_session_hits() {
+    fn launcher_loading_keeps_entries_selectable_placeholder_inert() {
         let (s, hit) = draw_session_pick(80, 20, true, 0, "");
         assert!(s.contains("New session"));
+        assert!(s.contains("Create Worktree"));
         assert!(s.contains("loading sessions"), "loading placeholder row renders");
-        // While loading only the New-session row is a MenuItem; no session rows.
-        let (mut m0, mut m1) = (false, false);
+        // While loading, New(0) + Create(1) stay selectable; the placeholder is not.
+        let (mut m0, mut m1, mut m2) = (false, false, false);
         for y in 0..20 {
             for x in 0..80 {
                 match hit.hit(x, y) {
                     Some(HitTarget::MenuItem(0)) => m0 = true,
                     Some(HitTarget::MenuItem(1)) => m1 = true,
+                    Some(HitTarget::MenuItem(2)) => m2 = true,
                     _ => {}
                 }
             }
         }
-        assert!(m0, "New session row is selectable while loading");
-        assert!(!m1, "the loading placeholder is not a selectable MenuItem");
+        assert!(m0 && m1, "New session + Create Worktree selectable while loading");
+        assert!(!m2, "the loading placeholder is not a selectable MenuItem");
     }
 
     #[test]
-    fn session_pick_filter_counts_sessions_only() {
-        // Filtering applies to loaded labels; New session stays visible. The
+    fn launcher_filter_counts_sessions_only() {
+        // Filtering applies to loaded labels; the two entry rows stay visible. The
         // right-aligned count is filtered/total over sessions (not the view rows).
-        let (s, _hit) = draw_session_pick(80, 20, false, 1, "redesign");
+        let (s, _hit) = draw_session_pick(80, 20, false, 2, "redesign");
         assert!(s.contains("New session"), "New session stays visible under a filter");
+        assert!(s.contains("Create Worktree"), "Create Worktree stays visible under a filter");
         assert!(s.contains("Redesign TUI"));
         assert!(!s.contains("Fix the parser"), "non-matching session filtered out");
         assert!(s.contains("1/2"), "count is filtered/total sessions");
     }
 
+    #[test]
+    fn session_row_age_survives_long_label() {
+        // A very long label must not truncate the "· Ns ago" suffix — the label is
+        // clipped with an ellipsis, the age always renders.
+        let items = vec![SessionChoice {
+            session_id: "s1".into(),
+            label: "x".repeat(200),
+            mtime_ms: 0,
+        }];
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hit = HitMap::default();
+        term.draw(|f| {
+            render_session_pick(f, &mut hit, "wt", &items, false, 2, "", 5_000, ButtonKind::Confirm);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut s = String::new();
+        for y in 0..20 {
+            for x in 0..60 {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        assert!(s.contains("ago"), "age suffix must always render");
+        assert!(s.contains('…'), "long label is clipped with an ellipsis");
+    }
+
+    #[test]
+    fn launcher_snapshot() {
+        let (s, _hit) = draw_session_pick(60, 18, false, 0, "");
+        insta::assert_snapshot!("launcher_open", s);
+    }
 }

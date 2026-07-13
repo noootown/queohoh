@@ -224,20 +224,19 @@ impl App {
             {
                 self.def_args_key(&k)
             }
-            // Create-worktree modal owns keys while open (checked before generic
-            // list handling); key-release falls through to the generic no-op.
-            Event::Key(k)
-                if k.kind == KeyEventKind::Press
-                    && matches!(self.mode, Mode::CreateWorktree { .. }) =>
-            {
-                self.create_worktree_key(&k)
-            }
             // Session picker owns keys while open (checked before generic list
             // handling); key-release falls through to the generic no-op.
             Event::Key(k)
                 if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::SessionPick { .. }) =>
             {
                 self.session_pick_key(&k)
+            }
+            // The bordered form owns keys while open (checked before generic list
+            // handling); key-release falls through to the generic no-op.
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::Form { .. }) =>
+            {
+                self.form_key(&k)
             }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
@@ -341,23 +340,11 @@ impl App {
                     editor.insert_str(&s);
                     Update { dirty: !s.is_empty(), cmds: vec![] }
                 }
-                // The single-line branch input takes it with control chars
-                // (newlines/tabs) collapsed to spaces so a multiline paste can't
-                // smuggle a newline into a one-line field.
-                Mode::CreateWorktree { input, error } => {
-                    let flat: String =
-                        s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-                    for c in flat.chars() {
-                        input.handle_event(&crossterm::event::Event::Key(
-                            crossterm::event::KeyEvent::new(
-                                KeyCode::Char(c),
-                                crossterm::event::KeyModifiers::NONE,
-                            ),
-                        ));
-                    }
-                    // A create-worktree paste clears any prior validation error.
-                    *error = None;
-                    Update { dirty: !flat.is_empty(), cmds: vec![] }
+                // The form routes paste to its focused text field (textarea
+                // verbatim; single-line input collapses control chars).
+                Mode::Form { state, .. } => {
+                    state.insert_str(&s);
+                    Update { dirty: !s.is_empty(), cmds: vec![] }
                 }
                 _ => Update { dirty: false, cmds: vec![] },
             },

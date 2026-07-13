@@ -487,9 +487,8 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     let title_style = if dimmed {
         p.dim_style().add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
-            .fg(if focused { p.accent } else { p.fg })
-            .add_modifier(Modifier::BOLD)
+        // Always white; focus is shown by the pane border, not the title color.
+        Style::default().fg(p.fg).add_modifier(Modifier::BOLD)
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -525,9 +524,12 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
 
     // Sub-tab chip row.
     let tabs = sub_tab_names(kind);
-    let mut content_top = inner.y;
+    // Content padding so text isn't flush against the border: `pad` cols each
+    // side and a one-row gap below the tab strip (or a top pad when tab-less).
+    let pad = 2u16;
+    let mut content_top = inner.y + 1;
     if !tabs.is_empty() {
-        let mut x = inner.x;
+        let mut x = inner.x; // tab strip is flush (no padding)
         let mut spans: Vec<Span> = Vec::new();
         for (i, label) in tabs.iter().enumerate() {
             let chip = format!(" {}:{} ", i + 1, label);
@@ -537,7 +539,9 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             } else if i == sub_tab {
                 Style::default().fg(p.selection_fg).bg(p.accent).add_modifier(Modifier::BOLD)
             } else {
-                p.dim_style()
+                // Inactive sub-tab labels are white — tabs are chrome (the whole
+                // row still dims via the `dimmed` arm when the pane is unfocused).
+                Style::default().fg(p.fg)
             };
             if x < inner.right() {
                 hits.push(
@@ -552,12 +556,12 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             Paragraph::new(Line::from(spans)),
             Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
         );
-        content_top = inner.y + 1;
+        content_top = inner.y + 2;
     }
     let content_area = Rect {
-        x: inner.x,
+        x: inner.x + pad,
         y: content_top,
-        width: inner.width,
+        width: inner.width.saturating_sub(pad * 2),
         height: inner.bottom().saturating_sub(content_top),
     };
     if content_area.height == 0 {
@@ -611,6 +615,25 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     app.detail_max_scroll.set(total.saturating_sub(height));
     app.detail_wrapped_len.set(total);
     let (start, end) = window_lines(total, height, app_scroll_offset(app, c), bottom);
+    // Register a click target per VISIBLE lane-task row (worktree detail): the
+    // Nth non-continuation LaneTask display line maps to lane task N, so a click
+    // selects + opens it (mirrors j/k + Enter). Pushed after PaneBody so it wins.
+    {
+        let mut ordinal = 0usize;
+        for (i, d) in display.iter().enumerate() {
+            if d.is_continuation || !matches!(d.ctx, LineCtx::LaneTask { .. }) {
+                continue;
+            }
+            if i >= start && i < end {
+                let y = content_area.y + (i - start) as u16;
+                hits.push(
+                    Rect { x: content_area.x, y, width: content_area.width, height: 1 },
+                    HitTarget::DetailLaneTask(ordinal),
+                );
+            }
+            ordinal += 1;
+        }
+    }
     let mut styled: Vec<Line> = display[start..end]
         .iter()
         .map(|seg| {
@@ -652,7 +675,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         let vis = seg - start;
         let lo = link.value_col;
         let hi = link.value_col + link.value_len - 1;
-        let link_style = Style::default().fg(p.info).add_modifier(Modifier::UNDERLINED);
+        let link_style = Style::default().fg(p.meta).add_modifier(Modifier::UNDERLINED);
         styled[vis] = patch_line_cols(&styled[vis], lo, hi, link_style);
         pr_osc8 = Some((
             content_area.x + link.value_col as u16,
@@ -946,6 +969,7 @@ mod tests {
                     session_id: Some("sess-abc123".to_string()),
                     model: Some("claude-opus-4-8".to_string()),
                     resolved_worktree: Some("/repos/acme.feature".to_string()),
+                    resolved_worktree_path: Some("/repos/acme.feature".to_string()),
                     cost_usd: Some(0.42),
                     turns: Some(37),
                     duration_ms: Some(195_000),
@@ -1041,6 +1065,7 @@ mod tests {
             session_id: Some("sess-abc123".to_string()),
             model: Some("claude-opus-4-8".to_string()),
             resolved_worktree: Some("/repos/acme.feature".to_string()),
+            resolved_worktree_path: Some("/repos/acme.feature".to_string()),
             cost_usd: Some(0.42),
             turns: Some(37),
             duration_ms: Some(195_000),

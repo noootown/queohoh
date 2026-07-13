@@ -1,6 +1,7 @@
 pub mod args_form;
 pub mod detail;
 pub mod footer;
+pub mod form;
 pub mod help;
 pub mod menu;
 pub mod modal;
@@ -245,18 +246,18 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
             // Render-feedback for wheel clamping (see the App fields).
             app.menu_preview_max_scroll.set(m.max_scroll);
         }
-        crate::app::Mode::CreateWorktree { input, error } => {
-            let repo = app.active_repo().unwrap_or_default();
-            modal::render_create_worktree(frame, &mut hits, &repo, input, error.as_deref());
-        }
-        crate::app::Mode::SessionPick { repo, worktree, items, loading, index, query } => {
-            // Title is the worktree display name (repo prefix stripped). The
-            // relative-age labels read wall-clock now from `now_epoch_s` (→ ms).
-            let title = crate::selectors::strip_repo_prefix(worktree, repo);
+        crate::app::Mode::SessionPick { repo, worktree, items, loading, index, query, focus } => {
+            // Title is `{repo} · {worktree display name}`. The relative-age labels
+            // read wall-clock now from `now_epoch_s` (→ ms).
+            let title =
+                format!("{repo} · {}", crate::selectors::strip_repo_prefix(worktree, repo));
             let now_ms = app.now_epoch_s.saturating_mul(1000);
             menu::render_session_pick(
-                frame, &mut hits, title, items, *loading, *index, query, now_ms,
+                frame, &mut hits, &title, items, *loading, *index, query, now_ms, *focus,
             );
+        }
+        crate::app::Mode::Form { state, .. } => {
+            form::render_form(frame, &mut hits, state);
         }
         _ => {}
     }
@@ -570,6 +571,7 @@ mod tests {
                     ("opus", "claude-opus-4-8"),
                     ("sonnet", "claude-sonnet-4-5"),
                 ]),
+                default_model: String::new(),
                 global: SettingsLayer {
                     entries: m(&[("sonnet", "claude-sonnet-4-6")]),
                     source: "~/.config/qoo/config.yaml".into(),
@@ -577,6 +579,7 @@ mod tests {
                 projects: vec![SettingsProjectLayer {
                     repo: "acme".into(),
                     entries: m(&[("opus", "claude-opus-4-9")]),
+                    default_model: String::new(),
                     source: "acme/vars.yaml".into(),
                 }],
             },

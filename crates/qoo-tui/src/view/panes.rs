@@ -47,14 +47,12 @@ const GROUP_SEP_EXTRA: usize = 2; // GROUP_SEP is 3 cells; the gap it replaces i
 
 use crate::view::{Computed, selection_range, window_start};
 
-/// The bold pane title, accent-colored when focused. Shared by the border-title
-/// on both the expanded chrome and the collapsed bar.
-fn title_span(title: &str, focused: bool, p: &Palette) -> Span<'static> {
+/// The bold pane title — always white (`fg`); a pane's focus is shown by its
+/// border color, not the title. Shared by the expanded chrome and collapsed bar.
+fn title_span(title: &str, _focused: bool, p: &Palette) -> Span<'static> {
     Span::styled(
         title.to_string(),
-        Style::default()
-            .fg(if focused { p.accent } else { p.fg })
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
     )
 }
 
@@ -367,7 +365,7 @@ fn queue_line(
     let gap = " ".repeat(crate::selectors::COL_GAP);
     if layout.worktree_w > 0 {
         spans.push(Span::raw(gap.clone()));
-        spans.push(Span::styled(pad_clip(&row.worktree, layout.worktree_w), Style::default().fg(p.accent)));
+        spans.push(Span::styled(pad_clip(&row.worktree, layout.worktree_w), Style::default().fg(p.worktree)));
     }
     if layout.def_w > 0 {
         spans.push(Span::raw(gap.clone()));
@@ -375,6 +373,8 @@ fn queue_line(
         spans.push(Span::styled(pad_clip(def, layout.def_w), Style::default().fg(p.mauve)));
     }
     spans.push(Span::raw(gap.clone()));
+    // Prompt/summary is prose → the terminal's default grey. White (`fg`) is
+    // reserved for actions/tabs, so this stays intentionally unstyled `Span::raw`.
     spans.push(Span::raw(pad_clip(&row.summary, layout.summary_w)));
     // Timestamps read in teal — a real color, not grey (grey-on-dark was
     // unreadable per user feedback).
@@ -524,9 +524,9 @@ fn worktree_line(
         }
         spans.push(Span::raw(" "));
     }
-    spans.push(Span::styled(pad_clip(&row.name, layout.name_w), Style::default().fg(p.accent)));
+    spans.push(Span::styled(pad_clip(&row.name, layout.name_w), Style::default().fg(p.worktree)));
     // Last finished lane task: status glyph (status-colored) + name (mauve when a
-    // def, fg when a prompt) + relative age (info), padded to the reserved width.
+    // def, default grey when a prompt) + relative age (info), padded to width.
     if layout.last_w > 0 {
         spans.push(Span::raw(gap.clone()));
         match &row.last {
@@ -536,7 +536,11 @@ fn worktree_line(
                 let shown = crate::selectors::clip(name, name_budget);
                 spans.push(Span::styled(glyph.to_string(), glyph_style(*glyph, p)));
                 spans.push(Span::raw(" "));
-                spans.push(Span::styled(shown.clone(), if *is_def { mauve } else { fg }));
+                if *is_def {
+                    spans.push(Span::styled(shown.clone(), mauve));
+                } else {
+                    spans.push(Span::raw(shown.clone())); // prompt = default grey
+                }
                 // Right-pin the age at the far edge of the column so ages line
                 // up vertically regardless of task-name length.
                 let used = 2 + shown.chars().count() + 1 + age.chars().count();
@@ -577,7 +581,7 @@ fn worktree_line(
     if layout.author_w > 0 {
         spans.push(Span::raw(gap.clone()));
         match wt_author_text(row) {
-            Some(t) => spans.push(Span::styled(pad_clip(&t, layout.author_w), fg)),
+            Some(t) => spans.push(Span::raw(pad_clip(&t, layout.author_w))), // author = default grey
             None => spans.push(Span::raw(pad_clip("", layout.author_w))),
         }
     }
@@ -647,10 +651,8 @@ fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line
     // def has no description. Omitted entirely when the pane reserved no fill.
     if layout.desc_w > 0 {
         spans.push(Span::raw(gap.clone()));
-        spans.push(Span::styled(
-            pad_clip(&crate::selectors::def_desc_text(def), layout.desc_w),
-            Style::default().fg(p.fg),
-        ));
+        // Task description = default grey (white is reserved for actions/tabs).
+        spans.push(Span::raw(pad_clip(&crate::selectors::def_desc_text(def), layout.desc_w)));
     }
     // Schedule column: the ⏰ icon plus the humanized cron when the def has one;
     // a def with a discovery command but no cron keeps the bare ⏰ marker; a def
@@ -1051,7 +1053,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             ListPane::Queue,
             &c.queue_sel,
             &c.queue,
-            "queue empty — [a] on a worktree to add a task",
+            "queue empty — [c]reate a task",
             app.now_epoch_s,
             pane_buttons(PaneId::Queue),
             QUEUE_ROW_SCOPED,
@@ -1252,19 +1254,19 @@ mod tests {
     #[test]
     fn build_header_worktrees_includes_row_verbs_and_tasks_chip() {
         let p = Palette::default();
-        // Wide enough for the labeled form: the worktrees strip carries all six
+        // Wide enough for the labeled form: the worktrees strip carries five
         // chips in scope order — row-scoped [r]un [g]oto [x] remove [t]asks, then
-        // the `·` divider, then pane-scoped [c]reate [z].
+        // the `·` divider, then pane-scoped [z] collapse. (The [c]reate chip was
+        // folded into the launcher's `r` → Create Worktree row.)
         let area = Rect { x: 0, y: 0, width: 100, height: 8 };
         let (line, rects) =
             build_header(area, "WORKTREES", None, false, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, &p);
-        assert_eq!(rects.len(), 6);
+        assert_eq!(rects.len(), 5);
         assert_eq!(rects[0].1, PaneButton::Run);
         assert_eq!(rects[1].1, PaneButton::Goto);
         assert_eq!(rects[2].1, PaneButton::Remove);
         assert_eq!(rects[3].1, PaneButton::Tasks);
-        assert_eq!(rects[4].1, PaneButton::Create);
-        assert_eq!(rects[5].1, PaneButton::Collapse);
+        assert_eq!(rects[4].1, PaneButton::Collapse);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[g]oto"), "labeled goto chip renders: {text}");
         assert!(text.contains("[x] remove"), "labeled remove chip renders: {text}");

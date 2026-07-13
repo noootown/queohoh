@@ -16,6 +16,7 @@ import {
 	buildLiveState,
 	effectiveModelTable,
 	laneKey,
+	loadProjectDefaultModel,
 	loadProjectModels,
 	loadProjectVars,
 	projectWorkspaceDir,
@@ -606,6 +607,12 @@ export class Engine {
 			deps.config.models,
 			loadProjectModels(projectWorkspaceDir(deps.config, task.target.repo)),
 		);
+		// Project-configurable default model for ad-hoc / enqueue runs that set no
+		// model of their own (a definition always carries one). Built-in fallback
+		// is `opus`; resolved through the alias table by the worker.
+		const defaultModel =
+			loadProjectDefaultModel(projectWorkspaceDir(deps.config, task.target.repo)) ??
+			"opus";
 
 		const lane = laneKey(task) ?? task.id;
 		deps.registry.registerWorker(task.id, lane, process.pid);
@@ -641,7 +648,7 @@ export class Engine {
 				}
 			},
 			worktreePath: (repo, worktree) => this.worktreeAbsPath(repo, worktree),
-			defaults: { model: "sonnet", timeoutMs: 1_800_000 },
+			defaults: { model: defaultModel, timeoutMs: 1_800_000 },
 		})
 			.catch((err) => {
 				try {

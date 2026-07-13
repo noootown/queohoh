@@ -183,22 +183,17 @@ impl App {
                 u.dirty
             }
             A::Create => {
-                match self.active_ui().last_list_pane {
-                    ListPane::Queue => {
-                        self.mode = Mode::AddTask {
-                            worktree: None,
-                            resume_session_id: None,
-                            resume_label: None,
-                            editor: Default::default(),
-                        };
-                    }
-                    ListPane::Worktrees => {
-                        self.mode = Mode::CreateWorktree {
-                            input: tui_input::Input::default(),
-                            error: None,
-                        };
-                    }
-                    ListPane::Tasks => { /* no create on the tasks pane */ }
+                // `Create` (`c`) is a QUEUE chip only — it opens the adhoc-task
+                // prompt. The worktrees pane's standalone create modal was folded
+                // into the launcher (`r` → Create Worktree row), so `c` no longer
+                // shows a chip there and this arm is only reached for QUEUE.
+                if self.active_ui().last_list_pane == ListPane::Queue {
+                    self.mode = Mode::AddTask {
+                        worktree: None,
+                        resume_session_id: None,
+                        resume_label: None,
+                        editor: Default::default(),
+                    };
                 }
                 true
             }
@@ -537,10 +532,16 @@ impl App {
     }
 
     /// Build the fire-and-forget create command. The dedicated Cmd (not the
-    /// generic Rpc) so its handler can read the reply's `path` and auto-open a
-    /// tmux window in the new worktree; budget/error semantics live there.
-    pub(super) fn create_worktree_cmd(repo: &str, name: &str) -> Cmd {
-        Cmd::CreateWorktree { repo: repo.to_string(), name: name.to_string() }
+    /// generic Rpc) so its handler can read the reply's `path` and either
+    /// auto-open a tmux window (create-only, `enqueue: None`) or enqueue a first
+    /// task into the new worktree (`enqueue: Some`); budget/error semantics live
+    /// there. Reused by the launcher's Create Worktree form.
+    pub(super) fn create_worktree_cmd(
+        repo: &str,
+        name: &str,
+        enqueue: Option<crate::event::EnqueueAfter>,
+    ) -> Cmd {
+        Cmd::CreateWorktree { repo: repo.to_string(), name: name.to_string(), enqueue }
     }
 
     /// Active project's worktree rows (unfiltered), used for ambient overlays.
@@ -604,6 +605,7 @@ impl App {
             loading: true,
             index: 0,
             query: String::new(),
+            focus: crate::hit::ButtonKind::Confirm,
         };
         Update { dirty: true, cmds: vec![Cmd::FetchSessions { repo, worktree }] }
     }

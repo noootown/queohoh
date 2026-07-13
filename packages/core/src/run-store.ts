@@ -36,6 +36,10 @@ export class RunStore {
 			task: TaskInstance;
 			definition: TaskDefinition | null;
 			resolvedWorktree: string;
+			/** Absolute checkout path this run executed in. The TUI "Resume" action
+			 * uses it as the tmux window's cwd; a bare worktree name makes tmux
+			 * `-c` fall back to $HOME. */
+			resolvedWorktreePath: string;
 			prompt: string;
 			model: string;
 		},
@@ -46,6 +50,7 @@ export class RunStore {
 			task: data.task,
 			definition: data.definition,
 			resolved_worktree: data.resolvedWorktree,
+			resolved_worktree_path: data.resolvedWorktreePath,
 			model: data.model,
 			started_at: new Date().toISOString(),
 		};

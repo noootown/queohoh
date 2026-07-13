@@ -1,0 +1,21 @@
+---
+source: crates/qoo-tui/src/view/menu.rs
+assertion_line: 1242
+expression: s
+---
+                                                            
+                                                            
+  ╭ wt-a ────────────────────────────────────────────────╮  
+  │                                                      │  
+  │  > █                                            2/2  │  
+  │  ✦ New session                                       │  
+  │  ⊕ Create Worktree…                                  │  
+  │  ──────────────────────────────────────────────────  │  
+  │  Fix the parser                              5d ago  │  
+  │  Redesign TUI                                5d ago  │  
+  │  ──────────────────────────────────────────────────  │  
+  │  Start a fresh Claude session in this worktree.      │  
+  │                                                      │  
+  │  [ Next ]  [ Cancel ]                                │  
+  │                                                      │  
+  ╰──────────────────────────────────────────────────────╯

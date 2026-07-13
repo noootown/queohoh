@@ -249,11 +249,11 @@ impl App {
         // so a move/drag never disturbs the field or closes the popup. Handling
         // mouse here (before the typing arms) is what keeps clicks out of the
         // `tui_input` field entirely.
-        if matches!(self.mode, Mode::AddTask { .. } | Mode::CreateWorktree { .. }) {
+        if matches!(self.mode, Mode::AddTask { .. }) {
             if let K::Down(MouseButton::Left) = m.kind {
                 match self.hit.hit(m.column, m.row).cloned() {
-                    // The create-worktree modal registers no buttons; only Modal
-                    // (inert) and outside (cancel) apply.
+                    // The adhoc-task prompt registers a Confirm button (≡ Enter);
+                    // Modal is inert and an outside click cancels.
                     Some(HitTarget::Button(crate::hit::ButtonKind::Confirm)) => {
                         return self
                             .update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
@@ -293,6 +293,17 @@ impl App {
             K::Down(MouseButton::Left) if matches!(self.mode, Mode::DefArgs { .. }) => {
                 return match target {
                     Some(t) => self.def_args_click(&t),
+                    None => {
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                };
+            }
+            // The bordered form owns every click while open: route to its hit
+            // targets; a click hitting nothing (outside the popup) cancels.
+            K::Down(MouseButton::Left) if matches!(self.mode, Mode::Form { .. }) => {
+                return match target {
+                    Some(t) => self.form_click(&t),
                     None => {
                         self.mode = Mode::List;
                         Update { dirty: true, cmds: vec![] }
@@ -348,6 +359,12 @@ impl App {
                     return self.apply_action(crate::keymap::AppAction::SwitchTab(i));
                 }
                 Some(HitTarget::SubTab(i)) => self.set_sub_tab_clamped(i, &mut cmds),
+                Some(HitTarget::DetailLaneTask(i)) => {
+                    // Click a worktree-detail lane task: select + open it (same as
+                    // moving the j/k cursor there and pressing Enter).
+                    self.ui().detail_row = i;
+                    return self.open_detail_row();
+                }
                 Some(HitTarget::PaneBody(p)) => {
                     // Detail is display-only: clicking its body must not steal
                     // focus (wheel scrolling over it still works — that routes by

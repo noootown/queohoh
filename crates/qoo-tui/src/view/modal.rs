@@ -13,7 +13,12 @@ use crate::view::theme::Palette;
 
 /// Interior padding shared by every modal dialog: horizontal 2, vertical 1
 /// (top/bottom blank row). All sizing math and `Block::inner` account for it.
-const MODAL_PADDING: Padding = Padding { left: 2, right: 2, top: 1, bottom: 1 };
+pub(crate) const MODAL_PADDING: Padding = Padding { left: 2, right: 2, top: 1, bottom: 1 };
+
+/// Fixed outer width (border included) shared by the launcher and the form so
+/// the picker-style dialogs never resize with their content. Clamped to the
+/// frame at the call site.
+pub(crate) const DIALOG_WIDTH: u16 = 60;
 
 /// Clear + rounded, accent-bordered, centered popup with `MODAL_PADDING`.
 /// `height` is the PADDED interior line count (borders + padding added here).
@@ -43,6 +48,59 @@ pub fn modal_frame(frame: &mut ratatui::Frame, hit: &mut HitMap, title: &str, he
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     inner
+}
+
+/// Shared bottom button row: `[ {primary_label} ]  [ Cancel ]`, left-aligned on
+/// the 1-high `row` with a two-column gap. The focused button renders
+/// `REVERSED | BOLD`; the unfocused primary in `base`, the unfocused Cancel dim.
+/// Registers `Button(Confirm)` (the primary, whatever its label) and
+/// `Button(Cancel)`. `base` is the only per-dialog variable — `p.warn` for the
+/// destructive confirm, `p.accent` everywhere else.
+pub(crate) fn render_button_row(
+    frame: &mut ratatui::Frame,
+    hit: &mut HitMap,
+    row: Rect,
+    primary_label: &str,
+    focus: Option<ButtonKind>,
+    base: ratatui::style::Color,
+) {
+    let p = Palette::default();
+    let primary_btn = format!("[ {primary_label} ]");
+    let cancel_btn = "[ Cancel ]";
+    let primary_w = primary_btn.chars().count() as u16;
+    let cancel_w = cancel_btn.chars().count() as u16;
+
+    // `focus == None` (a field owns focus in the form) highlights NEITHER button.
+    let focused = Style::default().fg(base).add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let primary_style =
+        if matches!(focus, Some(ButtonKind::Confirm)) { focused } else { Style::default().fg(base) };
+    let cancel_style =
+        if matches!(focus, Some(ButtonKind::Cancel)) { focused } else { p.dim_style() };
+
+    let primary_rect = Rect { x: row.x, y: row.y, width: primary_w, height: 1 };
+    let cancel_rect = Rect { x: row.x + primary_w + 2, y: row.y, width: cancel_w, height: 1 };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(primary_btn, primary_style))),
+        primary_rect,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(cancel_btn, cancel_style))),
+        cancel_rect,
+    );
+    hit.push(primary_rect, HitTarget::Button(ButtonKind::Confirm));
+    hit.push(cancel_rect, HitTarget::Button(ButtonKind::Cancel));
+}
+
+/// A single focused `[ Back ]` button (the confirm-dialog focused-button style)
+/// left-aligned on the 1-high `row`, for read-only overlays (help, settings)
+/// that only need dismissing. Registers `Button(Confirm)` — push it AFTER the
+/// overlay's `Modal` region so the click lands on the button, not the body.
+pub(crate) fn render_back_button(frame: &mut ratatui::Frame, hit: &mut HitMap, row: Rect, p: &Palette) {
+    let btn = "[ Back ]";
+    let style = Style::default().fg(p.accent).add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let rect = Rect { x: row.x, y: row.y, width: btn.chars().count() as u16, height: 1 };
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(btn, style))), rect);
+    hit.push(rect, HitTarget::Button(ButtonKind::Confirm));
 }
 
 /// Multiline new-task prompt modal. Renders the wrapped `editor` body (with the
@@ -174,82 +232,16 @@ pub fn render_confirm(
     lines.push(Line::from(""));
     frame.render_widget(Paragraph::new(lines), inner);
 
-    // Focused button: reversed + bold; unfocused: plain (warn Confirm, dim
-    // Cancel).
-    let focused = Style::default().fg(p.warn).add_modifier(Modifier::REVERSED | Modifier::BOLD);
-    let confirm_style =
-        if matches!(focus, ButtonKind::Confirm) { focused } else { Style::default().fg(p.warn) };
-    let cancel_style =
-        if matches!(focus, ButtonKind::Cancel) { focused } else { p.dim_style() };
-
+    // Destructive confirm: warn-colored button row on the last interior line.
     let btn_y = inner.y + inner.height.saturating_sub(1);
-    let confirm_rect = Rect { x: inner.x, y: btn_y, width: confirm_w as u16, height: 1 };
-    let cancel_rect =
-        Rect { x: inner.x + confirm_w as u16 + 2, y: btn_y, width: cancel_w as u16, height: 1 };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(confirm_btn, confirm_style))),
-        confirm_rect,
+    render_button_row(
+        frame,
+        hit,
+        Rect { x: inner.x, y: btn_y, width: inner.width, height: 1 },
+        confirm_label,
+        Some(focus),
+        p.warn,
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(cancel_btn, cancel_style))),
-        cancel_rect,
-    );
-    hit.push(confirm_rect, HitTarget::Button(ButtonKind::Confirm));
-    hit.push(cancel_rect, HitTarget::Button(ButtonKind::Cancel));
-}
-
-/// Create-worktree modal: a bordered branch-name input with an inline red error
-/// row and a key hint. The popup registers a `Modal` hit target; Enter/esc drive
-/// it (no OK/Cancel buttons). `error` renders red on the row under the field when set.
-pub fn render_create_worktree(
-    frame: &mut ratatui::Frame,
-    hit: &mut HitMap,
-    repo: &str,
-    input: &tui_input::Input,
-    error: Option<&str>,
-) {
-    let p = Palette::default();
-    let normal = Style::default().fg(p.fg);
-    // `modal_frame` registers the Modal hit target over the whole popup so
-    // clicks inside are opaque to the panes beneath.
-    let inner = modal_frame(frame, hit, &format!("Create worktree — {repo}"), 3);
-
-    // Field line: "branch> value█".
-    let field = Line::from(vec![
-        Span::styled("branch> ", p.dim_style()),
-        Span::styled(input.value().to_string(), normal),
-        Span::styled("█", Style::default().fg(p.accent)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(field),
-        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
-    );
-
-    // Second interior row: the inline error (red) when validation failed.
-    if let Some(msg) = error
-        && inner.height >= 2 {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    msg.to_string(),
-                    Style::default().fg(p.error),
-                ))),
-                Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
-            );
-        }
-
-    // Hint line on the bottom interior row.
-    if inner.height >= 3 {
-        let hint = Line::from(Span::styled("enter submit", p.dim_style()));
-        frame.render_widget(
-            Paragraph::new(hint),
-            Rect {
-                x: inner.x,
-                y: inner.y + inner.height.saturating_sub(1),
-                width: inner.width,
-                height: 1,
-            },
-        );
-    }
 }
 
 #[cfg(test)]
@@ -330,6 +322,74 @@ mod prompt_modal_view_tests {
     fn prompt_modal_snapshot() {
         let (s, _hit) = render_prompt(60, 15, "run this now\nand a second line");
         insta::assert_snapshot!("prompt_modal", s);
+    }
+}
+
+#[cfg(test)]
+mod button_row_view_tests {
+    use super::*;
+    use crate::hit::{ButtonKind, HitMap, HitTarget};
+    use ratatui::{backend::TestBackend, layout::Rect, style::Modifier, Terminal};
+
+    fn draw(
+        primary: &str,
+        focus: ButtonKind,
+        base: ratatui::style::Color,
+    ) -> (String, HitMap, ratatui::buffer::Buffer) {
+        let mut term = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        let mut hit = HitMap::default();
+        term.draw(|f| {
+            let row = Rect { x: 1, y: 1, width: 38, height: 1 };
+            render_button_row(f, &mut hit, row, primary, Some(focus), base);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut s = String::new();
+        for y in 0..3 {
+            for x in 0..40 {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        (s, hit, buf)
+    }
+
+    #[test]
+    fn draws_both_buttons_and_registers_targets() {
+        let (s, hit, _buf) = draw("Next", ButtonKind::Confirm, Palette::default().accent);
+        assert!(s.contains("[ Next ]"));
+        assert!(s.contains("[ Cancel ]"));
+        let (mut c, mut x) = (false, false);
+        for y in 0..3 {
+            for xx in 0..40 {
+                match hit.hit(xx, y) {
+                    Some(HitTarget::Button(ButtonKind::Confirm)) => c = true,
+                    Some(HitTarget::Button(ButtonKind::Cancel)) => x = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(c && x, "both buttons register hit targets");
+    }
+
+    #[test]
+    fn focus_reverses_the_focused_button_only() {
+        let reversed = |focus| {
+            let (_s, _h, buf) = draw("Next", focus, Palette::default().accent);
+            let mut out = String::new();
+            for y in 0..3 {
+                for x in 0..40 {
+                    if buf[(x, y)].modifier.contains(Modifier::REVERSED) {
+                        out.push_str(buf[(x, y)].symbol());
+                    }
+                }
+            }
+            out
+        };
+        assert!(reversed(ButtonKind::Confirm).contains("Next"));
+        assert!(!reversed(ButtonKind::Confirm).contains("Cancel"));
+        assert!(reversed(ButtonKind::Cancel).contains("Cancel"));
+        assert!(!reversed(ButtonKind::Cancel).contains("Next"));
     }
 }
 

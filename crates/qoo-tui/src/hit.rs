@@ -41,7 +41,7 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     match pane {
         PaneId::Queue => &[Run, Cancel, Actions, Create, Collapse],
         PaneId::Tasks => &[Run, Collapse],
-        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Create, Collapse],
+        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Collapse],
         PaneId::Detail => &[],
     }
 }
@@ -52,6 +52,9 @@ pub enum HitTarget {
     Row(ListPane, usize),
     PaneBody(PaneId),
     SubTab(usize),
+    /// A lane-task row in the worktree DETAIL view (index into the lane's tasks).
+    /// A click selects + opens that task (mirrors the j/k cursor + Enter).
+    DetailLaneTask(usize),
     MenuItem(usize),
     FormField(usize),
     DropdownItem(usize),

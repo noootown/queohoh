@@ -578,19 +578,6 @@ fn paste_into_add_task_editor_keeps_newlines() {
     }
 }
 
-// Paste into the single-line CreateWorktree input collapses newlines/tabs to
-// spaces so a multiline paste can't smuggle a newline into a one-line field.
-#[test]
-fn paste_into_single_line_input_collapses_control_chars() {
-    let mut app = fixture_app_one_project("platform");
-    app.mode = Mode::CreateWorktree { input: tui_input::Input::default(), error: None };
-    app.update(Event::Paste("do a\nthen b".into()));
-    match &app.mode {
-        Mode::CreateWorktree { input, .. } => assert_eq!(input.value(), "do a then b"),
-        other => panic!("expected CreateWorktree, got {other:?}"),
-    }
-}
-
 // alt+enter no longer inserts a newline in the DefArgs form (only shift+enter
 // does). The alt+enter falls through to the plain-Enter arm, which on a
 // required-but-empty free-text field flags the row and blocks submit — proving

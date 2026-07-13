@@ -147,6 +147,7 @@ export async function runTask(
 			task,
 			definition: def,
 			resolvedWorktree: worktree,
+			resolvedWorktreePath: cwd,
 			prompt: task.prompt,
 			model,
 		},

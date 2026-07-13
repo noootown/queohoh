@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::hit::{HitMap, HitTarget};
 use crate::ipc::types::SettingsPayload;
+use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
 /// Rows for the settings overlay: the effective global table first
@@ -101,30 +102,39 @@ pub fn render(
     p: &Palette,
     settings: &Option<Option<SettingsPayload>>,
 ) {
-    let mut lines = body_lines(settings, p);
-    lines.push(Line::from(Span::styled(" any key to close", p.dim_style())));
+    let lines = body_lines(settings, p);
 
     // Width: widen enough for `alias  claude-model-id` pairs but stay bounded,
-    // matching help's clamp. Height: content + hint + borders, capped to area.
+    // matching help's clamp. Height: content + blank + [ Back ] + border(2) +
+    // padding(2), capped to area.
     let width = (area.width.saturating_sub(8)).clamp(20, 72);
-    let height = (lines.len() as u16 + 2).min(area.height);
+    let height = ((lines.len() + 2) as u16 + 4).min(area.height);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect { x, y, width, height };
     frame.render_widget(Clear, popup);
+    // Opaque body region FIRST so the [ Back ] button (pushed last) stays topmost.
+    hits.push(popup, HitTarget::Modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(p.accent))
+        .padding(MODAL_PADDING)
         .title(Span::styled(
             " settings — model aliases ",
             Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
-    // Registered last → topmost: clicks inside never leak to the body.
-    hits.push(popup, HitTarget::Modal);
+    let content = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: inner.height.saturating_sub(2),
+    };
+    frame.render_widget(Paragraph::new(Text::from(lines)), content);
+    let btn_y = inner.y + inner.height.saturating_sub(1);
+    render_back_button(frame, hits, Rect { x: inner.x, y: btn_y, width: inner.width, height: 1 }, p);
 }
 
 #[cfg(test)]
@@ -142,6 +152,7 @@ mod tests {
         let p = SettingsPayload {
             models: SettingsModels {
                 defaults: map(&[("opus", "claude-opus-4-8"), ("sonnet", "claude-sonnet-4-5")]),
+                default_model: String::new(),
                 global: SettingsLayer { entries: BTreeMap::new(), source: "/cfg.yaml".into() },
                 projects: vec![],
             },
@@ -162,6 +173,7 @@ mod tests {
         let p = SettingsPayload {
             models: SettingsModels {
                 defaults: map(&[("sonnet", "claude-sonnet-4-5")]),
+                default_model: String::new(),
                 // global overlays defaults: sonnet is remapped in-place.
                 global: SettingsLayer {
                     entries: map(&[("sonnet", "claude-sonnet-4-6")]),
@@ -182,10 +194,12 @@ mod tests {
         let p = SettingsPayload {
             models: SettingsModels {
                 defaults: map(&[("opus", "claude-opus-4-8")]),
+                default_model: String::new(),
                 global: SettingsLayer { entries: BTreeMap::new(), source: "/cfg.yaml".into() },
                 projects: vec![SettingsProjectLayer {
                     repo: "acme".into(),
                     entries: map(&[("opus", "claude-opus-4-9")]),
+                    default_model: String::new(),
                     source: "/repos/acme/vars.yaml".into(),
                 }],
             },

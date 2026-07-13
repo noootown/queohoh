@@ -59,6 +59,16 @@ pub struct RpcCall {
     pub params: serde_json::Value,
 }
 
+/// Post-create enqueue payload for [`Cmd::CreateWorktree`]. When present, the
+/// handler enqueues a first task into the freshly-created worktree (resolving the
+/// worktree name from the create reply's `path` basename — never reconstructed in
+/// the TUI). Empty `model` means "daemon default".
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnqueueAfter {
+    pub prompt: String,
+    pub model: String,
+}
+
 /// Side effects `App::update` requests; performed by `execute` on tokio tasks
 /// (contract-verbatim).
 #[derive(Debug, Clone, PartialEq)]
@@ -87,14 +97,18 @@ pub enum Cmd {
     FetchSettings,
     ReadRunFiles { task_id: String, tail_lines: usize, delay_ms: u64 },
     /// Create a worktree via the `createWorktree` RPC (10-minute budget —
-    /// post-create `wt.toml` hooks routinely run for minutes), then, inside
-    /// tmux, auto-open a tmux window in the returned path (user request: no
-    /// manual open after a create). Outside tmux, or against an old daemon
-    /// whose reply carries no path, the open is silently skipped.
-    CreateWorktree { repo: String, name: String },
+    /// post-create `wt.toml` hooks routinely run for minutes). With
+    /// `enqueue: None` (create-only), then, inside tmux, auto-open a tmux window
+    /// in the returned path (user request: no manual open after a create);
+    /// outside tmux, or against an old daemon whose reply carries no path, the
+    /// open is silently skipped. With `enqueue: Some(_)` (the launcher's Create
+    /// Worktree flow), the handler instead enqueues a first task into the new
+    /// worktree — resolving its name from the reply `path` basename — and skips
+    /// the auto-open (the task owns the worktree).
+    CreateWorktree { repo: String, name: String, enqueue: Option<EnqueueAfter> },
     OpenTmux { path: String },
-    /// Resume a task's Claude session in a NEW tmux pane rooted at its worktree:
-    /// `tmux split-window -c <path> 'claude --resume <session_id>'`. Fired by the
+    /// Resume a task's Claude session in a NEW tmux tab (window) rooted at its
+    /// worktree: `tmux new-window -c <path> 'claude --resume <session_id>'`. Fired by the
     /// queue "Resume" action; gated on being inside tmux + a known session/path.
     TmuxResume { path: String, session_id: String },
     /// Write-through of the per-project pane layout. Fire-and-forget off the UI
@@ -384,7 +398,7 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 let _ = tx.send(Event::RunFiles { task_id, files: Box::new(files) });
             });
         }
-        Cmd::CreateWorktree { repo, name } => {
+        Cmd::CreateWorktree { repo, name, enqueue } => {
             tokio::spawn(async move {
                 let call = RpcCall {
                     method: "createWorktree".into(),
@@ -397,13 +411,46 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 };
                 let failed = status.is_some();
                 let _ = tx.send(Event::ActionResult { status, invalidate_defs_for: None });
-                if failed || std::env::var_os("TMUX").is_none() {
+                if failed {
+                    return;
+                }
+                // The created worktree's name is the basename of the reply path
+                // (matches the daemon's `listWorktrees` naming) — never
+                // reconstructed in the TUI.
+                let path = result
+                    .ok()
+                    .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(str::to_string));
+                // Option A: sequence create → enqueue into the new worktree using
+                // the authoritative path. Skips the auto-open (the task owns it).
+                if let Some(after) = enqueue {
+                    let wt = path
+                        .as_deref()
+                        .and_then(|p| Path::new(p).file_name().and_then(|s| s.to_str()));
+                    let status = match wt {
+                        Some(wt) => {
+                            let mut params =
+                                serde_json::json!({ "prompt": after.prompt, "repo": repo, "worktree": wt });
+                            if !after.model.is_empty() {
+                                params["model"] = serde_json::Value::String(after.model);
+                            }
+                            let enq = RpcCall { method: "enqueue".into(), params };
+                            rpc_once(&sock, &enq, 5_000)
+                                .await
+                                .err()
+                                .map(|e| format!("enqueue in {name}: {e}"))
+                        }
+                        None => Some(format!("enqueue in {name}: worktree has no path")),
+                    };
+                    if status.is_some() {
+                        let _ = tx.send(Event::ActionResult { status, invalidate_defs_for: None });
+                    }
+                    return;
+                }
+                // Create-only path: auto-open a tmux window in the new worktree.
+                if std::env::var_os("TMUX").is_none() {
                     return; // outside tmux: same silent gate as the menu action
                 }
-                let Some(path) = result
-                    .ok()
-                    .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(str::to_string))
-                else {
+                let Some(path) = path else {
                     return; // old daemon replied `true` — no path to open
                 };
                 if let Some(status) = open_tmux_window(&path).await {
@@ -426,11 +473,11 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
         }
         Cmd::TmuxResume { path, session_id } => {
             tokio::spawn(async move {
-                // A new pane split from the current window, rooted at the
-                // worktree, running `claude --resume <session>` as its command.
+                // A new tmux window (tab), rooted at the worktree, running
+                // `claude --resume <session>` as its command.
                 let result = tokio::process::Command::new("tmux")
                     .args([
-                        "split-window",
+                        "new-window",
                         "-c",
                         &path,
                         &format!("claude --resume {session_id}"),

@@ -5,7 +5,7 @@
 //! `(<eligible> of <total>)` counts.
 //!
 //! The QUEUE menu holds exactly ONE action — **Resume** (open the task's Claude
-//! session in a new tmux pane). Its old verbs became title-bar chips/keys
+//! session in a new tmux tab). Its old verbs became title-bar chips/keys
 //! instead: `r` re-queues (see `App::requeue_selected`) and `x` cancels
 //! (skip/stop; see `App::cancel_selected`). The tasks pane has no single-target
 //! menu: Enter on a tasks row runs the highlighted definition directly
@@ -19,8 +19,8 @@ use crate::selectors::QueueRow;
 /// a mode transition or an RPC/tmux dispatch. Variants are only ever added.
 #[derive(Debug, Clone)]
 pub enum MenuAction {
-    /// Resume the task's Claude session in a new tmux pane rooted at `path`
-    /// (`tmux split-window -c <path> 'claude --resume <session_id>'`).
+    /// Resume the task's Claude session in a new tmux tab (window) rooted at `path`
+    /// (`tmux new-window -c <path> 'claude --resume <session_id>'`).
     Resume { path: String, session_id: String },
     // --- Bulk actions. Targets are frozen at menu-open time: the eligible
     // ids/names are captured here so a snapshot push that reshuffles rows
@@ -65,7 +65,7 @@ pub fn filter_items(items: &[ActionItem], query: &str) -> Vec<usize> {
     crate::selectors::filter_rows(items, query, |it| it.label.clone())
 }
 
-const RESUME_DESC: &str = "Resume this task's Claude session in a new tmux pane.";
+const RESUME_DESC: &str = "Resume this task's Claude session in a new tmux tab.";
 
 /// Single-target queue menu: exactly one row, **Resume**. Disabled (with the
 /// most specific reason) when not inside tmux, when the run has recorded no
@@ -166,6 +166,13 @@ mod filter_tests {
         assert_eq!(filter_items(&items, "REMOVE"), vec![2]);
         // No match → empty.
         assert!(filter_items(&items, "zzz").is_empty());
+    }
+
+    #[test]
+    fn resume_desc_opens_a_tab_not_a_pane() {
+        // Resume opens a new tmux window (tab), not a split pane.
+        assert!(RESUME_DESC.contains("tab"));
+        assert!(!RESUME_DESC.contains("pane"));
     }
 }
 

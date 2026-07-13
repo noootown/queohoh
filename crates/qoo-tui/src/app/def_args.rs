@@ -1,57 +1,12 @@
-//! Definition-picker, run-form, and create-worktree input handling for `App`.
+//! Definition-picker and run-form input handling for `App`.
 //!
-//! Key navigation and click routing for the task/def picker (`DefPick`), the
-//! per-arg run form (`DefArgs`), and the new-worktree branch prompt
-//! (`CreateWorktree`). Split out of `app/mod.rs` verbatim (no behavior change).
+//! Key navigation and click routing for the task/def picker (`DefPick`) and the
+//! per-arg run form (`DefArgs`). Split out of `app/mod.rs` verbatim (no behavior
+//! change).
 
 use super::*;
 
 impl App {
-    /// `Mode::CreateWorktree` key handling. Enter validates the branch name:
-    /// invalid keeps the modal open with the inline error; valid dispatches
-    /// `createWorktree` and closes immediately (creation fires async and can
-    /// take minutes — progress lives on the status line). Esc cancels; every
-    /// other key edits the input and clears any prior error.
-    pub(super) fn create_worktree_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
-        use crossterm::event::KeyCode::*;
-        let repo = match self.active_repo() {
-            Some(r) => r,
-            None => return Update { dirty: false, cmds: vec![] },
-        };
-        match ev.code {
-            Esc => {
-                self.mode = Mode::List;
-                Update { dirty: true, cmds: vec![] }
-            }
-            Enter => {
-                let name = match &self.mode {
-                    Mode::CreateWorktree { input, .. } => input.value().to_string(),
-                    _ => return Update { dirty: false, cmds: vec![] },
-                };
-                if let Some(msg) = crate::worktree_context::validate_branch(&name) {
-                    if let Mode::CreateWorktree { error, .. } = &mut self.mode {
-                        *error = Some(msg);
-                    }
-                    return Update { dirty: true, cmds: vec![] };
-                }
-                // Close immediately — creation can take minutes; progress + result
-                // live on the status line, not a blocked modal.
-                self.mode = Mode::List;
-                self.status_line = Some(format!("creating worktree {name}…"));
-                Update { dirty: true, cmds: vec![Self::create_worktree_cmd(&repo, &name)] }
-            }
-            _ => {
-                // Feed the key to tui-input; a new keystroke clears any prior
-                // validation error. Mouse never reaches here (Task 12 filters it).
-                if let Mode::CreateWorktree { input, error } = &mut self.mode {
-                    input.handle_event(&crossterm::event::Event::Key(*ev));
-                    *error = None;
-                }
-                Update { dirty: true, cmds: vec![] }
-            }
-        }
-    }
-
     /// Open the run form. `fixed`/`initial` and `worktree` are caller-decided.
     /// Returns the prompt-fetch command(s) for the def's right panel (empty when
     /// the full definition is already cached / in flight).

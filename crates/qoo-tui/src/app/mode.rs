@@ -154,8 +154,8 @@ impl Default for TabUiState {
 
 /// Subset of the contract `Mode`. Variants are only ever
 /// added. `PartialEq` is intentionally not derived: `AddTask` carries a
-/// `MultilineInput` and `CreateWorktree` a `tui_input::Input`, neither of which
-/// is `PartialEq`; nothing compares `Mode` by value (tests use `matches!`).
+/// `MultilineInput` and `Form` a `FormState`, neither of which is `PartialEq`;
+/// nothing compares `Mode` by value (tests use `matches!`).
 #[derive(Debug, Clone, Default)]
 pub enum Mode {
     #[default]
@@ -228,10 +228,6 @@ pub enum Mode {
     /// Per-arg entry form for a chosen def (Task 18 constructs it; its key
     /// handling + render land in Task 19/20).
     DefArgs { form: crate::view::args_form::ArgsForm },
-    /// New-worktree branch-name prompt (Task 21). Enter validates via
-    /// `worktree_context::validate_branch`; invalid keeps the modal open with
-    /// `error` set, valid dispatches `createWorktree` and closes immediately.
-    CreateWorktree { input: tui_input::Input, error: Option<String> },
     /// Session picker (`r` on a worktree row): pick a resumable Claude session to
     /// carry into `Mode::AddTask`, or start fresh. Row 0 is ALWAYS the synthetic
     /// "New session" (fresh task); the loaded `items` follow it. `query` filters
@@ -247,7 +243,37 @@ pub enum Mode {
         loading: bool,
         index: usize,
         query: String,
+        /// Focused button in the bottom row (defaults to `Confirm` = Next on
+        /// open). Tab toggles it; Enter fires the focused button.
+        focus: crate::hit::ButtonKind,
     },
+    /// Reusable bordered typed form (Phase 4/5). `state` holds the fields, focus,
+    /// caret, dropdown, and validation error (see [`crate::view::form::FormState`]);
+    /// `action` is the frozen payload the Primary button fires once the form
+    /// validates. Key/click handling lives in `app/form.rs`; rendering in
+    /// `view/form.rs`.
+    Form {
+        state: crate::view::form::FormState,
+        action: FormAction,
+    },
+}
+
+/// What a validated [`Mode::Form`] fires on its Primary button. Each variant
+/// carries the frozen launcher context (repo/worktree) captured when the form
+/// opened; the field VALUES (model, prompt, branch name) come from `validate()`
+/// at fire time. See `App::fire_form_action`.
+#[derive(Debug, Clone)]
+pub enum FormAction {
+    /// New task (fresh or resumed) on an existing `worktree`. Fields:
+    /// `[model dropdown, prompt textarea]`. `resume_session_id` pins a session.
+    NewSession {
+        repo: String,
+        worktree: String,
+        resume_session_id: Option<String>,
+    },
+    /// Create a new worktree in `repo`, then enqueue a first task into it.
+    /// Fields: `[branch/name input, model dropdown, prompt textarea]`.
+    CreateWorktree { repo: String },
 }
 
 /// The frozen payload a [`Mode::Confirm`] fires when confirmed. Each variant

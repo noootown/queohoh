@@ -18,11 +18,11 @@ pub struct RunFiles {
     /// Claude session id for this run, read from `data.json` (`session_id`,
     /// written by the daemon's run store at finish). `None` until the run has
     /// recorded one; the queue "Resume" action resumes this session in a new
-    /// tmux pane and falls back to the task's `resume_session_id` when absent.
+    /// tmux tab and falls back to the task's `resume_session_id` when absent.
     pub session_id: Option<String>,
     /// Absolute worktree path this run executed in (`data.json` →
-    /// `resolved_worktree`), used as the tmux pane's working directory for
-    /// "Resume". `None` when the run record has no path yet.
+    /// `resolved_worktree_path`), used as the tmux window's working directory
+    /// for "Resume". `None` when the run record has no path yet.
     pub worktree_path: Option<String>,
     /// Parsed `data.json` metadata for the detail pane's `info` sub-tab. `None`
     /// until the run has a parseable `data.json` — run dirs appear lazily, so a
@@ -46,6 +46,10 @@ pub struct RunMeta {
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub resolved_worktree: Option<String>,
+    /// Absolute checkout path the run executed in (`data.json` →
+    /// `resolved_worktree_path`). Distinct from `resolved_worktree` (the bare
+    /// name); this is what "Resume" hands to tmux `-c`.
+    pub resolved_worktree_path: Option<String>,
     pub cost_usd: Option<f64>,
     pub turns: Option<i64>,
     pub duration_ms: Option<u64>,
@@ -73,7 +77,7 @@ pub async fn read_run_files(runs_dir: &Path, task_id: &str, tail_lines: usize) -
     // derived from the same parse (blank strings already dropped as absent so
     // Resume never offers an unusable target).
     let session_id = meta.as_ref().and_then(|m| m.session_id.clone());
-    let worktree_path = meta.as_ref().and_then(|m| m.resolved_worktree.clone());
+    let worktree_path = meta.as_ref().and_then(|m| m.resolved_worktree_path.clone());
     RunFiles { transcript_tail, report, session_id, worktree_path, meta }
 }
 
@@ -109,6 +113,7 @@ async fn read_run_meta(path: &Path) -> Option<RunMeta> {
         session_id: s("session_id"),
         model: s("model"),
         resolved_worktree: s("resolved_worktree"),
+        resolved_worktree_path: s("resolved_worktree_path"),
         cost_usd: usage("costUsd").and_then(|v| v.as_f64()),
         turns: usage("turns").and_then(|v| v.as_i64()),
         duration_ms: usage("durationMs").and_then(|v| v.as_u64()),
@@ -204,12 +209,15 @@ mod tests {
         let runs = setup("01SESS", Some("hi"), None);
         std::fs::write(
             runs.join("01SESS").join("data.json"),
-            r#"{"session_id":"sess-abc","resolved_worktree":"/repos/acme.feature","outcome":"done"}"#,
+            r#"{"session_id":"sess-abc","resolved_worktree":"acme.feature","resolved_worktree_path":"/repos/acme.feature","outcome":"done"}"#,
         )
         .unwrap();
         let out = read_run_files(&runs, "01SESS", 25).await;
         assert_eq!(out.session_id.as_deref(), Some("sess-abc"));
+        // `worktree_path` is the ABSOLUTE path (from `resolved_worktree_path`),
+        // not the bare `resolved_worktree` name — Resume feeds it to tmux `-c`.
         assert_eq!(out.worktree_path.as_deref(), Some("/repos/acme.feature"));
+        assert_eq!(out.meta.as_ref().unwrap().resolved_worktree.as_deref(), Some("acme.feature"));
     }
 
     #[tokio::test]

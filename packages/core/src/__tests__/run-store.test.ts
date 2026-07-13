@@ -37,6 +37,7 @@ describe("RunStore", () => {
 				task,
 				definition: null,
 				resolvedWorktree: "JUS-257",
+				resolvedWorktreePath: "/wt/platform.JUS-257",
 				prompt: task.prompt,
 				model: "opus",
 			},
@@ -44,6 +45,9 @@ describe("RunStore", () => {
 		);
 		const meta = rs.readRunMeta(task.id);
 		expect(meta?.resolved_worktree).toBe("JUS-257");
+		// The absolute path the run executed in — the TUI's "Resume" action uses
+		// it as the tmux window cwd (name alone → tmux falls back to $HOME).
+		expect(meta?.resolved_worktree_path).toBe("/wt/platform.JUS-257");
 		expect(meta?.model).toBe("opus");
 		expect(typeof meta?.started_at).toBe("string");
 		const prompt = readFileSync(
@@ -69,6 +73,7 @@ describe("RunStore", () => {
 				task,
 				definition: null,
 				resolvedWorktree: "JUS-257",
+				resolvedWorktreePath: "/wt/platform.JUS-257",
 				prompt: task.prompt,
 				model: "opus",
 			},

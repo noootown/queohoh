@@ -19,7 +19,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::layout::Position;
-use tui_input::backend::crossterm::EventHandler;
 
 use crate::event::{Cmd, Event, RpcCall};
 use crate::hit::{HitMap, HitTarget};
@@ -31,6 +30,7 @@ use crate::runfiles::RunFiles;
 
 mod actions;
 mod def_args;
+mod form;
 mod menus;
 mod mode;
 mod mouse;
@@ -666,7 +666,7 @@ mod bulk_flow_tests;
 mod def_pick_tests;
 
 #[cfg(test)]
-mod task21_tests;
+mod heal_wiring_tests;
 
 #[cfg(test)]
-mod heal_wiring_tests;
+mod form_tests;

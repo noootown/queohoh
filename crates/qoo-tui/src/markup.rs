@@ -292,7 +292,7 @@ pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette)
 
 /// Style a queue-style lane-task row (see [`LineCtx::LaneTask`]): a status glyph
 /// (colored by [`crate::view::theme::glyph_style`]), the task NAME (`line`) in
-/// mauve for a definition or fg for a prompt summary, then the fixed right-aligned
+/// mauve for a definition or default grey for a prompt summary, then the fixed right-aligned
 /// `created` / `age` columns (both `info` teal, like the queue pane's timestamp
 /// and age) and the `live` column (warn, the "now" slot — `⏱ <elapsed>` for a
 /// running task, `#N in lane` for a queued one, blank otherwise). Columns fit
@@ -318,7 +318,9 @@ fn style_lane_task_line(
         return Line::from(String::new());
     }
     let cols = crate::selectors::lane_task_cols(width);
-    let name_style = Style::default().fg(if is_def { p.mauve } else { p.fg });
+    // Def name in the name color (mauve); a prompt summary in the terminal-default
+    // grey (white is reserved for actions/tabs).
+    let name_style = if is_def { Style::default().fg(p.mauve) } else { Style::default() };
     let gap = " ".repeat(crate::selectors::COL_GAP);
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled(glyph.to_string(), crate::view::theme::glyph_style(glyph, p)),
@@ -404,7 +406,7 @@ fn style_config_line(line: &str, key_col: usize, p: &Palette) -> Line<'static> {
     // `key_col == 0` is a wrapped continuation (no key column) — style it wholly
     // as value so a wrapped path/value never mis-colors its start as a key.
     if key_col == 0 {
-        return Line::from(style_config_value(line, p));
+        return Line::from(style_config_value(line, Style::default(), p));
     }
     let chars: Vec<char> = line.chars().collect();
     if chars.len() <= key_col {
@@ -412,14 +414,29 @@ fn style_config_line(line: &str, key_col: usize, p: &Palette) -> Line<'static> {
     }
     let key: String = chars[..key_col].iter().collect();
     let value: String = chars[key_col..].iter().collect();
+    let base = config_value_style(key.trim(), p);
     let mut spans = vec![Span::styled(key, key_style)];
-    spans.extend(style_config_value(&value, p));
+    spans.extend(style_config_value(&value, base, p));
     Line::from(spans)
 }
 
-/// Spans for a config row's value column (see [`style_config_line`]).
-fn style_config_value(value: &str, p: &Palette) -> Vec<Span<'static>> {
-    let fg = Style::default().fg(p.fg);
+/// Base color for a config VALUE, keyed on its (trimmed) key so the same concept
+/// reads in the same color as the panes: timestamps in teal, `pr`/`model` in the
+/// metadata gold, everything else the terminal-default grey (white is reserved
+/// for actions/tabs). `pr` also underlines (link affordance).
+fn config_value_style(key: &str, p: &Palette) -> Style {
+    match key {
+        "created" | "started" | "finished" | "updated" => Style::default().fg(p.info),
+        "pr" => Style::default().fg(p.meta).add_modifier(Modifier::UNDERLINED),
+        "model" => Style::default().fg(p.meta),
+        _ => Style::default(), // default grey — the terminal's own foreground
+    }
+}
+
+/// Spans for a config row's value column (see [`style_config_line`]). `base` is
+/// the concept color from [`config_value_style`]; a wrapped continuation passes
+/// the default grey.
+fn style_config_value(value: &str, base: Style, p: &Palette) -> Vec<Span<'static>> {
     if value.trim() == "—" {
         return vec![Span::styled(value.to_string(), p.dim_style())];
     }
@@ -428,12 +445,12 @@ fn style_config_value(value: &str, p: &Palette) -> Vec<Span<'static>> {
         let before = &value[..idx];
         let after = &value[idx + arrow.len()..];
         return vec![
-            Span::styled(before.to_string(), fg),
+            Span::styled(before.to_string(), base),
             Span::styled(arrow.to_string(), p.dim_style()),
-            Span::styled(after.to_string(), fg.add_modifier(Modifier::BOLD)),
+            Span::styled(after.to_string(), base.add_modifier(Modifier::BOLD)),
         ];
     }
-    vec![Span::styled(value.to_string(), fg)]
+    vec![Span::styled(value.to_string(), base)]
 }
 
 /// Char-index ranges `[start, end)` of every `{{...}}` placeholder in `s`. The
@@ -1552,12 +1569,31 @@ mod tests {
     }
 
     #[test]
-    fn config_row_colors_key_accent_and_value_fg() {
+    fn config_row_key_accent_value_default_grey() {
+        // A generic value renders in the terminal-default grey (no fg override);
+        // white is reserved for actions/tabs.
         let p = Palette::default();
-        let fg = Style::default().fg(p.fg);
         assert_eq!(
             config("dedup      none", 11, &p),
-            vec![("dedup      ".into(), accent(&p)), ("none".into(), fg)]
+            vec![("dedup      ".into(), accent(&p)), ("none".into(), Style::default())]
+        );
+    }
+
+    #[test]
+    fn config_timestamp_value_is_teal_and_pr_is_meta_underlined() {
+        // Same concept, same color as the panes: timestamps teal, pr the metadata
+        // gold (underlined link affordance).
+        let p = Palette::default();
+        assert_eq!(
+            config("updated    9h ago", 11, &p),
+            vec![("updated    ".into(), accent(&p)), ("9h ago".into(), Style::default().fg(p.info))]
+        );
+        assert_eq!(
+            config("pr         #1870", 11, &p),
+            vec![
+                ("pr         ".into(), accent(&p)),
+                ("#1870".into(), Style::default().fg(p.meta).add_modifier(Modifier::UNDERLINED)),
+            ]
         );
     }
 
@@ -1571,16 +1607,18 @@ mod tests {
     }
 
     #[test]
-    fn config_row_dims_arrow_and_bolds_resolved_model() {
+    fn config_model_value_is_meta_gold_with_dim_arrow() {
+        // `model` reads in the metadata gold (matches the TASKS model column);
+        // the ` → ` arrow stays dim and the resolved id is bold.
         let p = Palette::default();
-        let fg = Style::default().fg(p.fg);
+        let meta = Style::default().fg(p.meta);
         assert_eq!(
             config("model      opus → claude-opus-4-8", 11, &p),
             vec![
                 ("model      ".into(), accent(&p)),
-                ("opus".into(), fg),
+                ("opus".into(), meta),
                 (" → ".into(), p.dim_style()),
-                ("claude-opus-4-8".into(), fg.add_modifier(Modifier::BOLD)),
+                ("claude-opus-4-8".into(), meta.add_modifier(Modifier::BOLD)),
             ]
         );
     }
@@ -1591,10 +1629,9 @@ mod tests {
         // segment styles as value, never re-coloring its start in the key accent.
         // Regression for the worktree info `path` row rendering `/Users…` blue.
         let p = Palette::default();
-        let fg = Style::default().fg(p.fg);
         assert_eq!(
             config("/Users/noootown/Downloads", 0, &p),
-            vec![("/Users/noootown/Downloads".into(), fg)]
+            vec![("/Users/noootown/Downloads".into(), Style::default())]
         );
     }
 
@@ -1700,9 +1737,8 @@ mod tests {
             !styled.iter().any(|(_, s)| *s == warn(&p)),
             "no warn span when the live cell is empty"
         );
-        // Non-def name is fg, not mauve.
-        let fg = Style::default().fg(p.fg);
-        assert!(styled.iter().any(|(t, s)| t.starts_with("flaky migration") && *s == fg));
+        // Non-def (prompt) name renders in the terminal-default grey, not mauve.
+        assert!(styled.iter().any(|(t, s)| t.starts_with("flaky migration") && *s == Style::default()));
     }
 
     #[test]

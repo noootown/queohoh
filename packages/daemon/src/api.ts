@@ -22,6 +22,7 @@ import {
 	instantiateDefinition,
 	listClaudeSessions,
 	listDefinitions,
+	loadProjectDefaultModel,
 	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectVars,
@@ -204,20 +205,26 @@ export class ApiServer {
 			case "ping":
 				return "pong";
 			case "settings": {
-				// Only projects that actually override models are listed; everyone
-				// else is fully described by defaults + global.
+				// Projects are listed when they override the models table OR set a
+				// `default_model`; everyone else is fully described by the built-in
+				// `default_model` ("opus") + defaults + global.
 				const projects = deps.config.projects
-					.map((p) => ({
-						repo: p.name,
-						entries: loadProjectModels(
-							projectWorkspaceDir(deps.config, p.name),
-						),
-						source: join(projectWorkspaceDir(deps.config, p.name), "vars.yaml"),
-					}))
-					.filter((p) => Object.keys(p.entries).length > 0);
+					.map((p) => {
+						const dir = projectWorkspaceDir(deps.config, p.name);
+						return {
+							repo: p.name,
+							entries: loadProjectModels(dir),
+							default_model: loadProjectDefaultModel(dir),
+							source: join(dir, "vars.yaml"),
+						};
+					})
+					.filter((p) => Object.keys(p.entries).length > 0 || p.default_model);
 				return {
 					models: {
 						defaults: DEFAULT_MODEL_ALIASES,
+						// Built-in default model an ad-hoc / enqueue run uses when nothing
+						// sets one; the TUI launcher preselects this (or a project override).
+						default_model: "opus",
 						global: { entries: deps.config.models, source: configPath() },
 						projects,
 					},

@@ -290,10 +290,11 @@ mod tests {
         assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Queue), AppAction::OpenActionMenu);
         assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Worktrees), AppAction::None);
         assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Tasks), AppAction::None);
-        // `c` (create) is a QUEUE + WORKTREES chip; inert on TASKS (`[r]un [z]`).
-        for f in [PaneId::Queue, PaneId::Worktrees] {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('c')), f), AppAction::Create);
-        }
+        // `c` (create) is a QUEUE-only chip now (the worktrees create modal was
+        // folded into the launcher's `r` → Create Worktree row); inert on
+        // WORKTREES and TASKS.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Queue), AppAction::Create);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Worktrees), AppAction::None);
         assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Tasks), AppAction::None);
     }
 

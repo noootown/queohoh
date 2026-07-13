@@ -358,6 +358,29 @@ fn jk_move_the_worktree_detail_row_cursor_and_reset_on_selection_change() {
 }
 
 #[test]
+fn clicking_a_worktree_detail_lane_task_selects_it() {
+    use crate::hit::{HitMap, HitTarget};
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let mut app = crate::test_fixtures::fixture_app();
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab); // worktrees; acme.feature lane has two tasks
+    assert_eq!(app.ui().detail_row, 0);
+    // Inject the hit geometry a render would produce: lane task index 1 at row 5.
+    let mut hit = HitMap::default();
+    hit.push(Rect { x: 40, y: 5, width: 30, height: 1 }, HitTarget::DetailLaneTask(1));
+    app.hit = hit;
+    app.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 42,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    });
+    // The click selected (and opened) the clicked lane task — mirrors j then Enter.
+    assert_eq!(app.ui().detail_row, 1);
+}
+
+#[test]
 fn enter_on_lane_task_jumps_to_its_queue_detail() {
     let mut app = crate::test_fixtures::fixture_app();
     press(&mut app, KeyCode::Tab);
@@ -835,22 +858,6 @@ fn ctrl_s_prefix_swallows_other_keys_and_disarms() {
 }
 
 #[test]
-fn pane_button_create_click_focuses_pane_then_acts() {
-    let mut app = app_with_hits();
-    app.set_focus(PaneId::Queue);
-    let mut hits = app.hit.clone();
-    hits.push(
-        Rect { x: 20, y: 0, width: 4, height: 1 },
-        HitTarget::PaneButton(PaneId::Worktrees, crate::hit::PaneButton::Create),
-    );
-    app.hit = hits;
-    app.update(mouse(MouseEventKind::Down(MouseButton::Left), 21, 0));
-    // Focus moved to worktrees first, then `c` opened the create-worktree modal.
-    assert_eq!(app.active_ui().last_list_pane, ListPane::Worktrees);
-    assert!(matches!(app.mode, Mode::CreateWorktree { .. }));
-}
-
-#[test]
 fn pane_button_tasks_click_focuses_pane_then_opens_task_menu() {
     let mut app = app_with_hits();
     app.set_focus(PaneId::Queue);
@@ -900,24 +907,6 @@ fn pane_button_rect(app: &App, pane: PaneId, btn: crate::hit::PaneButton) -> Rec
         .iter()
         .find_map(|(r, t)| (*t == HitTarget::PaneButton(pane, btn)).then_some(*r))
         .unwrap_or_else(|| panic!("pane button {pane:?}/{btn:?} registered"))
-}
-
-#[test]
-fn real_render_worktrees_create_chip_click_opens_modal() {
-    // Worktrees' top border is the lower row of divider band 1; the chip must
-    // still win the click (PaneButton registered after PaneDividerH). Rendered
-    // wide: `create` is a pane-scoped chip (drops before the row-scoped verbs
-    // on a narrow pane), so it needs a wide worktrees title bar to survive.
-    let mut app = app_rendered(120, 24);
-    app.set_focus(PaneId::Queue);
-    let r = pane_button_rect(&app, PaneId::Worktrees, crate::hit::PaneButton::Create);
-    app.update(mouse(
-        MouseEventKind::Down(MouseButton::Left),
-        r.x + r.width / 2,
-        r.y,
-    ));
-    assert_eq!(app.active_ui().last_list_pane, ListPane::Worktrees, "focus moved");
-    assert!(matches!(app.mode, Mode::CreateWorktree { .. }), "create modal opened");
 }
 
 #[test]

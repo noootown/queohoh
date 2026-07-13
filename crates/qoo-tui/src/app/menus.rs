@@ -352,52 +352,102 @@ impl App {
     /// session so Enter resumes it, else falling back to "New session"); Enter
     /// builds `Mode::AddTask` — row 0 → fresh, a session row → that session pinned.
     pub(super) fn session_pick_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
+        use crate::hit::ButtonKind;
         use crossterm::event::{KeyCode::*, KeyModifiers};
         let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
-        let Mode::SessionPick { items, index, query, worktree, .. } = &self.mode else {
+        let Mode::SessionPick { items, index, query, repo, worktree, focus, .. } = &self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
         let filtered = crate::selectors::filter_rows(items, query, |s| s.label.clone());
-        // The view has the "New session" row plus the filtered sessions.
-        let total = filtered.len() + 1;
+        // View rows: New session (0), Create Worktree (1), then filtered sessions
+        // (2..). `eff` clamps a stale index (e.g. a filter that emptied the
+        // matches) back into the view.
+        let total = filtered.len() + 2;
         let cur = *index;
-        // Pre-resolve the Enter target as OWNED data so the `&self.mode` borrow
-        // ends before any arm reassigns `self.mode`. `eff` clamps a stale index
-        // (e.g. a filter that emptied the matches) back into the view; `eff == 0`
-        // is the "New session" row, `eff >= 1` a picked session.
+        let focus = *focus;
+        let repo = repo.clone();
         let worktree = worktree.clone();
         let eff = cur.min(total - 1);
-        let chosen: Option<(String, String)> = if eff == 0 {
-            None
-        } else {
+        // Pre-resolve the picked session as OWNED data so the `&self.mode` borrow
+        // ends before any arm reassigns `self.mode`.
+        let chosen: Option<(String, String)> = if eff >= 2 {
             filtered
-                .get(eff - 1)
+                .get(eff - 2)
                 .and_then(|&i| items.get(i))
                 .map(|s| (s.session_id.clone(), s.label.clone()))
+        } else {
+            None
         };
         match ev.code {
             Esc => {
                 self.mode = Mode::List;
                 Update { dirty: true, cmds: vec![] }
             }
+            // Tab toggles the focused button (filter + list stay live: typing
+            // filters, ↑/↓ move the selection at any time).
+            Tab | BackTab => {
+                if let Mode::SessionPick { focus, .. } = &mut self.mode {
+                    *focus = match *focus {
+                        ButtonKind::Confirm => ButtonKind::Cancel,
+                        ButtonKind::Cancel => ButtonKind::Confirm,
+                    };
+                }
+                Update { dirty: true, cmds: vec![] }
+            }
             Up => self.session_pick_move(cur, total, -1),
             Down => self.session_pick_move(cur, total, 1),
             Char('k') | Char('p') if ctrl => self.session_pick_move(cur, total, -1),
             Char('j') | Char('n') if ctrl => self.session_pick_move(cur, total, 1),
-            Enter => {
-                let (resume_session_id, resume_label) = match chosen {
-                    Some((sid, label)) => (Some(sid), Some(label)),
-                    None => (None, None),
-                };
-                self.mode = Mode::AddTask {
-                    worktree: Some(worktree),
-                    resume_session_id,
-                    resume_label,
-                    editor: Default::default(),
-                };
-                Update { dirty: true, cmds: vec![] }
-            }
+            // Enter fires the FOCUSED button. Cancel closes; Next (Confirm) acts on
+            // the highlighted row: New session / Create Worktree / resume.
+            Enter => match focus {
+                ButtonKind::Cancel => {
+                    self.mode = Mode::List;
+                    Update { dirty: true, cmds: vec![] }
+                }
+                ButtonKind::Confirm if eff == 1 => {
+                    // Create Worktree → the launch form (branch/name + model +
+                    // prompt); its Primary creates the worktree then enqueues the
+                    // first task into it.
+                    let state = crate::view::form::FormState::new(
+                        &format!("Create Worktree · {repo}"),
+                        "Create",
+                        vec![
+                            crate::view::form::Field::input("branch / worktree name", "", true),
+                            self.model_field(&repo),
+                            crate::view::form::Field::textarea("prompt", "", true),
+                        ],
+                    );
+                    self.mode = Mode::Form {
+                        state,
+                        action: FormAction::CreateWorktree { repo },
+                    };
+                    Update { dirty: true, cmds: vec![] }
+                }
+                ButtonKind::Confirm => {
+                    // New session (row 0) or a resume row → the launch form
+                    // (model dropdown + prompt); its Primary enqueues with the
+                    // picked model (and pinned session, when resuming).
+                    let (resume_session_id, title) = match chosen {
+                        Some((sid, label)) => (Some(sid), format!("Resume · {label}")),
+                        None => (None, "New session".to_string()),
+                    };
+                    let state = crate::view::form::FormState::new(
+                        &title,
+                        "Enqueue",
+                        vec![
+                            self.model_field(&repo),
+                            crate::view::form::Field::textarea("prompt", "", true),
+                        ],
+                    );
+                    self.mode = Mode::Form {
+                        state,
+                        action: FormAction::NewSession { repo, worktree, resume_session_id },
+                    };
+                    Update { dirty: true, cmds: vec![] }
+                }
+            },
             Backspace => {
                 if let Mode::SessionPick { items, query, index, .. } = &mut self.mode {
                     query.pop();
@@ -417,7 +467,7 @@ impl App {
     }
 
     /// After a filter edit, land the highlight on the first matching session
-    /// (view row 1) when the query is non-empty and something matches; otherwise
+    /// (view row 2) when the query is non-empty and something matches; otherwise
     /// the "New session" row (0). So typing to find a session auto-selects it
     /// (Enter resumes), while an empty/no-match filter defaults to a fresh task.
     fn reset_session_index(
@@ -426,11 +476,11 @@ impl App {
         index: &mut usize,
     ) {
         let flen = crate::selectors::filter_rows(items, query, |s| s.label.clone()).len();
-        *index = if query.is_empty() || flen == 0 { 0 } else { 1 };
+        *index = if query.is_empty() || flen == 0 { 0 } else { 2 };
     }
 
     /// Move the session-picker highlight circularly over the view (`total` =
-    /// filtered sessions + 1 for the "New session" row).
+    /// filtered sessions + 2 for the New session / Create Worktree rows).
     fn session_pick_move(&mut self, cur: usize, total: usize, dir: i32) -> Update {
         let next = if total == 0 {
             0
@@ -457,7 +507,7 @@ impl App {
         let Mode::SessionPick { items, index, query, .. } = &self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
-        let total = crate::selectors::filter_rows(items, query, |s| s.label.clone()).len() + 1;
+        let total = crate::selectors::filter_rows(items, query, |s| s.label.clone()).len() + 2;
         let cur = *index;
         let next = (cur as i64 + delta as i64).clamp(0, total as i64 - 1) as usize;
         if next == cur {
@@ -469,20 +519,36 @@ impl App {
         Update { dirty: true, cmds: vec![] }
     }
 
-    /// Route a left-click while the session picker is open: a `MenuItem(i)` (view
-    /// row index) highlights that row and fires the same Enter path (New session /
-    /// resume); the `Modal` body is inert; a click on anything else closes it.
+    /// Route a left-click while the launcher is open: a `MenuItem(i)` (view row
+    /// index) highlights that row and fires it as Next (New session / Create
+    /// Worktree / resume); the `Next` button fires the highlighted row; `Cancel`
+    /// (or an outside click) closes; the `Modal` body is inert.
     pub(super) fn route_session_pick_click(&mut self, target: Option<HitTarget>) -> Update {
+        use crate::hit::ButtonKind;
+        let fire_next = |app: &mut Self| {
+            // Reuse the Enter resolution with focus forced onto Next.
+            app.session_pick_key(&crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+        };
         match target {
             Some(HitTarget::MenuItem(i)) => {
-                if let Mode::SessionPick { index, .. } = &mut self.mode {
+                if let Mode::SessionPick { index, focus, .. } = &mut self.mode {
                     *index = i;
+                    *focus = ButtonKind::Confirm;
                 }
-                // Reuse the Enter resolution against the freshly-set index.
-                self.session_pick_key(&crossterm::event::KeyEvent::new(
-                    crossterm::event::KeyCode::Enter,
-                    crossterm::event::KeyModifiers::NONE,
-                ))
+                fire_next(self)
+            }
+            Some(HitTarget::Button(ButtonKind::Confirm)) => {
+                if let Mode::SessionPick { focus, .. } = &mut self.mode {
+                    *focus = ButtonKind::Confirm;
+                }
+                fire_next(self)
+            }
+            Some(HitTarget::Button(ButtonKind::Cancel)) => {
+                self.mode = Mode::List;
+                Update { dirty: true, cmds: vec![] }
             }
             Some(HitTarget::Modal) => Update { dirty: false, cmds: vec![] },
             _ => {

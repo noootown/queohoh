@@ -243,6 +243,11 @@ pub struct SettingsModels {
     /// Built-in alias → model-id defaults the daemon ships with.
     #[serde(default)]
     pub defaults: std::collections::BTreeMap<String, String>,
+    /// Built-in default model an ad-hoc / enqueue run uses when nothing sets one
+    /// (the launcher form preselects this, unless a project overrides it). Empty
+    /// on an old daemon that omits the field.
+    #[serde(default)]
+    pub default_model: String,
     /// The global override layer (config-file `models:` block). Overlays
     /// `defaults` to form the effective global table.
     #[serde(default)]
@@ -267,8 +272,30 @@ pub struct SettingsProjectLayer {
     pub repo: String,
     #[serde(default)]
     pub entries: std::collections::BTreeMap<String, String>,
+    /// This project's `default_model` override from vars.yaml, when set (empty
+    /// otherwise — the caller falls back to [`SettingsModels::default_model`]).
+    #[serde(default)]
+    pub default_model: String,
     #[serde(default)]
     pub source: String,
+}
+
+impl SettingsModels {
+    /// Effective default model for `repo`: the project's `default_model` override
+    /// when set, else the built-in `default_model`, falling back to `"opus"` when
+    /// an old daemon omitted the field entirely.
+    pub fn default_model_for(&self, repo: &str) -> String {
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.repo == repo)
+            .map(|p| p.default_model.as_str())
+            .filter(|s| !s.is_empty());
+        project
+            .or(Some(self.default_model.as_str()).filter(|s| !s.is_empty()))
+            .unwrap_or("opus")
+            .to_string()
+    }
 }
 
 #[cfg(test)]
@@ -496,14 +523,20 @@ mod tests {
         let s: SettingsPayload = serde_json::from_str(
             r#"{"models": {
                 "defaults": {"opus": "claude-opus-4-8", "sonnet": "claude-sonnet-4-5"},
+                "default_model": "opus",
                 "global": {"entries": {"sonnet": "claude-sonnet-4-6"},
                            "source": "/home/ian/.config/qoo/config.yaml"},
                 "projects": [{"repo": "acme", "entries": {"opus": "claude-opus-4-9"},
-                              "source": "/repos/acme/vars.yaml"}]
+                              "default_model": "sonnet", "source": "/repos/acme/vars.yaml"}]
             }}"#,
         )
         .unwrap();
         assert_eq!(s.models.defaults.get("opus").map(String::as_str), Some("claude-opus-4-8"));
+        assert_eq!(s.models.default_model, "opus");
+        assert_eq!(s.models.projects[0].default_model, "sonnet");
+        // A project override wins; a repo with no layer falls back to the built-in.
+        assert_eq!(s.models.default_model_for("acme"), "sonnet");
+        assert_eq!(s.models.default_model_for("other"), "opus");
         // BTreeMap: iteration order is sorted, so snapshots stay deterministic.
         assert_eq!(
             s.models.defaults.keys().cloned().collect::<Vec<_>>(),
@@ -534,5 +567,8 @@ mod tests {
         assert_eq!(partial.models.defaults.get("haiku").map(String::as_str), Some("claude-haiku-4-5"));
         assert!(partial.models.projects.is_empty());
         assert_eq!(partial.models.global.source, "");
+        // Old daemon omits default_model entirely → resolver falls back to "opus".
+        assert_eq!(partial.models.default_model, "");
+        assert_eq!(partial.models.default_model_for("anything"), "opus");
     }
 }

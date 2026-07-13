@@ -125,6 +125,7 @@ export function loadProjectVars(projectDir: string): Record<string, string> {
 	for (const [key, value] of Object.entries(raw)) {
 		if (key === "models") continue; // reserved: read by loadProjectModels
 		if (key === "github_id") continue; // reserved: read by loadProjectGithubId
+		if (key === "default_model") continue; // reserved: read by loadProjectDefaultModel
 		if (value !== null && typeof value === "object") {
 			throw new Error(`non-scalar var: ${key}`);
 		}
@@ -164,5 +165,22 @@ export function loadProjectGithubId(projectDir: string): string | undefined {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
 		return undefined;
 	const value = (raw as Record<string, unknown>).github_id;
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** The project's optional `default_model` from vars.yaml — the model an ad-hoc /
+ * enqueue run uses when neither the task nor a definition sets one, and the value
+ * the TUI launcher preselects in its model dropdown. An alias (e.g. `opus`) or a
+ * full model id; resolved through the alias table downstream. Tolerant like
+ * loadProjectGithubId: absent file, absent key, a non-string, or an empty string
+ * all yield undefined (callers fall back to the built-in `opus` default), so a
+ * bad value never wedges config loading. */
+export function loadProjectDefaultModel(projectDir: string): string | undefined {
+	const path = join(projectDir, "vars.yaml");
+	if (!existsSync(path)) return undefined;
+	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+		return undefined;
+	const value = (raw as Record<string, unknown>).default_model;
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }

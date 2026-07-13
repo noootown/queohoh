@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::hit::{HitMap, HitTarget};
+use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
 const HELP_ROWS: [(&str, &str); 21] = [
@@ -43,17 +44,20 @@ const LEGEND_ROWS: [(&str, &str); 6] = [
 
 pub fn render(frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap, p: &Palette) {
     let width = (area.width.saturating_sub(8)).clamp(20, 64);
-    // keymap rows + blank + "legend" heading + legend rows + hint + borders.
-    let height =
-        ((HELP_ROWS.len() + 2 + LEGEND_ROWS.len()) as u16 + 3).min(area.height);
+    // content rows + blank separator + [ Back ] row + border(2) + padding(2).
+    let content_rows = HELP_ROWS.len() + 2 + LEGEND_ROWS.len();
+    let height = ((content_rows + 2) as u16 + 4).min(area.height);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect { x, y, width, height };
     frame.render_widget(Clear, popup);
+    // Opaque body region FIRST so the [ Back ] button (pushed last) stays topmost.
+    hits.push(popup, HitTarget::Modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(p.accent))
+        .padding(MODAL_PADDING)
         .title(Span::styled(
             " keymap ",
             Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
@@ -80,8 +84,15 @@ pub fn render(frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap, p: &Pal
             Span::styled((*what).to_string(), Style::default().fg(p.fg)),
         ]));
     }
-    lines.push(Line::from(Span::styled(" any key to close", p.dim_style())));
-    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
-    // Registered last → topmost: clicks inside never leak to the body.
-    hits.push(popup, HitTarget::Modal);
+    // Content fills all but the bottom two interior rows (a blank gap + the
+    // [ Back ] button). Esc / any key / a Back click closes (handled in update).
+    let content = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: inner.height.saturating_sub(2),
+    };
+    frame.render_widget(Paragraph::new(Text::from(lines)), content);
+    let btn_y = inner.y + inner.height.saturating_sub(1);
+    render_back_button(frame, hits, Rect { x: inner.x, y: btn_y, width: inner.width, height: 1 }, p);
 }
