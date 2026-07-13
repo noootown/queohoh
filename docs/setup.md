@@ -96,10 +96,9 @@ queohoh reload              # after changing daemon code: rebuild + restart
 ```bash
 # MCP server (enqueue_task / list_tasks / list_task_definitions / run_task_definition):
 claude mcp add queohoh -- queohoh mcp
-
-# /qoo skill:
-ln -s "$(pwd)/skills/qoo" ~/.claude/skills/qoo
 ```
+
+The `/qoo` skill itself is not part of this repo — it's a personal skill (lives in the user's own skills workspace) that talks to the daemon purely through the MCP server above.
 
 Interactive-session awareness (the scheduler won't run tasks in a worktree you're actively using) — add to `~/.claude/settings.json` hooks:
 

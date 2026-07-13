@@ -54,7 +54,6 @@ crates/qoo-tui/         The TUI — strictly layered, one-way data flow
 
 library/                Versioned shareable task definitions (NOT read by the
                         daemon — copied into a workspace's tasks dir)
-skills/qoo/             The /qoo Claude Code skill (enqueue via MCP)
 scripts/                daemon-ensure.sh: build + (re)start the daemon
 ```
 
