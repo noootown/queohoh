@@ -5,12 +5,12 @@ expression: term.backend()
 "                                        daemon unreachable — retrying… running 0"
 "╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│       ╭ Tasks — :platform.wt-a ──╮╭ squash-merge ────────────────────╮       │"
-"│ 🔍 [/]│> █                    2/2││no description                    │       │" Hidden by multi-width symbols: [(3, " ")]
-"│       │ autotest ⏰              ││                                  │       │" Hidden by multi-width symbols: [(20, " ")]
-"│ queue │ squash-merge (source, ta…││prompt                            │       │"
-"│       │                          ││loading prompt…                   │       │"
-"│       │                          ││                                  │       │"
-"│       │                          ││                                  │       │"
+"│ 🔍 [/]│                          ││                                  │       │" Hidden by multi-width symbols: [(3, " ")]
+"│       │  > █                2/2  ││  Description                     │       │"
+"│ queue │   autotest ⏰            ││  no description                  │       │" Hidden by multi-width symbols: [(22, " ")]
+"│       │   squash-merge (source…  ││                                  │       │"
+"│       │                          ││  Prompt                          │       │"
+"│       │                          ││  loading prompt…                 │       │"
 "│       │                          ││                                  │       │"
 "│       │                          ││                                  │       │"
 "│       │                          ││                                  │       │"
@@ -22,7 +22,7 @@ expression: term.backend()
 "╰───────│                          ││                                  │       │"
 "╭🌲 WORK│                          ││                                  │       │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]│                          ││                                  │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no wor╰ type to filter · ↑/↓ move╯╰──────────────────────────────────╯       │"
+"│ no wor╰──────────────────────────╯╰──────────────────────────────────╯       │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
 "[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "

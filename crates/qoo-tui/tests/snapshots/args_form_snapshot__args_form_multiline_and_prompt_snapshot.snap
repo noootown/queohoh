@@ -1,22 +1,21 @@
 ---
 source: crates/qoo-tui/tests/args_form_snapshot.rs
-assertion_line: 62
 expression: term.backend()
 ---
 "                                                            daemon unreachable — retrying… running 0"
 "╭📋 QUEUE── [r] [x] [a] · [c] [z]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
 "│                                ││                                                                │"
 "│ 🔍 [/] f╭ pr-ready args ───────────────────╮╭ pr-ready ────────────────────────────────╮         │" Hidden by multi-width symbols: [(3, " ")]
-"│         │ pr  PR number                    ││Flip the PR from WIP to ready-for-review. │         │"
-"│ queue em│  first line of the report        ││                                          │         │"
-"│         │  second line that is long enough ││Run a self review sized to the diff, sync │         │"
-"│         │   to soft-wrap across the field  ││the description, then assign the four     │         │"
-"│         │                                  ││standing reviewers.                       │         │"
-"│         │ mode ‹ready›                     ││                                          │         │"
 "│         │                                  ││                                          │         │"
-"│         │ source wt-a                      ││                                          │         │"
+"│ queue em│   pr  PR number                  ││  Flip the PR from WIP to                 │         │"
+"│         │    first line of the report      ││  ready-for-review.                       │         │"
+"│         │    second line that is long en   ││                                          │         │"
+"│         │    ough to soft-wrap across th   ││  Run a self review sized to the diff,    │         │"
+"│         │    e field                       ││  sync the description, then assign the   │         │"
+"│         │                                  ││  four standing reviewers.                │         │"
+"│         │   mode ‹ready›                   ││                                          │         │"
 "│         │                                  ││                                          │         │"
-"│         │                                  ││                                          │         │"
+"│         │   source wt-a                    ││                                          │         │"
 "╰─────────│                                  ││                                          │         │"
 "╭⚡TASKS ·│                                  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] f│                                  ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
@@ -25,8 +24,8 @@ expression: term.backend()
 "│         │                                  ││                                          │         │"
 "╰─────────│                                  ││                                          │         │"
 "╭🌲 WORKTR│                                  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/] f│                                  ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
-"│ no workt│ [ Run ]  [ Cancel ]              ││                                          │         │"
+"│ 🔍 [/] f│   [ Run ]  [ Cancel ]            ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
+"│ no workt│                                  ││                                          │         │"
 "│         ╰ tab/↑↓ move · ←/→ enum · shift+en╯╰──────────────────────────────────────────╯         │"
 "│                                ││                                                                │"
 "╰────────────────────────────────╯╰────────────────────────────────────────────────────────────────╯"

@@ -1,13 +1,14 @@
-//! Big lazyvim/snacks-style pickers (action menu + task menu) and the
-//! destructive worktree-remove confirm. Each picker is TWO separate bordered
-//! panels side by side: the left panel holds the search prompt (with a
-//! right-aligned match count), the FILTERED rows, and the key hint in its
-//! bottom border; the right panel is a scrollable preview (description /
-//! prompt) titled with the selected row's label. Both panels register `Modal`
-//! hit targets (clicks can't leak to the panes beneath), the left panel
-//! registers one `MenuItem(i)` per visible row (`i` = FILTERED display index),
-//! and the right panel's interior registers `MenuPreview` so the mouse wheel
-//! can scroll the preview.
+//! Big lazyvim/snacks-style pickers (the compact action menu + the task/def
+//! picker). The task/def picker is TWO separate bordered panels side by side:
+//! the left panel holds the search prompt (with a right-aligned match count)
+//! and the FILTERED rows; the right panel is a scrollable preview (a bold
+//! "Description"/"Prompt" heading pair, then the def's markdown-styled prompt)
+//! titled with the selected row's label. Both panels register `Modal` hit
+//! targets (clicks can't leak to the panes beneath), the left panel registers
+//! one `MenuItem(i)` per visible row (`i` = FILTERED display index), and the
+//! right panel's interior registers `MenuPreview` so the mouse wheel can
+//! scroll the preview. No bottom key hint — arrow-move/enter-run/esc-close are
+//! the picker's own established convention.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -76,11 +77,14 @@ pub(crate) fn picker_layout(area: Rect) -> PickerLayout {
     let left_w = (width as u32 * 45 / 100) as u16;
     let left = Rect { x, y, width: left_w, height };
     let right = Rect { x: x + left_w, y, width: width - left_w, height };
+    // Border (1) + MODAL_PADDING on every side — same interior inset as the
+    // confirm dialog and every other modal, so the picker's two panels read as
+    // the same dialog family instead of a flush, un-padded one.
     let inner = |r: Rect| Rect {
-        x: r.x + 1,
-        y: r.y + 1,
-        width: r.width.saturating_sub(2),
-        height: r.height.saturating_sub(2),
+        x: r.x + 1 + MODAL_PADDING.left,
+        y: r.y + 1 + MODAL_PADDING.top,
+        width: r.width.saturating_sub(2 + MODAL_PADDING.left + MODAL_PADDING.right),
+        height: r.height.saturating_sub(2 + MODAL_PADDING.top + MODAL_PADDING.bottom),
     };
     PickerLayout { left, left_inner: inner(left), right, right_inner: inner(right) }
 }
@@ -114,13 +118,14 @@ fn render_picker_chrome(
         hit.push(r, HitTarget::Modal); // both panels: opaque to clicks
     }
 
-    // Left panel: menu title in the top border, key hint in the bottom border.
+    // Left panel: menu title in the top border. No bottom hint — type-to-filter,
+    // arrow-move, and enter-to-run are the picker's own established convention
+    // and don't need spelling out (same call as dropping "esc cancel" elsewhere).
     let left_block = Block::default()
         .title(Span::styled(
             format!(" {title} "),
             Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
         ))
-        .title_bottom(Line::from(Span::styled(MENU_HINT, p.dim_style())))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(p.accent));
@@ -301,7 +306,7 @@ pub(crate) fn render_preview(
 }
 
 /// Render the right preview panel with a plain styled `prefix` (e.g. a
-/// description + a "prompt" heading) followed by `markup` rendered through the
+/// description + a "Prompt" heading) followed by `markup` rendered through the
 /// SAME markdown pipeline as the DETAIL pane's prompt tab — `fence_states` →
 /// `wrap_lines` → `style_transcript_line`, so headings, code fences, inline
 /// code / bold / URLs and `{{jinja}}` all style identically. Fence state spans
@@ -729,7 +734,7 @@ pub fn render_session_pick(
 /// FILTERED def rows (name + arg summary + `⏰` discovery glyph + `(g)` global
 /// marker; selected row a full-width inverse bar); right panel = the
 /// highlighted def's description (dim "no description" when unset), a blank
-/// line, a bold "prompt" heading, then the full definition's prompt —
+/// line, a bold "Prompt" heading, then the full definition's prompt —
 /// markdown-styled like the DETAIL pane's prompt tab (dim "loading prompt…"
 /// until `full` arrives), scrollable via the mouse wheel.
 pub fn render_def_pick(
@@ -777,12 +782,17 @@ pub fn render_def_pick(
         },
         |pos| if pos == index { p.selection() } else { Style::default().fg(p.fg) },
     );
-    // The description + blank + bold "prompt" heading are the plain PREFIX; the
-    // def's prompt below it is markdown-styled (matching the DETAIL pane). Until
-    // `full` arrives the prompt is a plain "loading" placeholder in the prefix.
+    // Bold Title Case "Description"/"Prompt" headings, in `p.heading` (pink) —
+    // the same color the markdown pipeline below them uses for `## heading`
+    // lines in the prompt body, so both heading kinds read as one system. Their
+    // bodies are the plain PREFIX; the def's prompt below it is markdown-styled
+    // (matching the DETAIL pane). Until `full` arrives the prompt is a plain
+    // "loading" placeholder in the prefix.
+    let heading = Style::default().fg(p.heading).add_modifier(Modifier::BOLD);
     let mut prefix: Vec<(String, Style)> = Vec::new();
     let mut prompt: Option<&str> = None;
     if let Some(def) = selected {
+        prefix.push(("Description".into(), heading));
         match &def.description {
             Some(desc) if !desc.is_empty() => {
                 prefix.push((desc.clone(), Style::default().fg(p.fg)))
@@ -790,7 +800,7 @@ pub fn render_def_pick(
             _ => prefix.push(("no description".into(), p.dim_style())),
         }
         prefix.push((String::new(), Style::default()));
-        prefix.push(("prompt".into(), Style::default().fg(p.fg).add_modifier(Modifier::BOLD)));
+        prefix.push(("Prompt".into(), heading));
         match full {
             Some(td) => prompt = Some(td.prompt.as_str()),
             None => prefix.push(("loading prompt…".into(), p.dim_style())),
@@ -1049,7 +1059,7 @@ mod menu_view_tests {
         assert!(s.contains("──"), "fenced code block styled as a rule: {s}");
         assert!(s.contains("bash"), "fence carries its language label");
         assert!(!s.contains("```"), "raw fence delimiters replaced by the rule");
-        assert!(s.contains("prompt"), "the bold prompt-heading prefix still renders");
+        assert!(s.contains("Prompt"), "the bold Prompt-heading prefix still renders");
     }
 
     #[test]

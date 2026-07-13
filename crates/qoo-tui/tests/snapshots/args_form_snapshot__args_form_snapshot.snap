@@ -5,13 +5,13 @@ expression: term.backend()
 "                                        daemon unreachable — retrying… running 0"
 "╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│       ╭ pr-ready args ───────────╮╭ pr-ready ────────────────────────╮       │"
-"│ 🔍 [/]│ pr  PR number            ││(loading definition…)             │       │" Hidden by multi-width symbols: [(3, " ")]
-"│       │                          ││                                  │       │"
+"│ 🔍 [/]│                          ││                                  │       │" Hidden by multi-width symbols: [(3, " ")]
+"│       │   pr  PR number          ││  (loading definition…)           │       │"
 "│ queue │                          ││                                  │       │"
-"│       │ mode ‹ready›             ││                                  │       │"
 "│       │                          ││                                  │       │"
-"│       │ source wt-a              ││                                  │       │"
+"│       │   mode ‹ready›           ││                                  │       │"
 "│       │                          ││                                  │       │"
+"│       │   source wt-a            ││                                  │       │"
 "│       │                          ││                                  │       │"
 "│       │                          ││                                  │       │"
 "╰───────│                          ││                                  │       │"
@@ -20,8 +20,8 @@ expression: term.backend()
 "│ no tas│                          ││                                  │       │"
 "│       │                          ││                                  │       │"
 "╰───────│                          ││                                  │       │"
-"╭🌲 WORK│                          ││                                  │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│ [ Run ]  [ Cancel ]      ││                                  │       │" Hidden by multi-width symbols: [(3, " ")]
+"╭🌲 WORK│   [ Run ]  [ Cancel ]    ││                                  │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│                          ││                                  │       │" Hidden by multi-width symbols: [(3, " ")]
 "│ no wor╰ tab/↑↓ move · ←/→ enum · ╯╰──────────────────────────────────╯       │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
