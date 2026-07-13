@@ -253,6 +253,64 @@ fn run_info_lines(
     (lines, ctxs)
 }
 
+/// `(key, value)` rows for the report tab's `## Stats` block, built from the
+/// SAME `RunMeta` the `info` sub-tab reads (not parsed from `report.md`'s
+/// text) — mirrors `run-store.ts`'s `finishRun` bullets (outcome + reason,
+/// model, cost, turns, duration) field-for-field, but reuses this file's own
+/// `EM_DASH` fallback and `format_duration` so it reads identically to the
+/// `info` tab's Details section once aligned via [`align_kv`].
+fn stats_rows(meta: &RunMeta) -> Vec<(&'static str, String)> {
+    let dash = || EM_DASH.to_string();
+    let outcome = match &meta.outcome {
+        Some(o) => match meta.reason.as_deref().filter(|r| !r.is_empty()) {
+            Some(r) => format!("{o} ({r})"),
+            None => o.clone(),
+        },
+        None => dash(),
+    };
+    vec![
+        ("outcome", outcome),
+        ("model", meta.model.clone().unwrap_or_else(dash)),
+        ("cost", meta.cost_usd.map(|c| format!("${c}")).unwrap_or_else(dash)),
+        ("turns", meta.turns.map(|t| t.to_string()).unwrap_or_else(dash)),
+        ("duration", meta.duration_ms.map(format_duration).unwrap_or_else(dash)),
+    ]
+}
+
+/// Report tab content: `report.md`'s markdown as-is, except the `## Stats`
+/// block is replaced with the aligned key/value rows from [`stats_rows`] —
+/// the SAME `LineCtx::Config` styling the `info`/`config` sub-tabs use, so
+/// `model` picks up the metadata-gold color `config_value_style` already
+/// gives it there (matching how the TASKS pane colors a model), instead of
+/// the plain grey a literal `- key: value` markdown bullet gets. Falls back
+/// to a plain markdown render of the raw text when there is no run record
+/// yet (an old daemon, or the run hasn't reached `data.json` yet) or the
+/// `## Stats` heading isn't present (an old report.md, or mid-run before
+/// `finishRun` has written it).
+fn report_content(report: Vec<String>, meta: Option<&RunMeta>) -> (Vec<String>, Vec<LineCtx>) {
+    let ctxs = fence_states(&report);
+    let Some(meta) = meta else { return (report, ctxs) };
+    let Some(heading) = report.iter().position(|l| l == "## Stats") else {
+        return (report, ctxs);
+    };
+    // The contiguous `- ` bullets `finishRun` writes immediately below the
+    // heading — replaced wholesale; everything else (the `# Result` text
+    // above, any `## Verify` section below) is untouched.
+    let start = heading + 1;
+    let end = report[start..]
+        .iter()
+        .position(|l| !l.starts_with("- "))
+        .map(|n| start + n)
+        .unwrap_or(report.len());
+    let (rows, key_col) = align_kv(&stats_rows(meta));
+    let row_ctxs = vec![LineCtx::Config { key_col }; rows.len()];
+    let mut lines = report;
+    let mut ctxs = ctxs;
+    lines.splice(start..end, rows);
+    ctxs.splice(start..end, row_ctxs);
+    (lines, ctxs)
+}
+
 /// A clickable descriptor for the worktree info block's `pr` row, or `None`
 /// unless the row carries BOTH an open PR number and its (non-empty) url — an
 /// old daemon sends neither, and the em-dash placeholder is never a link.
@@ -323,7 +381,12 @@ pub(crate) fn content_for(
                 }
                 None => (Vec::new(), Vec::new(), "(no run recorded yet)"),
             },
-            _ => fenced(run_files.map(|f| f.report.clone()).unwrap_or_default(), "(no report yet)"),
+            _ => {
+                let report = run_files.map(|f| f.report.clone()).unwrap_or_default();
+                let meta = run_files.and_then(|f| f.meta.as_ref());
+                let (lines, ctxs) = report_content(report, meta);
+                (lines, ctxs, "(no report yet)")
+            }
         },
         DetailContext::Definition { .. } => match def {
             None => (Vec::new(), Vec::new(), "(loading definition…)"),
@@ -1016,6 +1079,76 @@ mod tests {
         insta::assert_snapshot!("detail_run_info", terminal.backend());
     }
 
+    /// Detail pane over the run `report` sub-tab (index 0, the default) on a
+    /// `failed` run whose result text hit Claude's session limit — the exact
+    /// `report.md` shape `finishRun` writes for the bug report this feature was
+    /// built for. Verifies the `## Stats` bullets render as aligned Config rows
+    /// (model gold-colored) instead of a plain markdown bullet list.
+    fn detail_report_app() -> App {
+        use crate::ipc::types::TaskStatus;
+        let mut app = fixture_app();
+        app.now_epoch_s = crate::selectors::parse_iso_epoch_s("2026-07-12T23:30:29.000Z");
+        if let Some(snap) = app.snapshot.as_mut() {
+            let mut t = snap.tasks[0].clone(); // 01RUN base (worktree acme.feature, tui)
+            t.status = TaskStatus::Failed;
+            t.error = Some("session limit".to_string());
+            t.created = "2026-07-12T23:11:31.000Z".to_string();
+            t.finished_at = Some("2026-07-12T23:30:29.000Z".to_string());
+            snap.tasks = vec![t];
+            snap.archived_recent = vec![];
+            snap.running = vec![];
+        }
+        app.run_files = Some((
+            "01RUN".to_string(),
+            Box::new(RunFiles {
+                report: [
+                    "# Result",
+                    "",
+                    "You've hit your session limit · resets 1pm (America/Chicago)",
+                    "",
+                    "## Stats",
+                    "- outcome: failed (exit code 1)",
+                    "- model: claude-fable-5",
+                    "- cost: $31.07151099999998",
+                    "- turns: 40",
+                    "- duration: 1129s",
+                    "",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+                meta: Some(RunMeta {
+                    outcome: Some("failed".to_string()),
+                    reason: Some("exit code 1".to_string()),
+                    exit_code: Some(1),
+                    model: Some("claude-fable-5".to_string()),
+                    cost_usd: Some(31.07151099999998),
+                    turns: Some(40),
+                    duration_ms: Some(1_129_000),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        ));
+        let mut ui = TabUiState::default();
+        ui.focus = PaneId::Detail;
+        ui.last_list_pane = ListPane::Queue;
+        ui.sub_tab[DetailKind::Run as usize] = 0; // report sub-tab (default)
+        app.ui_by_tab.insert("acme".to_string(), ui);
+        app
+    }
+
+    #[test]
+    fn snapshot_detail_run_report_stats() {
+        let (terminal, _hits) = render_at(&detail_report_app(), 80, 24);
+        let body = terminal.backend().to_string();
+        assert!(body.contains("claude-fable-5"), "model value shown");
+        assert!(body.contains("session limit"), "the raw result text is untouched markdown");
+        assert!(!body.contains("- outcome"), "literal bullet dash replaced");
+        assert!(!body.contains("- model"), "literal bullet dash replaced");
+        insta::assert_snapshot!("detail_run_report_stats", terminal.backend());
+    }
+
     /// Minimal live task for the `run_info_lines` unit tests.
     fn info_task(status: TaskStatus) -> TaskInstance {
         TaskInstance {
@@ -1112,6 +1245,95 @@ mod tests {
         let (lines2, _) = run_info_lines(&task, &meta, INFO_NOW, INFO_TZ);
         assert!(lines2.iter().any(|l| l.trim_start().starts_with("error") && l.contains("boom")));
         assert!(!lines2.iter().any(|l| l.trim_start().starts_with("reason")), "error preempts reason");
+    }
+
+    #[test]
+    fn stats_rows_formats_outcome_reason_and_dashes_missing_fields() {
+        let meta = RunMeta {
+            outcome: Some("failed".to_string()),
+            reason: Some("exit code 1".to_string()),
+            model: Some("claude-fable-5".to_string()),
+            cost_usd: Some(31.07151099999998),
+            turns: Some(40),
+            duration_ms: Some(1_129_000),
+            ..Default::default()
+        };
+        let rows = stats_rows(&meta);
+        assert_eq!(
+            rows,
+            vec![
+                ("outcome", "failed (exit code 1)".to_string()),
+                ("model", "claude-fable-5".to_string()),
+                ("cost", "$31.07151099999998".to_string()),
+                ("turns", "40".to_string()),
+                ("duration", "18m".to_string()), // format_duration, not raw seconds
+            ]
+        );
+    }
+
+    #[test]
+    fn stats_rows_dashes_out_an_empty_meta() {
+        let rows = stats_rows(&RunMeta::default());
+        assert!(rows.iter().all(|(_, v)| v == EM_DASH), "every field absent → dash: {rows:?}");
+    }
+
+    #[test]
+    fn report_content_replaces_stats_bullets_with_aligned_config_rows() {
+        // A real report.md shape from `run-store.ts`'s `finishRun`.
+        let report: Vec<String> = [
+            "# Result",
+            "",
+            "You've hit your session limit · resets 1pm (America/Chicago)",
+            "",
+            "## Stats",
+            "- outcome: failed (exit code 1)",
+            "- model: claude-fable-5",
+            "- cost: $31.07151099999998",
+            "- turns: 40",
+            "- duration: 1129s",
+            "",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let meta = RunMeta {
+            outcome: Some("failed".to_string()),
+            reason: Some("exit code 1".to_string()),
+            model: Some("claude-fable-5".to_string()),
+            cost_usd: Some(31.07151099999998),
+            turns: Some(40),
+            duration_ms: Some(1_129_000),
+            ..Default::default()
+        };
+        let (lines, ctxs) = report_content(report, Some(&meta));
+        // Everything above the heading is untouched markdown.
+        assert_eq!(lines[0], "# Result");
+        assert_eq!(lines[2], "You've hit your session limit · resets 1pm (America/Chicago)");
+        assert_eq!(lines[4], "## Stats");
+        assert_eq!(ctxs[4], LineCtx::Text, "heading stays plain markdown (is_heading bolds it)");
+        // The 5 literal `- key: value` bullets collapse to 5 aligned Config rows —
+        // no leftover `- ` bullet text, and each carries LineCtx::Config.
+        let bullet_rows = &lines[5..10];
+        assert!(bullet_rows.iter().all(|l| !l.starts_with("- ")), "bullets replaced: {bullet_rows:?}");
+        assert!(bullet_rows[1].contains("claude-fable-5"), "model value present: {bullet_rows:?}");
+        for ctx in &ctxs[5..10] {
+            assert!(matches!(ctx, LineCtx::Config { .. }), "stats rows use Config styling: {ctx:?}");
+        }
+        // Trailing blank line after the (now shorter) stats block is preserved.
+        assert_eq!(lines.last().map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn report_content_falls_back_to_plain_markdown_without_meta_or_heading() {
+        let report = vec!["# Result".to_string(), "".to_string(), "still running".to_string()];
+        // No meta at all (adhoc run mid-flight, or an old daemon).
+        let (lines, _) = report_content(report.clone(), None);
+        assert_eq!(lines, report);
+        // Meta present but report.md predates the `## Stats` heading (or the run
+        // hasn't reached `finishRun` yet) — leave the text alone rather than
+        // silently dropping content that doesn't match the expected shape.
+        let (lines2, _) = report_content(report.clone(), Some(&RunMeta::default()));
+        assert_eq!(lines2, report);
     }
 
     #[test]

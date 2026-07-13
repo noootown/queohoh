@@ -19,7 +19,7 @@ use crate::view::theme::{
     BTN_LABEL_ACTIONS, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
-    GLYPH_DIRTY, GLYPH_DISCOVERY, GLYPH_DOT, GLYPH_SEARCH, Palette, RULE_CHAR,
+    GLYPH_DIRTY, GLYPH_DOT, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
 
@@ -448,8 +448,7 @@ fn def_header(layout: &DefColLayout, p: &Palette) -> Line<'static> {
         header_col(&mut spans, "Description", layout.desc_w, p);
     }
     if layout.sched_w > 0 {
-        // The schedule column's footprint is the ⏰ icon + a space + the text.
-        header_col(&mut spans, "Cron", crate::selectors::SCHED_ICON_W + 1 + layout.sched_w, p);
+        header_col(&mut spans, "Cron", layout.sched_w, p);
     }
     Line::from(spans)
 }
@@ -654,22 +653,13 @@ fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line
         // Task description = default grey (white is reserved for actions/tabs).
         spans.push(Span::raw(pad_clip(&crate::selectors::def_desc_text(def), layout.desc_w)));
     }
-    // Schedule column: the ⏰ icon plus the humanized cron when the def has one;
-    // a def with a discovery command but no cron keeps the bare ⏰ marker; a def
-    // with neither leaves the column blank. Teal/info like the args column.
-    match def.cron.as_deref().and_then(cron_human) {
-        Some(human) => {
-            spans.push(Span::raw(gap));
-            spans.push(Span::styled(
-                format!("{GLYPH_DISCOVERY} {}", pad_clip(&human, layout.sched_w)),
-                Style::default().fg(p.info),
-            ));
-        }
-        None if def.has_discovery => {
-            spans.push(Span::raw(gap));
-            spans.push(Span::styled(GLYPH_DISCOVERY.to_string(), Style::default().fg(p.info)));
-        }
-        None => {}
+    // Schedule column: the humanized cron text when the def has one (no leading
+    // icon — user request: drop the clock emoji); a def with a discovery command
+    // but no cron, or neither, leaves the column blank. Teal/info like the args
+    // column.
+    if let Some(human) = def.cron.as_deref().and_then(cron_human) {
+        spans.push(Span::raw(gap));
+        spans.push(Span::styled(pad_clip(&human, layout.sched_w), Style::default().fg(p.info)));
     }
     Line::from(spans)
 }

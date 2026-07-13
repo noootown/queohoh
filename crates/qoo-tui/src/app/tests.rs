@@ -358,7 +358,7 @@ fn jk_move_the_worktree_detail_row_cursor_and_reset_on_selection_change() {
 }
 
 #[test]
-fn clicking_a_worktree_detail_lane_task_selects_it() {
+fn clicking_a_worktree_detail_lane_task_only_selects_it() {
     use crate::hit::{HitMap, HitTarget};
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
@@ -376,8 +376,12 @@ fn clicking_a_worktree_detail_lane_task_selects_it() {
         row: 5,
         modifiers: KeyModifiers::NONE,
     });
-    // The click selected (and opened) the clicked lane task — mirrors j then Enter.
+    // The click moves the detail row cursor — mirrors j/k — and nothing else:
+    // it must NOT jump to the queue detail (that's Enter's job, see
+    // `enter_on_lane_task_jumps_to_its_queue_detail`).
     assert_eq!(app.ui().detail_row, 1);
+    assert_eq!(app.ui().focus, PaneId::Worktrees, "click does not steal focus");
+    assert_eq!(app.ui().last_list_pane, ListPane::Worktrees, "click does not switch pane");
 }
 
 #[test]

@@ -469,8 +469,9 @@ mod tests {
         // column hides them behind the busy row's queued·next cell).
         app.left_cols = Some(98);
         // Seed the TASKS pane with defs that exercise the schedule column:
-        // discovery + humanized cron, humanized cron only, a bare ⏰ (discovery,
-        // no cron), and a plain def (blank schedule). Two carry a description so
+        // discovery + humanized cron, humanized cron only, discovery with no cron
+        // (blank schedule, same as a plain def — no icon anymore), and a plain def
+        // (blank schedule). Two carry a description so
         // the desc FILL column renders (blank on the two that don't); all four
         // carry a model so the model column renders (two `claude-`-prefixed to
         // exercise stripping, two plain aliases); seeded here locally, not in the

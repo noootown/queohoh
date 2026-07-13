@@ -19,10 +19,10 @@ expression: terminal.backend()
 "╰────────────────────────────────────────────────────────────────────────────────────────────────╯│                                        │"
 "╭⚡TASKS · 4 tasks────────────────────────────────────────────────────────── [r]un · [z] collapse╮│                                        │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter                                                                                  ││                                        │" Hidden by multi-width symbols: [(3, " ")]
-"│ Name          Model     Description                                         Cron               ││                                        │"
-"│ pr-review     opus-4-8  Review an open PR end to end.                       ⏰ Everyday 1:30p▲ ││                                        │" Hidden by multi-width symbols: [(79, " ")]
-"│ nightly-tidy  sonnet    Nightly repo tidy sweep.                            ⏰ Everyday 2am  █ ││                                        │" Hidden by multi-width symbols: [(79, " ")]
-"│ deploy        fable-5                                                       ⏰               ▼ ││                                        │" Hidden by multi-width symbols: [(79, " ")]
+"│ Name          Model     Description                                            Cron            ││                                        │"
+"│ pr-review     opus-4-8  Review an open PR end to end.                          Everyday 1:30p▲ ││                                        │"
+"│ nightly-tidy  sonnet    Nightly repo tidy sweep.                               Everyday 2am  █ ││                                        │"
+"│ deploy        fable-5                                                                        ▼ ││                                        │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────╯│                                        │"
 "╭🌲 WORKTREES · 1 busy · 2 total────────────────── [r]un [g]oto [x] remove [t]asks · [z] collapse╮│                                        │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/] filter                                                                                  ││                                        │" Hidden by multi-width symbols: [(3, " ")]

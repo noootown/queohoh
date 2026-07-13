@@ -360,10 +360,11 @@ impl App {
                 }
                 Some(HitTarget::SubTab(i)) => self.set_sub_tab_clamped(i, &mut cmds),
                 Some(HitTarget::DetailLaneTask(i)) => {
-                    // Click a worktree-detail lane task: select + open it (same as
-                    // moving the j/k cursor there and pressing Enter).
+                    // Click a worktree-detail lane task: select ONLY (same as
+                    // moving the j/k cursor there) — jumping to the queue detail
+                    // is a separate, explicit action (Enter / `A::OpenDetailRow`).
                     self.ui().detail_row = i;
-                    return self.open_detail_row();
+                    true
                 }
                 Some(HitTarget::PaneBody(p)) => {
                     // Detail is display-only: clicking its body must not steal

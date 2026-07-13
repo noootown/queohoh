@@ -7,7 +7,7 @@ expression: term.backend()
 "│       ╭ Tasks — :platform.wt-a ──╮╭ squash-merge ────────────────────╮       │"
 "│ 🔍 [/]│                          ││                                  │       │" Hidden by multi-width symbols: [(3, " ")]
 "│       │  > █                2/2  ││  Description                     │       │"
-"│ queue │   autotest ⏰            ││  no description                  │       │" Hidden by multi-width symbols: [(22, " ")]
+"│ queue │   autotest               ││  no description                  │       │"
 "│       │   squash-merge (source…  ││                                  │       │"
 "│       │                          ││  Prompt                          │       │"
 "│       │                          ││  loading prompt…                 │       │"

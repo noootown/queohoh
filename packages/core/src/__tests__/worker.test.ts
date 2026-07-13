@@ -129,6 +129,33 @@ describe("runTask", () => {
 		expect((await runTask(t.id, deps)).error).toBe("timed out");
 	});
 
+	it("session limit message in result text → failed with session limit reason", async () => {
+		const { deps, store } = makeDeps({
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 1,
+				resultText:
+					"You've hit your session limit · resets 1pm (America/Chicago)",
+			}),
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		expect((await runTask(t.id, deps)).error).toBe("session limit");
+	});
+
+	it("nonzero exit without a session-limit message keeps the generic exit reason", async () => {
+		const { deps, store } = makeDeps({
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 1,
+				resultText: "something else went wrong",
+			}),
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		expect((await runTask(t.id, deps)).error).toBe("exit code 1");
+	});
+
 	it("dirty tree alone no longer fails a run (dirty-check moved to per-def verify)", async () => {
 		// Policy change: the universal dirty-tree guard punished `worktree: repo`
 		// tasks for pre-existing dirt in the user's own checkout. Defs that want

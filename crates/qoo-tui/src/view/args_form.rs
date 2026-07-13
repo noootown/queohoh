@@ -418,9 +418,6 @@ fn pad(s: &str, width: usize) -> String {
     out
 }
 
-const RUN_FORM_HINT: &str =
-    " tab/↑↓ move · ←/→ enum · shift+enter newline · enter run · esc cancel ";
-
 /// Render the run form: the full two-panel picker shell with the arg inputs on
 /// the left and the definition's prompt (scrollable, markdown-styled like the
 /// DETAIL pane) on the right. `full` is the cached `TaskDefinition` for the
@@ -444,7 +441,6 @@ pub fn render_run_form(
     let title_style = Style::default().fg(p.fg).add_modifier(Modifier::BOLD);
     let left_block = Block::default()
         .title(Span::styled(format!(" {} args ", form.def_name), title_style))
-        .title_bottom(Line::from(Span::styled(RUN_FORM_HINT, p.dim_style())))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(p.accent));

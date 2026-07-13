@@ -25,8 +25,18 @@ pub const GLYPH_SKIPPED: char = '⊝';
 /// glyph from the worker `✗` so the two failure modes read apart, but the same
 /// red because both are failures needing attention.
 pub const GLYPH_VERIFY_FAILED: char = '⊗';
+/// Session-limit hit — `⊠` (squared times), single-width, in error red. A
+/// `failed` run whose result text reported Claude's own session/usage limit
+/// (`worker.ts`'s `SESSION_LIMIT_RE`) — distinct from the generic worker `✗`
+/// because retrying right away won't help (the fix is to wait for the reset),
+/// but the same red because it's still a failure needing attention.
+pub const GLYPH_SESSION_LIMIT: char = '⊠';
+/// Timed-out — `⧗` (hourglass), single-width, in error red. A `failed` run
+/// that hit its configured `timeout` before finishing — distinct from the
+/// generic worker `✗` so a wedged/slow task reads apart from an outright
+/// error, but the same red because it's still a failure needing attention.
+pub const GLYPH_TIMED_OUT: char = '⧗';
 pub const GLYPH_RUNNING: char = '▶';
-pub const GLYPH_DISCOVERY: char = '⏰';
 /// Worktree has uncommitted changes (git status --porcelain non-empty).
 pub const GLYPH_DIRTY: char = '±';
 /// Filled dot — colored by context (connection indicator, worktree state).
@@ -99,11 +109,11 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// | `mauve`          | task / definition NAME | QUEUE def column; TASKS name column; WORKTREES `next: <name>` and last-task name WHEN a def |
 /// | `worktree`       | worktree IDENTITY NAME | QUEUE worktree column; WORKTREES name column                                                |
 /// | `accent`         | generic UI accent      | selection bar; focused borders; active tab; dialog/menu borders; filter `>`; footer keys    |
-/// | `info` (teal)    | TIMESTAMPS only        | QUEUE timestamp + age; TASKS `⏰` schedule; WORKTREES commit-age, last-task age             |
+/// | `info` (teal)    | TIMESTAMPS only        | QUEUE timestamp + age; TASKS Cron schedule text; WORKTREES commit-age, last-task age        |
 /// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
 /// | `fg`             | prose / summaries      | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
-/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗`)                                            |
+/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⊠ ⧗`)                                        |
 ///
 /// `info` is deliberately reserved for timestamp-related text (user request);
 /// every other informational column reads in `meta`.
@@ -196,7 +206,7 @@ pub const MOCHA_BRIGHT: Palette = Palette {
 /// never read as the "done" status dot.
 pub const PRISM: Palette = Palette {
     accent: Color::Rgb(77, 166, 255),        // electric blue — generic UI accent
-    worktree: Color::Rgb(255, 158, 92),      // light warm orange — worktree NAME columns only
+    worktree: Color::Rgb(255, 182, 133),     // lighter warm orange (user request) — worktree NAME columns only
     border: Color::Rgb(58, 63, 90),
     border_focused: Color::Rgb(77, 166, 255),
     dim: Color::Rgb(123, 131, 166),          // still clearly dimmer than fg
@@ -301,6 +311,10 @@ pub fn glyph_style(glyph: char, p: &Palette) -> Style {
         GLYPH_FAILED => Style::default().fg(p.error),
         // A failed done-condition is a failure too — same red, distinct glyph.
         GLYPH_VERIFY_FAILED => Style::default().fg(p.error),
+        // Session-limit and timeout are still failures — same red, distinct
+        // glyphs so each reads apart from a generic `✗` at a glance.
+        GLYPH_SESSION_LIMIT => Style::default().fg(p.error),
+        GLYPH_TIMED_OUT => Style::default().fg(p.error),
         GLYPH_RUNNING => Style::default().fg(p.warn),
         // Needs-input is bold so the `‼` reads as urgent (also the graceful
         // degradation if a terminal renders it plainer than intended).
@@ -324,6 +338,8 @@ mod tests {
         assert_eq!(glyph_style(GLYPH_DONE, &p), Style::default().fg(p.ok));
         assert_eq!(glyph_style(GLYPH_FAILED, &p), Style::default().fg(p.error));
         assert_eq!(glyph_style(GLYPH_VERIFY_FAILED, &p), Style::default().fg(p.error));
+        assert_eq!(glyph_style(GLYPH_SESSION_LIMIT, &p), Style::default().fg(p.error));
+        assert_eq!(glyph_style(GLYPH_TIMED_OUT, &p), Style::default().fg(p.error));
         assert_eq!(glyph_style(GLYPH_RUNNING, &p), Style::default().fg(p.warn));
         assert_eq!(glyph_style(GLYPH_CANCELLED, &p), Style::default().fg(p.warn));
         assert_eq!(glyph_style(GLYPH_SKIPPED, &p), Style::default().fg(p.dim));
@@ -335,9 +351,15 @@ mod tests {
         // Cancelled and skipped use DISTINCT glyphs (glyph_style keys on the char,
         // so they must differ to color differently).
         assert_ne!(GLYPH_CANCELLED, GLYPH_SKIPPED);
-        // Verify-failed shares the error color with failed but MUST be a distinct
-        // glyph so the two failure modes read apart in the queue.
+        // Verify-failed, session-limit, and timed-out all share the error color
+        // with failed but MUST each be a distinct glyph so the four failure modes
+        // read apart in the queue.
         assert_ne!(GLYPH_VERIFY_FAILED, GLYPH_FAILED);
+        assert_ne!(GLYPH_SESSION_LIMIT, GLYPH_FAILED);
+        assert_ne!(GLYPH_TIMED_OUT, GLYPH_FAILED);
+        assert_ne!(GLYPH_SESSION_LIMIT, GLYPH_VERIFY_FAILED);
+        assert_ne!(GLYPH_TIMED_OUT, GLYPH_VERIFY_FAILED);
+        assert_ne!(GLYPH_SESSION_LIMIT, GLYPH_TIMED_OUT);
     }
 
     #[test]
@@ -354,8 +376,15 @@ mod tests {
     #[test]
     fn new_status_glyphs_are_single_width() {
         use unicode_width::UnicodeWidthChar;
-        for g in [GLYPH_NEEDS_INPUT, GLYPH_CANCELLED, GLYPH_SKIPPED, GLYPH_VERIFY_FAILED, GLYPH_DONE]
-        {
+        for g in [
+            GLYPH_NEEDS_INPUT,
+            GLYPH_CANCELLED,
+            GLYPH_SKIPPED,
+            GLYPH_VERIFY_FAILED,
+            GLYPH_DONE,
+            GLYPH_SESSION_LIMIT,
+            GLYPH_TIMED_OUT,
+        ] {
             assert_eq!(UnicodeWidthChar::width(g), Some(1), "glyph {g:?} must be single-width");
         }
     }

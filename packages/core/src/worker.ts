@@ -21,6 +21,13 @@ export type VerifyExecutor = typeof executeVerify;
  * override it, and the run's own `timeout` already bounds the worker itself. */
 export const VERIFY_TIMEOUT_MS = 600_000;
 
+/** Matches Claude's own "you've hit your session/usage limit" message (e.g.
+ * `You've hit your session limit · resets 1pm (America/Chicago)`). Permissive
+ * on the noun (session/usage) and the surrounding wording, since the exact
+ * phrasing isn't a stable API contract — a false negative just falls back to
+ * the generic `exit code N` reason, never a crash. */
+export const SESSION_LIMIT_RE = /\b(?:session|usage)\s+limit\b/i;
+
 export interface WorkerDeps {
 	store: QueueStore;
 	runStore: RunStore;
@@ -226,7 +233,15 @@ export async function runTask(
 			}
 		} else if (result.exitCode !== 0) {
 			outcome = "failed";
-			reason = `exit code ${result.exitCode}`;
+			// Claude's own session/usage-limit message lands in `resultText` with a
+			// generic non-zero exit — no distinct exit code or event field marks it.
+			// Stamping the terse "session limit" reason (matched verbatim, not
+			// re-derived, by the TUI's glyph selection) lets the queue/worktree panes
+			// show a distinct icon instead of the generic failed ✗, since retrying
+			// immediately won't help (the fix is to wait for the reset).
+			reason = SESSION_LIMIT_RE.test(result.resultText)
+				? "session limit"
+				: `exit code ${result.exitCode}`;
 		}
 
 		// Done-condition (`verify`) gate — the framework's own success check.

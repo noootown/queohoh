@@ -118,16 +118,34 @@ pub fn build_tabs(snapshot: &StateSnapshot) -> Vec<TabInfo> {
     tabs
 }
 
+/// The worker's exact `reason` string (`worker.ts`) for a run that hit its
+/// configured timeout — matched verbatim against `task.error` so the queue/
+/// worktree panes can pick the distinct timeout glyph without a run-detail
+/// fetch (the snapshot already carries `error`).
+const TIMED_OUT_REASON: &str = "timed out";
+/// The worker's exact `reason` string (`worker.ts`'s `SESSION_LIMIT_RE` match)
+/// for a run whose result text reported Claude's own session/usage limit.
+const SESSION_LIMIT_REASON: &str = "session limit";
+
 // Status glyphs MUST match the `GLYPH_*` consts in `view::theme` char-for-char —
 // `theme::glyph_style` colors a row by matching this char. (Kept as literals to
 // avoid a data-layer → view dependency; a test asserts the two stay in sync.)
-fn status_glyph(status: TaskStatus) -> char {
-    match status {
+// `Failed` is sub-classified by `task.error`'s exact text into two distinct
+// red glyphs (session-limit, timed-out) so those cases read apart from a
+// generic worker failure at a glance in the QUEUE pane and the WORKTREES
+// pane's "Last Task" column — both render from this same snapshot data, no
+// extra run-detail fetch needed.
+fn status_glyph(task: &TaskInstance) -> char {
+    match task.status {
         TaskStatus::Running => '▶',
         TaskStatus::Queued => '○',
         TaskStatus::NeedsInput => '‼',
         TaskStatus::Done => '●',
-        TaskStatus::Failed => '✗',
+        TaskStatus::Failed => match task.error.as_deref() {
+            Some(SESSION_LIMIT_REASON) => '⊠',
+            Some(TIMED_OUT_REASON) => '⧗',
+            _ => '✗',
+        },
         TaskStatus::Cancelled => '⊘',
         TaskStatus::Skipped => '⊝',
         TaskStatus::VerifyFailed => '⊗', // circled ✕ — the done-condition disagreed
@@ -245,7 +263,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
         };
         rows.push(QueueRow {
             task_id: task.id.clone(),
-            glyph: status_glyph(task.status),
+            glyph: status_glyph(task),
             running: task.status == TaskStatus::Running,
             worktree: strip_repo_prefix(
                 task.target.worktree.as_deref().unwrap_or(&task.target.git_ref),
@@ -271,7 +289,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
     for task in &archived[start..] {
         rows.push(QueueRow {
             task_id: task.id.clone(),
-            glyph: status_glyph(task.status),
+            glyph: status_glyph(task),
             running: false,
             worktree: strip_repo_prefix(
                 task.target.worktree.as_deref().unwrap_or(&task.target.git_ref),
@@ -381,7 +399,7 @@ fn last_finished_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<(char, 
             // left the wide fill rendering blank padding (the exact complaint
             // that made this column the fill).
             let (name, is_def) = lane_task_display_name(t, usize::MAX);
-            (status_glyph(t.status), name, parse_iso_epoch_s(&t.created), is_def)
+            (status_glyph(t), name, parse_iso_epoch_s(&t.created), is_def)
         })
 }
 
@@ -391,7 +409,7 @@ fn last_finished_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<(char, 
 /// pane lists every task on the lane, not just the last finished one.
 pub(crate) fn lane_task_display(task: &TaskInstance) -> (char, String, bool, u64) {
     let (name, is_def) = lane_task_display_name(task, usize::MAX);
-    (status_glyph(task.status), name, is_def, parse_iso_epoch_s(&task.created))
+    (status_glyph(task), name, is_def, parse_iso_epoch_s(&task.created))
 }
 
 /// The "Live" cell for a lane task in the worktree detail list, mirroring the
@@ -1035,9 +1053,9 @@ fn capped_max<'a>(values: impl Iterator<Item = &'a str>, cap: usize) -> usize {
 pub const WORKTREE_CAP: usize = 28;
 pub const DEF_CAP: usize = 20;
 pub const NAME_CAP: usize = 48;
-/// Max width of the humanized schedule text in the TASKS pane (the `⏰` icon and
-/// its trailing space sit outside this budget). A raw-cron fallback longer than
-/// this is clipped with `…` rather than blowing out the row.
+/// Max width of the humanized schedule text in the TASKS pane. A raw-cron
+/// fallback longer than this is clipped with `…` rather than blowing out the
+/// row.
 pub const SCHED_CAP: usize = 20;
 /// Max width of the model cell in the TASKS pane (the `claude-` prefix is
 /// stripped first, so real values are short: `sonnet`, `opus`, `fable-5`,
@@ -1216,7 +1234,7 @@ pub(crate) fn lane_task_cols(width: usize) -> LaneTaskCols {
 }
 
 /// Resolved column widths for the TASKS pane: `name | model | description |
-/// ⏰ schedule`. `name_w`/`model_w` are content-capped columns; `desc_w` is the
+/// schedule`. `name_w`/`model_w` are content-capped columns; `desc_w` is the
 /// FILL (the remainder, like the queue pane's summary — prose gets the slack),
 /// 0 when no visible def has a description or the pane is too narrow to spare
 /// any. `model_w` sits right after the name (user request: the model matters
@@ -1225,7 +1243,7 @@ pub(crate) fn lane_task_cols(width: usize) -> LaneTaskCols {
 /// slide). The args column was dropped from the row entirely (user request —
 /// args still show in the def picker rows and the detail config tab). The
 /// schedule stays the trailing capped column (`sched_w` sizes the humanized
-/// cron text; the `⏰ ` prefix is reserved separately). Narrow-pane drop order:
+/// cron text — plain text, no icon, per user request). Narrow-pane drop order:
 /// the desc FILL shrinks to 0 first, then the model column drops, then `name_w`
 /// shrinks last; the schedule column is always kept. A width of 0 means that
 /// column is omitted.
@@ -1236,10 +1254,6 @@ pub struct DefColLayout {
     pub model_w: usize,
     pub sched_w: usize,
 }
-/// Reserved cells for the `⏰` schedule icon (double-width emoji). The layout is
-/// otherwise char-based; over-reserving the icon by a cell keeps the trailing
-/// schedule text from clipping when the desc FILL right-pins it.
-pub const SCHED_ICON_W: usize = 2;
 
 /// The description cell text for a def ("" when it has none). Prose, rendered in
 /// plain fg and filling the remaining pane width (truncated with `…` when tight).
@@ -1267,18 +1281,11 @@ pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout 
         .max()
         .unwrap_or(0)
         .min(SCHED_CAP);
-    // Trailing schedule column footprint (right-pinned by the desc fill): the ⏰
-    // icon + a space + the humanized text for cron defs; a bare ⏰ for a
-    // discovery-only def; nothing when no visible def schedules.
+    // Trailing schedule column footprint (right-pinned by the desc fill): the
+    // humanized text for cron defs; nothing for a discovery-only def or one
+    // with neither (no icon — plain text only, per user request).
     let has_cron = sched_w > 0;
-    let has_disc = rows.iter().any(|d| d.has_discovery);
-    let sched_col = if has_cron {
-        SCHED_ICON_W + 1 + sched_w
-    } else if has_disc {
-        SCHED_ICON_W
-    } else {
-        0
-    };
+    let sched_col = if has_cron { sched_w } else { 0 };
     // The desc FILL is present only when some visible def actually has a
     // description (else the schedule keeps its today-position, no layout shift).
     let has_desc = rows.iter().any(|d| d.description.as_deref().is_some_and(|s| !s.is_empty()));
@@ -1688,6 +1695,33 @@ mod tests {
             rows.iter().map(|r| r.glyph).collect::<Vec<_>>(),
             vec!['▶', '○', '○', '●', '✗']
         );
+    }
+
+    #[test]
+    fn queue_rows_sub_classifies_failed_by_error_reason() {
+        // `worker.ts` stamps the exact strings "timed out" / "session limit" into
+        // `task.error` for those two failure modes; any other reason (or none)
+        // stays the generic `✗`. Both special cases are still red (see
+        // `theme::glyph_style`) — only the glyph differs, so they read apart at a
+        // glance without a color that could be confused for a different severity.
+        let mut timed_out = task_on(TaskStatus::Failed, "t1", "platform", Some("wt-a"));
+        timed_out.error = Some("timed out".into());
+        let mut session_limit = task_on(TaskStatus::Failed, "t2", "platform", Some("wt-a"));
+        session_limit.error = Some("session limit".into());
+        let mut generic = task_on(TaskStatus::Failed, "t3", "platform", Some("wt-a"));
+        generic.error = Some("exit code 1".into());
+        let mut no_reason = task_on(TaskStatus::Failed, "t4", "platform", Some("wt-a"));
+        no_reason.error = None;
+        let rows = queue_rows(
+            &snap(vec![timed_out, session_limit, generic, no_reason], vec![]),
+            "platform",
+            now(),
+        );
+        let glyph_for = |id: &str| rows.iter().find(|r| r.task_id == id).unwrap().glyph;
+        assert_eq!(glyph_for("t1"), '⧗');
+        assert_eq!(glyph_for("t2"), '⊠');
+        assert_eq!(glyph_for("t3"), '✗');
+        assert_eq!(glyph_for("t4"), '✗');
     }
 
     #[test]
@@ -2753,6 +2787,30 @@ mod tests {
     }
 
     #[test]
+    fn worktree_last_task_sub_classifies_failed_by_error_reason() {
+        // The WORKTREES pane's "Last Task" column derives from the same
+        // `status_glyph` classification as the QUEUE pane — a timed-out or
+        // session-limited run must show its distinct glyph here too, not just
+        // in the queue.
+        let mut timed_out = task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-a"));
+        timed_out.error = Some("timed out".into());
+        let mut s = snap(vec![timed_out], vec![]);
+        s.worktrees = platform_worktrees();
+        let rows = worktree_rows(&s, "platform");
+        let a = rows.iter().find(|r| r.name == "wt-a").unwrap();
+        assert_eq!(a.last.as_ref().unwrap().0, '⧗');
+
+        let mut session_limit =
+            task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-b"));
+        session_limit.error = Some("session limit".into());
+        let mut s = snap(vec![session_limit], vec![]);
+        s.worktrees = platform_worktrees();
+        let rows = worktree_rows(&s, "platform");
+        let b = rows.iter().find(|r| r.name == "wt-b").unwrap();
+        assert_eq!(b.last.as_ref().unwrap().0, '⊠');
+    }
+
+    #[test]
     fn worktree_row_passes_through_git_enrichment() {
         let mut s = snap(vec![], vec![]);
         let mut wts = platform_worktrees();
@@ -3041,7 +3099,7 @@ mod tests {
     #[test]
     fn def_col_layout_description_fills_then_degrades() {
         // name="pr-review"(9), cron→"Everyday 1:30pm"(15), description present.
-        // Schedule footprint = ⏰(2)+space(1)+15 = 18.
+        // Schedule footprint = 15 (plain text, no icon).
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
@@ -3052,20 +3110,20 @@ mod tests {
             },
             DefinitionSummary { name: "lint".into(), ..Default::default() },
         ];
-        // Wide: name(9), schedule(18), desc is the FILL remainder.
-        // used_wo_desc = 9 + (2+18) = 29; desc = 120 - 29 - 2 = 89.
+        // Wide: name(9), schedule(15), desc is the FILL remainder.
+        // used_wo_desc = 9 + (2+15) = 26; desc = 120 - 26 - 2 = 92.
         let wide = def_col_layout(&defs, 120);
         assert_eq!((wide.name_w, wide.sched_w), (9, 15));
-        assert_eq!(wide.desc_w, 89, "description is the fill remainder");
+        assert_eq!(wide.desc_w, 92, "description is the fill remainder");
         // Tighter: the desc fill shrinks toward 0 first (name/schedule kept).
         let mid = def_col_layout(&defs, 40);
         assert_eq!((mid.name_w, mid.sched_w), (9, 15));
-        assert_eq!(mid.desc_w, 9, "fill absorbs only what's left: 40 - 29 - 2");
-        // Very narrow: name shrinks last (29 > 20 → shrink by 9 → name_w 0... but
-        // schedule stays). 9 - (29 - 20) = 0.
+        assert_eq!(mid.desc_w, 12, "fill absorbs only what's left: 40 - 26 - 2");
+        // Very narrow: name shrinks next (26 > 20 → shrink by 6 → name_w 3), but
+        // schedule stays. 9 - (26 - 20) = 3.
         let tiny = def_col_layout(&defs, 20);
         assert_eq!(tiny.desc_w, 0);
-        assert_eq!(tiny.name_w, 0, "name shrinks last; schedule is kept");
+        assert_eq!(tiny.name_w, 3, "name shrinks before schedule, which is kept");
         assert_eq!(tiny.sched_w, 15, "schedule is the trailing kept column");
         // No description anywhere → no fill; schedule keeps its today-position.
         let no_desc = vec![DefinitionSummary {
@@ -3092,7 +3150,8 @@ mod tests {
     #[test]
     fn def_col_layout_model_sizes_and_degrades_before_name() {
         // name="pr-review"(9), model "claude-fable-5"→"fable-5"(7),
-        // cron→"Everyday 1:30pm"(15), description present. Schedule footprint = 18.
+        // cron→"Everyday 1:30pm"(15), description present. Schedule footprint = 15
+        // (plain text, no icon).
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
@@ -3105,18 +3164,18 @@ mod tests {
             DefinitionSummary { name: "lint".into(), model: Some("sonnet".into()), ..Default::default() },
         ];
         // Wide: model sized to the widest cell (7), desc is the fill remainder.
-        // used_wo_desc = 9 + (2+7) + (2+18) = 38; desc = 120 - 38 - 2 = 80.
+        // used_wo_desc = 9 + (2+7) + (2+15) = 35; desc = 120 - 35 - 2 = 83.
         let wide = def_col_layout(&defs, 120);
         assert_eq!((wide.name_w, wide.model_w, wide.sched_w), (9, 7, 15));
-        assert_eq!(wide.desc_w, 80, "description is the fill remainder after the model column");
-        // Tighter: name+model+schedule (38) still fit in 40; the fill takes the rest.
+        assert_eq!(wide.desc_w, 83, "description is the fill remainder after the model column");
+        // Tighter: name+model+schedule (35) still fit in 40; the fill takes the rest.
         let mid = def_col_layout(&defs, 40);
         assert_eq!(mid.model_w, 7, "model kept while the fixed columns fit");
-        assert_eq!(mid.desc_w, 0, "fill exhausted: 40 - 38 - 2");
+        assert_eq!(mid.desc_w, 3, "fill absorbs only what's left: 40 - 35 - 2");
         // Narrower: the model column drops (before the name shrinks).
-        // used_wo_desc without model = 9 + (2+18) = 29.
+        // used_wo_desc without model = 9 + (2+15) = 26.
         let narrow = def_col_layout(&defs, 30);
-        assert_eq!((narrow.model_w, narrow.desc_w), (0, 0));
+        assert_eq!((narrow.model_w, narrow.desc_w), (0, 2));
         assert_eq!(narrow.name_w, 9, "name still fits; schedule kept");
         // No model anywhere → the model column is omitted pane-wide even when wide.
         let no_model = vec![DefinitionSummary { name: "lint".into(), ..Default::default() }];
