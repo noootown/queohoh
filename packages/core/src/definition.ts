@@ -123,6 +123,11 @@ function tasksDir(projectDir: string): string {
 	return join(projectDir, "tasks");
 }
 
+/** `repo/name` keys already warned about in this process, so a definition that
+ * fails to parse is logged once rather than on every enumeration (the cron
+ * scheduler lists definitions every tick). */
+const warnedBadDefs = new Set<string>();
+
 /** Whether `<projectDir>/tasks/<taskName>/config.yaml` exists on disk. */
 export function definitionExists(
 	projectDir: string,
@@ -170,8 +175,25 @@ export function listDefinitions(
 ): TaskDefinition[] {
 	const dir = tasksDir(projectDir);
 	if (!existsSync(dir)) return [];
-	return readdirSync(dir, { withFileTypes: true })
-		.filter((entry) => entry.isDirectory())
-		.map((entry) => loadDefinition(projectDir, repoName, entry.name))
-		.sort((a, b) => a.name.localeCompare(b.name));
+	const defs: TaskDefinition[] = [];
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		try {
+			defs.push(loadDefinition(projectDir, repoName, entry.name));
+		} catch (err) {
+			// A single malformed definition must not hide the rest — and for the
+			// cron scheduler, which enumerates every project's defs each tick, an
+			// all-or-nothing throw would silently disable ALL scheduling. Skip the
+			// bad one with a once-per-process warning; the error still surfaces
+			// loudly if someone resolves or runs that def by name.
+			const key = `${repoName}/${entry.name}`;
+			if (!warnedBadDefs.has(key)) {
+				warnedBadDefs.add(key);
+				console.warn(
+					`skipping unparseable definition ${key}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+	}
+	return defs.sort((a, b) => a.name.localeCompare(b.name));
 }

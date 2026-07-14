@@ -285,4 +285,16 @@ describe("listDefinitions", () => {
 		const projectDir = mkdtempSync(join(tmpdir(), "queohoh-empty-"));
 		expect(listDefinitions(projectDir, "platform")).toEqual([]);
 	});
+
+	it("skips an unparseable definition instead of throwing", () => {
+		// `bad` has an arg field the strict schema rejects (`type`) — one malformed
+		// def must not hide the good ones (nor disable the cron scheduler).
+		const projectDir = makeRepo({
+			good: { config: "{}", prompt: "g" },
+			bad: { config: "args:\n  - name: x\n    type: bogus\n", prompt: "b" },
+		});
+		expect(listDefinitions(projectDir, "platform").map((d) => d.name)).toEqual([
+			"good",
+		]);
+	});
 });

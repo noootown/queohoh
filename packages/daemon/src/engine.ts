@@ -8,17 +8,23 @@ import type {
 	RunStore,
 	SessionLineageStore,
 	SessionRegistry,
+	TaskDefinition,
 	TaskInstance,
 	VerifyExecutor,
 	WorktreeInfo,
 } from "@queohoh/core";
 import {
 	buildLiveState,
+	cronDue,
 	effectiveModelTable,
+	globalWorkspaceDir,
+	instantiateDefinition,
 	laneKey,
+	listDefinitions,
 	loadProjectDefaultModel,
 	loadProjectModels,
 	loadProjectVars,
+	parseCron,
 	projectWorkspaceDir,
 	qooTempName,
 	REPO_SENTINEL,
@@ -67,6 +73,9 @@ export interface EngineDeps {
 	redact: Redactor;
 	lineage: SessionLineageStore;
 	onChange?: () => void;
+	/** Wall-clock seam for cron evaluation; defaults to Date.now. Tests inject a
+	 * controllable clock. */
+	now?: () => number;
 }
 
 export class Engine {
@@ -81,6 +90,14 @@ export class Engine {
 	// run settles (startWorker's finally-then).
 	private cancelledTaskIds = new Set<string>();
 	private ticking = false;
+	// Cron fire-timing dedup: definition key ("repo/name") -> epoch ms of last
+	// evaluation. In-memory by design — survives macOS sleep (process suspended,
+	// not restarted); a true restart re-seeds to `now`, which is why nothing fires
+	// on boot / hot-reload. See docs/superpowers/specs/2026-07-14-cron-scheduler-design.md.
+	private cronCursor = new Map<string, number>();
+	// Definitions whose async fire has not yet settled — guards a slow discovery
+	// from being fired twice on consecutive ticks.
+	private cronInFlight = new Set<string>();
 	private worktreeCache = new Map<string, WorktreeInfo[]>(); // repo name -> worktrees
 	// Git enrichment, keyed by worktree PATH, refreshed off the hot pass() path.
 	private gitEnrichCache = new Map<string, GitEnrichment>();
@@ -245,6 +262,7 @@ export class Engine {
 	private async pass(): Promise<void> {
 		const { deps } = this;
 		deps.registry.sweep();
+		this.evaluateCrons();
 		await this.refreshWorktreeCache();
 		// Fire-and-forget: git enrichment must never add latency to the pass. It
 		// is TTL-throttled and single-flighted, and pushes onChange when it moves.
@@ -292,6 +310,108 @@ export class Engine {
 		}
 		for (const task of decision.start) {
 			this.startWorker(task);
+		}
+	}
+
+	/** Every definition with a non-null `cron`, across all projects. Global defs
+	 * are shadowed by a project-local def of the same name (matches the API's
+	 * `definitions` enumeration). A project whose tasks dir is unreadable is
+	 * skipped, not fatal. */
+	private cronDefinitions(): TaskDefinition[] {
+		const out: TaskDefinition[] = [];
+		for (const project of this.deps.config.projects) {
+			try {
+				const byName = new Map<string, TaskDefinition>();
+				for (const def of listDefinitions(
+					globalWorkspaceDir(this.deps.config),
+					project.name,
+				)) {
+					byName.set(def.name, def);
+				}
+				for (const def of listDefinitions(
+					projectWorkspaceDir(this.deps.config, project.name),
+					project.name,
+				)) {
+					byName.set(def.name, def);
+				}
+				for (const def of byName.values()) {
+					if (def.cron) out.push(def);
+				}
+			} catch {
+				// Unreadable tasks dir: skip this project's crons for this tick.
+			}
+		}
+		return out;
+	}
+
+	/** Fire any cron definition whose schedule has come due since its cursor.
+	 * Synchronous and cheap when nothing is due (an in-memory `cronDue` check);
+	 * the expensive discovery shell-out only runs on a due slot, and even then
+	 * off the pass via fire-and-forget `fireCron`. */
+	private evaluateCrons(): void {
+		const now = this.deps.now?.() ?? Date.now();
+		const defs = this.cronDefinitions();
+		const liveKeys = new Set(defs.map((d) => `${d.repo}/${d.name}`));
+		// Prune vanished defs so a re-added def re-seeds (no surprise catch-up).
+		for (const key of [...this.cronCursor.keys()]) {
+			if (!liveKeys.has(key)) this.cronCursor.delete(key);
+		}
+		for (const def of defs) {
+			const key = `${def.repo}/${def.name}`;
+			const cursor = this.cronCursor.get(key);
+			if (cursor === undefined) {
+				this.cronCursor.set(key, now); // first sight: seed, never fire on boot
+				continue;
+			}
+			if (this.cronInFlight.has(key)) continue;
+			let due: boolean;
+			try {
+				due = cronDue(parseCron(def.cron as string), cursor, now);
+			} catch (err) {
+				console.error(
+					`cron parse error for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+				this.cronCursor.set(key, now); // don't re-log every tick
+				continue;
+			}
+			if (!due) continue;
+			this.cronCursor.set(key, now); // advance BEFORE the async fire (no double-fire)
+			this.cronInFlight.add(key);
+			void this.fireCron(def).finally(() => this.cronInFlight.delete(key));
+		}
+	}
+
+	/** Enqueue a cron fire through the same path as the runDefinition API: run
+	 * discovery (if any) and create tasks with source "cron". Never throws — a
+	 * failure is logged and the cursor stays advanced (no retry-spam). */
+	private async fireCron(def: TaskDefinition): Promise<void> {
+		const { deps } = this;
+		const project = deps.config.projects.find((p) => p.name === def.repo);
+		if (!project) return;
+		const projectDir = projectWorkspaceDir(deps.config, def.repo);
+		try {
+			const repoVars = loadProjectVars(projectDir);
+			const created = await instantiateDefinition(
+				def,
+				def.discovery ? { mode: "discover" } : { mode: "args", values: [] },
+				{
+					store: deps.store,
+					exec: deps.exec,
+					cwd: projectDir,
+					source: "cron",
+					globalVars: {
+						project: def.repo,
+						repo_path: project.path,
+						...deps.config.vars,
+					},
+					repoVars,
+				},
+			);
+			if (created.length > 0) deps.onChange?.();
+		} catch (err) {
+			console.error(
+				`cron fire failed for ${def.repo}/${def.name}: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 	}
 

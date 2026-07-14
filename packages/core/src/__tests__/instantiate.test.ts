@@ -394,3 +394,42 @@ describe("instantiateDefinition — args", () => {
 		expect(created[0]?.resumeSessionId).toBeNull();
 	});
 });
+
+describe("instantiateDefinition — cron dedup coercion", () => {
+	const discoveryless = () =>
+		def({ discovery: null, args: [], dedup: "skip_seen", worktree: "repo" });
+
+	it("fires a discovery-less skip_seen def more than once when source is cron", async () => {
+		const store = freshStore();
+		const d = deps(store, ""); // deps() defaults source to "cron"
+		const first = await instantiateDefinition(
+			discoveryless(),
+			{ mode: "args", values: [] },
+			d,
+		);
+		const second = await instantiateDefinition(
+			discoveryless(),
+			{ mode: "args", values: [] },
+			d,
+		);
+		expect(first).toHaveLength(1);
+		expect(second).toHaveLength(1); // NOT deduped away — cursor owns fire-timing
+	});
+
+	it("still dedups a discovery-less skip_seen def when source is NOT cron", async () => {
+		const store = freshStore();
+		const d = { ...deps(store, ""), source: "tui" as const };
+		const first = await instantiateDefinition(
+			discoveryless(),
+			{ mode: "args", values: [] },
+			d,
+		);
+		const second = await instantiateDefinition(
+			discoveryless(),
+			{ mode: "args", values: [] },
+			d,
+		);
+		expect(first).toHaveLength(1);
+		expect(second).toHaveLength(0); // skip_seen blocks the repeat
+	});
+});

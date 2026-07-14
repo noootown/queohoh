@@ -83,10 +83,17 @@ export async function instantiateDefinition(
 	const definition = `${def.repo}/${def.name}`;
 	const itemKeyTemplate = def.discovery?.itemKey ?? defaultKeyTemplate(def);
 	const existing = [...deps.store.list(), ...deps.store.listArchived()];
+	// A discovery-less cron fire always yields the identical item (from arg
+	// defaults / the static `adhoc` key), so `skip_seen` would drop every fire
+	// after the first. Fire-timing dedup is owned by the engine's cron cursor, so
+	// item dedup is meaningless here — force it off. Discovery-backed crons keep
+	// their configured dedup (hourly pr-review must still skip PRs already queued).
+	const dedupMode =
+		deps.source === "cron" && !def.discovery ? "none" : def.dedup;
 	const fresh = filterNewItems(items, {
 		definition,
 		itemKeyTemplate,
-		mode: def.dedup,
+		mode: dedupMode,
 		existing,
 	});
 

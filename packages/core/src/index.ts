@@ -11,6 +11,13 @@ export {
 	projectWorkspaceDir,
 	resolveDefinition,
 } from "./config.js";
+export type { CronSpec } from "./cron.js";
+export {
+	CRON_LOOKBACK_MINUTES,
+	cronDue,
+	cronMatches,
+	parseCron,
+} from "./cron.js";
 export type { DedupMode, KeyedItem } from "./dedup.js";
 export { filterNewItems } from "./dedup.js";
 export type { ArgSpec, TaskDefinition } from "./definition.js";
