@@ -37,12 +37,21 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 
-    // Right: connection indicator + running counter, right-aligned.
-    let running = app.snapshot.as_ref().map(|s| s.running.len()).unwrap_or(0);
-    let max = app.snapshot.as_ref().and_then(|s| s.max_concurrent);
-    let run_label = match max {
-        Some(m) => format!(" running {}/{}", running, m),
-        None => format!(" running {}", running),
+    // Right: connection indicator + running counter, right-aligned. The cap is
+    // PER PROJECT, so the denominator belongs to the active project, not the
+    // global running total. Show the global total (no denominator — there is no
+    // global cap) plus the active project's usage against its cap:
+    // `running 3 · acme 1/10`. Fall back to a bare total when there is no active
+    // project or an old daemon omits `max_concurrent`.
+    let snap = app.snapshot.as_ref();
+    let running = snap.map(|s| s.running.len()).unwrap_or(0);
+    let max = snap.and_then(|s| s.max_concurrent);
+    let run_label = match (snap, c.active_name.as_deref(), max) {
+        (Some(s), Some(repo), Some(m)) => {
+            let n = crate::selectors::running_count_for(s, repo);
+            format!(" running {} · {} {}/{}", running, repo, n, m)
+        }
+        _ => format!(" running {}", running),
     };
     let conn: Span = if app.connected {
         Span::styled(GLYPH_DOT.to_string(), Style::default().fg(p.ok))

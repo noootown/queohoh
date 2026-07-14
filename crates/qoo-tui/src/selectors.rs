@@ -235,6 +235,20 @@ fn queue_sort(a: &QueueRow, b: &QueueRow) -> std::cmp::Ordering {
     })
 }
 
+/// Count of currently-running tasks (from the daemon's authoritative `running`
+/// id set) that belong to `project`. The concurrency cap is enforced PER PROJECT,
+/// so the tabbar shows this against the cap rather than dividing the global
+/// running total by the per-project number — that conflated two scopes and made
+/// N tasks spread across N projects read as a saturated global cap (e.g. "3/3").
+pub fn running_count_for(snapshot: &StateSnapshot, project: &str) -> usize {
+    let running: HashSet<&str> = snapshot.running.iter().map(String::as_str).collect();
+    snapshot
+        .tasks
+        .iter()
+        .filter(|t| t.target.repo == project && running.contains(t.id.as_str()))
+        .count()
+}
+
 pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> Vec<QueueRow> {
     // Live rows plus the last 10 archived rows (dimmed by the view via
     // `archived: true`), then sorted into an ACTIVE section (running/needs-input/
@@ -1684,6 +1698,32 @@ mod tests {
             vec!["01TASKAAA000000000000000000", "01TASKCCC000000000000000000"]
         );
         assert_eq!(rows.iter().map(|r| r.archived).collect::<Vec<_>>(), vec![false, true]);
+    }
+
+    #[test]
+    fn running_count_for_is_scoped_to_the_project() {
+        // Three running tasks spread across three projects: each project has
+        // exactly one running task, so none is near a per-project cap of e.g. 10.
+        // The tabbar must not read this as a saturated cap (the old "3/3" bug).
+        let s = StateSnapshot {
+            tasks: vec![
+                task_on(TaskStatus::Running, "r-plat", "platform", Some("wt-a")),
+                task_on(TaskStatus::Running, "r-web", "web", Some("wt-b")),
+                task_on(TaskStatus::Running, "r-docs", "docs", Some("wt-c")),
+                // Queued on platform → not running → must not count.
+                task_on(TaskStatus::Queued, "q-plat", "platform", Some("wt-a")),
+            ],
+            running: vec!["r-plat".into(), "r-web".into(), "r-docs".into()],
+            ..Default::default()
+        };
+        assert_eq!(running_count_for(&s, "platform"), 1);
+        assert_eq!(running_count_for(&s, "web"), 1);
+        assert_eq!(running_count_for(&s, "docs"), 1);
+        assert_eq!(running_count_for(&s, "absent"), 0);
+        // Per-project counts partition the global running total exactly.
+        let total: usize =
+            ["platform", "web", "docs"].iter().map(|p| running_count_for(&s, p)).sum();
+        assert_eq!(total, s.running.len());
     }
 
     #[test]
