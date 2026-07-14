@@ -4,6 +4,8 @@
 //! inputs look identical. Editing is char-based (the caret is a char index,
 //! converted to a byte offset at the edit point).
 
+use crate::view::args_form::wrap_value_cursor;
+
 #[derive(Debug, Clone, Default)]
 pub struct MultilineInput {
     pub text: String,
@@ -121,6 +123,68 @@ impl MultilineInput {
         let target = line + 1;
         self.cursor = self.line_start(target) + col.min(self.line_len(target));
     }
+
+    /// Char index of the caret after moving `delta` visual rows at `width`,
+    /// preserving the visual column (clamped to the target row's length).
+    /// Inert (returns the current cursor) past the first/last visual row.
+    fn visual_target(&self, width: usize, delta: isize) -> usize {
+        let w = width.max(1);
+        let (rows, cur_row, cur_col) = wrap_value_cursor(&self.text, self.cursor, w);
+        let target = cur_row as isize + delta;
+        if target < 0 || target as usize >= rows.len() {
+            return self.cursor;
+        }
+        let target = target as usize;
+        // Char index of the start of visual row `target` = sum of prior rows'
+        // char lengths, minus a `\n` that was consumed at a hard-line boundary.
+        // Simpler + robust: recompute by walking the wrap rows and counting the
+        // consumed source characters (each visual row consumes its own chars;
+        // a hard newline consumes one extra `\n` not present in any row string).
+        // Use `wrap_row_char_starts` to get exact source indices.
+        let starts = wrap_row_char_starts(&self.text, w);
+        let base = starts[target];
+        let row_len = rows[target].chars().count();
+        // `wrap_value_cursor` reports `cur_col == w` for a caret at end-of-text
+        // on a completely full row (the end-of-text reserve column). That value
+        // is the soft-wrap BOUNDARY index, which belongs to the row below —
+        // cap it to the last real column of the row so up/down lands on this
+        // row instead of overshooting onto the next one.
+        let cur_col = cur_col.min(w.saturating_sub(1));
+        base + cur_col.min(row_len)
+    }
+
+    /// Move the caret one VISUAL (wrapped) row up at `width`, preserving the
+    /// visual column. Inert at the first visual row.
+    pub fn move_up_visual(&mut self, width: usize) {
+        self.cursor = self.visual_target(width, -1);
+    }
+    /// Move the caret one VISUAL (wrapped) row down at `width`, preserving the
+    /// visual column. Inert at the last visual row.
+    pub fn move_down_visual(&mut self, width: usize) {
+        self.cursor = self.visual_target(width, 1);
+    }
+}
+
+/// Source char index at the start of each visual row for `text` wrapped to
+/// `width` — the inverse mapping `wrap_value_cursor` implies. A hard `\n`
+/// terminates a row and is itself consumed (not part of any row string).
+fn wrap_row_char_starts(text: &str, width: usize) -> Vec<usize> {
+    let w = width.max(1);
+    let mut starts = vec![0usize];
+    let mut col = 0usize;
+    for (idx, ch) in text.chars().enumerate() {
+        if ch == '\n' {
+            starts.push(idx + 1); // next row starts AFTER the newline
+            col = 0;
+        } else {
+            if col == w {
+                starts.push(idx); // soft-wrap: next row starts AT this char
+                col = 0;
+            }
+            col += 1;
+        }
+    }
+    starts
 }
 
 #[cfg(test)]
@@ -204,5 +268,80 @@ mod tests {
         assert_eq!(m.cursor, 3);
         m.move_down();
         assert_eq!(m.cursor, 3);
+    }
+
+    #[test]
+    fn visual_move_traverses_wrapped_rows_of_one_logical_line() {
+        // width 4, one logical line "abcdefghij" wraps to ["abcd","efgh","ij"].
+        // caret at index 9 ('j') → visual row 2, col 1.
+        let mut m = ml("abcdefghij", 9);
+        m.move_up_visual(4); // → row 1 col 1 → index 5 ('f')
+        assert_eq!(m.cursor, 5);
+        m.move_up_visual(4); // → row 0 col 1 → index 1 ('b')
+        assert_eq!(m.cursor, 1);
+        m.move_up_visual(4); // already top → inert
+        assert_eq!(m.cursor, 1);
+        m.move_down_visual(4); // → row 1 col 1 → index 5
+        assert_eq!(m.cursor, 5);
+    }
+
+    #[test]
+    fn visual_move_clamps_column_onto_short_last_row() {
+        // width 4: rows ["abcd","efgh","ij"]; caret at index 2 (row0 col2).
+        let mut m = ml("abcdefghij", 2);
+        m.move_down_visual(4); // row1 col2 → index 6
+        assert_eq!(m.cursor, 6);
+        m.move_down_visual(4); // row2 len2, col clamped to 2 → index 10 (end)
+        assert_eq!(m.cursor, 10);
+    }
+
+    #[test]
+    fn wrap_row_char_starts_matches_wrap_value_cursor() {
+        let text = "abc\ndefghij\nk";
+        for w in [1usize, 2, 3, 4, 7] {
+            let starts = wrap_row_char_starts(text, w);
+            for cur in 0..=text.chars().count() {
+                let (_rows, row, col) = wrap_value_cursor(text, cur, w);
+                assert!(starts[row] <= cur, "w={w} cur={cur} row={row}");
+                if row + 1 < starts.len() {
+                    assert!(cur <= starts[row + 1], "w={w} cur={cur}");
+                }
+                // For interior carets (not the end-of-text boundary), the
+                // reconstruction `starts[row] + col` must round-trip back to
+                // `cur` exactly — i.e. the boundary index is attributed to
+                // the same row consistently on both sides of the mapping.
+                if cur < text.chars().count() {
+                    assert_eq!(starts[row] + col, cur, "w={w} cur={cur} row={row} col={col}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn visual_move_up_clamps_off_the_full_row_boundary() {
+        // width 4, one logical line "abcdefgh" wraps to exactly ["abcd","efgh"]
+        // with no remainder — the caret at end-of-text (index 8) sits at
+        // (row 1, col 4), where col 4 == width is the end-of-text reserve
+        // column, not a real column on row 1. Up must land on row 0, not
+        // re-land on row 1's start (the boundary index).
+        let mut m = ml("abcdefgh", 8);
+        m.move_up_visual(4);
+        // Lands on row 0 (index 3, the last char of "abcd"); in particular
+        // NOT index 4 (the start of "efgh" / row 1).
+        assert_eq!(m.cursor, 3);
+        let (_rows, row, _col) = wrap_value_cursor(&m.text, m.cursor, 4);
+        assert_eq!(row, 0);
+        // Already on the top visual row → inert.
+        m.move_up_visual(4);
+        assert_eq!(m.cursor, 3);
+    }
+
+    #[test]
+    fn visual_move_down_is_inert_at_full_row_boundary_end_of_text() {
+        // Same shape as above but exercising move_down_visual from the
+        // already-last visual row: must stay inert, not skip past the end.
+        let mut m = ml("abcdefgh", 8);
+        m.move_down_visual(4);
+        assert_eq!(m.cursor, 8);
     }
 }

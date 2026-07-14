@@ -8,7 +8,7 @@ fn key(code: KeyCode) -> Event {
 }
 
 fn arg(name: &str) -> ArgSpec {
-    ArgSpec { name: name.into(), default: None, options: None, description: None }
+    ArgSpec { name: name.into(), r#type: None, default: None, options: None, description: None }
 }
 
 fn dsum(repo: &str, name: &str, scope: &str, args: Vec<ArgSpec>) -> DefinitionSummary {
@@ -191,11 +191,13 @@ fn tasks_pane_r_with_args_opens_run_form_with_ambient_overlay() {
     app.set_focus(PaneId::Tasks);
     let update = app.update(key(KeyCode::Char('r')));
     match &app.mode {
-        Mode::DefArgs { form } => {
-            assert_eq!(form.args[0].options.as_deref(), Some(&["jus-9-x".to_string()][..]));
-            assert_eq!(form.values[0], "jus-9-x");
-            assert!(form.fixed.is_empty());
-            assert_eq!(form.initial_worktree, None);
+        Mode::DefArgs { state, args, initial_worktree, .. } => {
+            // The ambient overlay injects the worktree branch as the source arg's
+            // only option → field 0 is a seeded Dropdown, prefilled from the row.
+            assert_eq!(args[0].options.as_deref(), Some(&["jus-9-x".to_string()][..]));
+            assert!(matches!(&state.fields[0].kind, crate::view::form::FieldKind::Dropdown { .. }));
+            assert_eq!(state.fields[0].value, "jus-9-x");
+            assert_eq!(*initial_worktree, None);
         }
         other => panic!("expected DefArgs, got {other:?}"),
     }
@@ -382,24 +384,136 @@ fn def_pick_enter_with_args_opens_def_args_with_fixed_context() {
     );
     app.update(key(KeyCode::Enter));
     match &app.mode {
-        Mode::DefArgs { form } => {
-            assert_eq!(form.fixed.get("source").map(String::as_str), Some("jus-9-x"));
-            assert_eq!(form.fixed.get("ticket").map(String::as_str), Some("JUS-9"));
-            assert_eq!(form.values[0], "jus-9-x"); // source row prefilled from fixed
-            assert_eq!(form.values[1], "main");     // target from default (editable)
-            assert_eq!(form.initial_worktree.as_deref(), Some("platform.wt-a"));
+        Mode::DefArgs { state, initial_worktree, .. } => {
+            // `source` is fixed from the worktree branch → a read-only field
+            // prefilled with the branch; `target` is editable from its default.
+            assert!(state.fields[0].readonly);
+            assert_eq!(state.fields[0].value, "jus-9-x");
+            assert!(!state.fields[1].readonly);
+            assert_eq!(state.fields[1].value, "main"); // target from default (editable)
+            assert_eq!(state.focus, 1); // focus starts past the read-only source
+            assert_eq!(initial_worktree.as_deref(), Some("platform.wt-a"));
         }
         other => panic!("expected DefArgs, got {other:?}"),
     }
 }
 
-// --- Task 20: Mode::DefArgs key + mouse handling ---
-fn shift(code: KeyCode) -> Event {
-    Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT))
+// --- Task 6: form_from_args builds the FormState fields ---
+#[test]
+fn open_def_args_builds_formstate_fields() {
+    let mut app = fixture_app_one_project("platform");
+    app.open_def_args(
+        "platform".into(),
+        "pr-ready".into(),
+        vec![
+            ArgSpec { options: Some(vec!["full-review".into(), "bypass-review".into()]), ..arg("review") },
+            arg("pr"),
+        ],
+        HashMap::new(),
+        HashMap::new(),
+        None,
+        Vec::new(),
+        Vec::new(),
+    );
+    match &app.mode {
+        Mode::DefArgs { state, .. } => {
+            assert!(matches!(state.fields[0].kind, crate::view::form::FieldKind::Dropdown { .. }));
+            assert_eq!(state.focus, 0); // first (non-readonly) field
+        }
+        other => panic!("expected DefArgs, got {other:?}"),
+    }
 }
+
+// --- Task 14: worktree-typed arg seeds a combobox / locks readonly ----------
+fn wt_arg(name: &str) -> ArgSpec {
+    ArgSpec { name: name.into(), r#type: Some("worktree".into()), default: None, options: None, description: None }
+}
+
+#[test]
+fn form_from_args_worktree_arg_is_seeded_combobox() {
+    let app = fixture_app_one_project("platform");
+    let wts = vec!["platform.wt-a".to_string(), "platform.wt-b".to_string()];
+    let state = app.form_from_args("pr-review", &[wt_arg("target")], &HashMap::new(), &HashMap::new(), &wts, &[], None);
+    match &state.fields[0].kind {
+        crate::view::form::FieldKind::Combobox { options } => assert_eq!(options, &wts),
+        other => panic!("expected Combobox seeded with worktrees, got {other:?}"),
+    }
+    assert!(
+        state.fields[0].required,
+        "the task-pane worktree combobox must be required so an empty submit is blocked inline"
+    );
+}
+
+#[test]
+fn form_from_args_worktree_arg_locks_readonly_from_launch() {
+    let app = fixture_app_one_project("platform");
+    let wts = vec!["platform.wt-a".to_string()];
+    let state = app.form_from_args(
+        "pr-review", &[wt_arg("target")], &HashMap::new(), &HashMap::new(), &wts, &[], Some("platform.wt-a"),
+    );
+    assert!(state.fields[0].readonly, "launch-from-worktree locks the field readonly");
+    assert_eq!(state.fields[0].value, "platform.wt-a");
+}
+
+// --- field-kind mapping: plain input, type:text, type:branch ---------------
+#[test]
+fn form_from_args_plain_arg_is_single_line_input() {
+    // A plain free-text arg (no type, no options) renders as a single-line
+    // Input, not a 3-row Textarea — e.g. squash-merge's `target`. (Regression.)
+    let app = fixture_app_one_project("platform");
+    let target = ArgSpec { default: Some("main".into()), ..arg("target") };
+    let state = app.form_from_args(
+        "squash-merge", &[target], &HashMap::new(), &HashMap::new(), &[], &[], None,
+    );
+    assert!(matches!(state.fields[0].kind, crate::view::form::FieldKind::Input));
+    assert_eq!(state.fields[0].value, "main");
+    assert!(!state.fields[0].required, "an arg with a default is not required");
+}
+
+#[test]
+fn form_from_args_type_text_is_textarea() {
+    // `type: text` opts back into the multiline auto-growing textarea.
+    let app = fixture_app_one_project("platform");
+    let situation = ArgSpec { r#type: Some("text".into()), ..arg("situation") };
+    let state = app.form_from_args(
+        "autofix", &[situation], &HashMap::new(), &HashMap::new(), &[], &[], None,
+    );
+    assert!(matches!(state.fields[0].kind, crate::view::form::FieldKind::Textarea));
+    assert!(state.fields[0].required, "a free-text arg with no default is required");
+}
+
+#[test]
+fn form_from_args_type_branch_is_dropdown_seeded_with_branches_incl_default() {
+    // `type: branch` → dropdown seeded with the repo's branches; the default
+    // value is prepended so it stays selectable even without a local worktree.
+    let app = fixture_app_one_project("platform");
+    let target = ArgSpec { r#type: Some("branch".into()), default: Some("main".into()), ..arg("target") };
+    let branches = vec!["improvement".to_string(), "wt-a".to_string()]; // no "main"
+    let state = app.form_from_args(
+        "squash-merge", &[target], &HashMap::new(), &HashMap::new(), &[], &branches, None,
+    );
+    match &state.fields[0].kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert_eq!(options.first().map(String::as_str), Some("main"), "default prepended");
+            assert!(options.contains(&"improvement".to_string()));
+        }
+        other => panic!("expected Dropdown seeded with branches, got {other:?}"),
+    }
+    assert_eq!(state.fields[0].value, "main");
+}
+
+// --- Task 7/9: Mode::DefArgs key + mouse handling on the shared FormState ---
 fn def_args_app(args: Vec<ArgSpec>, fixed: HashMap<String, String>, worktree: Option<String>) -> App {
     let mut app = fixture_app_one_project("platform");
-    app.mode = Mode::DefArgs { form: crate::view::args_form::ArgsForm::new("platform".into(), "pr-ready".into(), args, fixed, HashMap::new(), worktree) };
+    let state = app.form_from_args("pr-ready", &args, &fixed, &HashMap::new(), &[], &[], worktree.as_deref());
+    app.mode = Mode::DefArgs {
+        state,
+        repo: "platform".into(),
+        def_name: "pr-ready".into(),
+        args,
+        initial_worktree: worktree,
+        preview_scroll: 0,
+    };
     app
 }
 
@@ -408,15 +522,17 @@ fn def_args_fill_text_and_submit_positional_with_fixed_and_worktree() {
     use crossterm::event::KeyCode::*;
     let mut app = def_args_app(
         vec![
-            ArgSpec { name: "source".into(), default: None, options: None, description: None },
-            ArgSpec { name: "target".into(), default: Some("main".into()), options: None, description: None },
+            ArgSpec { name: "source".into(), r#type: None, default: None, options: None, description: None },
+            ArgSpec { name: "target".into(), r#type: None, default: Some("main".into()), options: None, description: None },
         ],
         HashMap::from([("source".into(), "wt-a".into())]),
         Some("platform.wt-a".into()),
     );
-    // Focus starts on target (source fixed). Clear "main", type "dev".
+    // Focus starts on target (source read-only). Clear "main", type "dev".
     for _ in 0..4 { app.update(key(Backspace)); }
     for c in "dev".chars() { app.update(key(Char(c))); }
+    // Only the Primary button submits: Tab from the target field onto Run, Enter.
+    app.update(key(Tab));
     let update = app.update(key(Enter));
     match &update.cmds[0] {
         Cmd::Rpc { call, invalidate_defs_for, .. } => {
@@ -433,32 +549,69 @@ fn def_args_fill_text_and_submit_positional_with_fixed_and_worktree() {
 #[test]
 fn def_args_required_empty_blocks_submit() {
     use crossterm::event::KeyCode::*;
-    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), default: None, options: None, description: None }], HashMap::new(), None);
-    let update = app.update(key(Enter)); // required + empty
+    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), r#type: None, default: None, options: None, description: None }], HashMap::new(), None);
+    // Tab onto the Primary button, then Enter: validation flags the empty field.
+    app.update(key(Tab));
+    let update = app.update(key(Enter));
     assert!(update.cmds.is_empty());
     assert!(matches!(app.mode, Mode::DefArgs { .. }));
-    if let Mode::DefArgs { form } = &app.mode { assert_eq!(form.error, Some(0)); }
+    if let Mode::DefArgs { state, .. } = &app.mode { assert_eq!(state.error, Some(0)); }
+}
+
+#[test]
+fn def_args_enter_never_submits_from_a_text_field() {
+    // App-wide standard: plain Enter on a focused free-text field inserts a
+    // newline (textarea) and never submits — only the Primary button does.
+    use crossterm::event::KeyCode::*;
+    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), r#type: Some("text".into()), default: None, options: None, description: None }], HashMap::new(), None);
+    let update = app.update(key(Enter));
+    assert!(update.cmds.is_empty(), "Enter on a field must not submit");
+    match &app.mode {
+        Mode::DefArgs { state, .. } => assert_eq!(state.fields[0].value, "\n"),
+        other => panic!("expected DefArgs still open, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_args_enter_on_input_advances_focus_without_submitting() {
+    // A single-line Input (a plain arg, the new default): plain Enter advances
+    // focus off the field (toward the Run button) and never submits or inserts
+    // a newline — the app-wide explicit-commit rule.
+    use crossterm::event::KeyCode::*;
+    let mut app = def_args_app(
+        vec![ArgSpec { name: "pr".into(), r#type: None, default: None, options: None, description: None }],
+        HashMap::new(), None,
+    );
+    let update = app.update(key(Enter));
+    assert!(update.cmds.is_empty(), "Enter on an input must not submit");
+    match &app.mode {
+        Mode::DefArgs { state, .. } => {
+            assert_eq!(state.fields[0].value, "", "no newline inserted into an input");
+            assert_ne!(state.focus, 0, "focus advanced off the input");
+        }
+        other => panic!("expected DefArgs still open, got {other:?}"),
+    }
 }
 
 #[test]
 fn def_args_enter_on_enum_opens_dropdown_then_pick() {
     use crossterm::event::KeyCode::*;
     let mut app = def_args_app(
-        vec![ArgSpec { name: "mode".into(), default: Some("ready".into()), options: Some(vec!["ready".into(), "create".into()]), description: None }],
+        vec![ArgSpec { name: "mode".into(), r#type: None, default: Some("ready".into()), options: Some(vec!["ready".into(), "create".into()]), description: None }],
         HashMap::new(), None,
     );
-    app.update(key(Enter)); // enum focus -> opens dropdown
-    if let Mode::DefArgs { form } = &app.mode { assert_eq!(form.dropdown, Some(0)); }
+    app.update(key(Enter)); // dropdown focus -> opens dropdown, highlight = current
+    if let Mode::DefArgs { state, .. } = &app.mode { assert!(state.dropdown_open); assert_eq!(state.dropdown_index, 0); }
     app.update(key(Down));  // highlight create
     app.update(key(Enter)); // pick
-    if let Mode::DefArgs { form } = &app.mode { assert_eq!(form.values[0], "create"); assert_eq!(form.dropdown, None); }
+    if let Mode::DefArgs { state, .. } = &app.mode { assert_eq!(state.fields[0].value, "create"); assert!(!state.dropdown_open); }
 }
 
 #[test]
 fn def_args_esc_closes_dropdown_then_cancels() {
     use crossterm::event::KeyCode::*;
     let mut app = def_args_app(
-        vec![ArgSpec { name: "mode".into(), default: Some("ready".into()), options: Some(vec!["ready".into(), "create".into()]), description: None }],
+        vec![ArgSpec { name: "mode".into(), r#type: None, default: Some("ready".into()), options: Some(vec!["ready".into(), "create".into()]), description: None }],
         HashMap::new(), None,
     );
     app.update(key(Enter)); // open dropdown
@@ -468,30 +621,235 @@ fn def_args_esc_closes_dropdown_then_cancels() {
     assert!(matches!(app.mode, Mode::List));
 }
 
+// --- Task 12: Combobox key handling on Mode::DefArgs -------------------------
+/// A Mode::DefArgs parked on a single Combobox field seeded with `options`.
+fn def_args_combobox_app(options: Vec<String>) -> App {
+    use crate::view::form::{Field, FormState};
+    let mut app = fixture_app_one_project("platform");
+    let state = FormState::new("pr-ready", "Run", vec![Field::combobox("target", options, "")]);
+    app.mode = Mode::DefArgs {
+        state,
+        repo: "platform".into(),
+        def_name: "pr-ready".into(),
+        args: vec![ArgSpec { name: "target".into(), r#type: Some("worktree".into()), default: None, options: None, description: None }],
+        initial_worktree: None,
+        preview_scroll: 0,
+    };
+    app
+}
+
 #[test]
-fn def_args_shift_tab_and_arrows_move_and_cycle() {
+fn def_args_combobox_type_opens_and_filters() {
+    use crossterm::event::KeyCode::*;
+    let mut app = def_args_combobox_app(vec!["acme".into(), "beta".into()]);
+    for c in "ac".chars() { app.update(key(Char(c))); }
+    match &app.mode {
+        Mode::DefArgs { state, .. } => {
+            assert_eq!(state.fields[0].value, "ac");
+            assert!(state.dropdown_open, "typing (re)opens the filtered list");
+            let view = state.combobox_filtered();
+            assert!(view.iter().any(|(_, s)| s == "acme"));
+            assert!(!view.iter().any(|(_, s)| s == "beta"), "beta filtered out");
+        }
+        other => panic!("expected DefArgs, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_args_combobox_picks_typed_pr_ref() {
+    use crossterm::event::KeyCode::*;
+    let mut app = def_args_combobox_app(vec!["acme".into()]);
+    for c in "45".chars() { app.update(key(Char(c))); }
+    // The only filtered row is the synthetic `pr:45`; Down highlights it, Enter picks.
+    app.update(key(Down));
+    app.update(key(Enter));
+    match &app.mode {
+        Mode::DefArgs { state, .. } => {
+            assert_eq!(state.fields[0].value, "pr:45");
+            assert!(!state.dropdown_open, "pick closes the list");
+        }
+        other => panic!("expected DefArgs, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_args_combobox_esc_closes_list_then_cancels() {
+    use crossterm::event::KeyCode::*;
+    let mut app = def_args_combobox_app(vec!["acme".into()]);
+    app.update(key(Char('a'))); // opens the list
+    app.update(key(Esc));       // closes the list only
+    match &app.mode {
+        Mode::DefArgs { state, .. } => assert!(!state.dropdown_open),
+        other => panic!("expected DefArgs still open, got {other:?}"),
+    }
+    app.update(key(Esc)); // cancels the form
+    assert!(matches!(app.mode, Mode::List));
+}
+
+// --- Task 15: submit resolves the worktree combobox to a ref ----------------
+/// A Mode::DefArgs on a single worktree-typed combobox arg seeded with
+/// `options`, over a snapshot carrying `worktrees` (raw names for exact-match).
+fn def_args_worktree_submit_app(options: Vec<String>, worktrees: Vec<&str>) -> App {
+    use crate::view::form::{Field, FormState};
+    let mut app = fixture_app_one_project("platform");
+    if !worktrees.is_empty() {
+        let mut wts = HashMap::new();
+        wts.insert(
+            "platform".to_string(),
+            worktrees
+                .iter()
+                .map(|w| WorktreeInfo { name: w.to_string(), path: format!("/wt/{w}"), branch: w.to_string(), ..Default::default() })
+                .collect(),
+        );
+        app.snapshot = Some(StateSnapshot {
+            projects: vec![Project { name: "platform".into(), github_id: None }],
+            worktrees: wts,
+            ..Default::default()
+        });
+    }
+    let state = FormState::new("pr-review", "Run", vec![Field::combobox("target", options, "")]);
+    app.mode = Mode::DefArgs {
+        state,
+        repo: "platform".into(),
+        def_name: "pr-review".into(),
+        args: vec![wt_arg("target")],
+        initial_worktree: None,
+        preview_scroll: 0,
+    };
+    app
+}
+
+#[test]
+fn def_args_combobox_submits_pr_ref() {
+    use crossterm::event::KeyCode::*;
+    let mut app = def_args_worktree_submit_app(vec!["acme".into()], vec![]);
+    for c in "45".chars() { app.update(key(Char(c))); }
+    app.update(key(Tab)); // combobox → Run (closes the list)
+    let update = app.update(key(Enter));
+    match &update.cmds[0] {
+        Cmd::Rpc { call, .. } => {
+            assert_eq!(call.method, "runDefinition");
+            assert_eq!(call.params["ref"], "pr:45");
+            assert!(call.params.get("worktree").is_none(), "a ref replaces the worktree param");
+        }
+        other => panic!("expected runDefinition, got {other:?}"),
+    }
+    assert!(matches!(app.mode, Mode::List));
+}
+
+#[test]
+fn def_args_worktree_combobox_empty_blocks_submit() {
+    use crossterm::event::KeyCode::*;
+    // Built through `form_from_args` (the real task-pane launch path, no
+    // `initial_worktree`) rather than the raw-FormState submit-app helper, so
+    // the combobox picks up the production `required = true` wiring. Leaving
+    // it empty and submitting must NOT resolve to the malformed ref
+    // `"worktree:"` — `validate()` flags it and keeps the form open
+    // (final-review finding M1).
+    let mut app = fixture_app_one_project("platform");
+    let wts = vec!["acme".to_string()];
+    let state = app.form_from_args("pr-review", &[wt_arg("target")], &HashMap::new(), &HashMap::new(), &wts, &[], None);
+    app.mode = Mode::DefArgs {
+        state,
+        repo: "platform".into(),
+        def_name: "pr-review".into(),
+        args: vec![wt_arg("target")],
+        initial_worktree: None,
+        preview_scroll: 0,
+    };
+    app.update(key(Tab)); // combobox → Run, value left empty
+    let update = app.update(key(Enter));
+    assert!(update.cmds.is_empty(), "an empty required worktree field must not emit a run command");
+    assert!(matches!(app.mode, Mode::DefArgs { .. }), "the form must stay open on the blocked submit");
+    if let Mode::DefArgs { state, .. } = &app.mode {
+        assert_eq!(state.error, Some(0));
+    }
+}
+
+#[test]
+fn def_args_combobox_submits_worktree_ref_for_existing_name() {
+    use crossterm::event::KeyCode::*;
+    // Typed "JUS-1756" matches an existing worktree → worktree:<name> wins over
+    // the ticket classifier.
+    let mut app = def_args_worktree_submit_app(vec!["JUS-1756".into()], vec!["JUS-1756"]);
+    for c in "JUS-1756".chars() { app.update(key(Char(c))); }
+    app.update(key(Tab));
+    let update = app.update(key(Enter));
+    match &update.cmds[0] {
+        Cmd::Rpc { call, .. } => {
+            assert_eq!(call.params["ref"], "worktree:JUS-1756");
+            assert!(call.params.get("worktree").is_none());
+        }
+        other => panic!("expected runDefinition, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_args_locked_worktree_submits_ref_and_omits_worktree_param() {
+    use crossterm::event::KeyCode::*;
+    // Launched FROM worktree "platform.wt-a": the target arg is readonly-locked;
+    // submit still resolves it to a ref (and never sends the legacy worktree param).
+    let mut app = fixture_app_one_project("platform");
+    let mut wts = HashMap::new();
+    wts.insert(
+        "platform".to_string(),
+        vec![WorktreeInfo { name: "platform.wt-a".into(), path: "/wt/wt-a".into(), branch: "wt-a".into(), ..Default::default() }],
+    );
+    app.snapshot = Some(StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        worktrees: wts,
+        ..Default::default()
+    });
+    let wt_names = app.active_worktree_names();
+    let state = app.form_from_args(
+        "pr-review", &[wt_arg("target")], &HashMap::new(), &HashMap::new(), &wt_names, &[], Some("platform.wt-a"),
+    );
+    app.mode = Mode::DefArgs {
+        state,
+        repo: "platform".into(),
+        def_name: "pr-review".into(),
+        args: vec![wt_arg("target")],
+        initial_worktree: Some("platform.wt-a".into()),
+        preview_scroll: 0,
+    };
+    app.update(key(Tab)); // skip the readonly field → Run
+    let update = app.update(key(Enter));
+    match &update.cmds[0] {
+        Cmd::Rpc { call, .. } => {
+            assert_eq!(call.params["ref"], "worktree:platform.wt-a");
+            assert!(call.params.get("worktree").is_none(), "a ref replaces the worktree param");
+        }
+        other => panic!("expected runDefinition, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_args_tab_moves_focus_and_dropdown_pick_sets_value() {
     use crossterm::event::KeyCode::*;
     let mut app = def_args_app(
         vec![
-            ArgSpec { name: "mode".into(), default: Some("ready".into()), options: Some(vec!["ready".into(), "create".into()]), description: None },
-            ArgSpec { name: "pr".into(), default: None, options: None, description: None },
+            ArgSpec { name: "mode".into(), r#type: None, default: Some("ready".into()), options: Some(vec!["ready".into(), "create".into()]), description: None },
+            ArgSpec { name: "pr".into(), r#type: None, default: None, options: None, description: None },
         ],
         HashMap::new(), None,
     );
-    app.update(key(Right)); // cycle mode -> create
-    if let Mode::DefArgs { form } = &app.mode { assert_eq!(form.values[0], "create"); }
+    // The dropdown value changes by open + move + pick (arrows never cycle it).
+    app.update(key(Enter)); // open
+    app.update(key(Down));  // highlight create
+    app.update(key(Enter)); // pick
+    if let Mode::DefArgs { state, .. } = &app.mode { assert_eq!(state.fields[0].value, "create"); }
     app.update(key(Tab));   // focus pr
-    if let Mode::DefArgs { form } = &app.mode { assert_eq!(form.focus, 1); }
-    app.update(shift(BackTab)); // shift-tab back to mode
-    if let Mode::DefArgs { form } = &app.mode { assert_eq!(form.focus, 0); }
+    if let Mode::DefArgs { state, .. } = &app.mode { assert_eq!(state.focus, 1); }
+    app.update(key(BackTab)); // back to mode
+    if let Mode::DefArgs { state, .. } = &app.mode { assert_eq!(state.focus, 0); }
 }
 
 #[test]
 fn def_args_click_focuses_field_and_run_submits() {
     use crate::hit::{ButtonKind, HitTarget};
-    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), default: None, options: None, description: None }], HashMap::new(), None);
+    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), r#type: None, default: None, options: None, description: None }], HashMap::new(), None);
     app.def_args_click(&HitTarget::FormField(0));
-    if let Mode::DefArgs { form } = &app.mode { assert_eq!(form.focus, 0); }
+    if let Mode::DefArgs { state, .. } = &app.mode { assert_eq!(state.focus, 0); }
     // fill then Run
     app.update(Event::Key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE)));
     let update = app.def_args_click(&HitTarget::Button(ButtonKind::Confirm));
@@ -505,7 +863,7 @@ fn def_args_click_focuses_field_and_run_submits() {
 #[test]
 fn def_args_click_on_pane_target_behind_form_cancels() {
     use crate::hit::HitTarget;
-    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), default: None, options: None, description: None }], HashMap::new(), None);
+    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), r#type: None, default: None, options: None, description: None }], HashMap::new(), None);
     let update = app.def_args_click(&HitTarget::Row(ListPane::Queue, 0));
     assert!(update.dirty);
     assert!(matches!(app.mode, Mode::List));
@@ -519,10 +877,10 @@ fn def_args_run_button_click_through_rendered_hitmap_submits() {
     use crate::hit::{ButtonKind, HitTarget};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend};
-    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), default: None, options: None, description: None }], HashMap::new(), None);
+    let mut app = def_args_app(vec![ArgSpec { name: "pr".into(), r#type: None, default: None, options: None, description: None }], HashMap::new(), None);
     let (w, h) = app.size;
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| { app.hit = crate::view::render(&app, f); }).unwrap();
+    term.draw(|f| { app.hit = crate::view::render(&mut app, f); }).unwrap();
     // Fill the required field, then click the real Run button rect.
     app.update(Event::Key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE)));
     let run = app
@@ -547,7 +905,7 @@ fn def_args_run_button_click_through_rendered_hitmap_submits() {
 #[test]
 fn def_args_paste_inserts_multiline_verbatim() {
     let mut app = def_args_app(
-        vec![ArgSpec { name: "desc".into(), default: None, options: None, description: None }],
+        vec![ArgSpec { name: "desc".into(), r#type: Some("text".into()), default: None, options: None, description: None }],
         HashMap::new(),
         None,
     );
@@ -555,7 +913,7 @@ fn def_args_paste_inserts_multiline_verbatim() {
     assert!(u.dirty);
     assert!(u.cmds.is_empty()); // no submit — the paste just fills the field
     match &app.mode {
-        Mode::DefArgs { form } => assert_eq!(form.values[0], "line one\nline two"),
+        Mode::DefArgs { state, .. } => assert_eq!(state.fields[0].value, "line one\nline two"),
         other => panic!("expected DefArgs still open, got {other:?}"),
     }
 }
@@ -578,24 +936,21 @@ fn paste_into_add_task_editor_keeps_newlines() {
     }
 }
 
-// alt+enter no longer inserts a newline in the DefArgs form (only shift+enter
-// does). The alt+enter falls through to the plain-Enter arm, which on a
-// required-but-empty free-text field flags the row and blocks submit — proving
-// no '\n' was inserted and that alt+enter is not treated as a newline chord.
+// alt+enter is not a submit chord: like plain Enter on a focused textarea it
+// inserts a newline (only the Primary button submits), so it never dispatches.
 #[test]
-fn alt_enter_does_not_insert_newline_in_def_args_form() {
+fn alt_enter_does_not_submit_in_def_args_form() {
     let mut app = def_args_app(
-        vec![ArgSpec { name: "pr".into(), default: None, options: None, description: None }],
+        vec![ArgSpec { name: "pr".into(), r#type: Some("text".into()), default: None, options: None, description: None }],
         HashMap::new(),
         None,
     );
     let update = app.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)));
-    // No submit (required + empty), form stays open, value has no newline.
+    // No submit; form stays open on the focused text field.
     assert!(update.cmds.is_empty());
     match &app.mode {
-        Mode::DefArgs { form } => {
-            assert_eq!(form.error, Some(0), "alt+enter attempted submit, flagging the empty row");
-            assert!(!form.values[0].contains('\n'), "alt+enter must not insert a newline");
+        Mode::DefArgs { state, .. } => {
+            assert_eq!(state.focus, 0, "alt+enter did not submit — focus stays on the field");
         }
         other => panic!("expected DefArgs still open, got {other:?}"),
     }

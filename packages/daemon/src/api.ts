@@ -569,10 +569,13 @@ export class ApiServer {
 				const task = this.mustGet(String(params.id));
 				// `verify-failed` re-queues like `failed` — both are non-success
 				// terminal outcomes a user may want to re-run after a fix.
+				// `cancelled` too: a user-cancelled task is a terminal row the
+				// user can revive (mirrors the TUI rerun eligibility).
 				if (
 					task.status !== "failed" &&
 					task.status !== "verify-failed" &&
-					task.status !== "needs-input"
+					task.status !== "needs-input" &&
+					task.status !== "cancelled"
 				) {
 					throw new Error(`cannot retry task in status ${task.status}`);
 				}
@@ -670,6 +673,26 @@ export class ApiServer {
 				}
 				const infos = listClaudeSessions(this.claudeProjectsDir, path, 5);
 				const promptBySession = this.runPromptBySession();
+				const modelBySession = this.runModelBySession();
+				// Reverse the repo's effective alias→id table so a resumed session
+				// can default its launch form to the SAME model alias it originally
+				// ran on (consumed by form.rs). Run metadata stores the RESOLVED id
+				// (worker.ts), so map it back to the alias; a value that is already
+				// an alias passes through. Unknown/foreign sessions (no run data, or
+				// an id no alias maps to) omit `model` → the form falls back to the
+				// project/global default.
+				const table = effectiveModelTable(
+					deps.config.models,
+					loadProjectModels(projectWorkspaceDir(deps.config, repo)),
+				);
+				const aliasForModel = (m: string | undefined): string | undefined => {
+					if (m === undefined || m === "") return undefined;
+					if (m in table) return m; // already an alias
+					for (const [alias, id] of Object.entries(table)) {
+						if (id === m) return alias;
+					}
+					return undefined;
+				};
 				return {
 					sessions: infos.map((s) => ({
 						session_id: s.sessionId,
@@ -679,6 +702,7 @@ export class ApiServer {
 							s.aiTitle ??
 							s.firstPrompt ??
 							s.sessionId.slice(0, 8),
+						model: aliasForModel(modelBySession.get(s.sessionId)),
 					})),
 				};
 			}
@@ -718,6 +742,30 @@ export class ApiServer {
 			if (typeof sid === "string" && sid !== "" && typeof prompt === "string") {
 				const firstLine = (prompt.split("\n", 1)[0] ?? "").trim();
 				if (firstLine !== "") map.set(sid, firstLine.slice(0, 120));
+			}
+		}
+		return map;
+	}
+
+	/**
+	 * Reverse index: Claude session_id → the model that run used (the resolved
+	 * id persisted in run data, e.g. `claude-opus-4-8`). Built from the run
+	 * store on demand. `listSessions` maps this back to an alias so resuming a
+	 * session defaults to the same model it ran on.
+	 */
+	private runModelBySession(): Map<string, string> {
+		const map = new Map<string, string>();
+		for (const taskId of this.deps.runStore.listRunTaskIds()) {
+			const data = this.deps.runStore.readRunData(taskId);
+			const sid = data?.session_id;
+			const model = data?.model;
+			if (
+				typeof sid === "string" &&
+				sid !== "" &&
+				typeof model === "string" &&
+				model !== ""
+			) {
+				map.set(sid, model);
 			}
 		}
 		return map;

@@ -84,11 +84,6 @@ impl App {
             // These overlay modes swallow keys (checked before generic list
             // handling). Guards include the Press filter so key-release events
             // fall through to the generic arm's no-op.
-            Event::Key(k)
-                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ActionMenu { .. }) =>
-            {
-                self.action_menu_key(&k)
-            }
             // Unified destructive-confirm. Left/Right/Tab move focus between the
             // two buttons; Enter activates the FOCUSED one; `y`/`n` are always-on
             // accelerators; Esc dismisses (unadvertised — the button row is the
@@ -330,8 +325,9 @@ impl App {
                         up.dirty = up.dirty || had_status;
                         up
                     }
-                    // ActionMenu/Confirm only reach here on key-release
-                    // (their Press events are handled by the guarded arms above).
+                    // The overlay modes (Confirm, AddTask, DefPick, DefArgs,
+                    // SessionPick, Form) only reach here on key-release — their
+                    // Press events are handled by the guarded arms above.
                     _ => Update { dirty: false, cmds: vec![] },
                 }
             }
@@ -342,9 +338,9 @@ impl App {
             // paste can't smuggle a newline into a one-line field. Every other
             // mode ignores paste (List has no text target).
             Event::Paste(s) => match &mut self.mode {
-                Mode::DefArgs { form } => {
-                    let inserted = form.insert_str(&s);
-                    Update { dirty: inserted, cmds: vec![] }
+                Mode::DefArgs { state, .. } => {
+                    state.insert_str(&s);
+                    Update { dirty: !s.is_empty(), cmds: vec![] }
                 }
                 // The multiline prompt editor takes the payload verbatim
                 // (newlines preserved — this is the "paste your bug report" flow).
@@ -485,7 +481,7 @@ impl App {
 
     /// Dispatch a confirmed [`ConfirmAction`]. Each arm produces exactly the
     /// `Cmd`s its former dedicated confirm mode produced (single `Cmd::Rpc` for a
-    /// remove; a range-clearing `RpcSeq` for bulk remove and cancel).
+    /// remove; a range-clearing `RpcSeq` for bulk remove, cancel, and re-queue).
     fn run_confirm_action(&mut self, action: ConfirmAction) -> Vec<Cmd> {
         match action {
             ConfirmAction::RemoveWorktree { repo, worktree } => vec![self.dispatch_rpc(
@@ -511,6 +507,10 @@ impl App {
             ConfirmAction::CancelTasks { calls } => {
                 self.clear_range_and_marks(ListPane::Queue);
                 vec![Cmd::RpcSeq { verb: "cancelled".into(), calls, invalidate_defs_for: None }]
+            }
+            ConfirmAction::RequeueTasks { calls } => {
+                self.clear_range_and_marks(ListPane::Queue);
+                vec![Cmd::RpcSeq { verb: "reran".into(), calls, invalidate_defs_for: None }]
             }
         }
     }

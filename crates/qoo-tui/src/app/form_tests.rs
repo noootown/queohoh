@@ -275,8 +275,8 @@ fn launcher_app() -> App {
         repo: "platform".into(),
         worktree: "platform.wt-a".into(),
         items: vec![
-            SessionChoice { session_id: "s1".into(), label: "fix login".into(), mtime_ms: 0 },
-            SessionChoice { session_id: "s2".into(), label: "add tests".into(), mtime_ms: 0 },
+            SessionChoice { session_id: "s1".into(), label: "fix login".into(), mtime_ms: 0, model: None },
+            SessionChoice { session_id: "s2".into(), label: "add tests".into(), mtime_ms: 0, model: None },
         ],
         loading: false,
         index: 0,

@@ -152,7 +152,7 @@ fn space_on_an_empty_pane_is_inert() {
 /// Render the app to a test buffer and return every line as a String, paired
 /// with whether that line carries the selection background (the same accent bg
 /// the contiguous range paints).
-fn rendered_selected_rows(a: &App) -> Vec<String> {
+fn rendered_selected_rows(a: &mut App) -> Vec<String> {
     use ratatui::{Terminal, backend::TestBackend};
     let mut term = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
     // NOTE: `render`'s signature is `render(app, frame)` — app first.
@@ -243,7 +243,7 @@ fn a_marked_row_renders_with_the_selection_highlight() {
     a.update(down()); // cursor → wt-b
     a.update(space()); // mark wt-b
     a.update(down()); // cursor → wt-c, leaving wt-b marked but not under the cursor
-    let lines = rendered_selected_rows(&a);
+    let lines = rendered_selected_rows(&mut a);
     assert!(
         lines.iter().any(|l| l.contains("wt-c")),
         "the cursor row stays bright-highlighted so it never goes invisible: {lines:?}"
@@ -265,7 +265,7 @@ fn cursor_row_is_bright_and_a_marked_non_cursor_row_is_muted() {
     a.update(down()); // cursor → wt-c (wt-b now marked but not the cursor)
 
     let mut term = Terminal::new(TestBackend::new(120, 40)).expect("term");
-    term.draw(|f| { crate::view::render(&a, f); }).expect("draw"); // NOTE: render(app, frame)
+    term.draw(|f| { crate::view::render(&mut a, f); }).expect("draw"); // NOTE: render(app, frame)
     let buf = term.backend().buffer().clone();
     let bright = crate::view::theme::Palette::default().selection_bg;
     let muted = crate::view::theme::Palette::default().selection_muted_bg;

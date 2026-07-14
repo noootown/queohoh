@@ -185,7 +185,7 @@ mod tests {
         }
     }
     fn arg(name: &str) -> ArgSpec {
-        ArgSpec { name: name.to_string(), default: None, options: None, description: None }
+        ArgSpec { name: name.to_string(), r#type: None, default: None, options: None, description: None }
     }
     fn rows() -> Vec<WorktreeRow> {
         vec![

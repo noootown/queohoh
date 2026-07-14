@@ -18,7 +18,7 @@ use crate::selectors::{
     wt_author_text, wt_col_layout,
 };
 use crate::view::theme::{
-    BTN_LABEL_ACTIONS, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
+    BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DOT, GLYPH_SEARCH, Palette, RULE_CHAR,
@@ -35,7 +35,7 @@ use crate::view::theme::{
 // shows only while chips from BOTH groups remain (see [`build_header`]);
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
-const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x]stop [a]ctions · [c]reate [z]
+const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x]stop [g]oto · [c]reate [z]
 const TASKS_ROW_SCOPED: usize = 1; // [r]un · [z]
 const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [c]reate [z]
 
@@ -99,7 +99,6 @@ fn button_chip(
     let (key, label) = match b {
         PaneButton::Create => ('c', BTN_LABEL_CREATE),
         PaneButton::Tasks => ('t', BTN_LABEL_TASKS),
-        PaneButton::Actions => ('a', BTN_LABEL_ACTIONS),
         PaneButton::Run => ('r', if pane == PaneId::Queue { BTN_LABEL_RERUN } else { BTN_LABEL_RUN }),
         PaneButton::Goto => ('g', BTN_LABEL_GOTO),
         PaneButton::Cancel => ('x', BTN_LABEL_STOP),
@@ -117,7 +116,7 @@ fn button_chip(
     let label_style = if disabled { p.dim_style() } else { Style::default().fg(p.fg) };
     let mut spans = vec![Span::styled(format!("[{key}]"), key_style)];
     if labeled {
-        // `[c]reate` / `[a]ctions` when the key is the label's first letter
+        // `[c]reate` / `[g]oto` when the key is the label's first letter
         // (the footer's `[q]uit` pattern); otherwise `[z]collapse`.
         match label.strip_prefix(key) {
             Some(rest) => spans.push(Span::styled(rest.to_string(), label_style)),
@@ -332,7 +331,7 @@ fn render_collapsed_pane(
     bulk: bool,
 ) {
     // A collapsed bar shows ONLY the expand chip: it is the bar's primary
-    // affordance and must never be the one dropped for width (create/actions
+    // affordance and must never be the one dropped for width (create/goto
     // return with the pane).
     let _ = buttons;
     let (mut header, rects) =
@@ -689,6 +688,7 @@ fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line
 
 /// Register a vertical scrollbar hit region (track + proportional thumb) and draw
 /// the built-in Scrollbar. `total` rows, `offset` first-visible, `visible` rows.
+#[allow(clippy::too_many_arguments)]
 fn render_scrollbar(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -696,6 +696,7 @@ fn render_scrollbar(
     offset: usize,
     visible: usize,
     pane: PaneId,
+    fg: ratatui::style::Color,
     hits: &mut HitMap,
 ) {
     if total <= visible || area.height == 0 {
@@ -717,16 +718,19 @@ fn render_scrollbar(
         Rect { x: track.x, y: thumb_top, width: 1, height: thumb_h },
         HitTarget::ScrollbarThumb(pane),
     );
-    // Explicit bg(Reset) on every scrollbar part: a selected row paints its
-    // selection bg across the full pane width (including this column), and the
-    // scrollbar glyphs alone would let that blue bleed through behind them.
-    let clear_bg = Style::default().bg(ratatui::style::Color::Reset);
+    // Explicit fg + bg(Reset) on every scrollbar part. Rows paint across the full
+    // pane width (including this column): the bg(Reset) stops a selected row's
+    // selection bg bleeding through behind the glyphs, and the explicit fg stops
+    // the begin/end arrows and thumb from INHERITING the underlying cell's fg
+    // (fg: None keeps the cell's existing color) — otherwise the top arrow lands
+    // on the first row's colored Live-timer cell and renders in that yellow.
+    let sb_style = Style::default().bg(ratatui::style::Color::Reset).fg(fg);
     frame.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .track_style(clear_bg)
-            .thumb_style(clear_bg)
-            .begin_style(clear_bg)
-            .end_style(clear_bg),
+            .track_style(sb_style)
+            .thumb_style(sb_style)
+            .begin_style(sb_style)
+            .end_style(sb_style),
         area,
         &mut state,
     );
@@ -1024,7 +1028,7 @@ fn render_list_pane<T, C>(
             );
         }
     }
-    render_scrollbar(frame, rows_area, total, offset, visible, pane, hits);
+    render_scrollbar(frame, rows_area, total, offset, visible, pane, p.border, hits);
 }
 
 pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap) {
@@ -1265,18 +1269,18 @@ mod tests {
         let p = Palette::default();
         // width 30 → avail 28: the labeled strip can't fit alongside the title,
         // so all three compact chips survive right-aligned, in scope order
-        // (row-scoped [a]ctions first, then [c]reate [z]).
+        // (row-scoped [g]oto first, then [c]reate [z]).
         let area = Rect { x: 0, y: 0, width: 30, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
         assert_eq!(rects.len(), 3);
         // avail=28, title "Q"=1, each compact chip=3 cells, base strip=3*(1+3)=12,
         // plus the ` · ` divider (+2, both groups shown) = 14. filler=28-1-14=13.
-        // Chips start at x0(1)+title(1)+filler(13)=15; the first (actions) sits one
+        // Chips start at x0(1)+title(1)+filler(13)=15; the first (goto) sits one
         // separator space in, at x=16 with width 3.
         assert_eq!(rects[0].0.x, 16);
         assert_eq!(rects[0].0.width, 3);
-        assert_eq!(rects[0].1, PaneButton::Actions);
+        assert_eq!(rects[0].1, PaneButton::Goto);
         assert_eq!(rects[2].1, PaneButton::Collapse);
         // The last chip ends flush against the right corner (x0 + avail = 29).
         let last = rects[2].0;
@@ -1288,19 +1292,19 @@ mod tests {
         let p = Palette::default();
         // width 60 → avail 58 ≥ title(1) + labeled strip + divider: the labeled
         // form fits, so chips carry their label words at full width, in scope
-        // order (row-scoped [a]ctions first, then [c]reate [z]).
+        // order (row-scoped [g]oto first, then [c]reate [z]).
         let area = Rect { x: 0, y: 0, width: 60, height: 8 };
         let (line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
         assert_eq!(rects.len(), 3);
-        // Labeled widths — `[a]ctions`/`[c]reate` merge the key into the word
-        // (actions 3+6=9, create 3+5=8); collapse fuses the same way
+        // Labeled widths — `[g]oto`/`[c]reate` merge the key into the word
+        // (goto 3+3=6, create 3+5=8); collapse fuses the same way
         // (`[z]collapse`, 3+8=11).
-        assert_eq!(rects[0].0.width, 9);
+        assert_eq!(rects[0].0.width, 6);
         assert_eq!(rects[1].0.width, 8);
         assert_eq!(rects[2].0.width, 11);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
-        assert!(text.contains("[a]ctions"));
+        assert!(text.contains("[g]oto"));
         assert!(text.contains("[c]reate"));
         assert!(text.contains("[z]collapse"));
         // The `·` scope divider sits between the two groups.
@@ -1315,14 +1319,14 @@ mod tests {
         let p = Palette::default();
         let area = Rect { x: 0, y: 0, width: 60, height: 8 };
         // QUEUE's doable bulk verbs (Run/Cancel) keep their normal accent key
-        // style even under a bulk selection; Actions (not doable) dims.
+        // style even under a bulk selection; Goto (not doable) dims.
         let (line, _) = build_header(
             area,
             "Q",
             None,
             false,
             PaneId::Queue,
-            &[PaneButton::Run, PaneButton::Cancel, PaneButton::Actions],
+            &[PaneButton::Run, PaneButton::Cancel, PaneButton::Goto],
             2,
             false,
             true, // bulk
@@ -1334,7 +1338,7 @@ mod tests {
         assert_eq!(key_spans.len(), 3);
         assert_eq!(key_spans[0].style, accent_key, "rerun stays live (bulk-doable)");
         assert_eq!(key_spans[1].style, accent_key, "stop stays live (bulk-doable)");
-        assert_eq!(key_spans[2].style, dim, "actions dims (not bulk-doable)");
+        assert_eq!(key_spans[2].style, dim, "goto dims (not bulk-doable)");
 
         // The same buttons WITHOUT a bulk selection all stay live.
         let (line, _) = build_header(
@@ -1343,7 +1347,7 @@ mod tests {
             None,
             false,
             PaneId::Queue,
-            &[PaneButton::Run, PaneButton::Cancel, PaneButton::Actions],
+            &[PaneButton::Run, PaneButton::Cancel, PaneButton::Goto],
             2,
             false,
             false, // no bulk selection
@@ -1426,12 +1430,12 @@ mod tests {
         // avail = width-2 = 8. Labeled can't fit → compact. At kept=1 there is no
         // divider (single group shown): title "Q"(1) + chip(1+3)=4 → 5 ≤ 8. At
         // kept=2 both groups show, so + the divider: 1 + (1+3)+(1+3) + 2 = 11 > 8.
-        // Only the leftmost (row-scoped [a]ctions) stays.
+        // Only the leftmost (row-scoped [g]oto) stays.
         let area = Rect { x: 0, y: 0, width: 10, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
-        assert_eq!(rects.len(), 1, "only the leftmost (actions) button survives");
-        assert_eq!(rects[0].1, PaneButton::Actions);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
+        assert_eq!(rects.len(), 1, "only the leftmost (goto) button survives");
+        assert_eq!(rects[0].1, PaneButton::Goto);
     }
 
     #[test]
@@ -1449,9 +1453,9 @@ mod tests {
         let p = Palette::default();
         let area = Rect { x: 0, y: 0, width: 40, height: 8 };
         let (expanded, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
         let (collapsed, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, true, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, true, false, &p);
         let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text(&expanded).contains(BTN_LABEL_COLLAPSE));
         assert!(text(&collapsed).contains(BTN_LABEL_EXPAND));

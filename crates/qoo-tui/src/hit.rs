@@ -10,10 +10,10 @@ pub enum ButtonKind {
 
 /// A clickable action chip on a list pane's top border. Clicking one behaves
 /// exactly like pressing its hotkey with that pane focused. `Create` ≡ `c`,
-/// `Tasks` ≡ `t`, `Actions` ≡ `a` (QUEUE only — Resume menu), `Run` ≡ `r`
-/// (TASKS runs the highlighted def; QUEUE re-queues the selected task, so its
-/// chip reads `[r]erun`; WORKTREES opens a fresh worktree-targeted new task),
-/// `Goto` ≡ `g` (WORKTREES only — open the worktree in tmux), `Cancel` ≡ `x`
+/// `Tasks` ≡ `t`, `Run` ≡ `r` (TASKS runs the highlighted def; QUEUE re-queues
+/// the selected task, so its chip reads `[r]erun`; WORKTREES opens a fresh
+/// worktree-targeted new task), `Goto` ≡ `g` (QUEUE — resume the task's Claude
+/// session in tmux; WORKTREES — open the worktree in tmux), `Cancel` ≡ `x`
 /// (QUEUE only — skip/stop the selected task), `Remove` ≡ `x` (WORKTREES
 /// only — remove the selected worktree), `Collapse` ≡ `z` (labeled
 /// collapse/expand by expanded/collapsed state).
@@ -21,7 +21,6 @@ pub enum ButtonKind {
 pub enum PaneButton {
     Create,
     Tasks,
-    Actions,
     Run,
     Goto,
     Cancel,
@@ -39,7 +38,7 @@ pub enum PaneButton {
 pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     use PaneButton::*;
     match pane {
-        PaneId::Queue => &[Run, Cancel, Actions, Create, Collapse],
+        PaneId::Queue => &[Run, Cancel, Goto, Create, Collapse],
         PaneId::Tasks => &[Run, Collapse],
         PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Collapse],
         PaneId::Detail => &[],
@@ -50,7 +49,7 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
 /// verbs that stay live during a range: QUEUE's `Run` (re-queue, `[r]erun`)
 /// and `Cancel` (stop, `[x]stop`) already fan the RPC out over every row in
 /// the range; WORKTREES' `Remove` opens its own bulk-remove menu. Everything
-/// else — including the pane-scoped `Actions`/`Create`/`Collapse` chips that
+/// else — including the pane-scoped `Goto`/`Create`/`Collapse` chips that
 /// don't even read the selection — is bulk-disabled: the title bar dims it
 /// (see [`crate::view::panes::button_chip`]) and its key/click refuses with a
 /// status line (`App::apply_action`) instead of silently acting on just the
@@ -154,7 +153,7 @@ mod tests {
         // QUEUE: only rerun/stop.
         assert!(bulk_allowed(PaneId::Queue, Run));
         assert!(bulk_allowed(PaneId::Queue, Cancel));
-        for btn in [Actions, Create, Collapse] {
+        for btn in [Goto, Create, Collapse] {
             assert!(!bulk_allowed(PaneId::Queue, btn), "{btn:?} should be bulk-disabled on QUEUE");
         }
         // TASKS: none.

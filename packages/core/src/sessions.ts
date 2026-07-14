@@ -131,7 +131,10 @@ export function buildLiveState(
 	for (const t of running) {
 		const lane = laneKey(t);
 		if (lane) runningLanes.add(lane);
-		runningByRepo.set(t.target.repo, (runningByRepo.get(t.target.repo) ?? 0) + 1);
+		runningByRepo.set(
+			t.target.repo,
+			(runningByRepo.get(t.target.repo) ?? 0) + 1,
+		);
 	}
 	const interactiveLanes = new Set<string>();
 	for (const s of sessions) {

@@ -9,7 +9,7 @@
 //! - [`mode`] — pure state/mode types (`Mode`, `ListPane`, `TabUiState`, …).
 //! - [`update`] — the `update`/`update_event` event-dispatch entry point.
 //! - [`actions`] — list-mode `AppAction` handling and `Cmd` builders.
-//! - [`menus`] — action-menu / bulk-menu open, key, and click handling.
+//! - [`menus`] — bulk-menu open and SessionPick key/click handling.
 //! - [`def_args`] — def-picker, run-form, and create-worktree input handling.
 //! - [`mouse`] — mouse routing, drags, and DETAIL text selection.
 
@@ -100,10 +100,10 @@ pub struct App {
     /// view each draw; the scrollbar-drag math reads it so its scrollable extent
     /// matches the on-screen wrapped lines instead of recomputing the wrap.
     pub detail_wrapped_len: std::cell::Cell<usize>,
-    /// Render-feedback for the picker preview (ActionMenu/DefPick right panel):
-    /// max scroll offset (wrapped lines − pane height) written by the view each
-    /// draw. The wheel clamps `preview_scroll` against it. Same freshness
-    /// argument as `detail_max_scroll`.
+    /// Render-feedback for the picker preview (DefPick right panel): max scroll
+    /// offset (wrapped lines − pane height) written by the view each draw. The
+    /// wheel clamps `preview_scroll` against it. Same freshness argument as
+    /// `detail_max_scroll`.
     pub menu_preview_max_scroll: std::cell::Cell<usize>,
     /// Active left-mouse drag: `Some(kind)` between a `Down` on a draggable
     /// target (scrollbar thumb/track, a pane divider, a detail text-selection)

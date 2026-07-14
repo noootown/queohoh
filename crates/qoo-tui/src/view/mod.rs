@@ -1,4 +1,5 @@
 pub mod args_form;
+pub mod def_args;
 pub mod detail;
 pub mod footer;
 pub mod form;
@@ -120,7 +121,7 @@ pub fn compute(app: &App) -> Computed<'_> {
 }
 
 /// Draw the whole frame, returning the hit map for mouse routing.
-pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
+pub fn render(app: &mut App, frame: &mut ratatui::Frame) -> HitMap {
     let mut hits = HitMap::new();
     let area = frame.area();
     let p = Palette::default();
@@ -190,78 +191,93 @@ pub fn render(app: &App, frame: &mut ratatui::Frame) -> HitMap {
     }
 
     // Overlays render last so their rects register topmost in the hit map.
-    match &app.mode {
-        crate::app::Mode::Help => help::render(frame, area, &mut hits, &p),
-        crate::app::Mode::Settings => {
-            settings::render(frame, area, &mut hits, &p, &app.settings)
+    // `Mode::Form` is peeled off first via a `&mut` reborrow of `app.mode` (its
+    // render needs `&mut FormState` to cache the focused Textarea's content
+    // width — see `FormState::set_content_width`); every other overlay only
+    // ever reads `app.mode`, so it stays on the original shared `match` in the
+    // `else` branch (NLL ends the failed `if let`'s mutable borrow before it,
+    // so `app.active_repo()` etc. below are unaffected).
+    // The DefArgs prompt is resolved (and cloned) from `full_defs` BEFORE the
+    // `&mut app.mode` render borrow below, so the render can hold `&mut state`
+    // without also borrowing `app.full_defs`.
+    let def_args_prompt: Option<String> = match &app.mode {
+        crate::app::Mode::DefArgs { repo, def_name, .. } => {
+            app.full_defs.get(&format!("{repo}/{def_name}")).map(|td| td.prompt.clone())
         }
-        crate::app::Mode::ActionMenu { title, items, index, query, preview_scroll } => {
-            let state =
-                menu::PickerState { index: *index, query, preview_scroll: *preview_scroll };
-            let m = menu::render_menu(frame, &mut hits, title, items, state);
-            // Render-feedback for wheel clamping (see the App fields).
-            app.menu_preview_max_scroll.set(m.max_scroll);
+        _ => None,
+    };
+    if let crate::app::Mode::Form { state, .. } = &mut app.mode {
+        form::render_form(frame, &mut hits, state);
+    } else if let crate::app::Mode::DefArgs { state, def_name, preview_scroll, .. } = &mut app.mode {
+        let m = def_args::render_def_args(
+            frame,
+            &mut hits,
+            &p,
+            state,
+            def_name,
+            def_args_prompt.as_deref(),
+            *preview_scroll,
+        );
+        app.menu_preview_max_scroll.set(m.max_scroll);
+    } else {
+        match &app.mode {
+            crate::app::Mode::Help => help::render(frame, area, &mut hits, &p),
+            crate::app::Mode::Settings => {
+                settings::render(frame, area, &mut hits, &p, &app.settings)
+            }
+            crate::app::Mode::Confirm { title, body, confirm_label, focus, .. } => {
+                modal::render_confirm(frame, &mut hits, title, body, confirm_label, *focus);
+            }
+            crate::app::Mode::AddTask { worktree, resume_label, editor, .. } => {
+                let repo = app.active_repo().unwrap_or_default();
+                let target = match worktree {
+                    Some(w) => format!("{repo}:{}", crate::selectors::strip_repo_prefix(w, &repo)),
+                    None => format!("{repo} (adhoc)"),
+                };
+                let title = match resume_label {
+                    Some(label) => format!("New task — resume: {label} — {target}"),
+                    None => format!("New task — {target}"),
+                };
+                modal::render_prompt_modal(frame, &mut hits, &p, &title, editor);
+            }
+            crate::app::Mode::DefPick { defs, index, worktree, branch, query, preview_scroll } => {
+                let repo = app.active_repo().unwrap_or_default();
+                let title = match worktree {
+                    Some(wt) => {
+                        format!("Tasks — {}:{}", repo, crate::selectors::strip_repo_prefix(wt, &repo))
+                    }
+                    None => format!("Tasks — {repo}"),
+                };
+                let _ = branch;
+                // Resolve the highlighted (filtered) def's full prompt for the right
+                // pane: filter by name, map the display index to the underlying def,
+                // then look it up in `full_defs` keyed "repo/name".
+                let filtered = crate::selectors::filter_rows(defs, query, |d| d.name.clone());
+                let full = filtered
+                    .get(*index)
+                    .and_then(|&i| defs.get(i))
+                    .and_then(|d| app.full_defs.get(&format!("{}/{}", d.repo, d.name)));
+                let state =
+                    menu::PickerState { index: *index, query, preview_scroll: *preview_scroll };
+                let m = menu::render_def_pick(frame, &mut hits, &title, defs, full, state);
+                // Render-feedback for wheel clamping (see the App fields).
+                app.menu_preview_max_scroll.set(m.max_scroll);
+            }
+            crate::app::Mode::SessionPick { repo, worktree, items, loading, index, query, focus } => {
+                // Title is `{repo} · {worktree display name}`. The relative-age labels
+                // read wall-clock now from `now_epoch_s` (→ ms).
+                let title =
+                    format!("{repo} · {}", crate::selectors::strip_repo_prefix(worktree, repo));
+                let now_ms = app.now_epoch_s.saturating_mul(1000);
+                menu::render_session_pick(
+                    frame, &mut hits, &title, items, *loading, *index, query, now_ms, *focus,
+                );
+            }
+            crate::app::Mode::Form { .. } | crate::app::Mode::DefArgs { .. } => {
+                unreachable!("handled by the `if let` chain above")
+            }
+            _ => {}
         }
-        crate::app::Mode::Confirm { title, body, confirm_label, focus, .. } => {
-            modal::render_confirm(frame, &mut hits, title, body, confirm_label, *focus);
-        }
-        crate::app::Mode::AddTask { worktree, resume_label, editor, .. } => {
-            let repo = app.active_repo().unwrap_or_default();
-            let target = match worktree {
-                Some(w) => format!("{repo}:{}", crate::selectors::strip_repo_prefix(w, &repo)),
-                None => format!("{repo} (adhoc)"),
-            };
-            let title = match resume_label {
-                Some(label) => format!("New task — resume: {label} — {target}"),
-                None => format!("New task — {target}"),
-            };
-            modal::render_prompt_modal(frame, &mut hits, &p, &title, editor);
-        }
-        crate::app::Mode::DefPick { defs, index, worktree, branch, query, preview_scroll } => {
-            let repo = app.active_repo().unwrap_or_default();
-            let title = match worktree {
-                Some(wt) => {
-                    format!("Tasks — {}:{}", repo, crate::selectors::strip_repo_prefix(wt, &repo))
-                }
-                None => format!("Tasks — {repo}"),
-            };
-            let _ = branch;
-            // Resolve the highlighted (filtered) def's full prompt for the right
-            // pane: filter by name, map the display index to the underlying def,
-            // then look it up in `full_defs` keyed "repo/name".
-            let filtered = crate::selectors::filter_rows(defs, query, |d| d.name.clone());
-            let full = filtered
-                .get(*index)
-                .and_then(|&i| defs.get(i))
-                .and_then(|d| app.full_defs.get(&format!("{}/{}", d.repo, d.name)));
-            let state =
-                menu::PickerState { index: *index, query, preview_scroll: *preview_scroll };
-            let m = menu::render_def_pick(frame, &mut hits, &title, defs, full, state);
-            // Render-feedback for wheel clamping (see the App fields).
-            app.menu_preview_max_scroll.set(m.max_scroll);
-        }
-        crate::app::Mode::DefArgs { form } => {
-            // Resolve the def's full prompt for the right panel (keyed "repo/name",
-            // same source as the DefPick preview); `None` until the fetch lands.
-            let full = app.full_defs.get(&format!("{}/{}", form.repo, form.def_name));
-            let m = args_form::render_run_form(frame, &mut hits, &p, form, full);
-            // Render-feedback for wheel clamping (see the App fields).
-            app.menu_preview_max_scroll.set(m.max_scroll);
-        }
-        crate::app::Mode::SessionPick { repo, worktree, items, loading, index, query, focus } => {
-            // Title is `{repo} · {worktree display name}`. The relative-age labels
-            // read wall-clock now from `now_epoch_s` (→ ms).
-            let title =
-                format!("{repo} · {}", crate::selectors::strip_repo_prefix(worktree, repo));
-            let now_ms = app.now_epoch_s.saturating_mul(1000);
-            menu::render_session_pick(
-                frame, &mut hits, &title, items, *loading, *index, query, now_ms, *focus,
-            );
-        }
-        crate::app::Mode::Form { state, .. } => {
-            form::render_form(frame, &mut hits, state);
-        }
-        _ => {}
     }
 
     hits
@@ -438,7 +454,7 @@ mod tests {
         let mut hits = HitMap::new();
         terminal
             .draw(|frame| {
-                hits = render(&app, frame);
+                hits = render(&mut app, frame);
             })
             .unwrap();
         (terminal, hits)

@@ -1,6 +1,7 @@
 use super::*;
 use crate::event::SessionChoice;
 use crate::ipc::types::{Project, SessionEntry, StateSnapshot, TaskInstance, TaskStatus, WorktreeInfo};
+use crate::runfiles::RunFiles;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 
@@ -10,12 +11,8 @@ fn key(c: char) -> Event {
 fn enter() -> Event {
     Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
 }
-// Menu navigation moved to arrow keys (letters now type into the filter).
 fn down() -> Event {
     Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
-}
-fn up() -> Event {
-    Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
 }
 fn esc() -> Event {
     Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
@@ -68,44 +65,33 @@ fn focus_worktrees(a: &mut App) {
     tab(a);
 }
 
-/// Open a synthetic multi-row `ActionMenu` directly. The single-target worktree
-/// menu was retired in Task 9 (its verbs became the `r`/`g`/`x` hotkeys), but
-/// the lazyvim-style picker machinery (navigation, filtering, wheel, click) is
-/// still live for the queue Resume + bulk menus — these generic-nav tests need a
-/// multi-row vehicle. Rows are inert placeholders; execution routes to a
-/// harmless `BulkRunDefs` so a click has an observable effect (returns to List).
-fn open_synthetic_menu(a: &mut App, n: usize) {
-    use crate::action_menu::{ActionItem, MenuAction};
-    let items = (0..n)
-        .map(|i| ActionItem {
-            label: format!("item {i}"),
-            disabled: None,
-            description: String::new(),
-            action: MenuAction::BulkRunDefs { repo: "platform".into(), names: vec![] },
-        })
-        .collect();
-    a.mode = Mode::ActionMenu {
-        title: "menu".into(),
-        items,
-        index: 0,
-        query: String::new(),
-        preview_scroll: 0,
-    };
-}
-
 // --- queue `r` / `x` chip-keys (the queue menu's old verbs are now keys) ------
 
 #[test]
-fn queue_r_requeues_the_selected_failed_task() {
-    // `r` on QUEUE re-queues the selected task via the retry RPC (single row).
+fn queue_r_confirms_then_requeues_the_selected_failed_task() {
+    // `r` on QUEUE always opens the confirm dialog first (single row); Enter
+    // fires the retry via an RpcSeq (verb "reran").
     let mut a = app_with(failed_task_snapshot());
-    let u = a.update(key('r'));
+    let opened = a.update(key('r'));
+    assert!(opened.cmds.is_empty(), "r opens the dialog, dispatches nothing yet");
+    match &a.mode {
+        Mode::Confirm { action: ConfirmAction::RequeueTasks { calls }, .. } => {
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].method, "retry");
+            assert_eq!(calls[0].params, serde_json::json!({ "id": "t1" }));
+        }
+        other => panic!("expected requeue confirm, got {other:?}"),
+    }
+    let u = a.update(enter()); // confirm
     assert!(matches!(a.mode, Mode::List));
-    assert!(
-        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
-            if call.method == "retry" && call.params == serde_json::json!({ "id": "t1" }))),
-        "expected retry Cmd, got {:?}", u.cmds,
-    );
+    match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
+        Cmd::RpcSeq { verb, calls, .. } => {
+            assert_eq!(verb, "reran");
+            assert_eq!(calls[0].method, "retry");
+            assert_eq!(calls[0].params, serde_json::json!({ "id": "t1" }));
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]
@@ -115,7 +101,24 @@ fn queue_r_noop_on_running_sets_status_line() {
     let mut a = app_with(snap);
     let u = a.update(key('r'));
     assert!(u.cmds.is_empty(), "running is not re-queueable");
-    assert!(a.status_line.as_deref().unwrap_or("").contains("requeue"), "status: {:?}", a.status_line);
+    assert!(a.status_line.as_deref().unwrap_or("").contains("rerun"), "status: {:?}", a.status_line);
+}
+
+#[test]
+fn queue_r_confirms_on_cancelled_task() {
+    // A user-cancelled task is rerunnable: `r` opens the confirm dialog (no
+    // status-line no-op) and Enter fires the retry.
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].status = TaskStatus::Cancelled;
+    let mut a = app_with(snap);
+    let opened = a.update(key('r'));
+    assert!(opened.cmds.is_empty(), "r opens the dialog, dispatches nothing yet");
+    assert!(
+        matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }),
+        "cancelled task should open the rerun confirm, got {:?}", a.mode,
+    );
+    let u = a.update(enter()); // confirm
+    assert!(u.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { calls, .. } if calls[0].method == "retry")));
 }
 
 #[test]
@@ -183,12 +186,14 @@ fn queue_x_noop_on_terminal_sets_status_line_without_dialog() {
 
 #[test]
 fn queue_needs_input_is_requeueable_and_cancellable_via_skip() {
-    // Needs-input: `r` re-queues immediately (retry); `x` confirms then skips.
+    // Needs-input: `r` confirms then re-queues (retry); `x` confirms then skips.
     let mut snap = failed_task_snapshot();
     snap.tasks[0].status = TaskStatus::NeedsInput;
     let mut a = app_with(snap);
-    let ru = a.update(key('r'));
-    assert!(ru.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. } if call.method == "retry")));
+    a.update(key('r'));
+    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }));
+    let ru = a.update(enter());
+    assert!(ru.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { calls, .. } if calls[0].method == "retry")));
 
     let mut snap2 = failed_task_snapshot();
     snap2.tasks[0].status = TaskStatus::NeedsInput;
@@ -209,21 +214,23 @@ fn queue_range_requeue_with_no_eligible_sets_status_line() {
     a.update(shift_down());
     let u = a.update(key('r'));
     assert!(u.cmds.is_empty());
-    assert!(a.status_line.as_deref().unwrap_or("").contains("re-queueable"), "status: {:?}", a.status_line);
+    assert!(a.status_line.as_deref().unwrap_or("").contains("rerunnable"), "status: {:?}", a.status_line);
 }
 
 #[test]
 fn queue_range_requeue_all_eligible_requeues_each() {
-    // A range of two failed tasks re-queues both in one RpcSeq.
+    // A range of two failed tasks confirms first, then re-queues both in one RpcSeq.
     let mut t0 = TaskInstance::default(); t0.id = "t0".into(); t0.status = TaskStatus::Failed; t0.target.repo = "platform".into();
     let mut t1 = TaskInstance::default(); t1.id = "t1".into(); t1.status = TaskStatus::Failed; t1.target.repo = "platform".into();
     let snap = StateSnapshot { tasks: vec![t0, t1], projects: vec![Project { name: "platform".into(), github_id: None }], ..Default::default() };
     let mut a = app_with(snap);
     a.update(shift_down());
-    let u = a.update(key('r'));
+    a.update(key('r')); // opens confirm
+    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }));
+    let u = a.update(enter()); // confirm
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { verb, calls, .. } => {
-            assert_eq!(verb, "requeued");
+            assert_eq!(verb, "reran");
             assert_eq!(calls.len(), 2);
             assert!(calls.iter().all(|c| c.method == "retry"));
         }
@@ -272,152 +279,90 @@ fn queue_range_cancel_with_no_eligible_sets_status_line() {
     assert!(a.status_line.as_deref().unwrap_or("").contains("stop"), "status: {:?}", a.status_line);
 }
 
+// --- queue `g` (goto): the retired single-target Resume menu's verb, now a
+// direct key — mirrors the worktrees `g_on_worktree_row_*` tests below. -------
+
 #[test]
-fn queue_action_menu_is_single_resume_and_disabled_enter_is_inert() {
-    // `a` on QUEUE opens the single Resume menu. The fixture task never ran (no
-    // session id) and has no worktree, so Resume is disabled regardless of TMUX
-    // → Enter is inert and the menu stays open (generic disabled-row guard).
+fn queue_g_noop_outside_tmux_sets_status() {
     let mut a = app_with(failed_task_snapshot());
-    a.update(key('a'));
-    match &a.mode {
-        Mode::ActionMenu { items, .. } => {
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].label, "Resume");
-            assert!(items[0].disabled.is_some(), "no session/worktree → disabled");
-        }
-        other => panic!("expected single-item Resume menu, got {other:?}"),
-    }
-    let u = a.update(enter());
-    assert!(matches!(a.mode, Mode::ActionMenu { .. }), "disabled row keeps the menu open");
-    assert!(u.cmds.is_empty());
-}
-
-// --- generic action-menu navigation (exercised via the WORKTREE menu, which
-// still has multiple items now the queue menu is a single row) ----------------
-
-#[test]
-fn menu_arrows_move_highlight() {
-    let mut a = app_with(worktree_snapshot());
-    open_synthetic_menu(&mut a, 4); // multi-row picker vehicle
-    a.update(down());
-    match &a.mode {
-        Mode::ActionMenu { index, .. } => assert_eq!(*index, 1),
-        other => panic!("{other:?}"),
-    }
-    a.update(up());
-    match &a.mode {
-        Mode::ActionMenu { index, .. } => assert_eq!(*index, 0),
-        other => panic!("{other:?}"),
-    }
+    a.inside_tmux = false;
+    let up = a.update(key('g'));
+    assert!(up.cmds.is_empty(), "no tmux → no TmuxResume");
+    assert!(a.status_line.as_deref().unwrap_or("").contains("tmux"), "status: {:?}", a.status_line);
 }
 
 #[test]
-fn menu_esc_closes_but_q_types_into_filter() {
-    let mut a = app_with(worktree_snapshot());
-    open_synthetic_menu(&mut a, 2);
-    a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-    assert!(matches!(a.mode, Mode::List));
-    // Reopen: `q` no longer closes — it types into the label filter.
-    open_synthetic_menu(&mut a, 2);
-    a.update(key('q'));
-    match &a.mode {
-        Mode::ActionMenu { query, index, .. } => {
-            assert_eq!(query, "q");
-            assert_eq!(*index, 0);
-        }
-        other => panic!("expected the menu to stay open, got {other:?}"),
-    }
-}
-
-#[test]
-fn menu_backspace_edits_filter() {
-    let mut a = app_with(worktree_snapshot());
-    open_synthetic_menu(&mut a, 2);
-    a.update(key('f'));
-    a.update(key('z')); // "fz" → no matches
-    a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
-    match &a.mode {
-        Mode::ActionMenu { query, .. } => assert_eq!(query, "f"),
-        other => panic!("{other:?}"),
-    }
-}
-
-fn menu_preview_scroll(a: &App) -> usize {
-    match &a.mode {
-        Mode::ActionMenu { preview_scroll, .. } => *preview_scroll,
-        other => panic!("expected ActionMenu, got {other:?}"),
-    }
-}
-
-// ctrl+d/u preview paging was removed (user request — wheel-only scroll);
-// `menu_wheel_scrolls_preview_and_moves_selection` covers the scroll path.
-
-/// Sets the open ActionMenu's preview scroll directly (the wheel path is
-/// exercised by its own test; here we only need a non-zero scroll to reset).
-fn set_menu_scroll(a: &mut App, v: usize) {
-    if let Mode::ActionMenu { preview_scroll, .. } = &mut a.mode {
-        *preview_scroll = v;
-    } else {
-        panic!("expected ActionMenu");
-    }
-}
-
-#[test]
-fn menu_nav_and_query_edits_reset_preview_scroll() {
+fn queue_g_no_session_sets_status_when_task_never_ran() {
+    // Reason precedence: tmux first, then session, then worktree. The fixture
+    // task has no `resume_session_id` and no run record → "no session yet".
     let mut a = app_with(failed_task_snapshot());
-    a.update(key('a'));
-    set_menu_scroll(&mut a, 3);
-    a.update(down()); // highlight moved → preview belongs to a new row
-    assert_eq!(menu_preview_scroll(&a), 0);
-    set_menu_scroll(&mut a, 3);
-    a.update(key('s')); // query edit → filtered view changed
-    assert_eq!(menu_preview_scroll(&a), 0);
-    set_menu_scroll(&mut a, 3);
-    a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
-    assert_eq!(menu_preview_scroll(&a), 0);
-}
-
-#[test]
-fn menu_wheel_scrolls_preview_and_moves_selection() {
-    use crate::hit::HitTarget;
-    use crossterm::event::{MouseEvent, MouseEventKind};
-    fn wheel(a: &mut App, kind: MouseEventKind, col: u16, row: u16) {
-        a.update(Event::Mouse(MouseEvent { kind, column: col, row, modifiers: KeyModifiers::NONE }));
-    }
-    // A 4-row menu so the left-panel wheel can move the selection (the queue
-    // menu is a single Resume row).
-    let mut a = app_with(worktree_snapshot());
-    open_synthetic_menu(&mut a, 4);
-    // Synthetic picker hit map: left panel Modal + right preview region.
-    let mut hits = crate::hit::HitMap::new();
-    hits.push(ratatui::layout::Rect { x: 5, y: 5, width: 20, height: 10 }, HitTarget::Modal);
-    hits.push(
-        ratatui::layout::Rect { x: 50, y: 5, width: 20, height: 10 },
-        HitTarget::MenuPreview,
+    a.inside_tmux = true;
+    let up = a.update(key('g'));
+    assert!(up.cmds.is_empty());
+    assert!(
+        a.status_line.as_deref().unwrap_or("").contains("no session"),
+        "status: {:?}", a.status_line
     );
-    a.hit = hits;
-    a.menu_preview_max_scroll.set(10);
-    // The preview scrolls at the shared DETAIL wheel step (WHEEL_STEP = 3 lines
-    // per tick), not one line — matching the detail pane so they never drift.
-    wheel(&mut a, MouseEventKind::ScrollDown, 55, 6); // over the preview
-    assert_eq!(menu_preview_scroll(&a), 3);
-    wheel(&mut a, MouseEventKind::ScrollUp, 55, 6);
-    assert_eq!(menu_preview_scroll(&a), 0);
-    // Over the left panel: the wheel moves the selection (clamped) and the
-    // menu stays open.
-    wheel(&mut a, MouseEventKind::ScrollDown, 6, 6);
-    match &a.mode {
-        Mode::ActionMenu { index, preview_scroll, .. } => {
-            assert_eq!(*index, 1);
-            assert_eq!(*preview_scroll, 0);
-        }
-        other => panic!("{other:?}"),
-    }
-    wheel(&mut a, MouseEventKind::ScrollUp, 6, 6);
-    match &a.mode {
-        Mode::ActionMenu { index, .. } => assert_eq!(*index, 0),
-        other => panic!("{other:?}"),
-    }
+}
+
+#[test]
+fn queue_g_no_worktree_sets_status_when_session_exists_but_no_worktree() {
+    // A session id is recorded but the task has no worktree target and no run
+    // record with a path → the second data gap ("no worktree for this task").
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].resume_session_id = Some("sess-x".into());
+    let mut a = app_with(snap);
+    a.inside_tmux = true;
+    let up = a.update(key('g'));
+    assert!(up.cmds.is_empty());
+    assert!(
+        a.status_line.as_deref().unwrap_or("").contains("no worktree"),
+        "status: {:?}", a.status_line
+    );
+}
+
+#[test]
+fn queue_g_resumes_the_selected_tasks_session() {
+    // Happy path: a run record with both a session id and a worktree path
+    // (keyed to the selected task) resumes it via `Cmd::TmuxResume`.
+    let mut a = app_with(failed_task_snapshot());
+    a.inside_tmux = true;
+    a.run_files = Some((
+        "t1".to_string(),
+        Box::new(RunFiles {
+            session_id: Some("sess-flaky".into()),
+            worktree_path: Some("/repos/acme-flaky".into()),
+            ..Default::default()
+        }),
+    ));
+    let up = a.update(key('g'));
+    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id }]
+        if path == "/repos/acme-flaky" && session_id == "sess-flaky"));
+}
+
+#[test]
+fn queue_g_bulk_range_refuses_not_applicable() {
+    // A multi-row range on QUEUE's `g` isn't bulk-doable (only rerun/stop are)
+    // → refuses with a status line instead of acting on the cursor row alone.
+    let mut t0 = TaskInstance::default();
+    t0.id = "t0".into();
+    t0.status = TaskStatus::Failed;
+    t0.target.repo = "platform".into();
+    let mut t1 = TaskInstance::default();
+    t1.id = "t1".into();
+    t1.status = TaskStatus::Failed;
+    t1.target.repo = "platform".into();
+    let snap = StateSnapshot {
+        tasks: vec![t0, t1],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.inside_tmux = true;
+    a.update(shift_down());
+    let up = a.update(key('g'));
+    assert!(up.cmds.is_empty());
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
 }
 
 // --- worktrees `r`/`g`/`x` hotkeys (replace the retired worktree menu) --------
@@ -430,8 +375,8 @@ fn loaded(worktree: &str) -> Event {
     Event::SessionsLoaded {
         worktree: worktree.into(),
         result: Ok(vec![
-            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000 },
-            SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 1_000 },
+            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000, model: Some("sonnet".into()) },
+            SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 1_000, model: None },
         ]),
     }
 }
@@ -473,11 +418,35 @@ fn picking_a_session_pins_it() {
     a.update(down());
     a.update(down());
     a.update(enter());
-    // The launch form pins the session; the label rides in the form title.
+    // The launch form pins the session; the label rides in the form title; and
+    // the model dropdown defaults to the model that session already ran on.
     match &a.mode {
         Mode::Form { state, action: FormAction::NewSession { resume_session_id: Some(s), .. } } => {
             assert_eq!(s, "sess-1");
             assert!(state.title.contains("Fix the parser"), "title: {}", state.title);
+            assert_eq!(state.fields[0].value, "sonnet", "model defaults to the resumed session's model");
+        }
+        other => panic!("expected NewSession resume form, got {other:?}"),
+    }
+}
+
+#[test]
+fn resuming_a_session_without_a_recorded_model_falls_back_to_default() {
+    // sess-2 has `model: None` (e.g. started outside queohoh); the resume form
+    // then falls back to the resolved default (opus, no settings fetched).
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    a.update(key('r'));
+    a.update(loaded("platform.wt-a"));
+    // Rows: New(0), Create Worktree(1), sess-1(2), sess-2(3) — three downs.
+    a.update(down());
+    a.update(down());
+    a.update(down());
+    a.update(enter());
+    match &a.mode {
+        Mode::Form { state, action: FormAction::NewSession { resume_session_id: Some(s), .. } } => {
+            assert_eq!(s, "sess-2");
+            assert_eq!(state.fields[0].value, "opus", "no recorded model → resolved default");
         }
         other => panic!("expected NewSession resume form, got {other:?}"),
     }
@@ -644,6 +613,15 @@ fn a_no_longer_opens_a_menu_on_worktrees() {
 }
 
 #[test]
+fn a_no_longer_opens_a_menu_on_queue() {
+    // `a` retired the queue's single-target Resume menu too — its verb moved
+    // to `g` (see the `queue_g_*` tests above).
+    let mut a = app_with(failed_task_snapshot());
+    a.update(key('a'));
+    assert!(matches!(a.mode, Mode::List));
+}
+
+#[test]
 fn tasks_pane_run_zero_arg_def_dispatches_and_closes() {
     // tasks-pane Enter runs the highlighted def directly (no menu hop). A
     // zero-arg def dispatches runDefinition immediately.
@@ -672,75 +650,3 @@ fn tasks_pane_run_zero_arg_def_dispatches_and_closes() {
     );
 }
 
-#[test]
-fn click_menu_item_executes() {
-    use crate::hit::HitTarget;
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use ratatui::{Terminal, backend::TestBackend};
-
-    // A synthetic multi-row menu (all rows enabled) so a row click executes a
-    // real action — the queue menu is a single (often disabled) Resume row.
-    let mut a = app_with(worktree_snapshot());
-    open_synthetic_menu(&mut a, 4); // row 0 = enabled BulkRunDefs
-    assert!(matches!(a.mode, Mode::ActionMenu { .. }));
-
-    // Render the open menu so the real hit map carries its MenuItem regions.
-    let (w, h) = (120u16, 40u16);
-    a.size = (w, h);
-    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    let mut hits = crate::hit::HitMap::new();
-    term.draw(|f| hits = crate::view::render(&a, f)).unwrap();
-    a.hit = hits;
-
-    // Locate a MenuItem(0) cell and synthesize a left-click on it.
-    let mut pos = None;
-    'find: for y in 0..h {
-        for x in 0..w {
-            if let Some(HitTarget::MenuItem(0)) = a.hit.hit(x, y) {
-                pos = Some((x, y));
-                break 'find;
-            }
-        }
-    }
-    let (mx, my) = pos.expect("MenuItem(0) region present after render");
-    let u = a.update(Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: mx,
-        row: my,
-        modifiers: KeyModifiers::NONE,
-    }));
-    // Clicking the enabled row 0 executes it — the menu closes (→ List) and the
-    // action fires (the BulkRunDefs vehicle dispatches an RpcSeq).
-    assert!(matches!(a.mode, Mode::List), "clicking an enabled row closes the menu, got {:?}", a.mode);
-    assert!(
-        u.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { .. })),
-        "clicking the enabled row executes its action, got {:?}", u.cmds,
-    );
-}
-
-#[test]
-fn click_outside_menu_closes_it() {
-    use crate::hit::HitTarget;
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use ratatui::{Terminal, backend::TestBackend};
-
-    let mut a = app_with(failed_task_snapshot());
-    a.update(key('a'));
-    let (w, h) = (120u16, 40u16);
-    a.size = (w, h);
-    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    let mut hits = crate::hit::HitMap::new();
-    term.draw(|f| hits = crate::view::render(&a, f)).unwrap();
-    a.hit = hits;
-
-    // A corner cell is outside the centered popup (neither Modal nor MenuItem).
-    assert!(!matches!(a.hit.hit(0, h - 1), Some(HitTarget::Modal | HitTarget::MenuItem(_))));
-    let u = a.update(Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 0,
-        row: h - 1,
-        modifiers: KeyModifiers::NONE,
-    }));
-    assert!(matches!(a.mode, Mode::List));
-    assert!(u.cmds.is_empty());
-}

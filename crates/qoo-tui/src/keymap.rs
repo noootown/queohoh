@@ -41,7 +41,6 @@ pub enum AppAction {
     SwitchTab(usize),
     CycleTab(i32),
     CycleSubTab(i32),
-    OpenActionMenu,
     /// Open the task menu (`t`): the upgraded def picker over the active repo,
     /// carrying the selected worktree row's context when the worktrees pane holds
     /// focus. Routes to `App::open_task_menu`.
@@ -68,6 +67,12 @@ pub enum AppAction {
     /// worktrees `[g]oto` chip): works for session rows too. Inert with a status
     /// line outside tmux. Routes to `App::goto_worktree`.
     GotoWorktree,
+    /// Resume the QUEUE pane's selected task's Claude session in a new tmux
+    /// window (`g`, and the queue `[g]oto` chip): rooted at the task's recorded
+    /// worktree path. Inert with a status line outside tmux, when the task has
+    /// no recorded session, or when no worktree path resolves. Routes to
+    /// `App::goto_queue`.
+    GotoQueue,
     /// Remove the selected WORKTREES row (`x`, and the worktrees `[x]remove`
     /// chip): opens `Mode::Confirm`. Session rows / busy worktrees are a
     /// no-op with a status line. Routes to `App::remove_selected_worktree`.
@@ -119,8 +124,7 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         // keymap — so this bare arm can't shadow it.
         KeyCode::Char('s') => AppAction::Settings,
         // Pane-action verbs, each gated on the focused pane's chip set:
-        // QUEUE {r,x,a,c,z} · TASKS {r,z} · WORKTREES {r,g,x,t,c,z}.
-        KeyCode::Char('a') => gated(PaneButton::Actions, AppAction::OpenActionMenu),
+        // QUEUE {r,x,g,c,z} · TASKS {r,z} · WORKTREES {r,g,x,t,c,z}.
         KeyCode::Char('t') => gated(PaneButton::Tasks, AppAction::OpenTaskMenu),
         // `r` is a Run chip on all three panes, but means different things:
         // QUEUE re-queues the selected task(s), TASKS runs the highlighted def,
@@ -130,9 +134,13 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
             PaneId::Worktrees => gated(PaneButton::Run, AppAction::NewTaskOnWorktree),
             _ => gated(PaneButton::Run, AppAction::RunSelectedDef),
         },
-        // `g` opens the selected worktree in tmux — a WORKTREES-only chip, inert
-        // elsewhere. (`g`/`G` used to be unbound after the ScrollEdge removal.)
-        KeyCode::Char('g') => gated(PaneButton::Goto, AppAction::GotoWorktree),
+        // `g` is a Goto chip on QUEUE and WORKTREES, but means different things:
+        // QUEUE resumes the selected task's Claude session, WORKTREES opens the
+        // worktree in a fresh tmux window. Inert on TASKS (no Goto chip there).
+        KeyCode::Char('g') => match focus {
+            PaneId::Queue => gated(PaneButton::Goto, AppAction::GotoQueue),
+            _ => gated(PaneButton::Goto, AppAction::GotoWorktree),
+        },
         // `x` (plain) means stop on QUEUE (skip/stop the selected task) and
         // remove on WORKTREES (remove the selected worktree); inert on TASKS.
         // (`ctrl+x` above is the sub-tab cycle, matched first, so it never
@@ -291,18 +299,19 @@ mod tests {
     }
 
     #[test]
-    fn a_c_gated_by_pane_slash_esc_help_global() {
+    fn c_gated_by_pane_slash_esc_help_global() {
         // `?`/esc/`/` are global on every list pane.
         for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Char('?')), f), AppAction::Help);
             assert_eq!(list_mode_action(&k(KeyCode::Esc), f), AppAction::ClearEsc);
             assert_eq!(list_mode_action(&k(KeyCode::Char('/')), f), AppAction::OpenSearch);
         }
-        // `a` is a QUEUE-only chip now (the worktrees `[a]ctions` chip was
-        // retired — its verbs became the `r`/`g`/`x` worktree hotkeys).
-        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Queue), AppAction::OpenActionMenu);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Worktrees), AppAction::None);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Tasks), AppAction::None);
+        // `a` is unbound everywhere now — the queue `[a]ctions` (Resume) menu was
+        // retired in favor of the `[g]oto` chip, mirroring the worktrees `[a]ctions`
+        // retirement before it.
+        for f in LISTS {
+            assert_eq!(list_mode_action(&k(KeyCode::Char('a')), f), AppAction::None);
+        }
         // `c` (create) is a QUEUE-only chip now (the worktrees create modal was
         // folded into the launcher's `r` → Create Worktree row); inert on
         // WORKTREES and TASKS.
@@ -312,13 +321,13 @@ mod tests {
     }
 
     #[test]
-    fn g_gotos_on_worktrees_shift_g_unbound() {
-        // `g` is a WORKTREES chip (goto → open the worktree in tmux); inert on
-        // queue/tasks (no `[g]oto` chip there).
+    fn g_gotos_on_queue_and_worktrees_shift_g_unbound() {
+        // `g` is a Goto chip on QUEUE (resume the task's Claude session) and
+        // WORKTREES (open the worktree in tmux); inert on TASKS (no `[g]oto`
+        // chip there).
+        assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Queue), AppAction::GotoQueue);
         assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Worktrees), AppAction::GotoWorktree);
-        for f in [PaneId::Queue, PaneId::Tasks] {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('g')), f), AppAction::None);
-        }
+        assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Tasks), AppAction::None);
         // Shift+G stays unbound everywhere.
         for f in LISTS {
             assert_eq!(list_mode_action(&sk(KeyCode::Char('G')), f), AppAction::None);
@@ -332,8 +341,9 @@ mod tests {
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);
         assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Worktrees), AppAction::GotoWorktree);
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Worktrees), AppAction::RemoveSelectedWorktree);
-        // g inert off-worktrees; x still cancels on queue; a inert on worktrees now.
-        assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Queue), AppAction::None);
+        // g resumes the session on queue (not inert); x still cancels on queue;
+        // a inert on worktrees now.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Queue), AppAction::GotoQueue);
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Queue), AppAction::CancelSelected);
         assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Worktrees), AppAction::None);
     }
@@ -369,9 +379,10 @@ mod tests {
     #[test]
     fn unbound_keys_are_none() {
         // w/f/m moved to the action menu (parity with the Ink keymap tests). On
-        // the QUEUE pane `t`/`g` are inert (WORKTREES chips, keymap-gated). `r`/`x`
-        // ARE bound on QUEUE now (re-queue / cancel), so they're not in this set.
-        for c in ['w', 'f', 'm', 't', 'g'] {
+        // the QUEUE pane `t` is inert (a WORKTREES-only chip, keymap-gated).
+        // `r`/`x`/`g` ARE bound on QUEUE now (re-queue / cancel / goto), so
+        // they're not in this set.
+        for c in ['w', 'f', 'm', 't'] {
             assert_eq!(list_mode_action(&k(KeyCode::Char(c)), PaneId::Queue), AppAction::None);
         }
     }

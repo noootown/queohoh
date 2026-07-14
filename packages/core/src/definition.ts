@@ -13,6 +13,13 @@ import { PrioritySchema } from "./task.js";
  */
 export interface ArgSpec {
 	name: string;
+	/**
+	 * How the TUI renders the arg. `worktree` → a type-or-pick combobox that
+	 * resolves to a target ref; `branch` → a dropdown of the repo's branches;
+	 * `text` → a multiline textarea. Absent → a single-line input (or a dropdown
+	 * when `options` is given). A `type` is mutually exclusive with `options`.
+	 */
+	type?: "worktree" | "branch" | "text";
 	default?: string;
 	options?: string[];
 	description?: string;
@@ -21,6 +28,7 @@ export interface ArgSpec {
 const ArgSpecSchema = z
 	.object({
 		name: z.string().min(1),
+		type: z.enum(["worktree", "branch", "text"]).optional(),
 		default: z.string().optional(),
 		options: z.array(z.string().min(1)).min(1).optional(),
 		description: z.string().optional(),
@@ -100,6 +108,11 @@ function normalizeArgs(
 		) {
 			throw new Error(
 				`arg ${spec.name}: default "${spec.default}" not in options (${spec.options.join(", ")})`,
+			);
+		}
+		if (spec.type && spec.options) {
+			throw new Error(
+				`arg ${spec.name}: type "${spec.type}" cannot combine with options`,
 			);
 		}
 	}

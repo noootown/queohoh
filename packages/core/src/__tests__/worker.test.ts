@@ -164,6 +164,37 @@ describe("runTask", () => {
 		expect((await runTask(t.id, deps)).error).toBe("session limit");
 	});
 
+	it("credit-balance message in result text → failed with out of budget reason", async () => {
+		const { deps, store } = makeDeps({
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 1,
+				resultText:
+					"Your credit balance is too low to access the Anthropic API.",
+			}),
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		expect((await runTask(t.id, deps)).error).toBe("out of budget");
+	});
+
+	it("out of budget wins over session limit when both messages appear", async () => {
+		// The billing signal is the more specific/actionable one (needs a top-up),
+		// so it is checked first — a rerun after a session-limit reset still fails
+		// while the account is out of credits.
+		const { deps, store } = makeDeps({
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 1,
+				resultText:
+					"You've hit your usage limit. Your credit balance is too low.",
+			}),
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		expect((await runTask(t.id, deps)).error).toBe("out of budget");
+	});
+
 	it("nonzero exit without a session-limit message keeps the generic exit reason", async () => {
 		const { deps, store } = makeDeps({
 			executeClaude: async () => ({
@@ -238,6 +269,26 @@ describe("runTask", () => {
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("failed");
 		expect(result.error).toBe("stopped (SIGKILL)");
+	});
+
+	it("nonzero exit WITHOUT a signal but WITH isCancelled → cancelled 'stopped by user'", async () => {
+		// A user Stop where Claude traps SIGTERM, cleans up its terminal, and
+		// exits by CODE (no signal reported). The recorded user-cancel must still
+		// win over the exit-code branch — otherwise a deliberate stop masquerades
+		// as a `failed` run (the red ✗) instead of the cancelled `⊘`.
+		const { deps, store } = makeDeps({
+			executeClaude: async () => ({
+				...okResult,
+				exitCode: 143,
+				signal: null,
+			}),
+			isCancelled: () => true,
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("cancelled");
+		expect(result.error).toBe("stopped by user");
 	});
 
 	it("reports the spawned child pid via onSpawned", async () => {

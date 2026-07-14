@@ -196,7 +196,10 @@ describe("loadProjectVars", () => {
 describe("loadProjectDefaultModel", () => {
 	it("reads a string default_model from vars.yaml", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
-		writeFileSync(join(dir, "vars.yaml"), "default_model: opus\ngithub_id: noootown\n");
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"default_model: opus\ngithub_id: noootown\n",
+		);
 		expect(loadProjectDefaultModel(dir)).toBe("opus");
 	});
 

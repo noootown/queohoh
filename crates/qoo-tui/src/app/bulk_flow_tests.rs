@@ -29,14 +29,17 @@ fn two_queue_one_failed() -> StateSnapshot {
 #[test]
 fn queue_range_requeue_via_r_hits_only_eligible_and_clears_range() {
     // t0 failed (eligible), t1 queued (ineligible). `r` over the 2-row range
-    // re-queues only t0, with the "requeued" count feedback, and clears the range.
+    // opens the confirm freezing only t0; Enter re-queues it with the "reran"
+    // count feedback and clears the range.
     let mut a = app_with(two_queue_one_failed());
     a.update(shift_down()); // extend queue selection to 2 rows
-    let u = a.update(key('r'));
+    a.update(key('r')); // opens the confirm dialog (freezing the calls)
+    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }));
+    let u = a.update(enter()); // confirm
     assert!(matches!(a.mode, Mode::List));
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { verb, calls, invalidate_defs_for } => {
-            assert_eq!(verb, "requeued");
+            assert_eq!(verb, "reran");
             assert_eq!(calls.len(), 1); // only t0 is failed
             assert_eq!(calls[0].method, "retry");
             assert_eq!(calls[0].params, serde_json::json!({ "id": "t0" }));
@@ -44,7 +47,7 @@ fn queue_range_requeue_via_r_hits_only_eligible_and_clears_range() {
         }
         _ => unreachable!(),
     }
-    assert_eq!(a.active_ui().selections[0].anchor, None); // range cleared
+    assert_eq!(a.active_ui().selections[0].anchor, None); // range cleared on confirm
 }
 
 #[test]
@@ -78,7 +81,7 @@ fn queue_range_cancel_via_x_mixes_stop_and_skip_per_row() {
 fn tasks_bulk_range_via_r_refuses_not_applicable() {
     // TASKS keeps no bulk-doable verb (see `crate::hit::bulk_allowed`): a
     // multi-row range on `r` refuses with a status line instead of the old
-    // bulk-run menu, and never enters `Mode::ActionMenu`.
+    // bulk-run menu.
     let mut snap = StateSnapshot { projects: vec![Project { name: "platform".into(), github_id: None }], ..Default::default() };
     snap.tasks = vec![];
     let mut a = app_with(snap);
@@ -167,13 +170,13 @@ fn worktrees_bulk_range_refuses_run_goto_and_tasks_menu() {
 }
 
 #[test]
-fn queue_bulk_range_refuses_actions_create_and_collapse() {
-    // QUEUE keeps only `Run`/`Cancel` (rerun/stop) bulk-doable — `a`/`c`/`z`
+fn queue_bulk_range_refuses_goto_create_and_collapse() {
+    // QUEUE keeps only `Run`/`Cancel` (rerun/stop) bulk-doable — `g`/`c`/`z`
     // all refuse with a status line on a multi-row range.
     let mut a = app_with(two_queue_one_failed());
     a.update(shift_down());
 
-    a.update(key('a'));
+    a.update(key('g'));
     assert!(matches!(a.mode, Mode::List));
     assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
 
@@ -224,16 +227,19 @@ fn collapse_chip_click_refuses_on_a_bulk_selection() {
 }
 
 #[test]
-fn esc_with_active_range_clears_range_before_it_can_open_bulk() {
-    // Staged Esc (Task 11): first Esc clears the range, so a subsequent `a`
-    // opens a single-target menu, not a bulk one.
+fn esc_with_active_range_clears_range_before_it_can_act_singly() {
+    // Staged Esc (Task 11): first Esc clears the range, so a subsequent `g`
+    // (goto) targets a SINGLE row instead of refusing as bulk-not-applicable.
     let mut a = app_with(two_queue_one_failed());
+    a.inside_tmux = false; // explicit — must not depend on the test process's own TMUX env
     a.update(shift_down());
     assert_ne!(a.active_ui().selections[0].anchor, None);
     a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert_eq!(a.active_ui().selections[0].anchor, None);
-    a.update(key('a'));
-    match &a.mode { Mode::ActionMenu { title, .. } => assert_ne!(title, "2 selected"), _ => panic!() }
+    a.update(key('g'));
+    // Not inside tmux in this fixture, but critically NOT the bulk-refusal
+    // line either — proof the range was cleared before `g` ran.
+    assert_eq!(a.status_line.as_deref(), Some("not inside tmux"));
 }
 
 fn six_queue_failed(ids: &[&str]) -> StateSnapshot {
@@ -251,18 +257,19 @@ fn six_queue_failed(ids: &[&str]) -> StateSnapshot {
 }
 
 #[test]
-fn bulk_open_does_not_panic_when_rows_empty_between_select_and_open() {
-    // Race: a daemon snapshot empties the visible rows AFTER the range is
-    // extended but BEFORE `a` opens the menu. The selection anchor/cursor
-    // are untouched by a snapshot, so the range guard still fires; the empty
-    // visible set must bail (no `vis[0..=0]` panic on an empty slice).
+fn bulk_g_refuses_without_panicking_when_rows_empty_between_select_and_press() {
+    // Historical race: a daemon snapshot could empty the visible rows AFTER
+    // the range is extended but BEFORE the row-scoped verb acts. QUEUE's `g`
+    // (goto) was never bulk-doable, so `bulk_blocked` refuses before ever
+    // touching row data — this pins that no panic occurs even when rows
+    // vanish mid-range.
     let mut a = app_with(two_queue_one_failed());
     a.update(shift_down()); // anchor=0, cursor=1 (range of 2)
     // All queue rows vanish while the range is still active.
     a.update(Event::Snapshot(StateSnapshot { tasks: vec![], projects: vec![Project { name: "platform".into(), github_id: None }], ..Default::default() }));
-    a.update(key('a')); // must not panic
-    // Nothing survives → open bails, menu never opens (status line set instead).
+    a.update(key('g')); // must not panic
     assert!(matches!(a.mode, Mode::List));
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
 }
 
 #[test]
@@ -372,9 +379,16 @@ fn queue_range_requeue_clamps_when_rows_shrink_below_frozen_start() {
     a.update(shift_down()); a.update(shift_down()); // anchor=3, cursor=5
     assert_eq!(a.active_ui().selections[0], Selection { cursor: 5, anchor: Some(3) });
     a.update(Event::Snapshot(six_queue_failed(&["a0", "a1"])));
-    let u = a.update(key('r')); // must not panic
+    a.update(key('r')); // must not panic; opens the confirm
     // The [3..=5] span clamps against the 2 surviving rows → exactly one row
-    // re-queued (a failed, eligible task); no out-of-bounds panic.
+    // frozen for re-queue (a failed, eligible task); no out-of-bounds panic.
+    match &a.mode {
+        Mode::Confirm { action: ConfirmAction::RequeueTasks { calls }, .. } => {
+            assert_eq!(calls.len(), 1)
+        }
+        other => panic!("{other:?}"),
+    }
+    let u = a.update(enter()); // confirm
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { calls, .. } => assert_eq!(calls.len(), 1),
         _ => unreachable!(),

@@ -211,6 +211,54 @@ args:
 		});
 		expect(() => loadDefinition(projectDir, "platform", "badkey")).toThrow();
 	});
+
+	it("accepts type: worktree and rejects type+options together", () => {
+		const projectDir = makeRepo({
+			targeted: {
+				config: "args:\n  - name: pr\n    type: worktree\n",
+				prompt: "x",
+			},
+		});
+		const def = loadDefinition(projectDir, "platform", "targeted");
+		expect(def.args).toEqual([{ name: "pr", type: "worktree" }]);
+
+		const badProjectDir = makeRepo({
+			bad: {
+				config: "args:\n  - name: pr\n    type: worktree\n    options: [a]\n",
+				prompt: "x",
+			},
+		});
+		expect(() => loadDefinition(badProjectDir, "platform", "bad")).toThrow(
+			/type.*worktree.*options/i,
+		);
+	});
+
+	it("accepts type: branch and type: text", () => {
+		const projectDir = makeRepo({
+			branchy: {
+				config:
+					"args:\n  - name: target\n    type: branch\n    default: main\n  - name: situation\n    type: text\n",
+				prompt: "x",
+			},
+		});
+		const def = loadDefinition(projectDir, "platform", "branchy");
+		expect(def.args).toEqual([
+			{ name: "target", type: "branch", default: "main" },
+			{ name: "situation", type: "text" },
+		]);
+	});
+
+	it("rejects type: branch combined with options", () => {
+		const badProjectDir = makeRepo({
+			bad: {
+				config: "args:\n  - name: target\n    type: branch\n    options: [a]\n",
+				prompt: "x",
+			},
+		});
+		expect(() => loadDefinition(badProjectDir, "platform", "bad")).toThrow(
+			/type.*branch.*options/i,
+		);
+	});
 });
 
 describe("definitionExists", () => {

@@ -747,6 +747,21 @@ describe("ApiServer", () => {
 		expect(store.list()).toEqual([]);
 	});
 
+	it("retry re-queues a cancelled task (parity with failed)", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "cancelled", error: "cancelled by user" });
+		const retried = (await client.call("retry", { id: t.id })) as {
+			status: string;
+		};
+		expect(retried.status).toBe("queued");
+	});
+
 	it("skip CANCELS a queued task (status cancelled, stays visible), not failed/archived", async () => {
 		const { client, store } = await setup();
 		const t = store.create({
@@ -931,6 +946,63 @@ describe("ApiServer", () => {
 		expect(byId["sess-run"]).toBe("queohoh task prompt"); // run prompt beats jsonl content
 		expect(byId["sess-titled"]).toBe("Fix the parser"); // ai-title fallback
 		expect(res.sessions.length).toBe(2);
+	});
+
+	it("listSessions reports each session's model, reverse-mapped to an alias", async () => {
+		const projects = mkdtempSync(join(tmpdir(), "claude-projects-"));
+		const wtPath = "/wt/platform.wt-a";
+		const dir = join(projects, wtPath.replace(/[/.]/g, "-"));
+		mkdirSync(dir, { recursive: true });
+		// Two sessions; only sess-opus has a queohoh run (and thus a model) behind it.
+		writeFileSync(
+			join(dir, "sess-opus.jsonl"),
+			`${JSON.stringify({ type: "user", message: { content: "hi" } })}\n`,
+		);
+		writeFileSync(
+			join(dir, "sess-foreign.jsonl"),
+			`${JSON.stringify({ type: "ai-title", aiTitle: "outside", sessionId: "sess-foreign" })}\n`,
+		);
+		const { client, store, runStore } = await setup({
+			claudeProjectsDir: projects,
+			worktrees: [{ name: "platform.wt-a", path: wtPath, branch: "wt-a" }],
+		});
+		const task = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:platform.wt-a",
+			source: "mcp",
+		});
+		// Run data persists the RESOLVED id (as the worker does), not the alias.
+		runStore.writeSnapshot(
+			task.id,
+			{
+				task,
+				definition: null,
+				resolvedWorktree: wtPath,
+				resolvedWorktreePath: wtPath,
+				prompt: task.prompt,
+				model: "claude-opus-4-8",
+			},
+			(s) => s,
+		);
+		runStore.finishRun(
+			task.id,
+			{
+				result: { ...okRunResult, sessionId: "sess-opus" },
+				outcome: "done",
+				reason: null,
+			},
+			(s) => s,
+		);
+		const res = (await client.call("listSessions", {
+			repo: "platform",
+			worktree: "platform.wt-a",
+		})) as { sessions: { session_id: string; model?: string }[] };
+		const byModel = Object.fromEntries(
+			res.sessions.map((s) => [s.session_id, s.model]),
+		);
+		expect(byModel["sess-opus"]).toBe("opus"); // claude-opus-4-8 reverse-maps to opus
+		expect(byModel["sess-foreign"]).toBeUndefined(); // no run data -> no model
 	});
 
 	it("listSessions errors on an unknown worktree", async () => {

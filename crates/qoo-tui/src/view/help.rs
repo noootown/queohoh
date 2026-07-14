@@ -7,7 +7,7 @@ use crate::hit::{HitMap, HitTarget};
 use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 22] = [
+const HELP_ROWS: [(&str, &str); 21] = [
     ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
     ("1–9 / 0", "switch project tab (0 = 10th)"),
     ("ctrl+s then n/p", "next / previous project tab"),
@@ -17,9 +17,8 @@ const HELP_ROWS: [(&str, &str); 22] = [
     ("h / l", "detail: previous / next sub-tab"),
     ("ctrl+x / ctrl+z", "detail sub-tab (alias of l / h)"),
     ("enter", "open selected lane task (worktrees)"),
-    ("a", "action menu (queue: resume)"),
-    ("r", "run: new task on worktree (worktrees) · re-queue (queue) · run def (tasks)"),
-    ("g", "goto: open worktree in tmux (worktrees)"),
+    ("r", "run: new task on worktree (worktrees) · rerun (queue) · run def (tasks)"),
+    ("g", "goto: resume task's Claude session (queue) · open worktree in tmux (worktrees)"),
     ("x", "cancel (queue) · remove worktree (worktrees)"),
     ("c", "create (queue: adhoc task · worktrees: worktree)"),
     ("t", "task menu (worktrees)"),

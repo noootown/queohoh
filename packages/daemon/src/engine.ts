@@ -611,8 +611,9 @@ export class Engine {
 		// model of their own (a definition always carries one). Built-in fallback
 		// is `opus`; resolved through the alias table by the worker.
 		const defaultModel =
-			loadProjectDefaultModel(projectWorkspaceDir(deps.config, task.target.repo)) ??
-			"opus";
+			loadProjectDefaultModel(
+				projectWorkspaceDir(deps.config, task.target.repo),
+			) ?? "opus";
 
 		const lane = laneKey(task) ?? task.id;
 		deps.registry.registerWorker(task.id, lane, process.pid);

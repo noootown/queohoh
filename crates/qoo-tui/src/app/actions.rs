@@ -12,7 +12,7 @@ use super::*;
 type QueueSelRow = (String, TaskStatus, bool);
 
 /// Kebab-case status name for the queue `r`/`x` no-op status lines
-/// ("cannot requeue a queued task").
+/// ("cannot rerun a queued task").
 fn status_kebab(s: TaskStatus) -> &'static str {
     match s {
         TaskStatus::Queued => "queued",
@@ -29,6 +29,17 @@ fn status_kebab(s: TaskStatus) -> &'static str {
 
 /// Status line for a bulk-blocked verb (see [`App::bulk_blocked`]).
 const BULK_NOT_APPLICABLE: &str = "not applicable to bulk selection";
+
+/// Resolution outcome for [`App::goto_queue`]'s target lookup — mirrors the
+/// retired queue action-menu's disabled-reason precedence (row existence,
+/// then the two data gaps; the tmux check happens before this is even
+/// consulted).
+enum QueueGotoTarget {
+    NothingSelected,
+    NoSession,
+    NoWorktree,
+    Ready(String, String),
+}
 
 impl App {
     /// Refuse `btn` on `pane` with a status line when that pane's OWN
@@ -200,11 +211,6 @@ impl App {
                 None => false,
             },
             A::ClearEsc => self.clear_esc(),
-            A::OpenActionMenu => {
-                let u = self.open_actions_or_run();
-                cmds.extend(u.cmds);
-                u.dirty
-            }
             A::OpenTaskMenu => {
                 // `t` is a WORKTREES chip (keymap-gated there), so the def picker
                 // always carries the selected worktree row's context. Also
@@ -285,6 +291,12 @@ impl App {
                 cmds.extend(u.cmds);
                 u.dirty
             }
+            // `g` on QUEUE: resume the selected task's Claude session in tmux.
+            A::GotoQueue => {
+                let u = self.goto_queue();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
             // `x` on WORKTREES: confirm removing the selected worktree.
             A::RemoveSelectedWorktree => {
                 let u = self.remove_selected_worktree();
@@ -334,11 +346,14 @@ impl App {
         Some((sels, is_bulk))
     }
 
-    /// `r` on QUEUE. Terminal (done/failed/unknown) and needs-input tasks re-queue
-    /// via the `retry` RPC; queued/running (and archived) rows are ineligible. A
-    /// single row dispatches one call (with a per-status no-op status line when
-    /// ineligible); a range fires an `RpcSeq` over every eligible member with the
-    /// familiar "requeued N" count feedback.
+    /// `r` on QUEUE (and the `[r]un`/re-run chip). Re-queue ALWAYS confirms first
+    /// (parity with the stop verb and the worktree remove): it freezes the
+    /// per-task `retry` RPCs and opens `Mode::Confirm`. Terminal (done/failed/
+    /// cancelled/unknown) and needs-input tasks are eligible; queued/running
+    /// (and archived) rows are ineligible. Enter/y in that dialog dispatches the `RpcSeq` (verb
+    /// "reran", see `update`); a single ineligible row explains why with a
+    /// per-status no-op line, and a selection with nothing re-queueable never
+    /// opens the dialog — it sets a status line instead.
     pub(super) fn requeue_selected(&mut self) -> Update {
         let requeue_ok = |s: TaskStatus| {
             matches!(
@@ -347,6 +362,7 @@ impl App {
                     | TaskStatus::VerifyFailed
                     | TaskStatus::NeedsInput
                     | TaskStatus::Done
+                    | TaskStatus::Cancelled
                     | TaskStatus::Unknown
             )
         };
@@ -354,37 +370,52 @@ impl App {
             return Update::default();
         };
         if !is_bulk {
+            // Single row: keep the per-status no-op line explaining why the one
+            // row can't re-queue; an eligible row opens the confirm dialog.
             let Some((id, status, archived)) = rows.into_iter().next() else {
                 return Update::default();
             };
             if archived {
-                self.status_line = Some("cannot requeue an archived task".into());
+                self.status_line = Some("cannot rerun an archived task".into());
                 return Update { dirty: true, cmds: vec![] };
             }
             if !requeue_ok(status) {
-                self.status_line = Some(format!("cannot requeue a {} task", status_kebab(status)));
+                self.status_line = Some(format!("cannot rerun a {} task", status_kebab(status)));
                 return Update { dirty: true, cmds: vec![] };
             }
-            let cmd = self.dispatch_rpc("requeue task", "retry", serde_json::json!({ "id": id }), RpcOpts::default());
-            return Update { dirty: true, cmds: vec![cmd] };
+            let calls =
+                vec![RpcCall { method: "retry".into(), params: serde_json::json!({ "id": id }) }];
+            self.mode = Self::requeue_confirm_mode(1, calls);
+            return Update { dirty: true, cmds: vec![] };
         }
         let ids: Vec<String> =
             rows.into_iter().filter(|(_, s, arch)| !arch && requeue_ok(*s)).map(|(id, _, _)| id).collect();
         if ids.is_empty() {
-            self.status_line = Some("no re-queueable tasks in selection".into());
+            self.status_line = Some("no rerunnable tasks in selection".into());
             return Update { dirty: true, cmds: vec![] };
         }
-        self.clear_range_and_marks(ListPane::Queue);
-        Update {
-            dirty: true,
-            cmds: vec![Cmd::RpcSeq {
-                verb: "requeued".into(),
-                calls: ids
-                    .into_iter()
-                    .map(|id| RpcCall { method: "retry".into(), params: serde_json::json!({ "id": id }) })
-                    .collect(),
-                invalidate_defs_for: None,
-            }],
+        let n = ids.len();
+        let calls = ids
+            .into_iter()
+            .map(|id| RpcCall { method: "retry".into(), params: serde_json::json!({ "id": id }) })
+            .collect();
+        self.mode = Self::requeue_confirm_mode(n, calls);
+        Update { dirty: true, cmds: vec![] }
+    }
+
+    /// Build the QUEUE re-queue confirm dialog for `n` tasks. Mirror of the stop
+    /// dialog `cancel_selected` builds; `calls` are the frozen `retry` RPCs the
+    /// Confirm button fires via [`ConfirmAction::RequeueTasks`]. The range/marks
+    /// are cleared on confirm (in `run_confirm_action`), not at open time.
+    fn requeue_confirm_mode(n: usize, calls: Vec<RpcCall>) -> Mode {
+        let plural = if n == 1 { "" } else { "s" };
+        Mode::Confirm {
+            title: format!("Rerun {n} task{plural}"),
+            // No leading spaces — the modal's interior padding provides the inset.
+            body: vec![format!("Rerun {n} task{plural}?")],
+            confirm_label: "Rerun".into(),
+            action: ConfirmAction::RequeueTasks { calls },
+            focus: crate::hit::ButtonKind::Confirm,
         }
     }
 
@@ -497,14 +528,16 @@ impl App {
         }
     }
 
-    /// `a` / double-click over a list row (Enter is unbound in list mode). A
+    /// Double-click over a list row (Enter is unbound in list mode). A
     /// single-row selection on the TASKS pane runs the highlighted definition
     /// directly (no menu hop — zero-arg defs dispatch immediately, defs with
-    /// args open the run form); single rows on queue/worktrees open the action
-    /// menu. A bulk range refuses on QUEUE (its single-target Resume menu
-    /// isn't bulk-doable) and on TASKS (no bulk-doable verb there either,
-    /// mirroring `r`'s own guard); on WORKTREES it falls through to
-    /// [`Self::open_bulk_menu`], which fires the confirm dialog directly.
+    /// args open the run form); a single row on QUEUE resumes that task's
+    /// Claude session directly (mirrors the `g`/`[g]oto` verb); a single row on
+    /// WORKTREES has no direct verb here (its `r`/`g`/`x` hotkeys act on the
+    /// row instead). A bulk range refuses on QUEUE (goto isn't bulk-doable)
+    /// and on TASKS (no bulk-doable verb there either, mirroring `r`'s own
+    /// guard); on WORKTREES it falls through to [`Self::open_bulk_menu`],
+    /// which fires the confirm dialog directly.
     pub(super) fn open_actions_or_run(&mut self) -> Update {
         let ui = self.active_ui();
         let pane = ui.last_list_pane;
@@ -517,23 +550,25 @@ impl App {
         }
         if bulk {
             let btn = match pane {
-                ListPane::Queue => crate::hit::PaneButton::Actions,
+                ListPane::Queue => crate::hit::PaneButton::Goto,
                 ListPane::Tasks => crate::hit::PaneButton::Run,
                 ListPane::Worktrees => crate::hit::PaneButton::Remove,
             };
             if self.bulk_blocked(pane, btn) {
                 return Update { dirty: true, cmds: vec![] };
             }
-            // `open_bulk_menu` now resolves rows from `selection ∪ marks` itself
-            // (the `start`/`end` args are used only by the unreachable Tasks arm),
-            // so the frozen range is no longer the source of truth for Worktrees.
-            let (start, end) = crate::view::selection_range(&sel);
-            return self.open_bulk_menu(pane, start, end);
+            // `open_bulk_menu` resolves rows from `selection ∪ marks` itself —
+            // no frozen range needed.
+            return self.open_bulk_menu(pane);
         }
-        match self.open_action_menu() {
-            Some(mode) => self.mode = mode,
-            None => self.status_line = Some("nothing selected".into()),
+        // Single-row QUEUE resumes the task's Claude session directly (no menu
+        // hop, mirrors the retired single-target Resume menu). Single-row
+        // WORKTREES has no direct verb here — its `r`/`g`/`x` hotkeys act on
+        // the row instead — so it just reports nothing to do.
+        if pane == ListPane::Queue {
+            return self.goto_queue();
         }
+        self.status_line = Some("nothing selected".into());
         Update { dirty: true, cmds: vec![] }
     }
 
@@ -576,25 +611,42 @@ impl App {
         if def.args.is_empty() {
             return Update {
                 dirty: true,
-                cmds: vec![Self::run_definition_cmd(&def.repo, &def.name, &[], None)],
+                cmds: vec![Self::run_definition_cmd(&def.repo, &def.name, &[], None, None)],
             };
         }
         let rows = self.active_worktree_rows();
         let selected = self.selected_worktree_row();
+        let worktrees = Self::worktree_names(&rows);
         let (args, initial) =
             crate::worktree_context::ambient_run_args(&def.args, &rows, selected.as_ref());
-        let cmds = self.open_def_args(def.repo, def.name, args, HashMap::new(), initial, None);
+        let branches = self.active_worktree_branches();
+        let cmds = self
+            .open_def_args(def.repo, def.name, args, HashMap::new(), initial, None, worktrees, branches);
         Update { dirty: true, cmds }
     }
 
     /// Build the fire-and-forget `runDefinition` command. Client timeout is
     /// treated as success (discovery can outlive it; the push subscription
     /// re-syncs), and a successful run invalidates the repo's def summaries.
-    pub(super) fn run_definition_cmd(repo: &str, name: &str, values: &[String], worktree: Option<&str>) -> Cmd {
+    ///
+    /// `target_ref` (a canonical `pr:N` / `ticket:ID` / `worktree:<name>`)
+    /// resolves the worktree-typed arg on submit; when it is `Some` the command
+    /// sends `params.ref` and does NOT also send `params.worktree`, so the
+    /// daemon honors the ref (create-or-reuse) instead of the legacy worktree
+    /// hint. `worktree` (the launch context) is sent only when there is no ref.
+    pub(super) fn run_definition_cmd(
+        repo: &str,
+        name: &str,
+        values: &[String],
+        worktree: Option<&str>,
+        target_ref: Option<&str>,
+    ) -> Cmd {
         let mut params = serde_json::json!({
             "repo": repo, "name": name, "args": values, "source": "tui",
         });
-        if let Some(wt) = worktree {
+        if let Some(r) = target_ref {
+            params["ref"] = serde_json::Value::String(r.to_string());
+        } else if let Some(wt) = worktree {
             params["worktree"] = serde_json::Value::String(wt.to_string());
         }
         Cmd::Rpc {
@@ -620,11 +672,37 @@ impl App {
     }
 
     /// Active project's worktree rows (unfiltered), used for ambient overlays.
-    fn active_worktree_rows(&self) -> Vec<crate::selectors::WorktreeRow> {
+    pub(super) fn active_worktree_rows(&self) -> Vec<crate::selectors::WorktreeRow> {
         match (&self.snapshot, self.active_repo()) {
             (Some(snap), Some(repo)) => crate::selectors::worktree_rows(snap, &repo),
             _ => Vec::new(),
         }
+    }
+
+    /// The real worktrees' identifiers (`raw_name`, minus session rows) — the
+    /// combobox seed and the exact-match set for the submit ref resolution.
+    fn worktree_names(rows: &[crate::selectors::WorktreeRow]) -> Vec<String> {
+        rows.iter().filter(|r| !r.is_session).map(|r| r.raw_name.clone()).collect()
+    }
+
+    /// The active project's worktree identifiers (see [`Self::worktree_names`]).
+    pub(super) fn active_worktree_names(&self) -> Vec<String> {
+        Self::worktree_names(&self.active_worktree_rows())
+    }
+
+    /// The active project's worktree BRANCHES (non-session, non-empty), deduped
+    /// and INCLUDING main/master — the seed for a `type: branch` dropdown. This
+    /// is deliberately broader than `worktree_context::ambient_run_args`, which
+    /// excludes main/master (a `source` to squash from is never main; a `target`
+    /// to land on usually is).
+    pub(super) fn active_worktree_branches(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        self.active_worktree_rows()
+            .into_iter()
+            .filter(|r| !r.is_session && !r.branch.is_empty())
+            .map(|r| r.branch)
+            .filter(|b| seen.insert(b.clone()))
+            .collect()
     }
 
     /// Currently-selected worktree row (clamped cursor into the pane's rows).
@@ -639,9 +717,8 @@ impl App {
     }
 
     /// The WORKTREES row under the cursor in the CURRENT (search-filtered) view —
-    /// the exact row the `r`/`g`/`x` verbs act on. Mirrors the resolution the
-    /// retired worktree action menu used (`open_action_menu`'s worktrees arm):
-    /// cursor is an index into the FILTERED rows, mapped back to the full set.
+    /// the exact row the `r`/`g`/`x` verbs act on: cursor is an index into the
+    /// FILTERED rows, mapped back to the full set.
     fn selected_worktree_row_filtered(&self) -> Option<crate::selectors::WorktreeRow> {
         let snap = self.snapshot.as_ref()?;
         let repo = self.active_repo()?;
@@ -710,6 +787,79 @@ impl App {
         Update { dirty: true, cmds: vec![Cmd::OpenTmux { path: row.path.clone() }] }
     }
 
+    /// `g` on QUEUE (and the `[g]oto` chip): resume the selected task's Claude
+    /// session in a new tmux window rooted at its worktree — the queue's
+    /// former single-row Resume menu action, now a direct verb. The daemon
+    /// drives tmux, so it is inert with a status line outside tmux, when the
+    /// run has recorded no Claude session id yet, or when no worktree path
+    /// resolves.
+    pub(super) fn goto_queue(&mut self) -> Update {
+        // A bulk range isn't in the doable set — refuse rather than silently
+        // targeting just the cursor row's task.
+        if self.bulk_blocked(ListPane::Queue, crate::hit::PaneButton::Goto) {
+            return Update { dirty: true, cmds: vec![] };
+        }
+        if !self.inside_tmux {
+            self.status_line = Some("not inside tmux".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        match self.queue_goto_target() {
+            QueueGotoTarget::NothingSelected => {
+                self.status_line = Some("nothing selected".into());
+                Update { dirty: true, cmds: vec![] }
+            }
+            QueueGotoTarget::NoSession => {
+                self.status_line = Some("no session yet (task never ran)".into());
+                Update { dirty: true, cmds: vec![] }
+            }
+            QueueGotoTarget::NoWorktree => {
+                self.status_line = Some("no worktree for this task".into());
+                Update { dirty: true, cmds: vec![] }
+            }
+            QueueGotoTarget::Ready(session_id, path) => {
+                Update { dirty: true, cmds: vec![Cmd::TmuxResume { path, session_id }] }
+            }
+        }
+    }
+
+    /// Resolve the QUEUE cursor row's Claude session id + worktree path for
+    /// [`Self::goto_queue`]: the selected run's recorded Claude session +
+    /// worktree path (read from its run record), falling back to the task's
+    /// `resume_session_id` and the snapshot worktree's path — mirrors the
+    /// retired queue action-menu's own resolution.
+    fn queue_goto_target(&self) -> QueueGotoTarget {
+        let Some(snap) = self.snapshot.as_ref() else { return QueueGotoTarget::NothingSelected };
+        let Some(repo) = self.active_repo() else { return QueueGotoTarget::NothingSelected };
+        let ui = self.active_ui();
+        let rows = crate::selectors::queue_rows(snap, &repo, self.now_epoch_s);
+        let vis = crate::selectors::filter_rows(&rows, &ui.search[0], |r| r.summary.clone());
+        let cursor = ui.selections[0].cursor.min(vis.len().saturating_sub(1));
+        let Some(row) = vis.get(cursor).and_then(|&i| rows.get(i)) else {
+            return QueueGotoTarget::NothingSelected;
+        };
+        let Some(task) =
+            snap.tasks.iter().chain(snap.archived_recent.iter()).find(|t| t.id == row.task_id)
+        else {
+            return QueueGotoTarget::NothingSelected;
+        };
+        let run = self.run_files.as_ref().filter(|(id, _)| id == &row.task_id).map(|(_, f)| f);
+        let session_id =
+            run.and_then(|f| f.session_id.clone()).or_else(|| task.resume_session_id.clone());
+        let worktree_path = run.and_then(|f| f.worktree_path.clone()).or_else(|| {
+            task.target.worktree.as_deref().and_then(|w| {
+                snap.worktrees
+                    .get(&repo)
+                    .and_then(|wts| wts.iter().find(|i| i.name == w))
+                    .map(|i| i.path.clone())
+            })
+        });
+        match (session_id, worktree_path) {
+            (None, _) => QueueGotoTarget::NoSession,
+            (Some(_), None) => QueueGotoTarget::NoWorktree,
+            (Some(session_id), Some(path)) => QueueGotoTarget::Ready(session_id, path),
+        }
+    }
+
     /// `x` on WORKTREES (and the `[x]remove` chip): selection-aware, mirroring
     /// the tasks pane's `r`. A bulk selection (multi-row range OR any mark)
     /// opens the bulk remove confirm dialog directly (eligibility frozen at
@@ -728,8 +878,7 @@ impl App {
         let sel = ui.selections[ListPane::Worktrees.idx()];
         let marks = &ui.marks[ListPane::Worktrees.idx()];
         if crate::view::is_bulk_selection(&sel, marks) {
-            let (start, end) = crate::view::selection_range(&sel);
-            return self.open_bulk_menu(ListPane::Worktrees, start, end);
+            return self.open_bulk_menu(ListPane::Worktrees);
         }
         let Some(row) = self.selected_worktree_row_filtered() else {
             self.status_line = Some("no worktree selected".into());

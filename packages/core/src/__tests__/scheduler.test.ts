@@ -158,11 +158,9 @@ describe("schedule", () => {
 		const alpha3 = task({ repo: "alpha", worktree: "wt-a-3" });
 		const beta1 = task({ repo: "beta", worktree: "wt-b-1" });
 		const beta2 = task({ repo: "beta", worktree: "wt-b-2" });
-		const decision = schedule(
-			[alpha1, alpha2, alpha3, beta1, beta2],
-			idle,
-			{ perProjectMax: 2 },
-		);
+		const decision = schedule([alpha1, alpha2, alpha3, beta1, beta2], idle, {
+			perProjectMax: 2,
+		});
 		expect(decision.start.map((t) => t.id).sort()).toEqual(
 			[alpha1.id, alpha2.id, beta1.id, beta2.id].sort(),
 		);

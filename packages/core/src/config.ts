@@ -178,7 +178,9 @@ export function loadProjectGithubId(projectDir: string): string | undefined {
  * loadProjectGithubId: absent file, absent key, a non-string, or an empty string
  * all yield undefined (callers fall back to the built-in `opus` default), so a
  * bad value never wedges config loading. */
-export function loadProjectDefaultModel(projectDir: string): string | undefined {
+export function loadProjectDefaultModel(
+	projectDir: string,
+): string | undefined {
 	const path = join(projectDir, "vars.yaml");
 	if (!existsSync(path)) return undefined;
 	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};

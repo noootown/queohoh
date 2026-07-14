@@ -841,7 +841,7 @@ mod tests {
         app.size = (w, h);
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = HitMap::new();
-        terminal.draw(|frame| hits = render_frame(&app, frame)).unwrap();
+        terminal.draw(|frame| hits = render_frame(&mut app, frame)).unwrap();
         (terminal, hits)
     }
 
@@ -1466,7 +1466,7 @@ mod tests {
         app.size = (80, 24);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| {
-            render_frame(&app, frame);
+            render_frame(&mut app, frame);
         }).unwrap();
         let wrapped = app.detail_wrapped_len.get();
         assert!(wrapped > 1, "the long line wrapped into many display lines");

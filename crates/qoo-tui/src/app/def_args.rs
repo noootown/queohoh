@@ -5,11 +5,115 @@
 //! change).
 
 use super::*;
+use crate::view::form::{Field, FieldKind, FocusKind, FormState};
+
+/// Initial value for one arg when building its form field: `fixed` wins, then
+/// `initial`, then the declared `default`, then (for an enum) its first option,
+/// else empty. Mirrors the retired `ArgsForm::initial_value` precedence.
+fn initial_arg_value(
+    arg: &ArgSpec,
+    fixed: &HashMap<String, String>,
+    initial: &HashMap<String, String>,
+) -> String {
+    if let Some(v) = fixed.get(&arg.name) {
+        return v.clone();
+    }
+    if let Some(v) = initial.get(&arg.name) {
+        return v.clone();
+    }
+    if let Some(d) = &arg.default {
+        return d.clone();
+    }
+    if let Some(first) = arg.options.as_ref().and_then(|o| o.first()) {
+        return first.clone();
+    }
+    String::new()
+}
+
+/// Resolve a worktree-combobox field value to a canonical target ref: an exact
+/// existing-worktree name → `worktree:<name>` (this wins so a worktree that
+/// happens to look like a PR/ticket still targets the worktree); else the typed
+/// PR/ticket classification ([`crate::ref_classify::classify_ref`]); else a
+/// literal `worktree:<value>` (create-or-reuse a worktree by that name).
+fn resolve_target_ref(value: &str, worktrees: &[String]) -> String {
+    if worktrees.iter().any(|w| w == value) {
+        format!("worktree:{value}")
+    } else if let Some(r) = crate::ref_classify::classify_ref(value) {
+        r
+    } else {
+        format!("worktree:{value}")
+    }
+}
 
 impl App {
-    /// Open the run form. `fixed`/`initial` and `worktree` are caller-decided.
-    /// Returns the prompt-fetch command(s) for the def's right panel (empty when
-    /// the full definition is already cached / in flight).
+    /// Build a [`FormState`] with one field per arg, in declaration order:
+    /// a `fixed` arg becomes a read-only field; an arg with `options` a Dropdown;
+    /// everything else a free-text Textarea (a worktree-typed arg will become a
+    /// Combobox in Phase 3 — the branch is called out below). Focus starts on
+    /// the first non-readonly field. The Primary button is labeled `Run`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn form_from_args(
+        &self,
+        def_name: &str,
+        args: &[ArgSpec],
+        fixed: &HashMap<String, String>,
+        initial: &HashMap<String, String>,
+        worktrees: &[String],
+        branches: &[String],
+        initial_worktree: Option<&str>,
+    ) -> FormState {
+        let fields = args
+            .iter()
+            .map(|a| {
+                let val = initial_arg_value(a, fixed, initial);
+                if fixed.contains_key(&a.name) {
+                    Field::readonly(&a.name, &val)
+                } else if a.is_worktree() {
+                    // A worktree-typed arg is a Combobox seeded with the repo's
+                    // worktree names — or, when launched FROM a worktree row, a
+                    // read-only field locked to that worktree (no re-targeting).
+                    match initial_worktree {
+                        Some(wt) => Field::readonly(&a.name, wt),
+                        None => {
+                            // Required: an empty combobox must block submit
+                            // inline (via `FormState::validate`) rather than
+                            // resolve to the malformed ref `"worktree:"`.
+                            let mut f = Field::combobox(&a.name, worktrees.to_vec(), &val);
+                            f.required = true;
+                            f
+                        }
+                    }
+                } else if a.is_branch() {
+                    // A `type: branch` arg is a dropdown seeded with the repo's
+                    // worktree branches (incl. main/master). Prepend the current
+                    // value when it names a branch with no local worktree (e.g.
+                    // the default `main`) so it stays selectable.
+                    let mut opts = branches.to_vec();
+                    if !val.is_empty() && !opts.contains(&val) {
+                        opts.insert(0, val.clone());
+                    }
+                    Field::dropdown(&a.name, opts, &val)
+                } else if a.options.as_ref().is_some_and(|o| !o.is_empty()) {
+                    Field::dropdown(&a.name, a.options.clone().unwrap_or_default(), &val)
+                } else if a.is_text() {
+                    // `type: text` opts into the multiline, auto-growing textarea
+                    // (e.g. autofix's `situation`). Every other free-text arg is a
+                    // single-line input.
+                    Field::textarea(&a.name, &val, a.default.is_none())
+                } else {
+                    Field::input(&a.name, &val, a.default.is_none())
+                }
+            })
+            .collect();
+        FormState::new(def_name, "Run", fields)
+    }
+
+    /// Open the run form. `fixed`/`initial` and `worktree` are caller-decided;
+    /// `worktrees` seeds a worktree-typed arg's combobox (the repo's worktree
+    /// names, from the call site's `active_worktree_names()`). Returns the
+    /// prompt-fetch command(s) for the def's right panel (empty when the full
+    /// definition is already cached / in flight).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn open_def_args(
         &mut self,
         repo: String,
@@ -18,10 +122,26 @@ impl App {
         fixed: HashMap<String, String>,
         initial: HashMap<String, String>,
         worktree: Option<String>,
+        worktrees: Vec<String>,
+        branches: Vec<String>,
     ) -> Vec<Cmd> {
         let cmds = self.ensure_full_def(&repo, &name);
+        let state = self.form_from_args(
+            &name,
+            &args,
+            &fixed,
+            &initial,
+            &worktrees,
+            &branches,
+            worktree.as_deref(),
+        );
         self.mode = Mode::DefArgs {
-            form: crate::view::args_form::ArgsForm::new(repo, name, args, fixed, initial, worktree),
+            state,
+            repo,
+            def_name: name,
+            args,
+            initial_worktree: worktree,
+            preview_scroll: 0,
         };
         cmds
     }
@@ -118,14 +238,17 @@ impl App {
             self.mode = Mode::List;
             return Update {
                 dirty: true,
-                cmds: vec![Self::run_definition_cmd(&def.repo, &def.name, &[], worktree.as_deref())],
+                cmds: vec![Self::run_definition_cmd(&def.repo, &def.name, &[], worktree.as_deref(), None)],
             };
         }
         let fixed = branch
             .as_deref()
             .map(crate::worktree_context::context_arg_values)
             .unwrap_or_default();
-        let cmds = self.open_def_args(def.repo, def.name, def.args, fixed, HashMap::new(), worktree);
+        let worktrees = self.active_worktree_names();
+        let branches = self.active_worktree_branches();
+        let cmds = self
+            .open_def_args(def.repo, def.name, def.args, fixed, HashMap::new(), worktree, worktrees, branches);
         Update { dirty: true, cmds }
     }
 
@@ -157,84 +280,154 @@ impl App {
         }
     }
 
-    /// `Mode::DefArgs` key handling. Dropdown-open: ↑/↓ move, Enter picks, Esc
-    /// closes the dropdown only. Dropdown-closed: Tab/Shift-Tab are the ONLY
-    /// focus movers (app-wide form standard); ↑/↓ move the cursor within a
-    /// multiline free-text value and are inert at its top/bottom line or on an
-    /// enum/fixed row (they never step focus); ←/→ cycle an enum or move the
-    /// cursor in text; Home/End jump within the current line; Shift+Enter
-    /// inserts a hard newline; plain Enter
-    /// opens an enum dropdown or validates+submits; Esc cancels; printable/
-    /// Backspace edit at the cursor.
+    /// `Mode::DefArgs` key handling — mirrors `form_key` (the shared field-engine
+    /// standard) exactly, differing only in the mode pattern and that the Primary
+    /// button submits via `submit_def_args`. Dropdown-open: ↑/↓ move the
+    /// highlight, Enter picks, Esc closes the dropdown only. Dropdown-closed:
+    /// Tab/Shift-Tab are the ONLY focus movers; ↑/↓ open a focused dropdown or
+    /// move the caret between visual lines in a focused textarea (never stepping
+    /// focus); ←/→/Home/End/Backspace/printable edit the focused text field;
+    /// Shift+Enter inserts a newline; plain Enter NEVER submits from a field
+    /// (a textarea takes a newline, a single-line input advances focus, a
+    /// dropdown opens); only the Primary button submits. Esc cancels.
     pub(super) fn def_args_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
         use crossterm::event::{KeyCode::*, KeyModifiers};
-        let dropdown_open = matches!(&self.mode, Mode::DefArgs { form } if form.dropdown.is_some());
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
-        let Mode::DefArgs { form } = &mut self.mode else {
+        let Mode::DefArgs { state, .. } = &mut self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
+        let dropdown_open = state.dropdown_open;
+        // A focused Combobox (type-or-pick) has its own handling whether or not
+        // its list is open: printable/Backspace edit the value AND (re)open the
+        // filtered list; Up/Down open or move the highlight; Enter picks the
+        // highlight (or the typed ref) / opens when closed; Esc closes the list
+        // only (else cancels); ←/→/Home/End move the caret; Tab/Shift-Tab move
+        // focus (the app-wide standard).
+        if state.is_combobox_focused() {
+            return match ev.code {
+                Esc => {
+                    if dropdown_open { state.close_dropdown(); } else { self.mode = Mode::List; }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Enter => {
+                    if dropdown_open { state.dropdown_pick(); } else { state.open_dropdown(); }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Up => {
+                    if dropdown_open { state.dropdown_move(-1); } else { state.open_dropdown(); }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Down => {
+                    if dropdown_open { state.dropdown_move(1); } else { state.open_dropdown(); }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Left => { state.move_left(); Update { dirty: true, cmds: vec![] } }
+                Right => { state.move_right(); Update { dirty: true, cmds: vec![] } }
+                Home => { state.move_home(); Update { dirty: true, cmds: vec![] } }
+                End => { state.move_end(); Update { dirty: true, cmds: vec![] } }
+                Tab if !shift => { state.focus_next(); Update { dirty: true, cmds: vec![] } }
+                BackTab => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
+                Tab if shift => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
+                Backspace => {
+                    state.backspace();
+                    state.open_dropdown(); // re-open + reset the filtered highlight
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Char(c) if !ctrl && !alt => {
+                    state.insert_char(c);
+                    state.open_dropdown();
+                    Update { dirty: true, cmds: vec![] }
+                }
+                _ => Update { dirty: false, cmds: vec![] },
+            };
+        }
         if dropdown_open {
             match ev.code {
-                Up => { form.dropdown_move(-1); return Update { dirty: true, cmds: vec![] }; }
-                Down => { form.dropdown_move(1); return Update { dirty: true, cmds: vec![] }; }
-                Enter => { form.dropdown_pick(); return Update { dirty: true, cmds: vec![] }; }
-                Esc => { form.close_dropdown(); return Update { dirty: true, cmds: vec![] }; }
+                Up => { state.dropdown_move(-1); return Update { dirty: true, cmds: vec![] }; }
+                Down => { state.dropdown_move(1); return Update { dirty: true, cmds: vec![] }; }
+                Enter => { state.dropdown_pick(); return Update { dirty: true, cmds: vec![] }; }
+                Esc => { state.close_dropdown(); return Update { dirty: true, cmds: vec![] }; }
                 _ => return Update { dirty: false, cmds: vec![] },
             }
         }
-        let enum_focus = form.is_enum(form.focus);
+        let is_dropdown = state.is_dropdown_focused();
+        let fk = state.focus_kind();
         match ev.code {
             Esc => { self.mode = Mode::List; Update { dirty: true, cmds: vec![] } }
-            // Newline chord first — it must win over the plain-Enter run arm.
-            // No-op on enum/fixed rows (nothing to insert into). Only shift+enter
-            // inserts a newline; alt+enter is no longer special (falls through).
-            Enter if shift => { form.insert_newline(); Update { dirty: true, cmds: vec![] } }
-            Enter => {
-                if enum_focus && !form.is_fixed(form.focus) {
-                    form.open_dropdown(form.focus);
+            // Newline chord first — must win over the plain-Enter arm; inert off a
+            // focused textarea.
+            Enter if shift => { state.insert_newline(); Update { dirty: true, cmds: vec![] } }
+            // Enter NEVER submits from a text field — only the Primary button
+            // does (explicit-commit rule): a focused dropdown opens, a textarea
+            // takes a newline, a single-line input advances focus.
+            Enter => match fk {
+                FocusKind::Field(_) if is_dropdown => {
+                    state.open_dropdown();
                     Update { dirty: true, cmds: vec![] }
-                } else {
-                    self.submit_def_args()
                 }
-            }
-            Tab if !shift => { form.next_focus(); Update { dirty: true, cmds: vec![] } }
-            BackTab => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
-            Tab if shift => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
-            // ↑/↓ walk a multiline value's lines. They NEVER step focus (only
-            // Tab/Shift-Tab do — app-wide form standard): at a value edge, or on
-            // an enum/fixed row, they are simply inert.
-            Up => { form.try_move_up(); Update { dirty: true, cmds: vec![] } }
-            Down => { form.try_move_down(); Update { dirty: true, cmds: vec![] } }
-            // ←/→ cycle an enum; on a free-text row they move the cursor.
-            Left => {
-                if enum_focus { let i = form.focus; form.cycle_option(i, -1); }
-                else { form.move_left(); }
+                FocusKind::Field(i) if matches!(state.fields[i].kind, FieldKind::Textarea) => {
+                    state.insert_newline();
+                    Update { dirty: true, cmds: vec![] }
+                }
+                FocusKind::Field(_) => {
+                    state.focus_next();
+                    Update { dirty: true, cmds: vec![] }
+                }
+                FocusKind::Primary => self.submit_def_args(),
+                FocusKind::Cancel => { self.mode = Mode::List; Update { dirty: true, cmds: vec![] } }
+            },
+            // Tab/Shift-Tab are the ONLY focus movers; arrows never step focus.
+            Tab if !shift => { state.focus_next(); Update { dirty: true, cmds: vec![] } }
+            BackTab => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
+            Tab if shift => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
+            Up => {
+                if is_dropdown { state.open_dropdown(); } else { state.move_up(); }
                 Update { dirty: true, cmds: vec![] }
             }
-            Right => {
-                if enum_focus { let i = form.focus; form.cycle_option(i, 1); }
-                else { form.move_right(); }
+            Down => {
+                if is_dropdown { state.open_dropdown(); } else { state.move_down(); }
                 Update { dirty: true, cmds: vec![] }
             }
-            Home => { form.move_home(); Update { dirty: true, cmds: vec![] } }
-            End => { form.move_end(); Update { dirty: true, cmds: vec![] } }
-            Backspace => { form.backspace(); Update { dirty: true, cmds: vec![] } }
-            Char(c) if !ctrl && !alt => { form.input_char(c); Update { dirty: true, cmds: vec![] } }
+            Left => { state.move_left(); Update { dirty: true, cmds: vec![] } }
+            Right => { state.move_right(); Update { dirty: true, cmds: vec![] } }
+            Home => { state.move_home(); Update { dirty: true, cmds: vec![] } }
+            End => { state.move_end(); Update { dirty: true, cmds: vec![] } }
+            Backspace => { state.backspace(); Update { dirty: true, cmds: vec![] } }
+            Char(c) if !ctrl && !alt => { state.insert_char(c); Update { dirty: true, cmds: vec![] } }
             _ => Update { dirty: false, cmds: vec![] },
         }
     }
 
     /// Validate and dispatch `runDefinition`, or keep the form open on the first
-    /// missing field (the row is flagged via `error`).
+    /// missing field (the row is flagged via `error`, focus moved to it). When
+    /// the def has a worktree-typed arg, its field value is resolved to a
+    /// canonical ref (`resolve_target_ref`) and sent as `params.ref` (the
+    /// worktree param is then suppressed — see `run_definition_cmd`).
     fn submit_def_args(&mut self) -> Update {
-        let Mode::DefArgs { form } = &mut self.mode else {
+        // The repo's worktree names for the exact-match branch of the ref
+        // resolution — read before the `self.mode` mutable borrow.
+        let worktree_names = self.active_worktree_names();
+        let Mode::DefArgs { state, repo, def_name, args, initial_worktree, .. } = &mut self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
-        match form.validate() {
+        match state.validate() {
             Ok(values) => {
-                let cmd = Self::run_definition_cmd(&form.repo, &form.def_name, &values, form.initial_worktree.as_deref());
+                // A worktree-typed arg's value → canonical ref; no such arg keeps
+                // the old positional-only behavior (target_ref None).
+                let target_ref = args
+                    .iter()
+                    .position(ArgSpec::is_worktree)
+                    .and_then(|i| values.get(i))
+                    .map(|value| resolve_target_ref(value, &worktree_names));
+                let cmd = Self::run_definition_cmd(
+                    repo,
+                    def_name,
+                    &values,
+                    initial_worktree.as_deref(),
+                    target_ref.as_deref(),
+                );
                 self.mode = Mode::List;
                 Update { dirty: true, cmds: vec![cmd] }
             }
@@ -243,22 +436,23 @@ impl App {
     }
 
     /// Route a left-click while the args form is open: a `DropdownItem` picks it,
-    /// a `FormField` focuses (enum rows open the dropdown), `Button` Confirm
-    /// submits and Cancel closes; the `Modal` body is inert.
+    /// a `FormField` focuses (a dropdown field also opens), `Button` Confirm
+    /// submits and Cancel closes; the `Modal`/preview body is inert; anything
+    /// else (outside the popup) dismisses. Mirrors `form_click`.
     pub(super) fn def_args_click(&mut self, target: &HitTarget) -> Update {
         match target {
             HitTarget::DropdownItem(i) => {
-                if let Mode::DefArgs { form } = &mut self.mode {
-                    form.dropdown = Some(*i);
-                    form.dropdown_pick();
+                if let Mode::DefArgs { state, .. } = &mut self.mode {
+                    state.dropdown_index = *i;
+                    state.dropdown_pick();
                 }
                 Update { dirty: true, cmds: vec![] }
             }
             HitTarget::FormField(i) => {
-                if let Mode::DefArgs { form } = &mut self.mode {
-                    form.focus_field(*i);
-                    if form.is_enum(*i) && !form.is_fixed(*i) {
-                        form.open_dropdown(*i);
+                if let Mode::DefArgs { state, .. } = &mut self.mode {
+                    state.focus_field(*i);
+                    if state.is_dropdown_focused() {
+                        state.open_dropdown();
                     }
                 }
                 Update { dirty: true, cmds: vec![] }

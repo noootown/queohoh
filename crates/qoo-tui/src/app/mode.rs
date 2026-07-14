@@ -198,21 +198,8 @@ pub enum Mode {
     /// exactly like `Help`. The data it shows lives in `App::settings`, fetched
     /// once on first open.
     Settings,
-    /// Single-target (or bulk) action menu over the last-focused list pane's
-    /// selection. Lazyvim-style picker: `query` filters `items` by label (empty
-    /// = all), `index` is the highlighted row WITHIN the filtered view (reset to
-    /// 0 on every query change), and `preview_scroll` is the right (description)
-    /// panel's first visible wrapped line (reset to 0 whenever the query or the
-    /// highlighted row changes). Disabled rows are inert on Enter/click.
-    ActionMenu {
-        title: String,
-        items: Vec<crate::action_menu::ActionItem>,
-        index: usize,
-        query: String,
-        preview_scroll: usize,
-    },
     /// Unified destructive-confirmation dialog (remove worktree, bulk remove,
-    /// queue cancel). `title` names the verb; `body` are the message lines (built
+    /// queue cancel, queue re-queue). `title` names the verb; `body` are the message lines (built
     /// per-verb at open time — the branch/warning lines, the truncated name list,
     /// the running-will-be-stopped summary); `confirm_label` is the Confirm
     /// button's verb; `action` is the frozen payload fired on confirm. `focus`
@@ -254,9 +241,23 @@ pub enum Mode {
         query: String,
         preview_scroll: usize,
     },
-    /// Per-arg entry form for a chosen def (Task 18 constructs it; its key
-    /// handling + render land in Task 19/20).
-    DefArgs { form: crate::view::args_form::ArgsForm },
+    /// Per-arg entry form for a chosen def, running on the shared field engine
+    /// ([`crate::view::form::FormState`]) — the same engine as [`Mode::Form`],
+    /// drawn in the two-panel picker shell (fields left, the def's `prompt.md`
+    /// preview right; see `view::def_args::render_def_args`). `state` holds the
+    /// fields/focus/caret/dropdown; `repo`/`def_name`/`args` are the frozen
+    /// launch context (`args` is in the same declaration order as `state.fields`
+    /// so a submit maps field values back to positional args); `initial_worktree`
+    /// is the launch worktree (if any); `preview_scroll` is the right panel's
+    /// first visible wrapped line. Key/click handling lives in `app/def_args.rs`.
+    DefArgs {
+        state: crate::view::form::FormState,
+        repo: String,
+        def_name: String,
+        args: Vec<crate::ipc::types::ArgSpec>,
+        initial_worktree: Option<String>,
+        preview_scroll: usize,
+    },
     /// Session picker (`r` on a worktree row): pick a resumable Claude session to
     /// carry into `Mode::AddTask`, or start fresh. Row 0 is ALWAYS the synthetic
     /// "New session" (fresh task); the loaded `items` follow it. `query` filters
@@ -318,6 +319,10 @@ pub enum ConfirmAction {
     /// The frozen per-task skip/stop RPCs in one `RpcSeq` (verb "cancelled");
     /// clears the QUEUE range first.
     CancelTasks { calls: Vec<crate::event::RpcCall> },
+    /// The frozen per-task `retry` RPCs in one `RpcSeq` (verb "reran");
+    /// clears the QUEUE range first. Mirror of [`Self::CancelTasks`] for the
+    /// QUEUE re-queue (`r`) verb.
+    RequeueTasks { calls: Vec<crate::event::RpcCall> },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

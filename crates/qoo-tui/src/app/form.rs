@@ -43,8 +43,20 @@ impl App {
 
     /// The model dropdown field, preselected to `repo`'s resolved default model.
     pub(super) fn model_field(&self, repo: &str) -> Field {
+        self.model_field_defaulting(repo, None)
+    }
+
+    /// The model dropdown field, preselected to `preferred` when it names a
+    /// known model option (e.g. the model a resumed session already ran on),
+    /// else `repo`'s resolved default. `preferred` is validated against
+    /// `MODEL_OPTIONS` so a stale/foreign value can't select a phantom option.
+    pub(super) fn model_field_defaulting(&self, repo: &str, preferred: Option<&str>) -> Field {
         let options = MODEL_OPTIONS.iter().map(|s| s.to_string()).collect();
-        Field::dropdown("model", options, &self.resolve_default_model(repo))
+        let default = preferred
+            .filter(|m| MODEL_OPTIONS.contains(m))
+            .map(str::to_string)
+            .unwrap_or_else(|| self.resolve_default_model(repo));
+        Field::dropdown("model", options, &default)
     }
 
     /// `Mode::Form` key handling. Dropdown-open: ↑/↓ move the highlight, Enter
@@ -62,10 +74,53 @@ impl App {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
-        let dropdown_open = matches!(&self.mode, Mode::Form { state, .. } if state.dropdown_open);
         let Mode::Form { state, .. } = &mut self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
+        let dropdown_open = state.dropdown_open;
+        // A focused Combobox (type-or-pick) has its own handling whether or not
+        // its list is open — mirrors `def_args_key` exactly (see its comment):
+        // printable/Backspace edit + (re)open, Up/Down open or move the
+        // highlight, Enter picks/opens, Esc closes the list only (else cancels),
+        // ←/→/Home/End move the caret, Tab/Shift-Tab move focus.
+        if state.is_combobox_focused() {
+            return match ev.code {
+                Esc => {
+                    if dropdown_open { state.close_dropdown(); } else { self.mode = Mode::List; }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Enter => {
+                    if dropdown_open { state.dropdown_pick(); } else { state.open_dropdown(); }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Up => {
+                    if dropdown_open { state.dropdown_move(-1); } else { state.open_dropdown(); }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Down => {
+                    if dropdown_open { state.dropdown_move(1); } else { state.open_dropdown(); }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Left => { state.move_left(); Update { dirty: true, cmds: vec![] } }
+                Right => { state.move_right(); Update { dirty: true, cmds: vec![] } }
+                Home => { state.move_home(); Update { dirty: true, cmds: vec![] } }
+                End => { state.move_end(); Update { dirty: true, cmds: vec![] } }
+                Tab if !shift => { state.focus_next(); Update { dirty: true, cmds: vec![] } }
+                BackTab => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
+                Tab if shift => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
+                Backspace => {
+                    state.backspace();
+                    state.open_dropdown(); // re-open + reset the filtered highlight
+                    Update { dirty: true, cmds: vec![] }
+                }
+                Char(c) if !ctrl && !alt => {
+                    state.insert_char(c);
+                    state.open_dropdown();
+                    Update { dirty: true, cmds: vec![] }
+                }
+                _ => Update { dirty: false, cmds: vec![] },
+            };
+        }
         if dropdown_open {
             match ev.code {
                 Up => { state.dropdown_move(-1); return Update { dirty: true, cmds: vec![] }; }

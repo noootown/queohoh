@@ -1,30 +1,31 @@
 ---
-source: crates/qoo-tui/tests/args_form_snapshot.rs
+source: crates/qoo-tui/tests/def_args_snapshot.rs
+assertion_line: 76
 expression: term.backend()
 ---
 "                                                            daemon unreachable — retrying… running 0"
-"╭📋 QUEUE── [r] [x] [a] · [c] [z]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
+"╭📋 QUEUE── [r] [x] [g] · [c] [z]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
 "│                                ││                                                                │"
 "│ 🔍 [/]fi╭ pr-ready args ───────────────────╮╭ pr-ready ────────────────────────────────╮         │" Hidden by multi-width symbols: [(3, " ")]
 "│         │                                  ││                                          │         │"
-"│ queue em│   pr  PR number                  ││  Flip the PR from WIP to                 │         │"
-"│         │    first line of the report      ││  ready-for-review.                       │         │"
-"│         │    second line that is long en   ││                                          │         │"
-"│         │    ough to soft-wrap across th   ││  Run a self review sized to the diff,    │         │"
-"│         │    e field                       ││  sync the description, then assign the   │         │"
+"│ queue em│  ╭ pr ────────────────────────╮  ││  Flip the PR from WIP to                 │         │"
+"│         │  │                            │  ││  ready-for-review.                       │         │"
+"│         │  │                            │  ││                                          │         │"
+"│         │  │                            │  ││  Run a self review sized to the diff,    │         │"
+"│         │  ╰────────────────────────────╯  ││  sync the description, then assign the   │         │"
 "│         │                                  ││  four standing reviewers.                │         │"
-"│         │   mode ‹ready›                   ││                                          │         │"
-"│         │                                  ││                                          │         │"
-"│         │   source wt-a                    ││                                          │         │"
+"│         │  ╭ mode ──────────────────────╮  ││                                          │         │"
+"│         │  │ready                      ▾│  ││                                          │         │"
+"│         │  ╰────────────────────────────╯  ││                                          │         │"
 "╰─────────│                                  ││                                          │         │"
-"╭⚡TASKS ·│                                  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]fi│                                  ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
-"│ no task │                                  ││                                          │         │"
+"╭⚡TASKS ·│  ╭ source ────────────────────╮  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]fi│  │wt-a                        │  ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
+"│ no task │  ╰────────────────────────────╯  ││                                          │         │"
 "│         │                                  ││                                          │         │"
 "│         │                                  ││                                          │         │"
 "╰─────────│                                  ││                                          │         │"
 "╭🌲 WORKTR│                                  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]fi│   [ Run ]  [ Cancel ]            ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]fi│  [ Run ]  [ Cancel ]             ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
 "│ no workt│                                  ││                                          │         │"
 "│         ╰──────────────────────────────────╯╰──────────────────────────────────────────╯         │"
 "│                                ││                                                                │"

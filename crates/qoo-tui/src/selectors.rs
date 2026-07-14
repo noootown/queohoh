@@ -125,6 +125,11 @@ const TIMED_OUT_REASON: &str = "timed out";
 /// The worker's exact `reason` string (`worker.ts`'s `SESSION_LIMIT_RE` match)
 /// for a run whose result text reported Claude's own session/usage limit.
 const SESSION_LIMIT_REASON: &str = "session limit";
+/// The worker's exact `reason` string (`worker.ts`'s `OUT_OF_BUDGET_RE` match)
+/// for a run whose result text reported Anthropic's credit-balance/out-of-credits
+/// billing error — distinct from a session limit (that resets on a timer; this
+/// needs an account top-up before a rerun succeeds).
+const OUT_OF_BUDGET_REASON: &str = "out of budget";
 
 // Status glyphs MUST match the `GLYPH_*` consts in `view::theme` char-for-char —
 // `theme::glyph_style` colors a row by matching this char. (Kept as literals to
@@ -143,6 +148,7 @@ fn status_glyph(task: &TaskInstance) -> char {
         TaskStatus::Failed => match task.error.as_deref() {
             Some(SESSION_LIMIT_REASON) => '⊠',
             Some(TIMED_OUT_REASON) => '⧗',
+            Some(OUT_OF_BUDGET_REASON) => '¤',
             _ => '✗',
         },
         TaskStatus::Cancelled => '⊘',
@@ -1756,11 +1762,12 @@ mod tests {
 
     #[test]
     fn queue_rows_sub_classifies_failed_by_error_reason() {
-        // `worker.ts` stamps the exact strings "timed out" / "session limit" into
-        // `task.error` for those two failure modes; any other reason (or none)
-        // stays the generic `✗`. Both special cases are still red (see
-        // `theme::glyph_style`) — only the glyph differs, so they read apart at a
-        // glance without a color that could be confused for a different severity.
+        // `worker.ts` stamps the exact strings "timed out" / "session limit" /
+        // "out of budget" into `task.error` for those failure modes; any other
+        // reason (or none) stays the generic `✗`. All special cases are still red
+        // (see `theme::glyph_style`) — only the glyph differs, so they read apart
+        // at a glance without a color that could be confused for a different
+        // severity.
         let mut timed_out = task_on(TaskStatus::Failed, "t1", "platform", Some("wt-a"));
         timed_out.error = Some("timed out".into());
         let mut session_limit = task_on(TaskStatus::Failed, "t2", "platform", Some("wt-a"));
@@ -1769,8 +1776,13 @@ mod tests {
         generic.error = Some("exit code 1".into());
         let mut no_reason = task_on(TaskStatus::Failed, "t4", "platform", Some("wt-a"));
         no_reason.error = None;
+        let mut out_of_budget = task_on(TaskStatus::Failed, "t5", "platform", Some("wt-a"));
+        out_of_budget.error = Some("out of budget".into());
         let rows = queue_rows(
-            &snap(vec![timed_out, session_limit, generic, no_reason], vec![]),
+            &snap(
+                vec![timed_out, session_limit, generic, no_reason, out_of_budget],
+                vec![],
+            ),
             "platform",
             now(),
         );
@@ -1779,6 +1791,7 @@ mod tests {
         assert_eq!(glyph_for("t2"), '⊠');
         assert_eq!(glyph_for("t3"), '✗');
         assert_eq!(glyph_for("t4"), '✗');
+        assert_eq!(glyph_for("t5"), '¤');
     }
 
     #[test]
@@ -2129,9 +2142,9 @@ mod tests {
     #[test]
     fn arg_summary_names_and_defaults() {
         let args = vec![
-            ArgSpec { name: "pr".into(), default: None, options: None, description: None },
-            ArgSpec { name: "mode".into(), default: Some("ready".into()), options: None, description: None },
-            ArgSpec { name: "review".into(), default: Some("auto".into()), options: None, description: None },
+            ArgSpec { name: "pr".into(), r#type: None, default: None, options: None, description: None },
+            ArgSpec { name: "mode".into(), r#type: None, default: Some("ready".into()), options: None, description: None },
+            ArgSpec { name: "review".into(), r#type: None, default: Some("auto".into()), options: None, description: None },
         ];
         assert_eq!(arg_summary(&args), "pr, mode=ready, review=auto");
         assert_eq!(arg_summary(&[]), "");
@@ -2856,9 +2869,9 @@ mod tests {
     #[test]
     fn worktree_last_task_sub_classifies_failed_by_error_reason() {
         // The WORKTREES pane's "Last Task" column derives from the same
-        // `status_glyph` classification as the QUEUE pane — a timed-out or
-        // session-limited run must show its distinct glyph here too, not just
-        // in the queue.
+        // `status_glyph` classification as the QUEUE pane — a timed-out,
+        // session-limited, or out-of-budget run must show its distinct glyph here
+        // too, not just in the queue.
         let mut timed_out = task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-a"));
         timed_out.error = Some("timed out".into());
         let mut s = snap(vec![timed_out], vec![]);
@@ -2875,6 +2888,15 @@ mod tests {
         let rows = worktree_rows(&s, "platform");
         let b = rows.iter().find(|r| r.name == "wt-b").unwrap();
         assert_eq!(b.last.as_ref().unwrap().0, '⊠');
+
+        let mut out_of_budget =
+            task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-a"));
+        out_of_budget.error = Some("out of budget".into());
+        let mut s = snap(vec![out_of_budget], vec![]);
+        s.worktrees = platform_worktrees();
+        let rows = worktree_rows(&s, "platform");
+        let c = rows.iter().find(|r| r.name == "wt-a").unwrap();
+        assert_eq!(c.last.as_ref().unwrap().0, '¤');
     }
 
     #[test]

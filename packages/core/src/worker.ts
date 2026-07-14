@@ -28,6 +28,16 @@ export const VERIFY_TIMEOUT_MS = 600_000;
  * the generic `exit code N` reason, never a crash. */
 export const SESSION_LIMIT_RE = /\b(?:session|usage)\s+limit\b/i;
 
+/** Matches Anthropic's "you're out of credits/money" billing error (e.g.
+ * `Your credit balance is too low to access the Anthropic API`). Distinct from
+ * a session/usage limit: that resets on a timer, but this needs a top-up before
+ * a rerun can succeed. Permissive on the exact wording (not a stable API
+ * contract) — a false negative just falls back to the generic `exit code N`
+ * reason, never a crash. Checked BEFORE `SESSION_LIMIT_RE` so the more specific
+ * billing signal wins if both somehow appear. */
+export const OUT_OF_BUDGET_RE =
+	/credit balance (?:is )?too low|insufficient credits?|out of credits?/i;
+
 export interface WorkerDeps {
 	store: QueueStore;
 	runStore: RunStore;
@@ -221,34 +231,40 @@ export async function runTask(
 			redact: deps.redact,
 			onSpawned: (pid) => deps.onSpawned?.(taskId, pid),
 		});
-		// Reason precedence: a timeout is its own outcome; else a signal (a Stop
-		// kills the process group) wins over exit code, since a stopped run's
-		// signal is the truer cause; else a non-zero exit.
-		if (result.timedOut) {
+		// Reason precedence: a recorded user Stop wins over everything, since it's
+		// the most specific, deliberate signal — and Claude traps SIGTERM to clean
+		// up its terminal, so a stopped run often exits by CODE (no signal) and
+		// would otherwise fall through to the exit-code branch and masquerade as a
+		// `failed` run. Else a timeout is its own outcome; else an unrequested kill
+		// signal (external/OOM) wins over exit code, since it's the truer cause;
+		// else a non-zero exit.
+		if (deps.isCancelled?.(taskId)) {
+			outcome = "cancelled";
+			reason = "stopped by user";
+		} else if (result.timedOut) {
 			outcome = "failed";
 			reason = "timed out";
 		} else if (result.signal !== null) {
-			// A kill signal (timeout already handled above). If the engine recorded
-			// a user Stop for this task, it's a deliberate cancel — not a failure;
-			// any other signal (external/OOM kill) is still a genuine failure.
-			if (deps.isCancelled?.(taskId)) {
-				outcome = "cancelled";
-				reason = "stopped by user";
-			} else {
-				outcome = "failed";
-				reason = `stopped (${result.signal})`;
-			}
+			// A kill signal we did NOT request (a user Stop is handled above): an
+			// external/OOM kill is still a genuine failure.
+			outcome = "failed";
+			reason = `stopped (${result.signal})`;
 		} else if (result.exitCode !== 0) {
 			outcome = "failed";
-			// Claude's own session/usage-limit message lands in `resultText` with a
-			// generic non-zero exit — no distinct exit code or event field marks it.
-			// Stamping the terse "session limit" reason (matched verbatim, not
-			// re-derived, by the TUI's glyph selection) lets the queue/worktree panes
-			// show a distinct icon instead of the generic failed ✗, since retrying
-			// immediately won't help (the fix is to wait for the reset).
-			reason = SESSION_LIMIT_RE.test(result.resultText)
-				? "session limit"
-				: `exit code ${result.exitCode}`;
+			// Claude's own session/usage-limit AND credit-balance messages land in
+			// `resultText` with a generic non-zero exit — no distinct exit code or
+			// event field marks either. Stamping a terse reason (matched verbatim,
+			// not re-derived, by the TUI's glyph selection) lets the queue/worktree
+			// panes show a distinct icon instead of the generic failed ✗, since
+			// retrying immediately won't help. Budget is checked first (more
+			// specific: needs a top-up), then session limit (resets on a timer).
+			if (OUT_OF_BUDGET_RE.test(result.resultText)) {
+				reason = "out of budget";
+			} else if (SESSION_LIMIT_RE.test(result.resultText)) {
+				reason = "session limit";
+			} else {
+				reason = `exit code ${result.exitCode}`;
+			}
 		}
 
 		// Done-condition (`verify`) gate — the framework's own success check.

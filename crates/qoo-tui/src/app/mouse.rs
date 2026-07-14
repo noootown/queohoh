@@ -275,11 +275,6 @@ impl App {
         let mut cmds = Vec::new();
         let target = self.hit.hit(m.column, m.row).cloned();
         let dirty = match m.kind {
-            // An open action menu owns every click: route it via the menu's hit
-            // regions (checked before the list-pane routing below).
-            K::Down(MouseButton::Left) if matches!(self.mode, Mode::ActionMenu { .. }) => {
-                return self.route_menu_click(target);
-            }
             // The def-pick popup owns every click while open.
             K::Down(MouseButton::Left) if matches!(self.mode, Mode::DefPick { .. }) => {
                 return self.route_def_pick_click(target);
@@ -404,10 +399,11 @@ impl App {
                     } else {
                         // Single click selects only. A real double-click — a second
                         // click on the SAME ROW IDENTITY within DOUBLE_CLICK_MS —
-                        // opens the action menu (same target as Enter/a). Keying on
-                        // identity (resolved from the clicked index) not the index
-                        // means a resort between clicks can't fire the menu on a
-                        // row that merely slid into the clicked slot.
+                        // fires the row's default action (same target as
+                        // `open_actions_or_run`). Keying on identity (resolved
+                        // from the clicked index) not the index means a resort
+                        // between clicks can't fire on a row that merely slid
+                        // into the clicked slot.
                         let now = self.now_ms;
                         let identity = self.row_identity(pane, i);
                         let double = match (&self.last_click, &identity) {
@@ -421,8 +417,9 @@ impl App {
                         self.set_cursor(pane, i, &mut cmds);
                         if double {
                             // Consume the sequence so a third click starts fresh.
-                            // Same target as Enter/`a`: a tasks-pane row runs its
-                            // def directly; other panes open the action menu.
+                            // A tasks-pane row runs its def directly; a queue row
+                            // resumes its Claude session; a worktrees row is a
+                            // no-op here (its `r`/`g`/`x` hotkeys act on it instead).
                             self.last_click = None;
                             let u = self.open_actions_or_run();
                             cmds.extend(u.cmds);
@@ -476,10 +473,6 @@ impl App {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::OpenTaskMenu);
                         }
-                        crate::hit::PaneButton::Actions => {
-                            self.set_focus(p);
-                            return self.apply_action(crate::keymap::AppAction::OpenActionMenu);
-                        }
                         crate::hit::PaneButton::Run => {
                             self.set_focus(p);
                             // Run means re-queue on QUEUE, run-def on TASKS, new
@@ -494,7 +487,15 @@ impl App {
                         }
                         crate::hit::PaneButton::Goto => {
                             self.set_focus(p);
-                            return self.apply_action(crate::keymap::AppAction::GotoWorktree);
+                            // Goto means resume-the-session on QUEUE, open-in-
+                            // tmux on WORKTREES (the keymap's per-pane `g` split;
+                            // TASKS has no Goto chip, so this arm never fires there).
+                            let action = match lp {
+                                ListPane::Queue => crate::keymap::AppAction::GotoQueue,
+                                ListPane::Worktrees => crate::keymap::AppAction::GotoWorktree,
+                                ListPane::Tasks => crate::keymap::AppAction::GotoWorktree,
+                            };
+                            return self.apply_action(action);
                         }
                         crate::hit::PaneButton::Cancel => {
                             self.set_focus(p);
@@ -533,10 +534,7 @@ impl App {
             // the preview, over the left panel it moves the selection; it never
             // reaches the panes beneath the modal.
             K::ScrollDown | K::ScrollUp
-                if matches!(
-                    self.mode,
-                    Mode::ActionMenu { .. } | Mode::DefPick { .. } | Mode::DefArgs { .. }
-                ) =>
+                if matches!(self.mode, Mode::DefPick { .. } | Mode::DefArgs { .. }) =>
             {
                 let delta: i32 = if matches!(m.kind, K::ScrollDown) { 1 } else { -1 };
                 return self.menu_wheel(target, delta);

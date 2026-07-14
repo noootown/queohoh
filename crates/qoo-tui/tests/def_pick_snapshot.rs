@@ -23,8 +23,8 @@ fn def_pick_popup_snapshot() {
                 name: "squash-merge".into(),
                 scope: "global".into(),
                 args: vec![
-                    ArgSpec { name: "source".into(), default: None, options: None, description: None },
-                    ArgSpec { name: "target".into(), default: Some("main".into()), options: None, description: None },
+                    ArgSpec { name: "source".into(), r#type: None, default: None, options: None, description: None },
+                    ArgSpec { name: "target".into(), r#type: None, default: Some("main".into()), options: None, description: None },
                 ],
                 has_discovery: false,
                 cron: None,
@@ -40,7 +40,7 @@ fn def_pick_popup_snapshot() {
     };
     let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
     term.draw(|f| {
-        qoo_tui::view::render(&app, f);
+        qoo_tui::view::render(&mut app, f);
     })
     .unwrap();
     insta::assert_snapshot!(term.backend());

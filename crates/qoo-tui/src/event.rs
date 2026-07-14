@@ -51,6 +51,12 @@ pub struct SessionChoice {
     pub session_id: String,
     pub label: String,
     pub mtime_ms: u64,
+    /// The model alias this session last ran on (from the daemon's run store,
+    /// reverse-mapped from the resolved id). `None` for sessions with no run
+    /// data (e.g. started outside queohoh) — the resume form then falls back to
+    /// the project/global default. Absent on the wire → `None`.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -463,13 +463,23 @@ fn queue_nav_crosses_divider_onto_a_real_finished_row() {
     press(&mut app, KeyCode::Down); // 0 → 1 (last active)
     press(&mut app, KeyCode::Down); // 1 → 2 (first finished, across divider)
     assert_eq!(app.ui().selections[0].cursor, 2);
-    // Opening the menu targets that real finished task — the cursor index maps
-    // 1:1 to a real row, so the divider never shifts the row lookup.
-    press(&mut app, KeyCode::Char('a'));
-    match &app.mode {
-        Mode::ActionMenu { title, .. } => assert_eq!(title, "flaky migration"),
-        other => panic!("expected ActionMenu on the failed task, got {other:?}"),
-    }
+    // `g` (goto) targets that real finished task — the cursor index maps 1:1
+    // to a real row, so the divider never shifts the row lookup. Prove it by
+    // planting a run record keyed to the expected task id ("01FAIL", the
+    // "flaky migration" row) and checking the resulting TmuxResume carries
+    // ITS session/path, not some other row's.
+    app.inside_tmux = true;
+    app.run_files = Some((
+        "01FAIL".to_string(),
+        Box::new(RunFiles {
+            session_id: Some("sess-flaky".into()),
+            worktree_path: Some("/repos/acme-flaky".into()),
+            ..Default::default()
+        }),
+    ));
+    let up = press(&mut app, KeyCode::Char('g'));
+    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id }]
+        if path == "/repos/acme-flaky" && session_id == "sess-flaky"));
 }
 
 #[test]
@@ -485,14 +495,15 @@ fn queue_range_selection_spans_the_section_divider() {
 
 #[test]
 fn g_and_shift_g_no_longer_move_the_list_cursor() {
-    // g/G are unbound now (freed for a worktree-pane verb); neither may move the
-    // left-side list cursor. The cursor starts at 0 and must stay there.
+    // g/G never move the left-side list cursor. Shift+G is fully unbound; plain
+    // `g` is a goto verb now (QUEUE resumes the task's Claude session, focused
+    // here by default) — it dispatches/sets a status line but never touches the
+    // cursor, which starts at 0 and must stay there.
     let mut app = crate::test_fixtures::fixture_app();
     let up = app.update(Event::Key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT)));
     assert!(!up.dirty, "shift+G is a no-op");
     assert_eq!(app.ui().selections[0].cursor, 0);
-    let up = press(&mut app, KeyCode::Char('g'));
-    assert!(!up.dirty, "g is a no-op");
+    press(&mut app, KeyCode::Char('g'));
     assert_eq!(app.ui().selections[0].cursor, 0);
 }
 
@@ -704,24 +715,26 @@ fn click_row_focuses_and_selects_without_opening_menu() {
 }
 
 #[test]
-fn double_click_same_row_within_window_opens_menu() {
+fn double_click_same_row_within_window_resumes_its_session() {
     let mut app = app_with_hits();
+    // Row 1 is the queued fixture task "write docs for the cache" (01QUE): a
+    // double-click resumes its Claude session directly (no menu hop).
+    app.inside_tmux = true;
+    app.run_files = Some((
+        "01QUE".to_string(),
+        Box::new(RunFiles {
+            session_id: Some("sess-docs".into()),
+            worktree_path: Some("/repos/acme-docs".into()),
+            ..Default::default()
+        }),
+    ));
     app.now_ms = 1_000;
     app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3)); // click row 1
     app.status_line = None;
     app.now_ms = 1_200; // 200ms later (< 400ms) → double-click
-    app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
-    match &app.mode {
-        // Row 1 is the queued fixture task "write docs for the cache". The queue
-        // menu is now a single Resume row.
-        Mode::ActionMenu { title, items, index, .. } => {
-            assert_eq!(title, "write docs for the cache");
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].label, "Resume");
-            assert_eq!(*index, 0);
-        }
-        other => panic!("expected ActionMenu, got {other:?}"),
-    }
+    let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id }]
+        if path == "/repos/acme-docs" && session_id == "sess-docs"));
 }
 
 #[test]
@@ -1043,7 +1056,7 @@ fn app_rendered(w: u16, h: u16) -> App {
     app.size = (w, h);
     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
     let mut hits = crate::hit::HitMap::new();
-    terminal.draw(|f| hits = crate::view::render(&app, f)).unwrap();
+    terminal.draw(|f| hits = crate::view::render(&mut app, f)).unwrap();
     app.hit = hits;
     app
 }

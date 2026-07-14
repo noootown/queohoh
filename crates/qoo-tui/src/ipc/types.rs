@@ -169,9 +169,32 @@ pub struct WorktreeInfo {
 #[serde(rename_all = "camelCase", default)]
 pub struct ArgSpec {
     pub name: String,
+    #[serde(default, rename = "type")]
+    pub r#type: Option<String>,
     pub default: Option<String>,
     pub options: Option<Vec<String>>,
     pub description: Option<String>,
+}
+
+impl ArgSpec {
+    /// True when this arg is the worktree/target selector (rendered as a
+    /// combobox; resolves to a ref on submit).
+    pub fn is_worktree(&self) -> bool {
+        self.r#type.as_deref() == Some("worktree")
+    }
+
+    /// `type: branch` — rendered as a dropdown seeded with the repo's worktree
+    /// branches (incl. main/master).
+    pub fn is_branch(&self) -> bool {
+        self.r#type.as_deref() == Some("branch")
+    }
+
+    /// `type: text` — the multiline, auto-growing textarea (the opt-in for
+    /// free-text args that need more than one line, e.g. a problem scenario).
+    /// Plain free-text args with no `type` render as a single-line input.
+    pub fn is_text(&self) -> bool {
+        self.r#type.as_deref() == Some("text")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
