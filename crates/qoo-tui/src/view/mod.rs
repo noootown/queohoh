@@ -273,6 +273,15 @@ pub(crate) fn selection_range(sel: &Selection) -> (usize, usize) {
     }
 }
 
+/// Whether `sel` spans more than one row — the "bulk selection" condition that
+/// dims a pane's not-applicable title-bar chips (see
+/// [`crate::view::panes`]/[`crate::hit::bulk_allowed`]) and blocks their
+/// key/click with a status line in `App::apply_action`.
+pub(crate) fn is_bulk_selection(sel: &Selection) -> bool {
+    let (start, end) = selection_range(sel);
+    end > start
+}
+
 /// Window `start` for a cursor-centered slice of `len` rows into `capacity`
 /// rows. Uses only `window_rows(...).0` (see task assumption note): the first
 /// returned value is the first-visible-row offset whether Task 5 returns
@@ -461,7 +470,7 @@ mod tests {
     fn snapshot_wide_140x30() {
         // A wide terminal with a widened left column (override) so the pane inner
         // width clears the labeled-chip threshold: chips render as
-        // `[c]reate  [a]ctions  [z] collapse`.
+        // `[c]reate  [a]ctions  [z]collapse`.
         let mut app = fixture_app();
         // Widened enough to clear the labeled-chip threshold AND leave the
         // WORKTREES pane room for the author + commit-age columns (they drop

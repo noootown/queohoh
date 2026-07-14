@@ -549,6 +549,12 @@ impl App {
     /// become the FIXED arg context; otherwise both are `None`. Returns the
     /// prompt-prefetch commands for the first highlighted def.
     fn open_task_menu(&mut self) -> Vec<Cmd> {
+        // `t` is WORKTREES-only; a bulk range there isn't in the doable set
+        // (only `Remove` is) — refuse rather than silently targeting just the
+        // cursor row's worktree.
+        if self.bulk_blocked(ListPane::Worktrees, crate::hit::PaneButton::Tasks) {
+            return Vec::new();
+        }
         let Some(repo) = self.active_repo() else {
             return Vec::new();
         };

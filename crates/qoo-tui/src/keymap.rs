@@ -45,7 +45,7 @@ pub enum AppAction {
     /// chip): terminal / needs-input tasks re-run; queued/running are a no-op. A
     /// range re-queues every eligible member. Routes to `App::requeue_selected`.
     RequeueSelected,
-    /// Stop the QUEUE pane's selected task(s) (`x`, and the queue's `[x] stop`
+    /// Stop the QUEUE pane's selected task(s) (`x`, and the queue's `[x]stop`
     /// chip): queued/needs-input → skip, running → stop, terminal → no-op. A
     /// range stops each eligible member. Routes to `App::cancel_selected`.
     CancelSelected,
@@ -59,7 +59,7 @@ pub enum AppAction {
     /// worktrees `[g]oto` chip): works for session rows too. Inert with a status
     /// line outside tmux. Routes to `App::goto_worktree`.
     GotoWorktree,
-    /// Remove the selected WORKTREES row (`x`, and the worktrees `[x] remove`
+    /// Remove the selected WORKTREES row (`x`, and the worktrees `[x]remove`
     /// chip): opens `Mode::Confirm`. Session rows / busy worktrees are a
     /// no-op with a status line. Routes to `App::remove_selected_worktree`.
     RemoveSelectedWorktree,
@@ -344,8 +344,8 @@ mod tests {
 
     #[test]
     fn x_stops_on_queue_removes_on_worktrees_ctrl_x_still_cycles() {
-        // Plain `x`: stop on QUEUE (its `[x] stop` chip), remove on WORKTREES
-        // (its `[x] remove` chip); inert on TASKS (no `x` chip there).
+        // Plain `x`: stop on QUEUE (its `[x]stop` chip), remove on WORKTREES
+        // (its `[x]remove` chip); inert on TASKS (no `x` chip there).
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Queue), AppAction::CancelSelected);
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Worktrees), AppAction::RemoveSelectedWorktree);
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Tasks), AppAction::None);

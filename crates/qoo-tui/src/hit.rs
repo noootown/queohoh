@@ -11,12 +11,12 @@ pub enum ButtonKind {
 /// A clickable action chip on a list pane's top border. Clicking one behaves
 /// exactly like pressing its hotkey with that pane focused. `Create` ≡ `c`,
 /// `Tasks` ≡ `t`, `Actions` ≡ `a` (QUEUE only — Resume menu), `Run` ≡ `r`
-/// (TASKS runs the highlighted def; QUEUE re-queues the selected task;
-/// WORKTREES opens a fresh worktree-targeted new task), `Goto` ≡ `g`
-/// (WORKTREES only — open the worktree in tmux), `Cancel` ≡ `x` (QUEUE only —
-/// skip/stop the selected task), `Remove` ≡ `x` (WORKTREES only — remove the
-/// selected worktree), `Collapse` ≡ `z` (labeled collapse/expand by
-/// expanded/collapsed state).
+/// (TASKS runs the highlighted def; QUEUE re-queues the selected task, so its
+/// chip reads `[r]erun`; WORKTREES opens a fresh worktree-targeted new task),
+/// `Goto` ≡ `g` (WORKTREES only — open the worktree in tmux), `Cancel` ≡ `x`
+/// (QUEUE only — skip/stop the selected task), `Remove` ≡ `x` (WORKTREES
+/// only — remove the selected worktree), `Collapse` ≡ `z` (labeled
+/// collapse/expand by expanded/collapsed state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneButton {
     Create,
@@ -46,6 +46,23 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     }
 }
 
+/// Whether `btn` may act on a BULK (multi-row) selection in `pane` — the only
+/// verbs that stay live during a range: QUEUE's `Run` (re-queue, `[r]erun`)
+/// and `Cancel` (stop, `[x]stop`) already fan the RPC out over every row in
+/// the range; WORKTREES' `Remove` opens its own bulk-remove menu. Everything
+/// else — including the pane-scoped `Actions`/`Create`/`Collapse` chips that
+/// don't even read the selection — is bulk-disabled: the title bar dims it
+/// (see [`crate::view::panes::button_chip`]) and its key/click refuses with a
+/// status line (`App::apply_action`) instead of silently acting on just the
+/// cursor row. SINGLE SOURCE OF TRUTH for both.
+pub(crate) fn bulk_allowed(pane: PaneId, btn: PaneButton) -> bool {
+    use PaneButton::*;
+    matches!(
+        (pane, btn),
+        (PaneId::Queue, Run) | (PaneId::Queue, Cancel) | (PaneId::Worktrees, Remove)
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitTarget {
     Tab(usize),
@@ -70,7 +87,7 @@ pub enum HitTarget {
     /// click wins its sub-rect over the divider band sharing the border row.
     /// The rest of the title row deliberately has no click target — a whole-row
     /// collapse toggle used to live there and swallowed divider drags (collapse
-    /// ≡ the [z] collapse chip or the `z` key).
+    /// ≡ the [z]collapse chip or the `z` key).
     PaneButton(PaneId, PaneButton),
     /// The picker's right (preview) panel interior. Clicks are inert (like
     /// `Modal`); the mouse wheel over it scrolls the preview instead of moving
@@ -130,6 +147,26 @@ mod tests {
     use ratatui::layout::Rect;
 
     fn r(x: u16, y: u16, w: u16, h: u16) -> Rect { Rect { x, y, width: w, height: h } }
+
+    #[test]
+    fn bulk_allowed_matrix_matches_the_doable_lists() {
+        use PaneButton::*;
+        // QUEUE: only rerun/stop.
+        assert!(bulk_allowed(PaneId::Queue, Run));
+        assert!(bulk_allowed(PaneId::Queue, Cancel));
+        for btn in [Actions, Create, Collapse] {
+            assert!(!bulk_allowed(PaneId::Queue, btn), "{btn:?} should be bulk-disabled on QUEUE");
+        }
+        // TASKS: none.
+        for btn in [Run, Collapse] {
+            assert!(!bulk_allowed(PaneId::Tasks, btn), "{btn:?} should be bulk-disabled on TASKS");
+        }
+        // WORKTREES: only remove.
+        assert!(bulk_allowed(PaneId::Worktrees, Remove));
+        for btn in [Run, Goto, Tasks, Collapse] {
+            assert!(!bulk_allowed(PaneId::Worktrees, btn), "{btn:?} should be bulk-disabled on WORKTREES");
+        }
+    }
 
     #[test]
     fn empty_map_hits_nothing() {

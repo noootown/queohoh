@@ -1,12 +1,17 @@
 use super::*;
+use crate::hit::HitTarget;
+use ratatui::layout::Rect;
 use crate::ipc::types::{Project, StateSnapshot, TaskInstance, TaskStatus, WorktreeInfo};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
 
 fn key(c: char) -> Event { Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)) }
 fn enter() -> Event { Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) }
 fn down() -> Event { Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)) }
 fn shift_down() -> Event { Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)) }
+fn mouse(kind: MouseEventKind, col: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent { kind, column: col, row, modifiers: KeyModifiers::NONE })
+}
 
 fn app_with(snap: StateSnapshot) -> App {
     let mut a = App::new("/tmp/runs".into(), "/tmp/s.sock".into());
@@ -70,8 +75,10 @@ fn queue_range_cancel_via_x_mixes_stop_and_skip_per_row() {
 }
 
 #[test]
-fn bulk_run_defs_uses_started_verb_and_invalidates() {
-    // Parity oracle app.test.tsx:1573 → "started 1"; App.tsx:698 verb "started".
+fn tasks_bulk_range_via_r_refuses_not_applicable() {
+    // TASKS keeps no bulk-doable verb (see `crate::hit::bulk_allowed`): a
+    // multi-row range on `r` refuses with a status line instead of the old
+    // bulk-run menu, and never enters `Mode::ActionMenu`.
     let mut snap = StateSnapshot { projects: vec![Project { name: "platform".into(), github_id: None }], ..Default::default() };
     snap.tasks = vec![];
     let mut a = app_with(snap);
@@ -79,24 +86,13 @@ fn bulk_run_defs_uses_started_verb_and_invalidates() {
         { let mut d = crate::ipc::types::DefinitionSummary::default(); d.repo = "platform".into(); d.name = "lint".into(); d },
         { let mut d = crate::ipc::types::DefinitionSummary::default(); d.repo = "platform".into(); d.name = "deploy".into(); d.args = vec![crate::ipc::types::ArgSpec { name: "env".into(), ..Default::default() }]; d },
     ]);
-    // Focus the tasks pane, extend the selection to 2 rows, then open the
-    // bulk menu with `r`: the tasks pane has no `[a]ctions` chip, so `r`
-    // carries the range→bulk affordance (single-row `r` runs the def).
+    // Focus the tasks pane, extend the selection to 2 rows, then press `r`.
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     a.update(shift_down());
-    a.update(key('r'));
-    match &a.mode { Mode::ActionMenu { items, .. } => assert_eq!(items[0].label, "Run (1 of 2)"), _ => panic!() }
-    let u = a.update(enter());
-    match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
-        Cmd::RpcSeq { verb, calls, invalidate_defs_for } => {
-            assert_eq!(verb, "started");
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].method, "runDefinition");
-            assert_eq!(calls[0].params, serde_json::json!({ "repo": "platform", "name": "lint", "args": [], "source": "tui" }));
-            assert_eq!(invalidate_defs_for.as_deref(), Some("platform"));
-        }
-        _ => unreachable!(),
-    }
+    let u = a.update(key('r'));
+    assert!(matches!(a.mode, Mode::List));
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+    assert!(!u.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { .. } | Cmd::Rpc { .. })));
 }
 
 fn three_worktrees() -> StateSnapshot {
@@ -143,6 +139,89 @@ fn bulk_remove_n_cancels_without_cmd() {
     let u = a.update(key('n'));
     assert!(matches!(a.mode, Mode::List));
     assert!(u.cmds.is_empty());
+}
+
+#[test]
+fn worktrees_bulk_range_refuses_run_goto_and_tasks_menu() {
+    // WORKTREES keeps only `Remove` bulk-doable — `r`/`g`/`t` all refuse with a
+    // status line on a multi-row range instead of silently targeting the
+    // cursor row's single worktree.
+    let mut a = app_with(three_worktrees());
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(shift_down());
+
+    a.update(key('r'));
+    assert!(matches!(a.mode, Mode::List));
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+
+    a.status_line = None;
+    let u = a.update(key('g'));
+    assert!(matches!(a.mode, Mode::List));
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+    assert!(!u.cmds.iter().any(|c| matches!(c, Cmd::OpenTmux { .. })));
+
+    a.status_line = None;
+    a.update(key('t'));
+    assert!(matches!(a.mode, Mode::List));
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+}
+
+#[test]
+fn queue_bulk_range_refuses_actions_create_and_collapse() {
+    // QUEUE keeps only `Run`/`Cancel` (rerun/stop) bulk-doable — `a`/`c`/`z`
+    // all refuse with a status line on a multi-row range.
+    let mut a = app_with(two_queue_one_failed());
+    a.update(shift_down());
+
+    a.update(key('a'));
+    assert!(matches!(a.mode, Mode::List));
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+
+    a.status_line = None;
+    a.update(key('c'));
+    assert!(matches!(a.mode, Mode::List)); // no AddTask prompt opened
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+
+    a.status_line = None;
+    let collapsed_before = a.collapsed[ListPane::Queue.idx()];
+    a.update(key('z'));
+    assert_eq!(a.collapsed[ListPane::Queue.idx()], collapsed_before); // unchanged
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+}
+
+#[test]
+fn tasks_bulk_range_refuses_collapse() {
+    // TASKS keeps no bulk-doable verb, including `z`.
+    let mut snap = StateSnapshot { projects: vec![Project { name: "platform".into(), github_id: None }], ..Default::default() };
+    snap.tasks = vec![];
+    let mut a = app_with(snap);
+    a.defs_by_project.insert("platform".into(), vec![
+        { let mut d = crate::ipc::types::DefinitionSummary::default(); d.repo = "platform".into(); d.name = "lint".into(); d },
+        { let mut d = crate::ipc::types::DefinitionSummary::default(); d.repo = "platform".into(); d.name = "deploy".into(); d },
+    ]);
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → tasks
+    a.update(shift_down());
+    let collapsed_before = a.collapsed[ListPane::Tasks.idx()];
+    a.update(key('z'));
+    assert_eq!(a.collapsed[ListPane::Tasks.idx()], collapsed_before);
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+}
+
+#[test]
+fn collapse_chip_click_refuses_on_a_bulk_selection() {
+    // The title-bar Collapse chip is handled inline in `mouse.rs` (it doesn't
+    // route through `apply_action` like the other chips) — a separate wiring
+    // point that must carry the same bulk guard as the `z` key.
+    let mut a = app_with(two_queue_one_failed());
+    a.update(shift_down()); // 2-row bulk range on QUEUE
+    let mut hits = a.hit.clone();
+    hits.push(Rect { x: 20, y: 0, width: 4, height: 1 }, HitTarget::PaneButton(PaneId::Queue, crate::hit::PaneButton::Collapse));
+    a.hit = hits;
+    let before = a.collapsed[ListPane::Queue.idx()];
+    a.update(mouse(MouseEventKind::Down(MouseButton::Left), 21, 0));
+    assert_eq!(a.collapsed[ListPane::Queue.idx()], before, "collapse did not toggle");
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
 }
 
 #[test]

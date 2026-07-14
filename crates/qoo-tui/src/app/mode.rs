@@ -99,6 +99,16 @@ impl ListPane {
     pub fn idx(self) -> usize {
         self as usize
     }
+
+    /// The corresponding `PaneId` (always one of the three list variants,
+    /// never `Detail` — `ListPane` has no such case to map).
+    pub fn pane_id(self) -> PaneId {
+        match self {
+            ListPane::Queue => PaneId::Queue,
+            ListPane::Tasks => PaneId::Tasks,
+            ListPane::Worktrees => PaneId::Worktrees,
+        }
+    }
 }
 
 /// Which detail-pane context is showing. Discriminants index `TabUiState.sub_tab`

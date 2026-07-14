@@ -5,7 +5,7 @@ expression: terminal.backend()
 " 1:acme                                                            ● running 0/3"
 "╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
-"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│    Worktr…  Prompt      ││  # Result                                         │"
 "│ ⊠  feature  implement … ││                                                   │"
 "│                         ││  You've hit your session limit · resets 1pm       │"
@@ -16,13 +16,13 @@ expression: terminal.backend()
 "│                         ││  model     claude-fable-5                         │"
 "╰─────────────────────────╯│  cost      $31.07151099999998                     │"
 "╭⚡TASKS──────── [r] · [z]╮│  turns     40                                     │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/] filter           ││  duration  18m                                    │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]filter            ││  duration  18m                                    │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
 "╭🌲 WORKTREES─ [r] [g] [x]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│ ● feature               ││                                                   │"
 "│ ● hotfix                ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
-"[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "
+"[1-9/0 · ctrl+s n/p]tab · [ctrl+x/z]sub-tab · [?]help · [q]uit                  "

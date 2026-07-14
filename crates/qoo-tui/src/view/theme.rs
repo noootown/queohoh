@@ -72,7 +72,7 @@ pub const FENCE_RULE_MIN_TRAIL: usize = 3;
 
 // Chip label words (the lowercase verb after the `(key)`). No inline literals in
 // the component; the collapse chip picks LABEL_COLLAPSE / LABEL_EXPAND by state.
-// A chip renders `[{key}] {label}` when there is room, degrading to the compact
+// A chip renders `[{key}]{label}` when there is room, degrading to the compact
 // `[{key}]` form (labels dropped) on narrow panes. Icons were dropped — the
 // emoji glyphs (➕ ⚙️ 🔽) rendered inconsistently across terminals and carried
 // no meaning the label doesn't.
@@ -80,6 +80,7 @@ pub const BTN_LABEL_CREATE: &str = "create";
 pub const BTN_LABEL_TASKS: &str = "tasks";
 pub const BTN_LABEL_ACTIONS: &str = "actions";
 pub const BTN_LABEL_RUN: &str = "run";
+pub const BTN_LABEL_RERUN: &str = "rerun";
 pub const BTN_LABEL_GOTO: &str = "goto";
 pub const BTN_LABEL_STOP: &str = "stop";
 pub const BTN_LABEL_REMOVE: &str = "remove";

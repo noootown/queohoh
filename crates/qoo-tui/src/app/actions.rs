@@ -27,7 +27,26 @@ fn status_kebab(s: TaskStatus) -> &'static str {
     }
 }
 
+/// Status line for a bulk-blocked verb (see [`App::bulk_blocked`]).
+const BULK_NOT_APPLICABLE: &str = "not applicable to bulk selection";
+
 impl App {
+    /// Refuse `btn` on `pane` with a status line when that pane's OWN
+    /// selection is a bulk (multi-row) range and `btn` isn't in the doable set
+    /// ([`crate::hit::bulk_allowed`]) — the same rule that dims the chip on
+    /// the title bar (`view::panes::button_chip`). `true` (status line set)
+    /// means the caller must stop short of its normal cursor-row behavior;
+    /// `false` means proceed (either not bulk, or `btn` IS allowed on a
+    /// range, e.g. QUEUE's re-queue/stop or WORKTREES' remove).
+    pub(super) fn bulk_blocked(&mut self, pane: ListPane, btn: crate::hit::PaneButton) -> bool {
+        let sel = self.active_ui().selections[pane.idx()];
+        if !crate::view::is_bulk_selection(&sel) || crate::hit::bulk_allowed(pane.pane_id(), btn) {
+            return false;
+        }
+        self.status_line = Some(BULK_NOT_APPLICABLE.into());
+        true
+    }
+
     /// Resolve an `AppAction` from the keymap into state mutations + commands.
     /// Pure per-key logic lives in `keymap::list_mode_action`; per-tab state and
     /// focus-dependent semantics (g/G) resolve here.
@@ -187,7 +206,11 @@ impl App {
                 // prompt. The worktrees pane's standalone create modal was folded
                 // into the launcher (`r` → Create Worktree row), so `c` no longer
                 // shows a chip there and this arm is only reached for QUEUE.
-                if self.active_ui().last_list_pane == ListPane::Queue {
+                // Not in QUEUE's bulk-doable set (only re-queue/stop are), so a
+                // bulk range refuses rather than opening the prompt anyway.
+                if self.active_ui().last_list_pane == ListPane::Queue
+                    && !self.bulk_blocked(ListPane::Queue, crate::hit::PaneButton::Create)
+                {
                     self.mode = Mode::AddTask {
                         worktree: None,
                         resume_session_id: None,
@@ -199,8 +222,12 @@ impl App {
             }
             A::ToggleCollapse => match self.focused_list() {
                 // Collapse/expand the focused list pane; detail focus is a no-op.
+                // Not in any pane's bulk-doable set — a bulk selection refuses
+                // rather than collapsing/expanding out from under it.
                 Some(pane) => {
-                    self.toggle_collapse(pane, &mut cmds);
+                    if !self.bulk_blocked(pane, crate::hit::PaneButton::Collapse) {
+                        self.toggle_collapse(pane, &mut cmds);
+                    }
                     true
                 }
                 None => false,
@@ -332,7 +359,7 @@ impl App {
         }
     }
 
-    /// `x` on QUEUE (and the `[x] stop` chip). Stop ALWAYS confirms first: it
+    /// `x` on QUEUE (and the `[x]stop` chip). Stop ALWAYS confirms first: it
     /// freezes the per-task skip/stop RPCs (queued/needs-input → `skip`, running →
     /// `stop`; terminal/archived rows are ineligible) and opens `Mode::Confirm`.
     /// Enter/y in that dialog dispatches (see `update`); a selection with nothing
@@ -444,14 +471,28 @@ impl App {
     /// `a` / double-click over a list row (Enter is unbound in list mode). A
     /// single-row selection on the TASKS pane runs the highlighted definition
     /// directly (no menu hop — zero-arg defs dispatch immediately, defs with
-    /// args open the run form); a bulk range on any pane and single rows on
-    /// queue/worktrees open the action menu.
+    /// args open the run form); single rows on queue/worktrees open the action
+    /// menu. A bulk range refuses on QUEUE (its single-target Resume menu
+    /// isn't bulk-doable) and on TASKS (no bulk-doable verb there either,
+    /// mirroring `r`'s own guard); on WORKTREES it falls through to
+    /// `open_action_menu`, whose bulk branch already narrows to the doable
+    /// remove-only menu.
     pub(super) fn open_actions_or_run(&mut self) -> Update {
         let ui = self.active_ui();
         let pane = ui.last_list_pane;
         let (start, end) = crate::view::selection_range(&ui.selections[pane.idx()]);
         if end == start && pane == ListPane::Tasks {
             return self.run_selected_task_def();
+        }
+        if end > start {
+            let btn = match pane {
+                ListPane::Queue => crate::hit::PaneButton::Actions,
+                ListPane::Tasks => crate::hit::PaneButton::Run,
+                ListPane::Worktrees => crate::hit::PaneButton::Remove,
+            };
+            if self.bulk_blocked(pane, btn) {
+                return Update { dirty: true, cmds: vec![] };
+            }
         }
         match self.open_action_menu() {
             Some(mode) => self.mode = mode,
@@ -462,17 +503,14 @@ impl App {
 
     /// The tasks pane's `r` (key and `[r]un` chip): selection-aware. A single-row
     /// selection runs the highlighted def via [`Self::run_selected_task_def`]; a
-    /// multi-row range opens the bulk menu — the same range routing
-    /// `open_actions_or_run` gives the tasks pane via [`Self::open_bulk_menu`].
-    /// The tasks pane dropped its `[a]ctions` chip, so `r` owns both cases.
+    /// multi-row range is not in the bulk-doable set (TASKS keeps none — see
+    /// [`crate::hit::bulk_allowed`]), so it refuses with a status line instead
+    /// of the bulk-run menu the tasks pane's `r` used to open.
     fn run_or_bulk_selected_task_def(&mut self) -> Update {
         let (start, end) =
             crate::view::selection_range(&self.active_ui().selections[ListPane::Tasks.idx()]);
         if end > start {
-            match self.open_bulk_menu(ListPane::Tasks, start, end) {
-                Some(mode) => self.mode = mode,
-                None => self.status_line = Some("nothing selected".into()),
-            }
+            self.status_line = Some(BULK_NOT_APPLICABLE.into());
             return Update { dirty: true, cmds: vec![] };
         }
         self.run_selected_task_def()
@@ -586,6 +624,11 @@ impl App {
     /// rows are interactive sessions, not worktrees, so they can't host a task →
     /// status line, no mode change.
     pub(super) fn new_task_on_worktree(&mut self) -> Update {
+        // A bulk range isn't in the doable set (only `Remove` is) — refuse
+        // rather than silently targeting just the cursor row's worktree.
+        if self.bulk_blocked(ListPane::Worktrees, crate::hit::PaneButton::Run) {
+            return Update { dirty: true, cmds: vec![] };
+        }
         let Some(repo) = self.active_repo() else {
             return Update::default();
         };
@@ -614,6 +657,11 @@ impl App {
     /// session) in a new tmux window. The daemon drives tmux, so it is inert with
     /// a status line outside tmux. Session rows resolve to their cwd path.
     pub(super) fn goto_worktree(&mut self) -> Update {
+        // A bulk range isn't in the doable set (only `Remove` is) — refuse
+        // rather than silently targeting just the cursor row's worktree.
+        if self.bulk_blocked(ListPane::Worktrees, crate::hit::PaneButton::Goto) {
+            return Update { dirty: true, cmds: vec![] };
+        }
         if !self.inside_tmux {
             self.status_line = Some("not inside tmux".into());
             return Update { dirty: true, cmds: vec![] };
@@ -625,7 +673,7 @@ impl App {
         Update { dirty: true, cmds: vec![Cmd::OpenTmux { path: row.path.clone() }] }
     }
 
-    /// `x` on WORKTREES (and the `[x] remove` chip): selection-aware, mirroring
+    /// `x` on WORKTREES (and the `[x]remove` chip): selection-aware, mirroring
     /// the tasks pane's `r`. A multi-row range opens the bulk remove menu
     /// (eligibility frozen at open time via [`Self::open_bulk_menu`]); a single
     /// row confirms removing just that worktree (opens `Mode::Confirm`; the

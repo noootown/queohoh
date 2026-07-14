@@ -17,7 +17,7 @@ use crate::selectors::{
 };
 use crate::view::theme::{
     BTN_LABEL_ACTIONS, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
-    BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
+    BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DOT, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
@@ -33,9 +33,9 @@ use crate::view::theme::{
 // shows only while chips from BOTH groups remain (see [`build_header`]);
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
-const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x] stop [a]ctions · [c]reate [z]
+const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x]stop [a]ctions · [c]reate [z]
 const TASKS_ROW_SCOPED: usize = 1; // [r]un · [z]
-const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x] remove [t]asks · [c]reate [z]
+const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [c]reate [z]
 
 /// Scope divider drawn between the row-scoped and pane-scoped chip groups (the
 /// TUI's `·` separator convention). It REPLACES the normal single-space gap
@@ -45,7 +45,7 @@ const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x] remove [t]asks · [c]r
 const GROUP_SEP: &str = " · ";
 const GROUP_SEP_EXTRA: usize = 2; // GROUP_SEP is 3 cells; the gap it replaces is 1
 
-use crate::view::{Computed, selection_range, window_start};
+use crate::view::{Computed, is_bulk_selection, selection_range, window_start};
 
 /// The bold pane title — always white (`fg`); a pane's focus is shown by its
 /// border color, not the title. Shared by the expanded chrome and collapsed bar.
@@ -70,20 +70,35 @@ fn pane_block(title_line: Line<'static>, focused: bool, p: &Palette) -> Block<'s
 }
 
 /// The chip spans for one title-bar button plus its display width in CELLS.
-/// Labeled form is `[{key}] {label}` (`[k]` accent+bold, then the lowercase
-/// label word in fg — fused to `[c]reate` when the key is the label's first
-/// letter); the compact form drops the label, leaving `[{key}]`. Hotkeys always
-/// render in square brackets — the global convention across chips, hint rows,
-/// footer, and help. Width is measured with `Span::width()` (ratatui's
-/// unicode-width) rather than assumed, so a renamed label can't silently desync
-/// the border-fill / right-alignment / hit-rect math. The collapse chip flips
-/// its label on `collapsed`.
-fn button_chip(b: PaneButton, collapsed: bool, labeled: bool, p: &Palette) -> (Vec<Span<'static>>, u16) {
+/// Labeled form is `[{key}]{label}` (`[k]` accent+bold, then the lowercase
+/// label word in fg, no gap — fused to `[c]reate` when the key is the label's
+/// first letter, `[z]collapse` when it isn't); the compact form drops the
+/// label, leaving `[{key}]`. Hotkeys always render in square brackets — the
+/// global convention across chips, hint rows, footer, and help. Width is
+/// measured with `Span::width()` (ratatui's unicode-width) rather than
+/// assumed, so a renamed label can't silently desync the border-fill /
+/// right-alignment / hit-rect math. The collapse chip flips its label on
+/// `collapsed`; the run chip flips its label to `rerun` on QUEUE (`pane`),
+/// where `r` re-queues the selected task rather than running a definition.
+/// `bulk` (the pane has an active multi-row selection) dims the WHOLE chip
+/// (key + label, both forms) when [`crate::hit::bulk_allowed`] says `b` can't
+/// act on a range — the same de-emphasis `Palette::dim_style` uses for
+/// archived rows, not a disabled *color*, just less contrast. The key/click
+/// handlers refuse a dimmed chip's action with a status line instead of
+/// silently acting on the cursor row alone (see `App::apply_action`).
+fn button_chip(
+    b: PaneButton,
+    pane: PaneId,
+    collapsed: bool,
+    labeled: bool,
+    bulk: bool,
+    p: &Palette,
+) -> (Vec<Span<'static>>, u16) {
     let (key, label) = match b {
         PaneButton::Create => ('c', BTN_LABEL_CREATE),
         PaneButton::Tasks => ('t', BTN_LABEL_TASKS),
         PaneButton::Actions => ('a', BTN_LABEL_ACTIONS),
-        PaneButton::Run => ('r', BTN_LABEL_RUN),
+        PaneButton::Run => ('r', if pane == PaneId::Queue { BTN_LABEL_RERUN } else { BTN_LABEL_RUN }),
         PaneButton::Goto => ('g', BTN_LABEL_GOTO),
         PaneButton::Cancel => ('x', BTN_LABEL_STOP),
         PaneButton::Remove => ('x', BTN_LABEL_REMOVE),
@@ -91,17 +106,20 @@ fn button_chip(b: PaneButton, collapsed: bool, labeled: bool, p: &Palette) -> (V
             ('z', if collapsed { BTN_LABEL_EXPAND } else { BTN_LABEL_COLLAPSE })
         }
     };
-    let key_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+    let disabled = bulk && !crate::hit::bulk_allowed(pane, b);
+    let key_style = if disabled {
+        p.dim_style()
+    } else {
+        Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+    };
+    let label_style = if disabled { p.dim_style() } else { Style::default().fg(p.fg) };
     let mut spans = vec![Span::styled(format!("[{key}]"), key_style)];
     if labeled {
         // `[c]reate` / `[a]ctions` when the key is the label's first letter
-        // (the footer's `[q]uit` pattern); otherwise `[z] collapse`.
+        // (the footer's `[q]uit` pattern); otherwise `[z]collapse`.
         match label.strip_prefix(key) {
-            Some(rest) => spans.push(Span::styled(rest.to_string(), Style::default().fg(p.fg))),
-            None => {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(label.to_string(), Style::default().fg(p.fg)));
-            }
+            Some(rest) => spans.push(Span::styled(rest.to_string(), label_style)),
+            None => spans.push(Span::styled(label.to_string(), label_style)),
         }
     }
     let w: usize = spans.iter().map(|s| s.width()).sum();
@@ -159,9 +177,11 @@ fn build_header(
     title: &str,
     summary: Option<&str>,
     focused: bool,
+    pane: PaneId,
     buttons: &[PaneButton],
     row_scoped: usize,
     collapsed: bool,
+    bulk: bool,
     p: &Palette,
 ) -> (Line<'static>, Vec<(Rect, PaneButton)>) {
     let x0 = area.x + 1;
@@ -179,14 +199,14 @@ fn build_header(
     let labeled: Vec<(Vec<Span<'static>>, usize)> = buttons
         .iter()
         .map(|&b| {
-            let (spans, w) = button_chip(b, collapsed, true, p);
+            let (spans, w) = button_chip(b, pane, collapsed, true, bulk, p);
             (spans, w as usize)
         })
         .collect();
     let compact: Vec<(Vec<Span<'static>>, usize)> = buttons
         .iter()
         .map(|&b| {
-            let (spans, w) = button_chip(b, collapsed, false, p);
+            let (spans, w) = button_chip(b, pane, collapsed, false, bulk, p);
             (spans, w as usize)
         })
         .collect();
@@ -307,13 +327,14 @@ fn render_collapsed_pane(
     btn_hits: &mut Vec<(Rect, PaneId, PaneButton)>,
     p: &Palette,
     dimmed: bool,
+    bulk: bool,
 ) {
     // A collapsed bar shows ONLY the expand chip: it is the bar's primary
     // affordance and must never be the one dropped for width (create/actions
     // return with the pane).
     let _ = buttons;
     let (mut header, rects) =
-        build_header(area, title, Some(summary), focused, &[PaneButton::Collapse], 1, true, p);
+        build_header(area, title, Some(summary), focused, pane, &[PaneButton::Collapse], 1, true, bulk, p);
     if dimmed {
         patch_line(&mut header, p.dim_style());
     }
@@ -326,7 +347,7 @@ fn render_collapsed_pane(
 }
 
 /// The inline search-hint/input row (row 0 of every expanded pane). Idle:
-/// `🔍 [/] filter` with the hotkey accent+bold (hotkeys always in square
+/// `🔍 [/]filter` with the hotkey accent+bold (hotkeys always in square
 /// brackets, never grey — the visible-hotkey convention). Searching that pane:
 /// `🔍 /{query}█` with a colored query + block cursor. Filter set but not
 /// searching: `🔍 /{query}` colored, no cursor.
@@ -341,7 +362,7 @@ fn search_hint_line(query: &str, searching: bool, p: &Palette) -> Line<'static> 
             "[/]".to_string(),
             Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled(format!(" {SEARCH_HINT_IDLE}"), Style::default().fg(p.fg)));
+        spans.push(Span::styled(SEARCH_HINT_IDLE.to_string(), Style::default().fg(p.fg)));
     } else {
         spans.push(Span::styled(format!("/{query}"), Style::default().fg(p.meta)));
     }
@@ -798,8 +819,18 @@ fn render_list_pane<T, C>(
     decorate_row: impl Fn(&T, Rect, &C, &mut ratatui::buffer::Buffer),
 ) {
     let title = pane_title(title_base, sel);
-    let (mut header, rects) =
-        build_header(area, &title, Some(summary), focused, buttons, row_scoped, false, p);
+    let (mut header, rects) = build_header(
+        area,
+        &title,
+        Some(summary),
+        focused,
+        pane,
+        buttons,
+        row_scoped,
+        false,
+        is_bulk_selection(sel),
+        p,
+    );
     if dimmed {
         patch_line(&mut header, p.dim_style());
     }
@@ -1027,6 +1058,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &mut btn_hits,
             p,
             spotlight && !c.searching[0],
+            is_bulk_selection(&c.queue_sel),
         );
     } else {
         render_list_pane(
@@ -1072,6 +1104,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &mut btn_hits,
             p,
             spotlight && !c.searching[1],
+            is_bulk_selection(&c.tasks_sel),
         );
     } else {
         render_list_pane(
@@ -1116,6 +1149,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &mut btn_hits,
             p,
             spotlight && !c.searching[2],
+            is_bulk_selection(&c.wt_sel),
         );
     } else {
         render_list_pane(
@@ -1199,7 +1233,7 @@ mod tests {
         // (row-scoped [a]ctions first, then [c]reate [z]).
         let area = Rect { x: 0, y: 0, width: 30, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
         assert_eq!(rects.len(), 3);
         // avail=28, title "Q"=1, each compact chip=3 cells, base strip=3*(1+3)=12,
         // plus the ` · ` divider (+2, both groups shown) = 14. filler=28-1-14=13.
@@ -1222,18 +1256,18 @@ mod tests {
         // order (row-scoped [a]ctions first, then [c]reate [z]).
         let area = Rect { x: 0, y: 0, width: 60, height: 8 };
         let (line, rects) =
-            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
         assert_eq!(rects.len(), 3);
         // Labeled widths — `[a]ctions`/`[c]reate` merge the key into the word
-        // (actions 3+6=9, create 3+5=8); collapse keeps the spaced
-        // `[z] collapse` form (3+1+8=12).
+        // (actions 3+6=9, create 3+5=8); collapse fuses the same way
+        // (`[z]collapse`, 3+8=11).
         assert_eq!(rects[0].0.width, 9);
         assert_eq!(rects[1].0.width, 8);
-        assert_eq!(rects[2].0.width, 12);
+        assert_eq!(rects[2].0.width, 11);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[a]ctions"));
         assert!(text.contains("[c]reate"));
-        assert!(text.contains("[z] collapse"));
+        assert!(text.contains("[z]collapse"));
         // The `·` scope divider sits between the two groups.
         assert!(text.contains('·'), "group divider renders: {text}");
         // Still right-aligned flush against the corner.
@@ -1242,15 +1276,58 @@ mod tests {
     }
 
     #[test]
+    fn bulk_dims_only_the_not_bulk_doable_chips() {
+        let p = Palette::default();
+        let area = Rect { x: 0, y: 0, width: 60, height: 8 };
+        // QUEUE's doable bulk verbs (Run/Cancel) keep their normal accent key
+        // style even under a bulk selection; Actions (not doable) dims.
+        let (line, _) = build_header(
+            area,
+            "Q",
+            None,
+            false,
+            PaneId::Queue,
+            &[PaneButton::Run, PaneButton::Cancel, PaneButton::Actions],
+            2,
+            false,
+            true, // bulk
+            &p,
+        );
+        let accent_key = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+        let dim = p.dim_style();
+        let key_spans: Vec<&Span> = line.spans.iter().filter(|s| s.content.starts_with('[')).collect();
+        assert_eq!(key_spans.len(), 3);
+        assert_eq!(key_spans[0].style, accent_key, "rerun stays live (bulk-doable)");
+        assert_eq!(key_spans[1].style, accent_key, "stop stays live (bulk-doable)");
+        assert_eq!(key_spans[2].style, dim, "actions dims (not bulk-doable)");
+
+        // The same buttons WITHOUT a bulk selection all stay live.
+        let (line, _) = build_header(
+            area,
+            "Q",
+            None,
+            false,
+            PaneId::Queue,
+            &[PaneButton::Run, PaneButton::Cancel, PaneButton::Actions],
+            2,
+            false,
+            false, // no bulk selection
+            &p,
+        );
+        let key_spans: Vec<&Span> = line.spans.iter().filter(|s| s.content.starts_with('[')).collect();
+        assert!(key_spans.iter().all(|s| s.style == accent_key), "no dimming without a bulk selection");
+    }
+
+    #[test]
     fn build_header_worktrees_includes_row_verbs_and_tasks_chip() {
         let p = Palette::default();
         // Wide enough for the labeled form: the worktrees strip carries five
-        // chips in scope order — row-scoped [r]un [g]oto [x] remove [t]asks, then
-        // the `·` divider, then pane-scoped [z] collapse. (The [c]reate chip was
+        // chips in scope order — row-scoped [r]un [g]oto [x]remove [t]asks, then
+        // the `·` divider, then pane-scoped [z]collapse. (The [c]reate chip was
         // folded into the launcher's `r` → Create Worktree row.)
         let area = Rect { x: 0, y: 0, width: 100, height: 8 };
         let (line, rects) =
-            build_header(area, "WORKTREES", None, false, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, &p);
+            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, &p);
         assert_eq!(rects.len(), 5);
         assert_eq!(rects[0].1, PaneButton::Run);
         assert_eq!(rects[1].1, PaneButton::Goto);
@@ -1259,7 +1336,7 @@ mod tests {
         assert_eq!(rects[4].1, PaneButton::Collapse);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[g]oto"), "labeled goto chip renders: {text}");
-        assert!(text.contains("[x] remove"), "labeled remove chip renders: {text}");
+        assert!(text.contains("[x]remove"), "labeled remove chip renders: {text}");
         assert!(text.contains("[t]asks"), "labeled tasks chip renders: {text}");
     }
 
@@ -1317,7 +1394,7 @@ mod tests {
         // Only the leftmost (row-scoped [a]ctions) stays.
         let area = Rect { x: 0, y: 0, width: 10, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
         assert_eq!(rects.len(), 1, "only the leftmost (actions) button survives");
         assert_eq!(rects[0].1, PaneButton::Actions);
     }
@@ -1328,7 +1405,7 @@ mod tests {
         // Title alone overflows the 6-cell interior → no buttons; title truncates.
         let area = Rect { x: 0, y: 0, width: 8, height: 8 };
         let (_line, rects) =
-            build_header(area, "WORKTREES", None, false, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, &p);
+            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, &p);
         assert!(rects.is_empty());
     }
 
@@ -1337,9 +1414,9 @@ mod tests {
         let p = Palette::default();
         let area = Rect { x: 0, y: 0, width: 40, height: 8 };
         let (expanded, _) =
-            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
         let (collapsed, _) =
-            build_header(area, "Q", None, false, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, true, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Actions, PaneButton::Create, PaneButton::Collapse], 1, true, false, &p);
         let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text(&expanded).contains(BTN_LABEL_COLLAPSE));
         assert!(text(&collapsed).contains(BTN_LABEL_EXPAND));

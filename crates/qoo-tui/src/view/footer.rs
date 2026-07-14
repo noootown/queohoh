@@ -53,7 +53,7 @@ fn hint_line(s: &str, p: &Palette) -> Line<'static> {
 /// now live on the pane title bars, so the footer only lists keys that are global
 /// regardless of focus.
 const GLOBAL_HINT: &str =
-    "[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit";
+    "[1-9/0 · ctrl+s n/p]tab · [ctrl+x/z]sub-tab · [?]help · [q]uit";
 
 pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
     let p: &Palette = &c.palette;
@@ -72,7 +72,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
     let searching = c.searching.iter().any(|&s| s);
     if searching {
         frame.render_widget(
-            Paragraph::new(hint_line("type to filter · [enter] apply · [esc] clear", p)),
+            Paragraph::new(hint_line("type to filter · [enter]apply · [esc]clear", p)),
             area,
         );
         return;
@@ -101,7 +101,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
     if count > 1 {
         frame.render_widget(
             Paragraph::new(hint_line(
-                &format!("{count} selected · [a] bulk actions · [shift+↑↓] extend · [esc] clear"),
+                &format!("{count} selected · [a]bulk actions · [shift+↑↓]extend · [esc]clear"),
                 p,
             )),
             area,

@@ -460,7 +460,12 @@ impl App {
                     };
                     match btn {
                         crate::hit::PaneButton::Collapse => {
-                            self.toggle_collapse(lp, &mut cmds);
+                            // Not in any pane's bulk-doable set — a bulk
+                            // selection on `lp` refuses (status line) rather
+                            // than collapsing/expanding out from under it.
+                            if !self.bulk_blocked(lp, crate::hit::PaneButton::Collapse) {
+                                self.toggle_collapse(lp, &mut cmds);
+                            }
                             true
                         }
                         crate::hit::PaneButton::Create => {

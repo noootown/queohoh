@@ -1,12 +1,11 @@
 ---
 source: crates/qoo-tui/src/view/detail.rs
-assertion_line: 997
 expression: terminal.backend()
 ---
 " 1:acme                                                            ● running 0/3"
 "╭📋 QUEUE───── [r] [x] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
-"│ 🔍 [/] filter           ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│    Worktr…  Prompt      ││  Run                                              │"
 "│ ●  feature  implement … ││    id           01RUN                             │"
 "│                         ││    definition   squash-merge                      │"
@@ -22,7 +21,7 @@ expression: terminal.backend()
 "╰─────────────────────────╯│    worktree     /repos/acme.feature               │"
 "╭⚡TASKS──────── [r] · [z]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││    model        claude-opus-4-8                   │"
-"│ 🔍 [/] filter           ││    exit code    0                                 │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]filter            ││    exit code    0                                 │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││    cost         $0.42                             │"
 "│ no task definitions     ││    turns        37                                │"
 "│                         ││                                                   │"
@@ -30,10 +29,10 @@ expression: terminal.backend()
 "╰─────────────────────────╯│    description  Squash-merge the branch.          │"
 "╭🌲 WORKTREES─ [r] [g] [x]╮│    worktree     auto                              │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││    dedup        none                              │"
-"│ 🔍 [/] filter           ││    timeout      30m                               │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]filter            ││    timeout      30m                               │" Hidden by multi-width symbols: [(3, " ")]
 "│   Name     Live         ││    priority     normal                            │"
 "│ ● feature               ││    cron         30 13 * * *                       │"
 "│ ● hotfix                ││                                                   │"
 "│ ● feature               ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
-"[1-9/0 · ctrl+s n/p] tab · [ctrl+x/z] sub-tab · [?] help · [q]uit               "
+"[1-9/0 · ctrl+s n/p]tab · [ctrl+x/z]sub-tab · [?]help · [q]uit                  "
