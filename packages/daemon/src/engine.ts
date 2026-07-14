@@ -527,9 +527,13 @@ export class Engine {
 			return;
 		}
 		try {
+			// Temp names slug from the task's run-specific content: a def task's
+			// `prompt` is the rendered TEMPLATE (identical opening words for every
+			// run), so its itemKey — the rendered args — names the worktree/branch;
+			// an ad-hoc task's prompt IS the content.
 			const resolution = await resolveTarget(
 				task.target.ref,
-				{ repoPath, tempName: () => qooTempName(task.prompt) },
+				{ repoPath, tempName: () => qooTempName(task.itemKey ?? task.prompt) },
 				deps.resolverIO,
 			);
 			if (resolution.outcome === "resolved") {

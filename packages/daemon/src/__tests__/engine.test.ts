@@ -183,6 +183,28 @@ describe("Engine.tick", () => {
 		expect(store.list()[0]?.ephemeralWorktree).toBe(true);
 	});
 
+	it("names a def task's temp worktree from its itemKey, not the rendered template", async () => {
+		// A definition task's `prompt` is the rendered TEMPLATE — its opening
+		// words are identical for every run ("You are in a git worktree of…"),
+		// so slugging the prompt names every autofix worktree/branch
+		// `qoo-you-are-in-a-git-*`. The itemKey (the rendered args) is the
+		// run-specific content and must win when present.
+		const { engine, store } = setup();
+		store.create({
+			prompt: "You are in a git worktree of the repo. Fix the situation below.",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			definition: "platform/autofix",
+			item: { situation: "tabbar crash on empty project" },
+			itemKey: "tabbar crash on empty project",
+		});
+		await engine.tick(); // resolve pass
+		expect(store.list()[0]?.target.worktree).toMatch(
+			/^qoo-tabbar-crash-on-empty-[0-9a-z]{4}$/,
+		);
+	});
+
 	it("maps thrown spawn errors to failed", async () => {
 		const { engine, store } = setup({
 			resolverIO: {
