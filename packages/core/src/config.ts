@@ -15,7 +15,9 @@ const GlobalConfigSchema = z
 		projects: z
 			.array(z.object({ name: z.string().min(1), path: z.string().min(1) }))
 			.default([]),
-		max_concurrent_tasks: z.number().int().positive().default(3),
+		// Per-project concurrency cap (each registered project may run up to this
+		// many tasks at once; the cap is independent per project, not a shared total).
+		max_concurrent_tasks: z.number().int().positive().default(5),
 		archive_after_days: z.number().int().positive().default(7),
 		vars: z.record(z.string(), z.string()).default({}),
 		models: z.record(z.string(), z.unknown()).default({}),
@@ -37,6 +39,7 @@ const GlobalConfigSchema = z
 export interface GlobalConfig {
 	workspace: string;
 	projects: { name: string; path: string }[];
+	/** Per-project concurrency cap — see `max_concurrent_tasks` above. */
 	maxConcurrentTasks: number;
 	archiveAfterDays: number;
 	vars: Record<string, string>;

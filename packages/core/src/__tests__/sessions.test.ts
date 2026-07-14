@@ -84,6 +84,6 @@ describe("buildLiveState", () => {
 		);
 		expect(live.runningLanes).toEqual(new Set(["platform:JUS-1"]));
 		expect(live.interactiveLanes).toEqual(new Set(["platform:main"]));
-		expect(live.runningCount).toBe(1);
+		expect(live.runningByRepo).toEqual(new Map([["platform", 1]]));
 	});
 });

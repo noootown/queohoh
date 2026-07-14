@@ -4,7 +4,9 @@ import { laneKey } from "./task.js";
 export interface LiveState {
 	runningLanes: Set<string>;
 	interactiveLanes: Set<string>;
-	runningCount: number;
+	/** Count of currently running tasks per project (repo name). The concurrency
+	 * cap is enforced per project, so this replaces a single global count. */
+	runningByRepo: Map<string, number>;
 }
 
 export interface ScheduleDecision {
@@ -45,7 +47,7 @@ function isTerminalNonSuccess(status: TaskInstance["status"]): boolean {
 export function schedule(
 	tasks: TaskInstance[],
 	live: LiveState,
-	opts: { maxConcurrent: number },
+	opts: { perProjectMax: number },
 ): ScheduleDecision {
 	const eligible = tasks
 		.filter((t) => t.status === "queued")
@@ -61,7 +63,10 @@ export function schedule(
 	// tick (a member skipped here is treated as a failed predecessor below).
 	const skippedThisPass = new Set<string>();
 	const claimedLanes = new Set<string>();
-	let slots = opts.maxConcurrent - live.runningCount;
+	// Remaining start slots per project (repo name), lazily seeded on first
+	// touch from `perProjectMax - live.runningByRepo.get(repo)`. Each project
+	// gets its own independent pool — one saturated project never blocks another.
+	const slotsByRepo = new Map<string, number>();
 
 	for (const t of eligible) {
 		// Chain ordering gate (members after the head). Independent tasks and the
@@ -91,11 +96,19 @@ export function schedule(
 			if (t.target.worktree === null) continue;
 		}
 
-		if (slots <= 0) continue; // cap reached — keep scanning so skips still land
+		const repo = t.target.repo;
+		if (!slotsByRepo.has(repo)) {
+			slotsByRepo.set(
+				repo,
+				opts.perProjectMax - (live.runningByRepo.get(repo) ?? 0),
+			);
+		}
+		const slots = slotsByRepo.get(repo) ?? 0;
+		if (slots <= 0) continue; // this project's cap reached — keep scanning other projects/skips
 		const lane = laneKey(t);
 		if (lane === null) {
 			resolve.push(t);
-			slots -= 1;
+			slotsByRepo.set(repo, slots - 1);
 			continue;
 		}
 		// Remaining lane gates: per-lane serialization against tasks already
@@ -107,7 +120,7 @@ export function schedule(
 		}
 		start.push(t);
 		claimedLanes.add(lane);
-		slots -= 1;
+		slotsByRepo.set(repo, slots - 1);
 	}
 
 	return { start, resolve, skip };

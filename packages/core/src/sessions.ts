@@ -127,9 +127,11 @@ export function buildLiveState(
 ): LiveState {
 	const running = tasks.filter((t) => t.status === "running");
 	const runningLanes = new Set<string>();
+	const runningByRepo = new Map<string, number>();
 	for (const t of running) {
 		const lane = laneKey(t);
 		if (lane) runningLanes.add(lane);
+		runningByRepo.set(t.target.repo, (runningByRepo.get(t.target.repo) ?? 0) + 1);
 	}
 	const interactiveLanes = new Set<string>();
 	for (const s of sessions) {
@@ -138,5 +140,5 @@ export function buildLiveState(
 			if (lane) interactiveLanes.add(lane);
 		}
 	}
-	return { runningLanes, interactiveLanes, runningCount: running.length };
+	return { runningLanes, interactiveLanes, runningByRepo };
 }

@@ -31,7 +31,7 @@ const STARTER_CONFIG = `# queohoh global config
 # projects:
 #   - name: platform
 #     path: ~/workspace/platform
-# max_concurrent_tasks: 3
+# max_concurrent_tasks: 5   # per project
 # archive_after_days: 7
 # vars: {}
 `;

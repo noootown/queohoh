@@ -44,13 +44,13 @@ function task(overrides: {
 const idle: LiveState = {
 	runningLanes: new Set(),
 	interactiveLanes: new Set(),
-	runningCount: 0,
+	runningByRepo: new Map(),
 };
 
 describe("schedule", () => {
 	it("starts a queued resolved task on a free lane", () => {
 		const t = task({});
-		expect(schedule([t], idle, { maxConcurrent: 3 })).toEqual({
+		expect(schedule([t], idle, { perProjectMax: 3 })).toEqual({
 			start: [t],
 			resolve: [],
 			skip: [],
@@ -61,14 +61,16 @@ describe("schedule", () => {
 		const tasks = (["needs-input", "running", "done"] as const).map((status) =>
 			task({ status, worktree: `wt-${status}` }),
 		);
-		expect(schedule(tasks, idle, { maxConcurrent: 5 }).start).toEqual([]);
+		expect(schedule(tasks, idle, { perProjectMax: 5 }).start).toEqual([]);
 	});
 
 	it("orders by priority band then id", () => {
 		const low = task({ priority: "low", worktree: "wt-1" });
 		const high = task({ priority: "high", worktree: "wt-2" });
 		const normal = task({ priority: "normal", worktree: "wt-3" });
-		const { start } = schedule([low, high, normal], idle, { maxConcurrent: 3 });
+		const { start } = schedule([low, high, normal], idle, {
+			perProjectMax: 3,
+		});
 		expect(start.map((t) => t.id)).toEqual([high.id, normal.id, low.id]);
 	});
 
@@ -77,9 +79,9 @@ describe("schedule", () => {
 		const live: LiveState = {
 			runningLanes: new Set(["platform:busy"]),
 			interactiveLanes: new Set(),
-			runningCount: 1,
+			runningByRepo: new Map([["platform", 1]]),
 		};
-		expect(schedule([a], live, { maxConcurrent: 5 }).start).toEqual([]);
+		expect(schedule([a], live, { perProjectMax: 5 }).start).toEqual([]);
 	});
 
 	it("starts on a lane held by an interactive session (no longer blocks)", () => {
@@ -87,32 +89,35 @@ describe("schedule", () => {
 		const live: LiveState = {
 			runningLanes: new Set(),
 			interactiveLanes: new Set(["platform:yours"]),
-			runningCount: 0,
+			runningByRepo: new Map(),
 		};
-		expect(schedule([b], live, { maxConcurrent: 5 }).start).toEqual([b]);
+		expect(schedule([b], live, { perProjectMax: 5 }).start).toEqual([b]);
 	});
 
 	it("does not pause a lane containing a failed task", () => {
 		const failed = task({ status: "failed", worktree: "wt-a" });
 		const queued = task({ worktree: "wt-a" });
 		expect(
-			schedule([failed, queued], idle, { maxConcurrent: 3 }).start,
+			schedule([failed, queued], idle, { perProjectMax: 3 }).start,
 		).toEqual([queued]);
 	});
 
-	it("enforces the global cap across start + resolve + running", () => {
+	it("enforces the per-project cap across start + resolve + running", () => {
 		const a = task({ worktree: "wt-1" });
 		const b = task({ worktree: null });
 		const c = task({ worktree: "wt-3" });
-		const live: LiveState = { ...idle, runningCount: 1 };
-		const decision = schedule([a, b, c], live, { maxConcurrent: 2 });
+		const live: LiveState = {
+			...idle,
+			runningByRepo: new Map([["platform", 1]]),
+		};
+		const decision = schedule([a, b, c], live, { perProjectMax: 2 });
 		expect(decision.start).toEqual([a]);
 		expect(decision.resolve).toEqual([]);
 	});
 
 	it("routes unresolved tasks to resolve", () => {
 		const t = task({ worktree: null });
-		expect(schedule([t], idle, { maxConcurrent: 3 })).toEqual({
+		expect(schedule([t], idle, { perProjectMax: 3 })).toEqual({
 			start: [],
 			resolve: [t],
 			skip: [],
@@ -122,16 +127,59 @@ describe("schedule", () => {
 	it("starts at most one task per lane per decision", () => {
 		const first = task({ worktree: "wt-a" });
 		const second = task({ worktree: "wt-a" });
-		const { start } = schedule([first, second], idle, { maxConcurrent: 5 });
+		const { start } = schedule([first, second], idle, { perProjectMax: 5 });
 		expect(start).toEqual([first]);
 	});
 
 	it("treats the @repo sentinel as an ordinary lane (serializes primary-checkout tasks)", () => {
 		const first = task({ worktree: "@repo" });
 		const second = task({ worktree: "@repo" });
-		const { start } = schedule([first, second], idle, { maxConcurrent: 5 });
+		const { start } = schedule([first, second], idle, { perProjectMax: 5 });
 		// Both share the `platform:@repo` lane, so only one starts this decision.
 		expect(start).toEqual([first]);
+	});
+
+	it("does not let one saturated project consume another project's slots", () => {
+		// Project A already has perProjectMax(2) running; project B is idle.
+		const aQueued = task({ repo: "alpha", worktree: "wt-a-3" });
+		const bQueued = task({ repo: "beta", worktree: "wt-b-1" });
+		const live: LiveState = {
+			runningLanes: new Set(["alpha:wt-a-1", "alpha:wt-a-2"]),
+			interactiveLanes: new Set(),
+			runningByRepo: new Map([["alpha", 2]]),
+		};
+		const decision = schedule([aQueued, bQueued], live, { perProjectMax: 2 });
+		expect(decision.start).toEqual([bQueued]);
+	});
+
+	it("lets each of several projects independently reach perProjectMax", () => {
+		const alpha1 = task({ repo: "alpha", worktree: "wt-a-1" });
+		const alpha2 = task({ repo: "alpha", worktree: "wt-a-2" });
+		const alpha3 = task({ repo: "alpha", worktree: "wt-a-3" });
+		const beta1 = task({ repo: "beta", worktree: "wt-b-1" });
+		const beta2 = task({ repo: "beta", worktree: "wt-b-2" });
+		const decision = schedule(
+			[alpha1, alpha2, alpha3, beta1, beta2],
+			idle,
+			{ perProjectMax: 2 },
+		);
+		expect(decision.start.map((t) => t.id).sort()).toEqual(
+			[alpha1.id, alpha2.id, beta1.id, beta2.id].sort(),
+		);
+	});
+
+	it("still serializes two tasks on the same worktree within one project", () => {
+		const first = task({ repo: "alpha", worktree: "wt-shared" });
+		const second = task({ repo: "alpha", worktree: "wt-shared" });
+		const { start } = schedule([first, second], idle, { perProjectMax: 5 });
+		expect(start).toEqual([first]);
+	});
+
+	it("runs tasks on different worktrees within one project concurrently, bounded by perProjectMax", () => {
+		const w1 = task({ repo: "alpha", worktree: "wt-1" });
+		const w2 = task({ repo: "alpha", worktree: "wt-2" });
+		const { start } = schedule([w1, w2], idle, { perProjectMax: 5 });
+		expect(start.map((t) => t.id).sort()).toEqual([w1.id, w2.id].sort());
 	});
 });
 
@@ -153,9 +201,9 @@ describe("schedule — task chains", () => {
 		const live: LiveState = {
 			runningLanes: new Set(["platform:wt-c"]),
 			interactiveLanes: new Set(),
-			runningCount: 1,
+			runningByRepo: new Map([["platform", 1]]),
 		};
-		const decision = schedule([head, tail], live, { maxConcurrent: 3 });
+		const decision = schedule([head, tail], live, { perProjectMax: 3 });
 		expect(decision.start).toEqual([]);
 		expect(decision.skip).toEqual([]);
 	});
@@ -174,7 +222,7 @@ describe("schedule — task chains", () => {
 			chainId: "c1",
 			chainSeq: 1,
 		});
-		const { start, skip } = schedule([head, tail], idle, { maxConcurrent: 3 });
+		const { start, skip } = schedule([head, tail], idle, { perProjectMax: 3 });
 		expect(start).toEqual([tail]);
 		expect(skip).toEqual([]);
 	});
@@ -193,7 +241,7 @@ describe("schedule — task chains", () => {
 			chainId: "c1",
 			chainSeq: 1,
 		});
-		const decision = schedule([head, tail], idle, { maxConcurrent: 3 });
+		const decision = schedule([head, tail], idle, { perProjectMax: 3 });
 		expect(decision.start).toEqual([]);
 		expect(decision.skip.map((s) => s.task.id)).toEqual(["01C2"]);
 		expect(decision.skip[0]?.reason).toContain("failed");
@@ -213,7 +261,7 @@ describe("schedule — task chains", () => {
 			chainId: "c1",
 			chainSeq: 1,
 		});
-		const decision = schedule([head, tail], idle, { maxConcurrent: 3 });
+		const decision = schedule([head, tail], idle, { perProjectMax: 3 });
 		expect(decision.start).toEqual([]);
 		expect(decision.skip.map((s) => s.task.id)).toEqual(["01C2"]);
 		expect(decision.skip[0]?.reason).toContain("verify-failed");
@@ -233,7 +281,7 @@ describe("schedule — task chains", () => {
 			chainId: "c1",
 			chainSeq: 1,
 		});
-		const decision = schedule([head, tail], idle, { maxConcurrent: 3 });
+		const decision = schedule([head, tail], idle, { perProjectMax: 3 });
 		expect(decision.start).toEqual([]);
 		expect(decision.skip.map((s) => s.task.id)).toEqual(["01C2"]);
 		expect(decision.skip[0]?.reason).toContain("cancelled");
@@ -253,7 +301,7 @@ describe("schedule — task chains", () => {
 			chainId: "c1",
 			chainSeq: 1,
 		});
-		const decision = schedule([head, tail], idle, { maxConcurrent: 3 });
+		const decision = schedule([head, tail], idle, { perProjectMax: 3 });
 		expect(decision.skip.map((s) => s.task.id)).toEqual(["01C2"]);
 	});
 
@@ -277,7 +325,7 @@ describe("schedule — task chains", () => {
 			chainId: "c1",
 			chainSeq: 2,
 		});
-		const decision = schedule([a, b, c], idle, { maxConcurrent: 3 });
+		const decision = schedule([a, b, c], idle, { perProjectMax: 3 });
 		// b skipped (pred failed) and c skipped (pred b skipped this pass).
 		expect(decision.skip.map((s) => s.task.id).sort()).toEqual([
 			"01C2",
@@ -301,7 +349,7 @@ describe("schedule — task chains", () => {
 			chainId: "c1",
 			chainSeq: 1,
 		});
-		const decision = schedule([head, tail], idle, { maxConcurrent: 3 });
+		const decision = schedule([head, tail], idle, { perProjectMax: 3 });
 		expect(decision.resolve).toEqual([]);
 		expect(decision.start).toEqual([]);
 		expect(decision.skip).toEqual([]);
@@ -325,7 +373,7 @@ describe("schedule — task chains", () => {
 		// pauses a lane, and the chain gate is scoped to chain members).
 		const independent = task({ id: "01IND", worktree: "wt-shared" });
 		const decision = schedule([head, tail, independent], idle, {
-			maxConcurrent: 3,
+			perProjectMax: 3,
 		});
 		expect(decision.start).toEqual([independent]);
 		expect(decision.skip.map((s) => s.task.id)).toEqual(["01C2"]);

@@ -113,6 +113,7 @@ export class ApiServer {
 			archivedRecent: this.deps.store.listArchived().slice(-20),
 			sessions: this.deps.registry.list(),
 			running: this.deps.engine.runningTaskIds(),
+			// Per-project cap (see GlobalConfig.maxConcurrentTasks) — not a global total.
 			maxConcurrent: this.deps.config.maxConcurrentTasks,
 			projects: this.deps.config.projects.map((p) => ({
 				name: p.name,

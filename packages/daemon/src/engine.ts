@@ -278,7 +278,7 @@ export class Engine {
 			this.laneOfCwd(cwd),
 		);
 		const decision = schedule(tasks, live, {
-			maxConcurrent: deps.config.maxConcurrentTasks,
+			perProjectMax: deps.config.maxConcurrentTasks,
 		});
 
 		// Chain members whose predecessor did not succeed: mark terminal `skipped`

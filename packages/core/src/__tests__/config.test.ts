@@ -32,7 +32,7 @@ describe("loadGlobalConfig", () => {
 		expect(config.projects).toEqual([
 			{ name: "platform", path: join(homedir(), "workspace/platform") },
 		]);
-		expect(config.maxConcurrentTasks).toBe(3);
+		expect(config.maxConcurrentTasks).toBe(5);
 		expect(config.archiveAfterDays).toBe(7);
 		expect(config.vars).toEqual({ github_user: "noootown" });
 	});
