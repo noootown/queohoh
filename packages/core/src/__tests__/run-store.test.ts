@@ -22,6 +22,7 @@ const task: TaskInstance = {
 	session: "fresh",
 	resumeSessionId: null,
 	model: null,
+	timeoutMs: null,
 	prompt: "Review PR 257 with secret shh-token.\n",
 };
 

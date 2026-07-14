@@ -69,6 +69,12 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.describe(
 					"Model for the run (e.g. claude-fable-5); defaults to the daemon default",
 				),
+			timeout: z
+				.string()
+				.optional()
+				.describe(
+					"Duration like '30m' or '2h' that sets the run's hard wall-clock ceiling; defaults to the daemon default (3h). Inactivity (a wedged worker) is reaped separately by an idle timer and is not configurable here.",
+				),
 			verify: z
 				.string()
 				.optional()
@@ -144,6 +150,12 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.optional()
 				.describe(
 					"Model for prompt steps (definition steps use their own model)",
+				),
+			timeout: z
+				.string()
+				.optional()
+				.describe(
+					"Duration like '30m' or '2h' that sets the hard wall-clock ceiling applied to EVERY step in the chain; defaults to the daemon default (3h). Inactivity (a wedged worker) is reaped separately by an idle timer and is not configurable here.",
 				),
 		},
 		async (args) => toCallResult(mcpEnqueueChain(caller, args)),

@@ -54,6 +54,7 @@ export {
 	executeClaude,
 	executeVerify,
 	formatEventToMarkdown,
+	IDLE_TIMEOUT_MS,
 	VERIFY_OUTPUT_LIMIT,
 } from "./runner.js";
 export type { LiveState, ScheduleDecision } from "./scheduler.js";

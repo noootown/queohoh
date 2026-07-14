@@ -34,7 +34,20 @@ export interface ExecuteClaudeOptions {
 	transcriptPath: string;
 	redact: Redactor;
 	onSpawned?: (pid: number) => void;
+	/** Inactivity window: reset on every successfully-parsed stream event: if no
+	 * event arrives within this window the worker is presumed wedged and killed.
+	 * Defaults to [`IDLE_TIMEOUT_MS`]; injectable so tests don't wait 12 minutes.
+	 * `timeoutMs` remains a separate one-shot ceiling that fires regardless of
+	 * activity — the primary reaper is this idle window, `timeoutMs` is the
+	 * backstop against a run that never goes silent but also never finishes. */
+	idleTimeoutMs?: number;
 }
+
+/** Default inactivity window for the streaming Claude runner: 12 minutes. Reset
+ * on every parsed stream event (see `handleLine` in [`executeClaude`]); a run
+ * that goes silent longer than this is presumed wedged and killed, independent
+ * of the overall `timeoutMs` ceiling. */
+export const IDLE_TIMEOUT_MS = 12 * 60_000;
 
 export function formatEventToMarkdown(
 	event: Record<string, unknown>,
@@ -81,6 +94,7 @@ export function formatEventToMarkdown(
 
 export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 	const timeoutMs = Math.max(1000, opts.timeoutMs);
+	const idleTimeoutMs = Math.max(1000, opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
 	const args = [
 		"-p",
 		opts.prompt,
@@ -129,7 +143,18 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 		let lineBuffer = "";
 		let killTimer: ReturnType<typeof setTimeout> | null = null;
 
-		const timeout = setTimeout(() => {
+		// Two independent reapers, both landing the same `timedOut` outcome (the
+		// TUI matches "timed out" verbatim — see selectors.rs — so the two paths
+		// must not be distinguishable downstream):
+		//  - idleTimer: the PRIMARY reaper. Reset on every parsed stream event in
+		//    `handleLine`; fires when the worker has gone silent too long.
+		//  - ceiling: a one-shot backstop equal to the resolved `timeoutMs`, so a
+		//    run that keeps streaming (never idle) still cannot run forever.
+		const killChild = () => {
+			// Guard against both timers firing (idle and ceiling landing in the same
+			// tick, or a redundant fire after the other already killed the child):
+			// only the first call actually signals the process.
+			if (timedOut) return;
 			timedOut = true;
 			if (child.pid) {
 				try {
@@ -146,7 +171,20 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 				}
 			}, 5000);
 			killTimer.unref();
-		}, timeoutMs);
+		};
+
+		let idleTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+			killChild,
+			idleTimeoutMs,
+		);
+		const ceiling = setTimeout(killChild, timeoutMs);
+
+		const clearTimers = () => {
+			if (idleTimer) clearTimeout(idleTimer);
+			idleTimer = null;
+			clearTimeout(ceiling);
+			if (killTimer) clearTimeout(killTimer);
+		};
 
 		const handleLine = (line: string) => {
 			if (!line.trim()) return;
@@ -155,6 +193,13 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 				event = JSON.parse(line);
 			} catch {
 				return;
+			}
+			// A successfully-parsed event proves the worker is alive; reset the idle
+			// window. Once a reaper has already fired (idleTimer nulled by
+			// clearTimers), there's nothing to reset.
+			if (idleTimer) {
+				clearTimeout(idleTimer);
+				idleTimer = setTimeout(killChild, idleTimeoutMs);
 			}
 			appendFileSync(opts.eventsPath, `${opts.redact(line)}\n`);
 
@@ -189,8 +234,7 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 		});
 
 		child.on("close", (code, signal) => {
-			clearTimeout(timeout);
-			if (killTimer) clearTimeout(killTimer);
+			clearTimers();
 			if (lineBuffer) handleLine(lineBuffer);
 			resolve({
 				exitCode: code ?? 1,
@@ -204,7 +248,7 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 		});
 
 		child.on("error", () => {
-			clearTimeout(timeout);
+			clearTimers();
 			resolve({
 				exitCode: 1,
 				timedOut: false,

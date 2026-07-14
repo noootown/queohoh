@@ -731,6 +731,83 @@ describe("runTask pinned resume model resolution", () => {
 	});
 });
 
+describe("runTask timeout precedence", () => {
+	it("falls back to deps.defaults.timeoutMs when neither def nor task set one", async () => {
+		let seenTimeoutMs = 0;
+		const { deps, store } = makeDeps({
+			executeClaude: async (opts) => {
+				seenTimeoutMs = opts.timeoutMs;
+				return okResult;
+			},
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenTimeoutMs).toBe(60_000); // deps.defaults.timeoutMs in makeDeps
+	});
+
+	it("task.timeout_ms overrides the daemon default; definition timeout still wins", async () => {
+		let seenTimeoutMs = 0;
+		const { deps, store } = makeDeps({
+			executeClaude: async (opts) => {
+				seenTimeoutMs = opts.timeoutMs;
+				return okResult;
+			},
+		});
+		const t = store.create({
+			prompt: "p\n",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			timeoutMs: 900_000,
+		});
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenTimeoutMs).toBe(900_000);
+	});
+
+	it("def.timeoutMs beats task.timeoutMs", async () => {
+		const def: TaskDefinition = {
+			name: "d",
+			repo: "platform",
+			discovery: null,
+			description: null,
+			cron: null,
+			args: [],
+			dedup: "none",
+			worktree: "temp",
+			verify: null,
+			preRun: null,
+			postRun: null,
+			model: "opus",
+			timeoutMs: 45_000,
+			priority: "normal",
+			prompt: "p",
+		};
+		let seenTimeoutMs = 0;
+		const { deps, store } = makeDeps({
+			loadDef: () => def,
+			executeClaude: async (opts) => {
+				seenTimeoutMs = opts.timeoutMs;
+				return okResult;
+			},
+		});
+		const t = store.create({
+			prompt: "p\n",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			definition: "platform/d",
+			item: {},
+			itemKey: "adhoc",
+			timeoutMs: 900_000,
+		});
+		withWorktree(store, t.id);
+		await runTask(t.id, deps);
+		expect(seenTimeoutMs).toBe(45_000);
+	});
+});
+
 describe("runTask verify (done-condition)", () => {
 	const enqueueVerify = (store: QueueStore, verify: string) =>
 		store.create({

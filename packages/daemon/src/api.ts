@@ -261,6 +261,8 @@ export class ApiServer {
 					typeof params.verify === "string" && params.verify.length > 0
 						? params.verify
 						: undefined;
+				const timeoutMs =
+					typeof params.timeout_ms === "number" ? params.timeout_ms : undefined;
 				const cwd =
 					typeof params.cwd === "string" && params.cwd.length > 0
 						? params.cwd
@@ -291,6 +293,7 @@ export class ApiServer {
 					session: "fresh",
 					resumeSessionId,
 					model,
+					timeoutMs,
 					verify,
 				});
 				deps.onMutation();
@@ -307,6 +310,8 @@ export class ApiServer {
 					typeof params.model === "string" && params.model.length > 0
 						? params.model
 						: undefined;
+				const timeoutMs =
+					typeof params.timeout_ms === "number" ? params.timeout_ms : undefined;
 				const resumeSessionId =
 					typeof params.resume_session_id === "string" &&
 					params.resume_session_id.length > 0
@@ -368,16 +373,18 @@ export class ApiServer {
 							prompt: render(def.prompt, globalVars, repoVars, item),
 							definition: `${repo}/${def.name}`,
 							item,
-							// Chain-level model applies to prompt steps; a definition step's
-							// own model still wins at spawn (worker precedence), matching
-							// run_task_definition. Priority is the chain's (shared), applied
-							// uniformly by createChain so members schedule together.
+							// Chain-level model/timeout apply to prompt steps; a definition
+							// step's own model/timeout still win at spawn (worker
+							// precedence), matching run_task_definition. Priority is the
+							// chain's (shared), applied uniformly by createChain so members
+							// schedule together.
 							model,
+							timeoutMs,
 							verify,
 						};
 					}
 					if (typeof s.prompt === "string" && s.prompt.length > 0) {
-						return { prompt: s.prompt, model, verify };
+						return { prompt: s.prompt, model, timeoutMs, verify };
 					}
 					throw new Error(
 						`chain step ${i}: must have either 'definition' or 'prompt'`,

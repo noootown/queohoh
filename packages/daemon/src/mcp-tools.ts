@@ -1,3 +1,5 @@
+import { parseDuration } from "@queohoh/core";
+
 export interface DaemonPort {
 	call(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
@@ -47,11 +49,17 @@ export function mcpEnqueueTask(
 		priority?: "low" | "normal" | "high";
 		resume_session_id?: string;
 		model?: string;
+		timeout?: string;
 		verify?: string;
 	},
 ): Promise<ToolResult> {
-	return withPort(caller, (port) =>
-		port.call("enqueue", {
+	return withPort(caller, (port) => {
+		// Parsed here (not silently ignored on failure) so a malformed duration
+		// (e.g. "30 minutes") surfaces as a clear MCP error rather than falling
+		// back to the daemon default.
+		const timeoutMs =
+			args.timeout !== undefined ? parseDuration(args.timeout) : undefined;
+		return port.call("enqueue", {
 			prompt: args.prompt,
 			repo: args.repo,
 			cwd: args.cwd,
@@ -59,9 +67,10 @@ export function mcpEnqueueTask(
 			priority: args.priority,
 			resume_session_id: args.resume_session_id,
 			model: args.model,
+			timeout_ms: timeoutMs,
 			verify: args.verify,
-		}),
-	);
+		});
+	});
 }
 
 export function mcpEnqueueChain(
@@ -80,10 +89,15 @@ export function mcpEnqueueChain(
 		priority?: "low" | "normal" | "high";
 		resume_session_id?: string;
 		model?: string;
+		timeout?: string;
 	},
 ): Promise<ToolResult> {
-	return withPort(caller, (port) =>
-		port.call("enqueue_chain", {
+	return withPort(caller, (port) => {
+		// Parsed here (not silently ignored on failure) so a malformed duration
+		// surfaces as a clear MCP error; the one ceiling applies to every step.
+		const timeoutMs =
+			args.timeout !== undefined ? parseDuration(args.timeout) : undefined;
+		return port.call("enqueue_chain", {
 			steps: args.steps,
 			repo: args.repo,
 			cwd: args.cwd,
@@ -92,9 +106,10 @@ export function mcpEnqueueChain(
 			priority: args.priority,
 			resume_session_id: args.resume_session_id,
 			model: args.model,
+			timeout_ms: timeoutMs,
 			source: "mcp",
-		}),
-	);
+		});
+	});
 }
 
 export function mcpListTasks(caller: McpCaller): Promise<ToolResult> {

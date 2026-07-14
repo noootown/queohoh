@@ -27,6 +27,10 @@ export interface NewTaskInput {
 	session?: SessionMode;
 	resumeSessionId?: string;
 	model?: string;
+	/** Per-task hard wall-clock ceiling override, in ms (from the MCP `timeout`
+	 * param); a definition task's own `timeout:` still wins at run time,
+	 * mirroring `model`. */
+	timeoutMs?: number;
 	/** Done-condition command run after the worker claims success; a definition
 	 * task leaves this unset and uses the definition's own `verify` at run time. */
 	verify?: string;
@@ -42,6 +46,9 @@ export interface ChainStepInput {
 	item?: Record<string, string>;
 	itemKey?: string;
 	model?: string;
+	/** Chain-wide hard wall-clock ceiling override, in ms (a definition step's
+	 * own `timeout:` still wins at run time, mirroring `model`). */
+	timeoutMs?: number;
 	priority?: Priority;
 	/** Per-step done-condition command (a definition step's own `verify` still
 	 * wins at run time, mirroring `model`). */
@@ -95,6 +102,7 @@ export class QueueStore {
 			session: input.session ?? "fresh",
 			resumeSessionId: input.resumeSessionId ?? null,
 			model: input.model ?? null,
+			timeoutMs: input.timeoutMs ?? null,
 			prompt: input.prompt,
 			chainId: null,
 			chainSeq: null,
@@ -139,6 +147,7 @@ export class QueueStore {
 				// Resume applies to the head only; later steps are always fresh.
 				resumeSessionId: i === 0 ? (shared.resumeSessionId ?? null) : null,
 				model: step.model ?? null,
+				timeoutMs: step.timeoutMs ?? null,
 				prompt: step.prompt,
 				chainId,
 				chainSeq: i,

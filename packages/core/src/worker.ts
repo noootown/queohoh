@@ -146,7 +146,10 @@ export async function runTask(
 		def?.model ?? task.model ?? deps.defaults.model,
 		deps.modelTable ?? {},
 	);
-	const timeoutMs = def?.timeoutMs ?? deps.defaults.timeoutMs;
+	// Precedence: definition's own `timeout:` > per-task override (ad-hoc/chain
+	// step, set via the MCP `timeout` param) > daemon default. Mirrors `model`
+	// immediately above.
+	const timeoutMs = def?.timeoutMs ?? task.timeoutMs ?? deps.defaults.timeoutMs;
 
 	deps.runStore.writeSnapshot(
 		taskId,

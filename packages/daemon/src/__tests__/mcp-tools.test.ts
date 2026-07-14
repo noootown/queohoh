@@ -88,6 +88,29 @@ describe("mcpEnqueueTask", () => {
 		expect(calls[0]?.params?.verify).toBe("test -f dist/cli.js");
 	});
 
+	it("parses a timeout duration into timeout_ms on the enqueue RPC", async () => {
+		const { caller, calls } = fakeCaller(() => ({ id: "01T" }));
+		await mcpEnqueueTask(caller, {
+			prompt: "fix it",
+			repo: "platform",
+			timeout: "2h",
+		});
+		expect(calls[0]?.params?.timeout_ms).toBe(7_200_000);
+	});
+
+	it("surfaces a clear error for a malformed timeout instead of ignoring it", async () => {
+		const { caller, calls } = fakeCaller(() => ({ id: "01T" }));
+		const result = await mcpEnqueueTask(caller, {
+			prompt: "fix it",
+			repo: "platform",
+			timeout: "30 minutes",
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("invalid duration");
+		// Never reached the RPC — the bad value must not be silently dropped.
+		expect(calls).toHaveLength(0);
+	});
+
 	it("maps failures to isError result and still closes", async () => {
 		const { caller, closedCount } = fakeCaller(() => {
 			throw new Error("daemon not reachable");
@@ -152,6 +175,28 @@ describe("mcpEnqueueChain", () => {
 		expect(result.isError).toBe(true);
 		expect(result.content[0]?.text).toContain("must have either");
 		expect(closedCount()).toBe(1);
+	});
+
+	it("parses a timeout duration into timeout_ms, applied to the whole chain", async () => {
+		const { caller, calls } = fakeCaller(() => [{ id: "01H" }]);
+		await mcpEnqueueChain(caller, {
+			steps: [{ prompt: "a" }, { prompt: "b" }],
+			repo: "platform",
+			timeout: "45m",
+		});
+		expect(calls[0]?.params?.timeout_ms).toBe(2_700_000);
+	});
+
+	it("surfaces a clear error for a malformed chain timeout instead of ignoring it", async () => {
+		const { caller, calls } = fakeCaller(() => [{ id: "01H" }]);
+		const result = await mcpEnqueueChain(caller, {
+			steps: [{ prompt: "a" }],
+			repo: "platform",
+			timeout: "bogus",
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("invalid duration");
+		expect(calls).toHaveLength(0);
 	});
 });
 

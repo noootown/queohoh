@@ -18,6 +18,7 @@ const sample: TaskInstance = {
 	session: "fresh",
 	resumeSessionId: null,
 	model: null,
+	timeoutMs: null,
 	prompt: "Reply to review comments on PR #1423.\n",
 	chainId: null,
 	chainSeq: null,
@@ -119,6 +120,20 @@ describe("resume_session_id and model fields", () => {
 			"c77252c9-11d1-4e68-ab81-f099af529091",
 		);
 		expect(reparsed.model).toBe("claude-fable-5");
+	});
+});
+
+describe("timeout_ms field", () => {
+	it("defaults to null when absent (legacy task files)", () => {
+		const legacy = serializeTaskFile(sample).replace(/^timeout_ms: .*\n/m, "");
+		expect(legacy).not.toContain("timeout_ms:");
+		expect(parseTaskFile(legacy).timeoutMs).toBeNull();
+	});
+
+	it("round-trips when set", () => {
+		const withTimeout: TaskInstance = { ...sample, timeoutMs: 1_800_000 };
+		const reparsed = parseTaskFile(serializeTaskFile(withTimeout));
+		expect(reparsed.timeoutMs).toBe(1_800_000);
 	});
 });
 

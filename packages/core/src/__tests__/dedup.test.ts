@@ -25,6 +25,7 @@ function existing(
 		session: "fresh",
 		resumeSessionId: null,
 		model: null,
+		timeoutMs: null,
 		prompt: "p",
 	};
 }

@@ -35,6 +35,14 @@ if (mode === "ok") {
 	emit({ type: "system", session_id: "sess-hang" });
 	// Never exits — runner must SIGTERM the group.
 	setInterval(() => {}, 1000);
+} else if (mode === "trickle") {
+	// Emits a keepalive event on a short fixed cadence and never exits — used to
+	// prove the idle timer keeps getting reset by live stream activity, so a
+	// kill (if one lands) must come from the ceiling timeout, not idle.
+	emit({ type: "system", session_id: "sess-trickle" });
+	setInterval(() => {
+		emit({ type: "system", session_id: "sess-trickle" });
+	}, 100);
 } else if (mode === "crash") {
 	process.stderr.write("boom\n");
 	process.exit(2);

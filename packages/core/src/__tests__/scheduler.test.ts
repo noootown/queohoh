@@ -34,6 +34,7 @@ function task(overrides: {
 		session: "fresh",
 		resumeSessionId: null,
 		model: null,
+		timeoutMs: null,
 		prompt: "p",
 		chainId: overrides.chainId ?? null,
 		chainSeq: overrides.chainSeq ?? null,

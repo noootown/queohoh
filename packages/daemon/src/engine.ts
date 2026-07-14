@@ -648,7 +648,11 @@ export class Engine {
 				}
 			},
 			worktreePath: (repo, worktree) => this.worktreeAbsPath(repo, worktree),
-			defaults: { model: defaultModel, timeoutMs: 1_800_000 },
+			// 3h wall-clock ceiling. Idle reaping (12m, see runner.ts IDLE_TIMEOUT_MS)
+			// catches wedged workers early, so this ceiling is a generous backstop —
+			// not the primary reaper — for a run that keeps streaming but never
+			// actually finishes.
+			defaults: { model: defaultModel, timeoutMs: 10_800_000 },
 		})
 			.catch((err) => {
 				try {

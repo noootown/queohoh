@@ -74,6 +74,55 @@ describe("executeClaude", () => {
 		expect(result.signal).toBe("SIGTERM");
 	}, 15_000);
 
+	it("kills via the idle timer when the stream goes silent, well before the ceiling", async () => {
+		const { eventsPath, transcriptPath, dir } = paths();
+		const start = Date.now();
+		const result = await executeClaude({
+			prompt: "hang",
+			model: "opus",
+			cwd: dir,
+			// Ceiling is generous; the idle window (short) must be the one that
+			// actually fires.
+			timeoutMs: 10_000,
+			idleTimeoutMs: 300,
+			claudeBin: FAKE,
+			env: { FAKE_CLAUDE_MODE: "hang" },
+			eventsPath,
+			transcriptPath,
+			redact: passthrough,
+		});
+		const elapsed = Date.now() - start;
+		expect(result.timedOut).toBe(true);
+		expect(result.signal).toBe("SIGTERM");
+		// Killed near the idle window, nowhere near the 10s ceiling.
+		expect(elapsed).toBeLessThan(5000);
+	}, 15_000);
+
+	it("ceiling fires even when the stream stays continuously active (idle never elapses)", async () => {
+		const { eventsPath, transcriptPath, dir } = paths();
+		const start = Date.now();
+		const result = await executeClaude({
+			prompt: "trickle",
+			model: "opus",
+			cwd: dir,
+			// Ceiling is shorter than how long the trickle would need to go idle;
+			// the idle timer (reset every ~100ms by the fixture) must never fire.
+			timeoutMs: 1200,
+			idleTimeoutMs: 400,
+			claudeBin: FAKE,
+			env: { FAKE_CLAUDE_MODE: "trickle" },
+			eventsPath,
+			transcriptPath,
+			redact: passthrough,
+		});
+		const elapsed = Date.now() - start;
+		expect(result.timedOut).toBe(true);
+		expect(result.signal).toBe("SIGTERM");
+		// Proves the idle timer (400ms) did NOT kill it early — the ceiling
+		// (1200ms) had to fire instead.
+		expect(elapsed).toBeGreaterThanOrEqual(1000);
+	}, 15_000);
+
 	it("reports nonzero exit with stderr", async () => {
 		const { eventsPath, transcriptPath, dir } = paths();
 		const result = await executeClaude({

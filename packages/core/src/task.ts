@@ -59,6 +59,11 @@ const TaskMetaSchema = z
 		session: SessionModeSchema.default("fresh"),
 		resume_session_id: z.string().nullable().default(null),
 		model: z.string().nullable().default(null),
+		// Per-task hard wall-clock ceiling override, in ms (additive; absent on
+		// legacy files → null). Set from the MCP `timeout` param (enqueue_task /
+		// enqueue_chain); resolution precedence at run time is definition >
+		// per-task > daemon default (mirrors `model` immediately above).
+		timeout_ms: z.number().nullable().default(null),
 		// Task-chain linkage (additive; absent on legacy files → null). Members of
 		// one chain share `chain_id`; `chain_seq` is the 0-based position (head =
 		// 0). A non-chain task has both null.
@@ -94,6 +99,10 @@ export interface TaskInstance {
 	session: SessionMode;
 	resumeSessionId: string | null;
 	model: string | null;
+	/** Per-task hard wall-clock ceiling override, in ms; null = fall back to the
+	 * definition's `timeout:` (if any) or the daemon default. See
+	 * `TaskMetaSchema.timeout_ms`. */
+	timeoutMs: number | null;
 	prompt: string;
 	/** Chain id shared by all members of a task chain; null for a standalone
 	 * task. Optional so pre-chain callers and test literals need not set it. */
@@ -133,6 +142,7 @@ export function parseTaskFile(content: string): TaskInstance {
 		session: m.session,
 		resumeSessionId: m.resume_session_id,
 		model: m.model,
+		timeoutMs: m.timeout_ms,
 		prompt: body,
 		chainId: m.chain_id,
 		chainSeq: m.chain_seq,
@@ -160,6 +170,7 @@ export function serializeTaskFile(task: TaskInstance): string {
 		session: task.session,
 		resume_session_id: task.resumeSessionId,
 		model: task.model,
+		timeout_ms: task.timeoutMs ?? null,
 		chain_id: task.chainId ?? null,
 		chain_seq: task.chainSeq ?? null,
 		verify: task.verify ?? null,
