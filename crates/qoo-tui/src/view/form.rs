@@ -199,6 +199,23 @@ impl FormState {
     pub fn move_end(&mut self) {
         self.edit(|mi| mi.move_end());
     }
+    /// Vertical caret movement within the focused Textarea (logical lines).
+    /// Inert off a Textarea — a single-line Input has no rows to move between.
+    pub fn move_up(&mut self) {
+        if self.is_textarea_focused() {
+            self.edit(|mi| mi.move_up());
+        }
+    }
+    pub fn move_down(&mut self) {
+        if self.is_textarea_focused() {
+            self.edit(|mi| mi.move_down());
+        }
+    }
+
+    /// Whether the focused field is a Textarea (the only field with rows).
+    fn is_textarea_focused(&self) -> bool {
+        matches!(self.focus_kind(), FocusKind::Field(i) if matches!(self.fields[i].kind, FieldKind::Textarea))
+    }
     /// Insert a pasted string into the focused text field. A Textarea takes it
     /// verbatim (newlines preserved); an Input collapses control chars to spaces
     /// so a multiline paste can't smuggle a newline into a one-line field. Inert

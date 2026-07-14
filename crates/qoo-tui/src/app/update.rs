@@ -189,6 +189,18 @@ impl App {
                         }
                         Update { dirty: true, cmds: vec![] }
                     }
+                    Up => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.move_up();
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    Down => {
+                        if let Mode::AddTask { editor, .. } = &mut self.mode {
+                            editor.move_down();
+                        }
+                        Update { dirty: true, cmds: vec![] }
+                    }
                     Home => {
                         if let Mode::AddTask { editor, .. } = &mut self.mode {
                             editor.move_home();

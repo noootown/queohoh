@@ -60,6 +60,67 @@ impl MultilineInput {
     pub fn move_end(&mut self) {
         self.cursor = self.text.chars().count();
     }
+
+    /// `(line_index, column)` of the caret in LOGICAL lines (split on `\n`),
+    /// both char-based. Column is the char offset from the line's start.
+    fn line_col(&self) -> (usize, usize) {
+        let mut line = 0;
+        let mut col = 0;
+        for c in self.text.chars().take(self.cursor) {
+            if c == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    /// Char index of the first char on logical line `line` (clamped to the last
+    /// line). Lines are the `\n`-split segments of `text`.
+    fn line_start(&self, line: usize) -> usize {
+        let mut idx = 0;
+        let mut seen = 0;
+        for c in self.text.chars() {
+            if seen == line {
+                return idx;
+            }
+            idx += 1;
+            if c == '\n' {
+                seen += 1;
+            }
+        }
+        idx
+    }
+
+    /// Char length (excluding the trailing `\n`) of logical line `line`.
+    fn line_len(&self, line: usize) -> usize {
+        self.text.split('\n').nth(line).map(|l| l.chars().count()).unwrap_or(0)
+    }
+
+    /// Move the caret one logical line up, keeping the column where possible
+    /// (clamped to the shorter target line). Inert on the first line.
+    pub fn move_up(&mut self) {
+        let (line, col) = self.line_col();
+        if line == 0 {
+            return;
+        }
+        let target = line - 1;
+        self.cursor = self.line_start(target) + col.min(self.line_len(target));
+    }
+
+    /// Move the caret one logical line down, keeping the column where possible
+    /// (clamped to the shorter target line). Inert on the last line.
+    pub fn move_down(&mut self) {
+        let (line, col) = self.line_col();
+        let last_line = self.text.chars().filter(|&c| c == '\n').count();
+        if line >= last_line {
+            return;
+        }
+        let target = line + 1;
+        self.cursor = self.line_start(target) + col.min(self.line_len(target));
+    }
 }
 
 #[cfg(test)]
@@ -116,5 +177,32 @@ mod tests {
         m.insert_str("b\nc");
         assert_eq!(m.text, "ab\ncd");
         assert_eq!(m.cursor, 4);
+    }
+
+    #[test]
+    fn move_up_down_navigate_logical_lines_keeping_column() {
+        // "abc\ndefg\nhi"; caret after 'g' — line 1, col 4, char index 8.
+        let mut m = ml("abc\ndefg\nhi", 8);
+        m.move_up(); // → line 0, col clamped min(4,3)=3 → end of "abc" (index 3)
+        assert_eq!(m.cursor, 3);
+        m.move_up(); // already on the first line → inert
+        assert_eq!(m.cursor, 3);
+        // Back down: col 3 clamps onto line 1 (len 4) at index 4+3=7.
+        m.move_down();
+        assert_eq!(m.cursor, 7);
+        // Down again clamps col 3 onto the short last line "hi" (len 2): index 9+2=11.
+        m.move_down();
+        assert_eq!(m.cursor, 11);
+        m.move_down(); // last line → inert
+        assert_eq!(m.cursor, 11);
+    }
+
+    #[test]
+    fn move_up_down_are_inert_on_a_single_line() {
+        let mut m = ml("hello", 3);
+        m.move_up();
+        assert_eq!(m.cursor, 3);
+        m.move_down();
+        assert_eq!(m.cursor, 3);
     }
 }

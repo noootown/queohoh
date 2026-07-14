@@ -48,13 +48,15 @@ impl App {
     }
 
     /// `Mode::Form` key handling. Dropdown-open: ↑/↓ move the highlight, Enter
-    /// picks, Esc closes the dropdown only. Dropdown-closed: Tab/Shift-Tab (and
-    /// ↑/↓ off a text field) move focus; on a focused dropdown ↑/↓/Enter open it;
-    /// ←/→/Home/End/Backspace/printable edit the focused text field; Shift+Enter
-    /// inserts a newline (textarea only). Plain Enter NEVER submits from a field
-    /// (explicit-commit rule): it adds a newline in a textarea, advances focus
-    /// from a single-line input, or opens a focused dropdown; only the Primary
-    /// button submits. Cancel/Esc close.
+    /// picks, Esc closes the dropdown only. Dropdown-closed: Tab/Shift-Tab are
+    /// the ONLY focus movers between fields and the bottom buttons (app-wide
+    /// form standard); ↑/↓ open a focused dropdown or move the caret between
+    /// lines in a focused textarea (never stepping focus, so multiline stays
+    /// navigable); ←/→/Home/End/Backspace/printable edit the focused text
+    /// field; Shift+Enter inserts a newline (textarea only). Plain Enter NEVER
+    /// submits from a field (explicit-commit rule): it adds a newline in a
+    /// textarea, advances focus from a single-line input, or opens a focused
+    /// dropdown; only the Primary button submits. Cancel/Esc close.
     pub(super) fn form_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
         use crossterm::event::{KeyCode::*, KeyModifiers};
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
@@ -101,17 +103,20 @@ impl App {
                 FocusKind::Primary => self.submit_form(),
                 FocusKind::Cancel => { self.mode = Mode::List; Update { dirty: true, cmds: vec![] } }
             },
+            // Tab/Shift-Tab are the ONLY focus movers between fields and the
+            // bottom buttons — app-wide form standard. Arrow keys never change
+            // focus (they'd hijack a textarea's line navigation).
             Tab if !shift => { state.focus_next(); Update { dirty: true, cmds: vec![] } }
             BackTab => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
             Tab if shift => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
-            // ↑/↓ open a focused dropdown, else step focus (a text field has no
-            // multi-line cursor navigation here — Tab/click move between fields).
+            // ↑/↓ open a focused dropdown, move the caret between lines in a
+            // focused textarea, and are otherwise inert — they NEVER step focus.
             Up => {
-                if is_dropdown { state.open_dropdown(); } else { state.focus_prev(); }
+                if is_dropdown { state.open_dropdown(); } else { state.move_up(); }
                 Update { dirty: true, cmds: vec![] }
             }
             Down => {
-                if is_dropdown { state.open_dropdown(); } else { state.focus_next(); }
+                if is_dropdown { state.open_dropdown(); } else { state.move_down(); }
                 Update { dirty: true, cmds: vec![] }
             }
             Left => { state.move_left(); Update { dirty: true, cmds: vec![] } }

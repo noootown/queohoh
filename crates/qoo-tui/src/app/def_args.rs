@@ -158,9 +158,10 @@ impl App {
     }
 
     /// `Mode::DefArgs` key handling. Dropdown-open: ↑/↓ move, Enter picks, Esc
-    /// closes the dropdown only. Dropdown-closed: Tab/Shift-Tab move focus; ↑/↓
-    /// move the cursor within a multiline free-text value (moving focus only at
-    /// the value's top/bottom line, or on an enum); ←/→ cycle an enum or move the
+    /// closes the dropdown only. Dropdown-closed: Tab/Shift-Tab are the ONLY
+    /// focus movers (app-wide form standard); ↑/↓ move the cursor within a
+    /// multiline free-text value and are inert at its top/bottom line or on an
+    /// enum/fixed row (they never step focus); ←/→ cycle an enum or move the
     /// cursor in text; Home/End jump within the current line; Shift+Enter
     /// inserts a hard newline; plain Enter
     /// opens an enum dropdown or validates+submits; Esc cancels; printable/
@@ -201,16 +202,11 @@ impl App {
             Tab if !shift => { form.next_focus(); Update { dirty: true, cmds: vec![] } }
             BackTab => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
             Tab if shift => { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
-            // ↑/↓ walk a multiline value's lines; only at the value edge (or on an
-            // enum) do they step focus.
-            Up => {
-                if form.try_move_up() { Update { dirty: true, cmds: vec![] } }
-                else { form.prev_focus(); Update { dirty: true, cmds: vec![] } }
-            }
-            Down => {
-                if form.try_move_down() { Update { dirty: true, cmds: vec![] } }
-                else { form.next_focus(); Update { dirty: true, cmds: vec![] } }
-            }
+            // ↑/↓ walk a multiline value's lines. They NEVER step focus (only
+            // Tab/Shift-Tab do — app-wide form standard): at a value edge, or on
+            // an enum/fixed row, they are simply inert.
+            Up => { form.try_move_up(); Update { dirty: true, cmds: vec![] } }
+            Down => { form.try_move_down(); Update { dirty: true, cmds: vec![] } }
             // ←/→ cycle an enum; on a free-text row they move the cursor.
             Left => {
                 if enum_focus { let i = form.focus; form.cycle_option(i, -1); }

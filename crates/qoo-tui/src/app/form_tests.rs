@@ -83,6 +83,35 @@ fn tab_cycles_focus_over_fields_then_buttons() {
 }
 
 #[test]
+fn arrow_keys_never_change_field_focus() {
+    // App-wide standard: only Tab/Shift-Tab move focus. Up/Down on a focused
+    // textarea navigate its lines (never stepping to the next/prev field or the
+    // buttons), so a multiline prompt stays reviewable.
+    let mut app = form_app();
+    app.update(key(KeyCode::Tab)); // → prompt textarea (field 1)
+    assert_eq!(focus_kind(&app), FocusKind::Field(1));
+    // Down / Up from the textarea keep focus put (no jump to Primary / dropdown).
+    app.update(key(KeyCode::Down));
+    assert_eq!(focus_kind(&app), FocusKind::Field(1), "Down must not step focus");
+    app.update(key(KeyCode::Up));
+    assert_eq!(focus_kind(&app), FocusKind::Field(1), "Up must not step focus");
+}
+
+#[test]
+fn up_down_navigate_textarea_lines_without_moving_focus() {
+    let mut app = form_app();
+    app.update(key(KeyCode::Tab)); // → prompt textarea
+    for c in "ab".chars() { app.update(ch(c)); }
+    app.update(shift(KeyCode::Enter)); // newline
+    app.update(ch('c')); // value "ab\nc", caret after 'c' (line 1, col 1)
+    // Up moves the caret to line 0 (col 1), so typing lands inside "ab".
+    app.update(key(KeyCode::Up));
+    app.update(ch('X'));
+    assert_eq!(field_value(&app, 1), "aXb\nc");
+    assert_eq!(focus_kind(&app), FocusKind::Field(1), "line nav keeps focus on the textarea");
+}
+
+#[test]
 fn typing_edits_focused_textarea_and_shift_enter_inserts_newline() {
     let mut app = form_app();
     app.update(key(KeyCode::Tab)); // → prompt textarea
