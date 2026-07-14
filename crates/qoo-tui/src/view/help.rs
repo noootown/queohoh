@@ -7,11 +7,12 @@ use crate::hit::{HitMap, HitTarget};
 use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 21] = [
+const HELP_ROWS: [(&str, &str); 22] = [
     ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
     ("1–9 / 0", "switch project tab (0 = 10th)"),
     ("ctrl+s then n/p", "next / previous project tab"),
     ("arrows", "move list cursor (shift: extend selection)"),
+    ("space", "mark/unmark row (non-contiguous, combines with a range)"),
     ("j / k", "detail: move lane-task row · else scroll"),
     ("h / l", "detail: previous / next sub-tab"),
     ("ctrl+x / ctrl+z", "detail sub-tab (alias of l / h)"),
@@ -24,7 +25,7 @@ const HELP_ROWS: [(&str, &str); 21] = [
     ("t", "task menu (worktrees)"),
     ("z", "collapse / expand focused list pane"),
     ("/", "filter focused pane"),
-    ("esc", "clear range → clear filter → close overlay"),
+    ("esc", "clear range+marks → clear filter → close overlay"),
     ("Home/End", "detail pane top / bottom"),
     ("s", "settings — model table"),
     ("?", "this help"),

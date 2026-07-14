@@ -39,11 +39,30 @@ impl App {
     /// `false` means proceed (either not bulk, or `btn` IS allowed on a
     /// range, e.g. QUEUE's re-queue/stop or WORKTREES' remove).
     pub(super) fn bulk_blocked(&mut self, pane: ListPane, btn: crate::hit::PaneButton) -> bool {
-        let sel = self.active_ui().selections[pane.idx()];
-        if !crate::view::is_bulk_selection(&sel) || crate::hit::bulk_allowed(pane.pane_id(), btn) {
+        let ui = self.active_ui();
+        let sel = ui.selections[pane.idx()];
+        let marks = &ui.marks[pane.idx()];
+        if !crate::view::is_bulk_selection(&sel, marks) || crate::hit::bulk_allowed(pane.pane_id(), btn) {
             return false;
         }
         self.status_line = Some(BULK_NOT_APPLICABLE.into());
+        true
+    }
+
+    /// `Space`: toggle the focused pane's cursor row in/out of its marked set.
+    /// The mark key is the row's stable identity ([`App::row_identity`]), so it
+    /// survives search-filter edits and snapshot reorders. Toggle-in-place — the
+    /// cursor and anchor are untouched, which is what makes "jump to a row, mark
+    /// it, jump to another" work. Inert (not dirty) when the pane has no row
+    /// under the cursor (empty pane / cursor past the end).
+    pub(super) fn toggle_mark(&mut self) -> bool {
+        let Some(pane) = self.focused_list() else { return false };
+        let cursor = self.active_ui().selections[pane.idx()].cursor;
+        let Some(id) = self.row_identity(pane, cursor) else { return false };
+        let marks = &mut self.ui().marks[pane.idx()];
+        if !marks.remove(&id) {
+            marks.insert(id);
+        }
         true
     }
 
@@ -157,6 +176,7 @@ impl App {
                 }
                 None => false,
             },
+            A::ToggleMark => self.toggle_mark(),
             // Home/End scroll the detail pane unconditionally — no list branch,
             // so the left-side cursor never moves even though a list pane is
             // focused.
@@ -275,22 +295,31 @@ impl App {
         Update { dirty, cmds }
     }
 
-    /// The QUEUE selection resolved to `(task_id, status, archived)` rows over the
-    /// visible (search-filtered) span, plus whether the selection is a multi-row
-    /// range. `None` when there is no snapshot/repo/rows. Shared by the `r`
-    /// (re-queue) and `x` (cancel) verbs so both read the exact rows on screen.
+    /// The QUEUE rows the `r`/`x` verbs act on, plus whether this is a BULK
+    /// selection (a multi-row range OR any mark — see
+    /// [`crate::view::is_bulk_selection`]). Rows come back in visible-row order.
+    ///
+    /// Resolution goes through [`crate::view::selected_positions`], so a marked
+    /// row is included even when the cursor sits elsewhere, and — critically —
+    /// a bare cursor row is NOT swept in once marks exist.
     fn queue_selection_rows(&self) -> Option<(Vec<QueueSelRow>, bool)> {
         let snap = self.snapshot.as_ref()?;
         let repo = self.active_repo()?;
         let ui = self.active_ui();
         let rows = crate::selectors::queue_rows(snap, &repo, self.now_epoch_s);
         let vis = crate::selectors::filter_rows(&rows, &ui.search[0], |r| r.summary.clone());
-        let (start, end) = crate::view::selection_range(&ui.selections[0]);
-        let is_range = end > start;
-        let (start, hi, _total) = Self::clamp_span(start, end, vis.len())?;
-        let sels = vis[start..=hi]
-            .iter()
-            .filter_map(|&i| rows.get(i))
+        // The VISIBLE rows, in view order — the coordinate space the selection
+        // and the marks both live in.
+        let visible: Vec<&crate::selectors::QueueRow> =
+            vis.iter().filter_map(|&i| rows.get(i)).collect();
+        let sel = ui.selections[0];
+        let marks = &ui.marks[0];
+        // `is_bulk` reads the UNCLAMPED selection (see its docs): a range frozen
+        // over rows that have since shrunk must still take the bulk path.
+        let is_bulk = crate::view::is_bulk_selection(&sel, marks);
+        let sels = crate::view::selected_positions(&visible, &sel, marks, |r| r.task_id.clone())
+            .into_iter()
+            .filter_map(|pos| visible.get(pos).copied())
             .map(|r| {
                 let status = snap
                     .tasks
@@ -302,7 +331,7 @@ impl App {
                 (r.task_id.clone(), status, r.archived)
             })
             .collect();
-        Some((sels, is_range))
+        Some((sels, is_bulk))
     }
 
     /// `r` on QUEUE. Terminal (done/failed/unknown) and needs-input tasks re-queue
@@ -321,10 +350,10 @@ impl App {
                     | TaskStatus::Unknown
             )
         };
-        let Some((rows, is_range)) = self.queue_selection_rows() else {
+        let Some((rows, is_bulk)) = self.queue_selection_rows() else {
             return Update::default();
         };
-        if !is_range {
+        if !is_bulk {
             let Some((id, status, archived)) = rows.into_iter().next() else {
                 return Update::default();
             };
@@ -345,7 +374,7 @@ impl App {
             self.status_line = Some("no re-queueable tasks in selection".into());
             return Update { dirty: true, cmds: vec![] };
         }
-        self.clear_range(ListPane::Queue);
+        self.clear_range_and_marks(ListPane::Queue);
         Update {
             dirty: true,
             cmds: vec![Cmd::RpcSeq {
@@ -371,7 +400,7 @@ impl App {
             TaskStatus::Running => Some("stop"),
             _ => None,
         };
-        let Some((rows, _is_range)) = self.queue_selection_rows() else {
+        let Some((rows, _is_bulk)) = self.queue_selection_rows() else {
             return Update::default();
         };
         // Eligible rows in row order, keeping status so the summary can describe
@@ -475,16 +504,18 @@ impl App {
     /// menu. A bulk range refuses on QUEUE (its single-target Resume menu
     /// isn't bulk-doable) and on TASKS (no bulk-doable verb there either,
     /// mirroring `r`'s own guard); on WORKTREES it falls through to
-    /// `open_action_menu`, whose bulk branch already narrows to the doable
-    /// remove-only menu.
+    /// [`Self::open_bulk_menu`], which fires the confirm dialog directly.
     pub(super) fn open_actions_or_run(&mut self) -> Update {
         let ui = self.active_ui();
         let pane = ui.last_list_pane;
-        let (start, end) = crate::view::selection_range(&ui.selections[pane.idx()]);
-        if end == start && pane == ListPane::Tasks {
+        let sel = ui.selections[pane.idx()];
+        let marks = &ui.marks[pane.idx()];
+        let bulk = crate::view::is_bulk_selection(&sel, marks);
+        // Single-row TASKS runs the highlighted def directly (no menu hop).
+        if !bulk && pane == ListPane::Tasks {
             return self.run_selected_task_def();
         }
-        if end > start {
+        if bulk {
             let btn = match pane {
                 ListPane::Queue => crate::hit::PaneButton::Actions,
                 ListPane::Tasks => crate::hit::PaneButton::Run,
@@ -493,6 +524,11 @@ impl App {
             if self.bulk_blocked(pane, btn) {
                 return Update { dirty: true, cmds: vec![] };
             }
+            // `open_bulk_menu` now resolves rows from `selection ∪ marks` itself
+            // (the `start`/`end` args are used only by the unreachable Tasks arm),
+            // so the frozen range is no longer the source of truth for Worktrees.
+            let (start, end) = crate::view::selection_range(&sel);
+            return self.open_bulk_menu(pane, start, end);
         }
         match self.open_action_menu() {
             Some(mode) => self.mode = mode,
@@ -507,9 +543,10 @@ impl App {
     /// [`crate::hit::bulk_allowed`]), so it refuses with a status line instead
     /// of the bulk-run menu the tasks pane's `r` used to open.
     fn run_or_bulk_selected_task_def(&mut self) -> Update {
-        let (start, end) =
-            crate::view::selection_range(&self.active_ui().selections[ListPane::Tasks.idx()]);
-        if end > start {
+        let ui = self.active_ui();
+        let sel = ui.selections[ListPane::Tasks.idx()];
+        let marks = &ui.marks[ListPane::Tasks.idx()];
+        if crate::view::is_bulk_selection(&sel, marks) {
             self.status_line = Some(BULK_NOT_APPLICABLE.into());
             return Update { dirty: true, cmds: vec![] };
         }
@@ -674,25 +711,25 @@ impl App {
     }
 
     /// `x` on WORKTREES (and the `[x]remove` chip): selection-aware, mirroring
-    /// the tasks pane's `r`. A multi-row range opens the bulk remove menu
-    /// (eligibility frozen at open time via [`Self::open_bulk_menu`]); a single
-    /// row confirms removing just that worktree (opens `Mode::Confirm`; the
-    /// `y` handler dispatches the `removeWorktree` RPC). A session row isn't a
-    /// worktree and a busy worktree has a task running → status line, no confirm.
+    /// the tasks pane's `r`. A bulk selection (multi-row range OR any mark)
+    /// opens the bulk remove confirm dialog directly (eligibility frozen at
+    /// open time via [`Self::open_bulk_menu`]); a single row confirms removing
+    /// just that worktree (opens `Mode::Confirm`; the `y` handler dispatches
+    /// the `removeWorktree` RPC). A session row isn't a worktree and a busy
+    /// worktree has a task running → status line, no confirm.
     pub(super) fn remove_selected_worktree(&mut self) -> Update {
         let Some(repo) = self.active_repo() else {
             return Update::default();
         };
-        // A multi-row range opens the bulk remove menu (the worktrees pane dropped
-        // its `[a]ctions` chip, so `x` carries the bulk affordance now).
-        let (start, end) =
-            crate::view::selection_range(&self.active_ui().selections[ListPane::Worktrees.idx()]);
-        if end > start {
-            match self.open_bulk_menu(ListPane::Worktrees, start, end) {
-                Some(mode) => self.mode = mode,
-                None => self.status_line = Some("nothing selected".into()),
-            }
-            return Update { dirty: true, cmds: vec![] };
+        // A bulk selection (multi-row range OR any mark) opens the bulk-remove
+        // confirm, which resolves the exact rows from `selection ∪ marks`. A
+        // single-row (non-bulk) selection removes just the cursor's worktree.
+        let ui = self.active_ui();
+        let sel = ui.selections[ListPane::Worktrees.idx()];
+        let marks = &ui.marks[ListPane::Worktrees.idx()];
+        if crate::view::is_bulk_selection(&sel, marks) {
+            let (start, end) = crate::view::selection_range(&sel);
+            return self.open_bulk_menu(ListPane::Worktrees, start, end);
         }
         let Some(row) = self.selected_worktree_row_filtered() else {
             self.status_line = Some("no worktree selected".into());

@@ -12,13 +12,22 @@ use crate::hit::{PaneButton, pane_buttons};
 /// pane, so it stays effectively global. The vim keys address the DETAIL pane
 /// rather than the left panes: `j`/`k` move its row cursor (or scroll it),
 /// `h`/`l` cycle its sub-tab (aliasing `ctrl+x`/`ctrl+z`); the LEFT-pane cursor
-/// moves with the ARROW keys (`shift` extends). `Enter` opens the selected
-/// worktree lane-task. Project-tab cycling (`CycleTab`) is driven by the stateful
-/// `ctrl+s` prefix in `App`, not here.
+/// moves with the ARROW keys (`shift` extends the contiguous range; `space`
+/// toggles the cursor row's mark, which builds a NON-contiguous selection —
+/// the two combine, see `view::selected_positions`). `Enter` opens the
+/// selected worktree lane-task. Project-tab cycling (`CycleTab`) is driven by
+/// the stateful `ctrl+s` prefix in `App`, not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppAction {
     MoveCursor(i32),
     ExtendSelection(i32),
+    /// `Space`: toggle the cursor row into the focused pane's marked set — the
+    /// non-contiguous half of a bulk selection (`Shift+Arrow` covers the
+    /// contiguous half). Toggle-in-place: the cursor does not move and the
+    /// anchor is untouched. Live on all three list panes, since marking is a
+    /// selection primitive independent of which bulk VERBS a pane supports
+    /// (`hit::bulk_allowed` still governs that). Routes to `App::toggle_mark`.
+    ToggleMark,
     /// `j`/`k`: move the DETAIL pane's row cursor (worktree lane-task list) when
     /// the detail shows selectable rows, else scroll the detail one line. Never
     /// dead — the App resolves which by inspecting the current detail context.
@@ -141,6 +150,10 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         KeyCode::End => AppAction::DetailScrollEdge(1),
         KeyCode::Esc => AppAction::ClearEsc,
         KeyCode::Char('/') => AppAction::OpenSearch,
+        // Space marks/unmarks the cursor row (non-contiguous bulk selection).
+        // Ungated: every list pane can build a selection; whether a VERB may act
+        // on a bulk selection is `hit::bulk_allowed`'s call, not the keymap's.
+        KeyCode::Char(' ') => AppAction::ToggleMark,
         // Arrow keys drive the LEFT pane cursor (shift = extend selection). The
         // vim keys split off to the DETAIL pane: j/k move the detail row cursor
         // (or scroll), h/l cycle the detail sub-tab (aliasing ctrl+x/ctrl+z).
@@ -371,6 +384,14 @@ mod tests {
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Tasks), AppAction::RunSelectedDef);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Queue), AppAction::RequeueSelected);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);
+    }
+
+    #[test]
+    fn space_toggles_a_mark_on_every_list_pane() {
+        // Ungated: marking is a selection primitive, live on all three panes.
+        for f in LISTS {
+            assert_eq!(list_mode_action(&k(KeyCode::Char(' ')), f), AppAction::ToggleMark);
+        }
     }
 
     #[test]

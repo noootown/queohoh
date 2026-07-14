@@ -145,6 +145,9 @@ pub struct Palette {
     pub heading: Color,
     pub selection_fg: Color,
     pub selection_bg: Color,
+    /// Dimmer companion bg for MARKED rows that are not the cursor (and not
+    /// inside an anchored range) — see [`Palette::selection_muted`].
+    pub selection_muted_bg: Color,
 }
 
 /// Catppuccin Mocha-inspired dark profile (the original color set). The three
@@ -169,6 +172,7 @@ pub const MOCHA: Palette = Palette {
     heading: Color::Magenta,                 // ANSI magenta — markdown headings
     selection_fg: Color::Rgb(30, 30, 46),    // base
     selection_bg: Color::Rgb(137, 180, 250), // blue
+    selection_muted_bg: Color::Rgb(54, 64, 102),
 };
 
 /// Brightened Mocha (user request: the original read too dim overall). Same
@@ -194,6 +198,7 @@ pub const MOCHA_BRIGHT: Palette = Palette {
     heading: Color::LightMagenta,            // brighter ANSI magenta headings
     selection_fg: Color::Rgb(30, 30, 46),    // base (dark text on the bright bar)
     selection_bg: Color::Rgb(166, 204, 255), // blue, lightened with accent
+    selection_muted_bg: Color::Rgb(62, 74, 112),
 };
 
 /// Prism — a high-contrast rainbow profile (user pick), warm-leaning: light-orange
@@ -223,6 +228,7 @@ pub const PRISM: Palette = Palette {
     heading: Color::Rgb(244, 114, 182),       // pink — markdown headings
     selection_fg: Color::Rgb(10, 10, 16),     // near-black text on the bright bar
     selection_bg: Color::Rgb(77, 166, 255),   // accent blue bar
+    selection_muted_bg: Color::Rgb(38, 66, 112),
 };
 
 /// Neon Ice — the coldest, highest-contrast rainbow profile (user pick):
@@ -245,6 +251,7 @@ pub const NEON_ICE: Palette = Palette {
     heading: Color::Rgb(244, 114, 182),       // hot pink — markdown headings
     selection_fg: Color::Rgb(5, 8, 15),       // near-black text on the bright bar
     selection_bg: Color::Rgb(34, 211, 238),   // accent cyan bar
+    selection_muted_bg: Color::Rgb(26, 72, 88),
 };
 
 /// Synthwave — magenta + cyan accents on a deep-purple base (user pick): magenta
@@ -267,6 +274,7 @@ pub const SYNTHWAVE: Palette = Palette {
     heading: Color::Rgb(34, 211, 238),        // cyan — markdown headings
     selection_fg: Color::Rgb(20, 10, 31),     // deep-purple-black text on the bar
     selection_bg: Color::Rgb(255, 95, 210),   // accent magenta bar
+    selection_muted_bg: Color::Rgb(92, 42, 90),
 };
 
 /// The active theme profile. Re-theming the whole TUI = pointing this at a
@@ -284,6 +292,15 @@ impl Palette {
     /// Inverse-style highlight for the selected/active row.
     pub fn selection(&self) -> Style {
         Style::default().fg(self.selection_fg).bg(self.selection_bg)
+    }
+
+    /// Dimmer companion to [`selection`] for MARKED rows that are not the cursor
+    /// (and not inside an anchored range) — the non-contiguous half of a bulk
+    /// selection. Two-tone so the bright cursor bar stays locatable while marked
+    /// rows read as selected-but-not-here. Uses `fg` (not `selection_fg`) because
+    /// the muted bg is dark — near-white text keeps it readable.
+    pub fn selection_muted(&self) -> Style {
+        Style::default().fg(self.fg).bg(self.selection_muted_bg)
     }
 
     /// De-emphasis style for archived rows, empty states, disabled items. Uses a
@@ -372,6 +389,12 @@ mod tests {
         assert_eq!(p.ok, Color::Green);
         assert_eq!(p.warn, Color::Yellow);
         assert_eq!(p.error, Color::Red);
+    }
+
+    #[test]
+    fn muted_selection_differs_from_bright() {
+        let p = Palette::default();
+        assert_ne!(p.selection(), p.selection_muted());
     }
 
     #[test]

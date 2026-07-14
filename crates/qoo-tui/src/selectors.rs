@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::app::Selection;
 use crate::ipc::types::{ArgSpec, DefinitionSummary, StateSnapshot, TaskInstance, TaskStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -684,15 +683,21 @@ pub fn window_rows(len: usize, cursor: usize, capacity: usize) -> (usize, usize)
     (start, start + capacity)
 }
 
-/// The pane's border title: the base plus a `· N selected` suffix when a range is
-/// active. The `/filter` + cursor decoration lives in the inline hint row now (see
-/// `view::panes`), so it is no longer part of the title.
-pub fn pane_title(base: &str, sel: &Selection) -> String {
-    let selected = match sel.anchor {
-        Some(anchor) => anchor.abs_diff(sel.cursor) + 1,
-        None => 1,
-    };
-    if selected > 1 {
+/// The pane's border title: the base plus a `· N selected` suffix when the pane
+/// holds a BULK selection. `selected` is the union count (range ∪ marks) the
+/// caller resolved via `view::selected_positions`; `bulk` is
+/// `view::is_bulk_selection`. Both are passed in rather than derived here: a
+/// mark-aware count needs the pane's rows, which this pure helper doesn't see.
+/// The `/filter` + cursor decoration lives in the inline hint row (see
+/// `view::panes`), so it is not part of the title.
+///
+/// `bulk` and `selected` can disagree: a mark is `bulk` by presence even when
+/// it resolves to no visible row (e.g. filtered out by search), in which case
+/// `selected` is 0. The suffix only renders when `selected > 0` — "· 0
+/// selected" would be nonsensical, and the status line already explains any
+/// blocked action.
+pub fn pane_title(base: &str, selected: usize, bulk: bool) -> String {
+    if bulk && selected > 0 {
         format!("{base} · {selected} selected")
     } else {
         base.to_string()
@@ -2583,21 +2588,25 @@ mod tests {
     // ---- pane_title (mirrors paneTitle incl. selection count) ----
 
     #[test]
-    fn pane_title_plain_when_no_range() {
-        // The filter/cursor decoration moved to the inline hint row; the title is
-        // now just the base unless a multi-row range is active.
-        let single = Selection { cursor: 0, anchor: None };
-        assert_eq!(pane_title("QUEUE", &single), "QUEUE");
-        let anchored_single = Selection { cursor: 3, anchor: Some(3) };
-        assert_eq!(pane_title("QUEUE", &anchored_single), "QUEUE");
+    fn pane_title_plain_when_not_bulk() {
+        assert_eq!(pane_title("QUEUE", 1, false), "QUEUE");
     }
 
     #[test]
     fn pane_title_selection_count() {
-        let three = Selection { cursor: 4, anchor: Some(2) }; // rows 2..=4
-        assert_eq!(pane_title("WORKTREES", &three), "WORKTREES · 3 selected");
-        let two = Selection { cursor: 1, anchor: Some(2) };
-        assert_eq!(pane_title("WORKTREES", &two), "WORKTREES · 2 selected");
+        assert_eq!(pane_title("WORKTREES", 3, true), "WORKTREES · 3 selected");
+        assert_eq!(pane_title("WORKTREES", 2, true), "WORKTREES · 2 selected");
+        // A single MARKED row is bulk — the title must say so, or the pane would
+        // read "WORKTREES" while a row sits highlighted.
+        assert_eq!(pane_title("WORKTREES", 1, true), "WORKTREES · 1 selected");
+    }
+
+    #[test]
+    fn pane_title_bulk_but_zero_resolved_hides_the_ghost_count() {
+        // `bulk` can be true (a mark is present) while it resolves to NO visible
+        // row — e.g. the marked row was filtered out by search. "· 0 selected"
+        // is nonsensical, so the suffix must not appear in that case.
+        assert_eq!(pane_title("WORKTREES", 0, true), "WORKTREES");
     }
 
     // ---- filter_rows (mirrors matchesFilter) ----

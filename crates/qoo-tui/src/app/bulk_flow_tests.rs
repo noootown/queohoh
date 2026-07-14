@@ -111,8 +111,7 @@ fn bulk_remove_confirms_then_rpcseq_removes_each() {
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → tasks
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → worktrees
     a.update(shift_down()); a.update(shift_down()); // 3-row range
-    a.update(key('x')); // worktrees `x` on a range opens the bulk remove menu
-    a.update(enter()); // Remove worktrees… → confirm dialog (bulk remove)
+    a.update(key('x')); // worktrees `x` on a range opens the confirm dialog directly (no picker hop)
     match &a.mode { Mode::Confirm { action: ConfirmAction::BulkRemoveWorktrees { names, .. }, .. } => assert_eq!(names.len(), 3), other => panic!("{other:?}") }
     let u = a.update(key('y'));
     assert!(matches!(a.mode, Mode::List));
@@ -134,8 +133,8 @@ fn bulk_remove_n_cancels_without_cmd() {
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     a.update(shift_down());
-    a.update(key('x')); // worktrees `x` on a range opens the bulk remove menu
-    a.update(enter());
+    a.update(key('x')); // worktrees `x` on a range opens the confirm dialog directly
+    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::BulkRemoveWorktrees { .. }, .. }));
     let u = a.update(key('n'));
     assert!(matches!(a.mode, Mode::List));
     assert!(u.cmds.is_empty());
@@ -264,6 +263,102 @@ fn bulk_open_does_not_panic_when_rows_empty_between_select_and_open() {
     a.update(key('a')); // must not panic
     // Nothing survives → open bails, menu never opens (status line set instead).
     assert!(matches!(a.mode, Mode::List));
+}
+
+#[test]
+fn worktree_bulk_remove_acts_on_marks_not_the_cursor_row() {
+    // Mark wt-a and wt-c, leave the cursor on the UNMARKED wt-b, press x.
+    // The confirm must name exactly the two marked worktrees — sweeping the
+    // cursor row in would delete a worktree the user never selected.
+    let mut a = app_with(three_worktrees());
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → worktrees
+    a.update(key(' ')); // mark wt-a (cursor row 0)
+    a.update(down());
+    a.update(down()); // cursor → wt-c
+    a.update(key(' ')); // mark wt-c
+    a.update(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))); // cursor → wt-b (unmarked)
+    a.update(key('x'));
+    match &a.mode {
+        Mode::Confirm { action: ConfirmAction::BulkRemoveWorktrees { names, .. }, .. } => {
+            assert_eq!(names, &["wt-a".to_string(), "wt-c".to_string()]);
+        }
+        other => panic!("expected bulk-remove confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn worktree_bulk_remove_unions_a_range_with_marks() {
+    // Range over wt-a..wt-b (shift+down), plus a mark on wt-c → all three,
+    // in visible-row order, no duplicates.
+    let mut a = app_with(three_worktrees());
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(shift_down()); // range = wt-a..wt-b
+    a.update(down()); // NOTE: clears the anchor — see the assertion below
+    a.update(key(' ')); // mark wt-c
+    // Re-establish the range, since `down` collapsed it (set_cursor clears the
+    // anchor; marks survive). Cursor is on wt-c: shift+up ranges wt-b..wt-c.
+    a.update(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)));
+    a.update(key('x'));
+    match &a.mode {
+        Mode::Confirm { action: ConfirmAction::BulkRemoveWorktrees { names, .. }, .. } => {
+            // wt-b + wt-c from the range, wt-c also marked (deduped) → 2 names.
+            assert_eq!(names, &["wt-b".to_string(), "wt-c".to_string()]);
+        }
+        other => panic!("expected bulk-remove confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_single_marked_worktree_still_routes_through_the_bulk_confirm() {
+    // One mark, cursor elsewhere → bulk path (names the MARKED row), never the
+    // single-target path (which would name the cursor row).
+    let mut a = app_with(three_worktrees());
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(key(' ')); // mark wt-a
+    a.update(down()); // cursor → wt-b
+    a.update(key('x'));
+    match &a.mode {
+        Mode::Confirm { action: ConfirmAction::BulkRemoveWorktrees { names, .. }, .. } => {
+            assert_eq!(names, &["wt-a".to_string()]);
+        }
+        other => panic!("expected bulk-remove confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn queue_cancel_acts_on_marks_not_the_cursor_row() {
+    // t0 running, t1 queued, t2 queued. Mark t0 and t2, park the cursor on t1,
+    // press x → exactly two RPCs (stop t0, skip t2); t1 untouched.
+    let mut t0 = TaskInstance::default(); t0.id = "t0".into(); t0.status = TaskStatus::Running; t0.target.repo = "platform".into();
+    let mut t1 = TaskInstance::default(); t1.id = "t1".into(); t1.status = TaskStatus::Queued; t1.target.repo = "platform".into();
+    let mut t2 = TaskInstance::default(); t2.id = "t2".into(); t2.status = TaskStatus::Queued; t2.target.repo = "platform".into();
+    let snap = StateSnapshot {
+        tasks: vec![t0, t1, t2],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.update(key(' ')); // mark t0
+    a.update(down());
+    a.update(down()); // cursor → t2
+    a.update(key(' ')); // mark t2
+    a.update(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))); // cursor → t1 (unmarked)
+    a.update(key('x')); // opens the cancel confirm
+    let u = a.update(enter()); // confirm
+    match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
+        Cmd::RpcSeq { verb, calls, .. } => {
+            assert_eq!(verb, "cancelled");
+            assert_eq!(calls.len(), 2, "only the two MARKED tasks");
+            assert_eq!(calls[0].method, "stop"); // t0 running
+            assert_eq!(calls[0].params, serde_json::json!({ "id": "t0" }));
+            assert_eq!(calls[1].method, "skip"); // t2 queued
+            assert_eq!(calls[1].params, serde_json::json!({ "id": "t2" }));
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]

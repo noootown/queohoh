@@ -8,24 +8,13 @@
 use super::*;
 
 impl App {
-    /// Build the action menu for the last-focused list pane's current selection.
-    /// Returns `None` when nothing is selectable (empty pane). A multi-row range
-    /// opens the bulk menu; the single-target case handles queue/worktrees (the
-    /// tasks pane has no single-target menu — `open_actions_or_run` runs the
-    /// highlighted def before reaching here).
+    /// Build the single-target action menu for the last-focused list pane's
+    /// current selection. Returns `None` when nothing is selectable (empty
+    /// pane). A multi-row range is handled by the caller (`open_actions_or_run`)
+    /// before this is ever reached — it routes straight to
+    /// [`Self::open_bulk_menu`], which fires its own follow-up directly instead
+    /// of going through this single-target picker.
     pub(super) fn open_action_menu(&mut self) -> Option<Mode> {
-        // Bulk branch: a multi-row range on TASKS / WORKTREES opens the bulk menu
-        // with eligibility frozen at open time. QUEUE is excluded — its bulk verbs
-        // are the `r`/`x` chips, so `a` there always targets the cursor row's
-        // single Resume menu regardless of range.
-        {
-            let ui = self.active_ui();
-            let pane = ui.last_list_pane;
-            let (start, end) = crate::view::selection_range(&ui.selections[pane.idx()]);
-            if end > start && pane != ListPane::Queue {
-                return self.open_bulk_menu(pane, start, end);
-            }
-        }
         let snap = self.snapshot.as_ref()?;
         let repo = self.active_repo()?;
         let ui = self.active_ui();
@@ -76,13 +65,15 @@ impl App {
         }
     }
 
-    /// Clear a list pane's selection anchor on the active tab (collapse a range
-    /// to a single cursor). Called before every bulk dispatch, mirroring the
-    /// App.tsx `runBulk` clear-then-dispatch order.
-    pub(super) fn clear_range(&mut self, pane: ListPane) {
+    /// Collapse a list pane's bulk selection on the active tab — drop the range
+    /// anchor AND the marks. Called before every bulk dispatch (mirroring the
+    /// App.tsx `runBulk` clear-then-dispatch order) so a completed action never
+    /// leaves a stale selection to widen the next one.
+    pub(super) fn clear_range_and_marks(&mut self, pane: ListPane) {
         if let Some(repo) = self.active_repo()
             && let Some(ui) = self.ui_by_tab.get_mut(&repo) {
                 ui.selections[pane.idx()].anchor = None;
+                ui.marks[pane.idx()].clear();
             }
     }
 
@@ -102,45 +93,100 @@ impl App {
         Some((start, hi, hi - start + 1))
     }
 
-    /// Build the bulk menu for a `[start, end]` inclusive range on `pane`,
-    /// freezing eligibility (ids/names) into the returned `MenuAction`s at open
-    /// time — a daemon push reshuffling rows mid-menu can't retarget the
-    /// dispatch. Mirrors App.tsx `openBulkMenu`.
-    pub(super) fn open_bulk_menu(&self, pane: ListPane, start: usize, end: usize) -> Option<Mode> {
+    /// Build the bulk follow-up for a `[start, end]` inclusive range on `pane`,
+    /// freezing eligibility (ids/names) at open time — a daemon push reshuffling
+    /// rows mid-menu can't retarget the dispatch. WORKTREES is the only case
+    /// live traffic ever reaches (`hit::bulk_allowed` refuses everything else
+    /// before the caller gets here): since it has exactly one bulk verb
+    /// (Remove), the old single-row `Mode::ActionMenu` picker was a pointless
+    /// extra hop — Enter always landed on the same row anyway — so this now
+    /// opens `Mode::Confirm` directly, matching the single-row `x` flow. QUEUE
+    /// stays a hard `None` (no bulk menu there) and TASKS keeps building the
+    /// picker (unreachable today, kept only for shape/API parity — see
+    /// `bulk_flow_tests::tasks_bulk_range_via_r_refuses_not_applicable`).
+    /// Always reports dirty so the caller doesn't need its own branch.
+    pub(super) fn open_bulk_menu(&mut self, pane: ListPane, start: usize, end: usize) -> Update {
         use crate::action_menu::{bulk_menu, BulkSelection};
-        let snap = self.snapshot.as_ref()?;
-        let repo = self.active_repo()?;
+        let Some(snap) = self.snapshot.as_ref() else {
+            self.status_line = Some("nothing selected".into());
+            return Update { dirty: true, cmds: vec![] };
+        };
+        let Some(repo) = self.active_repo() else {
+            self.status_line = Some("nothing selected".into());
+            return Update { dirty: true, cmds: vec![] };
+        };
         let ui = self.active_ui();
-        let (title, items) = match pane {
-            // QUEUE has no bulk menu — `open_action_menu` never routes a queue
-            // range here (its `r`/`x` chips carry the bulk verbs).
-            ListPane::Queue => return None,
+        match pane {
+            // QUEUE has no bulk menu — its callers never route a queue range
+            // here (the `r`/`x` chips carry the bulk verbs instead).
+            ListPane::Queue => {
+                self.status_line = Some("nothing selected".into());
+                Update { dirty: true, cmds: vec![] }
+            }
             ListPane::Tasks => {
                 let defs = self.defs_by_project.get(&repo).cloned().unwrap_or_default();
                 let vis = crate::selectors::filter_rows(&defs, &ui.search[1], |d| d.name.clone());
-                let (start, hi, total) = Self::clamp_span(start, end, vis.len())?;
+                let Some((start, hi, total)) = Self::clamp_span(start, end, vis.len()) else {
+                    self.status_line = Some("nothing selected".into());
+                    return Update { dirty: true, cmds: vec![] };
+                };
                 let run_names: Vec<String> = vis[start..=hi]
                     .iter()
                     .filter_map(|&i| defs.get(i))
                     .filter(|d| d.args.is_empty())
                     .map(|d| d.name.clone())
                     .collect();
-                bulk_menu(BulkSelection::Tasks { repo: repo.clone(), run_names, total })
+                let (title, items) = bulk_menu(BulkSelection::Tasks { repo, run_names, total });
+                self.mode =
+                    Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 };
+                Update { dirty: true, cmds: vec![] }
             }
             ListPane::Worktrees => {
                 let rows = crate::selectors::worktree_rows(snap, &repo);
                 let vis = crate::selectors::filter_rows(&rows, &ui.search[2], |r| r.name.clone());
-                let (start, hi, total) = Self::clamp_span(start, end, vis.len())?;
-                let remove_names: Vec<String> = vis[start..=hi]
-                    .iter()
-                    .filter_map(|&i| rows.get(i))
-                    .filter(|r| !r.is_session && !matches!(r.state, crate::selectors::WtState::Busy))
-                    .map(|r| r.raw_name.clone())
-                    .collect();
-                bulk_menu(BulkSelection::Worktrees { repo: repo.clone(), remove_names, total })
+                let visible: Vec<&crate::selectors::WorktreeRow> =
+                    vis.iter().filter_map(|&i| rows.get(i)).collect();
+                let sel = ui.selections[2];
+                let marks = &ui.marks[2];
+                let remove_names: Vec<String> =
+                    crate::view::selected_positions(&visible, &sel, marks, |r| r.raw_name.clone())
+                        .into_iter()
+                        .filter_map(|pos| visible.get(pos).copied())
+                        // Eligibility is applied AFTER selection (a session row or
+                        // a busy worktree can be marked; it just isn't removable).
+                        .filter(|r| !r.is_session && !matches!(r.state, crate::selectors::WtState::Busy))
+                        .map(|r| r.raw_name.clone())
+                        .collect();
+                if remove_names.is_empty() {
+                    self.status_line = Some("no eligible rows".into());
+                    return Update { dirty: true, cmds: vec![] };
+                }
+                self.mode = Self::bulk_remove_confirm_mode(repo, remove_names);
+                Update { dirty: true, cmds: vec![] }
             }
-        };
-        Some(Mode::ActionMenu { title, items, index: 0, query: String::new(), preview_scroll: 0 })
+        }
+    }
+
+    /// Build the `Mode::Confirm` for removing `names` worktrees in `repo`:
+    /// a warning line, up to 8 names, then "…and N more" when the range
+    /// exceeds 8. Shared by the direct bulk-open path in `open_bulk_menu` and
+    /// `execute_menu_action`'s `MenuAction::BulkRemove` arm (the latter now
+    /// only reachable if a future bulk pane ever offers more than one verb).
+    fn bulk_remove_confirm_mode(repo: String, names: Vec<String>) -> Mode {
+        let extra = names.len().saturating_sub(8);
+        let mut body =
+            vec!["discards uncommitted changes and deletes each local branch".to_string()];
+        body.extend(names.iter().take(8).map(|name| format!("  {name}")));
+        if extra > 0 {
+            body.push(format!("  …and {extra} more"));
+        }
+        Mode::Confirm {
+            title: format!("Remove {} worktrees", names.len()),
+            body,
+            confirm_label: "Remove".into(),
+            action: ConfirmAction::BulkRemoveWorktrees { repo, names },
+            focus: crate::hit::ButtonKind::Confirm,
+        }
     }
 
     /// `Mode::ActionMenu` key handling (lazyvim-style picker). Esc closes;
@@ -302,13 +348,13 @@ impl App {
             M::Resume { path, session_id } => {
                 Update { dirty: true, cmds: vec![Cmd::TmuxResume { path, session_id }] }
             }
-            // --- Bulk actions. Range cleared before dispatch; the frozen
-            // ids/names ride inside the action. Verbs are past tense to feed
+            // --- Bulk actions. Range and marks cleared before dispatch; the
+            // frozen ids/names ride inside the action. Verbs are past tense to feed
             // `seq_summary` ("started 1", …). Queue bulk (rerun/skip) is gone —
             // the queue `r`/`x` chips carry those verbs (see `App::requeue_selected`
             // / `App::cancel_selected`). ---
             M::BulkRunDefs { repo, names } => {
-                self.clear_range(ListPane::Tasks);
+                self.clear_range_and_marks(ListPane::Tasks);
                 // Verb "started" per parity oracle (App.tsx:698 / app.test.tsx:1573).
                 Update { dirty: true, cmds: vec![Cmd::RpcSeq {
                     verb: "started".into(),
@@ -323,22 +369,7 @@ impl App {
                 }] }
             }
             M::BulkRemove { repo, names } => {
-                // Body mirrors the old bulk-remove dialog: a warning line, up to 8
-                // names, then "…and N more" when the range exceeds 8.
-                let extra = names.len().saturating_sub(8);
-                let mut body =
-                    vec!["discards uncommitted changes and deletes each local branch".to_string()];
-                body.extend(names.iter().take(8).map(|name| format!("  {name}")));
-                if extra > 0 {
-                    body.push(format!("  …and {extra} more"));
-                }
-                self.mode = Mode::Confirm {
-                    title: format!("Remove {} worktrees", names.len()),
-                    body,
-                    confirm_label: "Remove".into(),
-                    action: ConfirmAction::BulkRemoveWorktrees { repo, names },
-                    focus: crate::hit::ButtonKind::Confirm,
-                };
+                self.mode = Self::bulk_remove_confirm_mode(repo, names);
                 Update { dirty: true, cmds: vec![] }
             }
         }

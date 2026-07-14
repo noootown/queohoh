@@ -4,6 +4,8 @@
 //! and the `Mode` enum describing which overlay/input the app is in. Moved out
 //! of `app/mod.rs` verbatim as part of the module split (no behavior change).
 
+use std::collections::HashSet;
+
 use ratatui::layout::Rect;
 
 use crate::event::Cmd;
@@ -137,6 +139,22 @@ pub struct TabUiState {
     pub focus: PaneId,
     pub last_list_pane: ListPane,
     pub selections: [Selection; 3],
+    /// Individually MARKED rows per list pane (`Space`), keyed by the pane's
+    /// stable row identity — the same string `App::row_identity` produces
+    /// (Queue `task_id`, Tasks `{repo}/{name}`, Worktrees `raw_name`). Parallel
+    /// to `selections`, indexed by `ListPane::idx()`.
+    ///
+    /// Identity-keyed rather than index-keyed on purpose: marks must survive a
+    /// search-filter edit and a daemon snapshot reorder, both of which
+    /// invalidate the index-based `selections` range (see `update.rs`'s
+    /// `Mode::Search` handling, which resets `Selection` on every keystroke).
+    /// A mark whose identity no longer resolves to any current row is inert by
+    /// construction — it simply never matches — so no pruning pass is needed.
+    ///
+    /// The effective bulk selection is `anchored-range ∪ marks`; see
+    /// [`crate::view::selected_positions`] for the exact rule (notably: the
+    /// cursor row is NOT implicitly selected once marks exist).
+    pub marks: [HashSet<String>; 3],
     pub search: [String; 3],
     pub sub_tab: [usize; 4], // indexed by DetailKind (enum lands in Task 9)
     pub scroll_offset: usize,
@@ -154,6 +172,7 @@ impl Default for TabUiState {
             focus: PaneId::Queue,
             last_list_pane: ListPane::Queue,
             selections: [Selection::default(); 3],
+            marks: [HashSet::new(), HashSet::new(), HashSet::new()],
             search: [String::new(), String::new(), String::new()],
             sub_tab: [0; 4],
             scroll_offset: 0,

@@ -495,7 +495,7 @@ impl App {
                 RpcOpts::default(),
             )],
             ConfirmAction::BulkRemoveWorktrees { repo, names } => {
-                self.clear_range(ListPane::Worktrees);
+                self.clear_range_and_marks(ListPane::Worktrees);
                 vec![Cmd::RpcSeq {
                     verb: "removed".into(),
                     calls: names
@@ -509,7 +509,7 @@ impl App {
                 }]
             }
             ConfirmAction::CancelTasks { calls } => {
-                self.clear_range(ListPane::Queue);
+                self.clear_range_and_marks(ListPane::Queue);
                 vec![Cmd::RpcSeq { verb: "cancelled".into(), calls, invalidate_defs_for: None }]
             }
         }

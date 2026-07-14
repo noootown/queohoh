@@ -11,6 +11,8 @@ pub mod settings;
 pub mod tabbar;
 pub mod theme;
 
+use std::collections::HashSet;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
@@ -46,7 +48,7 @@ pub struct Computed<'a> {
     pub _marker: std::marker::PhantomData<&'a ()>,
 }
 
-fn clamp_sel(sel: &Selection, len: usize) -> Selection {
+pub(crate) fn clamp_sel(sel: &Selection, len: usize) -> Selection {
     if len == 0 {
         return Selection { cursor: 0, anchor: None };
     }
@@ -273,13 +275,74 @@ pub(crate) fn selection_range(sel: &Selection) -> (usize, usize) {
     }
 }
 
-/// Whether `sel` spans more than one row — the "bulk selection" condition that
-/// dims a pane's not-applicable title-bar chips (see
-/// [`crate::view::panes`]/[`crate::hit::bulk_allowed`]) and blocks their
-/// key/click with a status line in `App::apply_action`.
-pub(crate) fn is_bulk_selection(sel: &Selection) -> bool {
+/// The visible-row positions that make up the effective selection, ASCENDING and
+/// deduplicated: the anchored range unioned with the marked rows.
+///
+/// The rule, stated once (every bulk consumer reads through this function):
+///
+/// - An **anchored range** contributes `[start, end]` inclusive.
+/// - **Marks** contribute any row whose identity is in `marks`.
+/// - The **cursor row** contributes ONLY in the degenerate case — no anchor and
+///   no marks — where it is the whole selection.
+///
+/// That last clause is load-bearing. `selection_range` reports `(cursor, cursor)`
+/// when there is no anchor, so a naive `range ∪ marks` would silently sweep the
+/// cursor row into every marked selection: "mark row 0, move the cursor to row 3,
+/// press `x`" would remove row 3 as well. Once the user has marked anything, the
+/// cursor is just a viewport — not a selection.
+///
+/// With `marks` empty this reduces exactly to today's range behavior.
+///
+/// `sel` is clamped against `rows.len()` internally (same rule as [`clamp_sel`] /
+/// `App::clamp_span`), so a daemon snapshot that shrinks the row set between the
+/// selection and its use resolves to the surviving rows rather than panicking. A
+/// mark whose identity matches no current row is silently dropped.
+pub(crate) fn selected_positions<T>(
+    rows: &[T],
+    sel: &Selection,
+    marks: &HashSet<String>,
+    id_of: impl Fn(&T) -> String,
+) -> Vec<usize> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let sel = clamp_sel(sel, rows.len());
+    let has_anchor = sel.anchor.is_some();
+    let (start, end) = selection_range(&sel);
+    let mut out: Vec<usize> = (0..rows.len())
+        .filter(|&pos| {
+            let in_range = has_anchor && pos >= start && pos <= end;
+            in_range || marks.contains(&id_of(&rows[pos]))
+        })
+        .collect();
+    // Degenerate case: nothing anchored and nothing marked → the cursor row IS
+    // the selection (today's single-target behavior).
+    if out.is_empty() && !has_anchor && marks.is_empty() {
+        out.push(sel.cursor);
+    }
+    out
+}
+
+/// Whether the pane's selection is a BULK one — a multi-row range or ANY mark.
+/// Drives the not-applicable title-bar chip dimming
+/// ([`crate::hit::bulk_allowed`] / `view::panes::button_chip`), the
+/// status-line refusal in `App::bulk_blocked`, and the bulk-vs-single-target
+/// branch in the `r`/`x` verbs.
+///
+/// A SINGLE mark counts as bulk: the bulk path resolves rows from `marks`, the
+/// single-target path resolves them from the cursor, and with a mark present
+/// those two disagree — so the mark must win, or `x` would act on a row the user
+/// never marked.
+///
+/// Reads the UNCLAMPED `sel` on purpose (matching the historical `end > start`
+/// on the raw `Selection`): when a snapshot shrinks the rows under a frozen
+/// range, the action must still take the bulk path and let
+/// [`selected_positions`] clamp to the survivors — clamping here first would
+/// collapse the range to one row and silently reroute to the single-target
+/// dispatch.
+pub(crate) fn is_bulk_selection(sel: &Selection, marks: &HashSet<String>) -> bool {
     let (start, end) = selection_range(sel);
-    end > start
+    end > start || !marks.is_empty()
 }
 
 /// Window `start` for a cursor-centered slice of `len` rows into `capacity`
@@ -752,5 +815,109 @@ mod tests {
             sel_count >= 20,
             "selection bg spans well past the short def name (got {sel_count} cells)"
         );
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Rows are their own identity — keeps the tests about the selection rule,
+    /// not about identity extraction.
+    fn rows(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("r{i}")).collect()
+    }
+    fn marks_of(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+    fn positions(rows: &[String], sel: Selection, marks: &HashSet<String>) -> Vec<usize> {
+        selected_positions(rows, &sel, marks, |r| r.clone())
+    }
+
+    #[test]
+    fn no_anchor_no_marks_selects_only_the_cursor_row() {
+        // The degenerate case — exactly today's single-target behavior.
+        let r = rows(5);
+        let sel = Selection { cursor: 2, anchor: None };
+        assert_eq!(positions(&r, sel, &HashSet::new()), vec![2]);
+    }
+
+    #[test]
+    fn an_anchor_selects_the_inclusive_range() {
+        let r = rows(5);
+        let sel = Selection { cursor: 3, anchor: Some(1) };
+        assert_eq!(positions(&r, sel, &HashSet::new()), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn marks_alone_select_exactly_the_marked_rows_not_the_cursor() {
+        // THE load-bearing rule: with marks present and no anchor, a cursor
+        // parked on an unmarked row must NOT be swept into the selection.
+        // Without this, "mark row 0, move to row 3, press x" would destroy row 3.
+        let r = rows(5);
+        let sel = Selection { cursor: 3, anchor: None };
+        assert_eq!(positions(&r, sel, &marks_of(&["r0"])), vec![0]);
+    }
+
+    #[test]
+    fn range_and_marks_union_in_ascending_order_without_duplicates() {
+        // Range [2..=3] plus marks on r0 and r3 (r3 overlaps the range).
+        let r = rows(6);
+        let sel = Selection { cursor: 3, anchor: Some(2) };
+        assert_eq!(positions(&r, sel, &marks_of(&["r0", "r3"])), vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn a_stale_mark_is_silently_excluded() {
+        // "r9" isn't in the current rows (removed by another session / filtered
+        // out of the snapshot) — it must resolve to nothing, not panic. It must
+        // NOT fall back to the cursor row either: that fallback is reserved for
+        // the true degenerate case (no anchor AND no marks at all). A present
+        // but stale mark still means "the user has marked something," so the
+        // cursor stays a pure viewport — exactly the load-bearing rule this
+        // task exists to enforce (see `marks_alone_select_exactly_the_marked_
+        // rows_not_the_cursor` above).
+        let r = rows(3);
+        let sel = Selection { cursor: 0, anchor: None };
+        assert_eq!(positions(&r, sel, &marks_of(&["r9"])), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn positions_clamp_against_a_shrunken_row_set() {
+        // Race: the range was anchored at 3..=5, then the visible rows shrank to
+        // 2. Clamping (mirroring `clamp_sel`) yields the surviving row, matching
+        // what `clamp_span` does for the existing bulk paths.
+        let r = rows(2);
+        let sel = Selection { cursor: 5, anchor: Some(3) };
+        assert_eq!(positions(&r, sel, &HashSet::new()), vec![1]);
+    }
+
+    #[test]
+    fn empty_rows_select_nothing() {
+        let r: Vec<String> = vec![];
+        let sel = Selection { cursor: 0, anchor: None };
+        assert!(positions(&r, sel, &marks_of(&["r0"])).is_empty());
+    }
+
+    #[test]
+    fn is_bulk_is_true_for_a_range_or_any_mark() {
+        let plain = Selection { cursor: 2, anchor: None };
+        let ranged = Selection { cursor: 3, anchor: Some(1) };
+        assert!(!is_bulk_selection(&plain, &HashSet::new()));
+        assert!(is_bulk_selection(&ranged, &HashSet::new()));
+        // A SINGLE mark is still a bulk selection: it must route through the
+        // bulk path (which reads marks) rather than the single-target path
+        // (which reads the cursor row) — otherwise the two would disagree.
+        assert!(is_bulk_selection(&plain, &marks_of(&["r0"])));
+    }
+
+    #[test]
+    fn is_bulk_reads_the_unclamped_selection() {
+        // Deliberately NOT clamped: the shrink race (range 3..=5 over 2 rows)
+        // must still report bulk so the caller takes the RpcSeq path, matching
+        // `queue_range_requeue_clamps_when_rows_shrink_below_frozen_start`.
+        let sel = Selection { cursor: 5, anchor: Some(3) };
+        assert!(is_bulk_selection(&sel, &HashSet::new()));
     }
 }

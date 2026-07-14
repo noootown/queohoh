@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -45,7 +47,7 @@ const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [c]re
 const GROUP_SEP: &str = " · ";
 const GROUP_SEP_EXTRA: usize = 2; // GROUP_SEP is 3 cells; the gap it replaces is 1
 
-use crate::view::{Computed, is_bulk_selection, selection_range, window_start};
+use crate::view::{Computed, is_bulk_selection, selected_positions, selection_range, window_start};
 
 /// The bold pane title — always white (`fg`); a pane's focus is shown by its
 /// border color, not the title. Shared by the expanded chrome and collapsed bar.
@@ -790,6 +792,9 @@ fn render_list_pane<T, C>(
     pane: PaneId,
     list_pane: ListPane,
     sel: &Selection,
+    // The pane's MARKED row identities (`Space`). Combined with `sel` into the
+    // effective selection by `selected_positions` — see its docs for the rule.
+    marks: &HashSet<String>,
     rows: &[T],
     empty_msg: &str,
     now_epoch_s: u64,
@@ -808,6 +813,10 @@ fn render_list_pane<T, C>(
     header_of: impl Fn(&C, &Palette) -> Line<'static>,
     dim_of: impl Fn(&T) -> bool,
     running_of: impl Fn(&T) -> bool,
+    // The row's STABLE identity — the mark key. Must match what
+    // `App::row_identity` produces for this pane, or a marked row won't
+    // highlight (Queue `task_id`, Tasks `{repo}/{name}`, Worktrees `raw_name`).
+    id_of: impl Fn(&T) -> String,
     dimmed: bool,
     // Real-row index after which to splice an inert section divider (the QUEUE
     // ACTIVE/FINISHED break). `None` → no divider (tasks/worktrees always pass it).
@@ -818,7 +827,10 @@ fn render_list_pane<T, C>(
     // hyperlink). Called AFTER the paragraph paints. Queue/tasks pass a no-op.
     decorate_row: impl Fn(&T, Rect, &C, &mut ratatui::buffer::Buffer),
 ) {
-    let title = pane_title(title_base, sel);
+    let sel_positions: HashSet<usize> =
+        selected_positions(rows, sel, marks, &id_of).into_iter().collect();
+    let bulk = is_bulk_selection(sel, marks);
+    let title = pane_title(title_base, sel_positions.len(), bulk);
     let (mut header, rects) = build_header(
         area,
         &title,
@@ -828,7 +840,7 @@ fn render_list_pane<T, C>(
         buttons,
         row_scoped,
         false,
-        is_bulk_selection(sel),
+        bulk,
         p,
     );
     if dimmed {
@@ -890,7 +902,6 @@ fn render_list_pane<T, C>(
     }
     let total = display.len();
 
-    let (start_i, end_i) = selection_range(sel);
     let cap = rows_area.height as usize;
     // Window in DISPLAY space, centered on the cursor's display line (the divider
     // is never a cursor position, so a Row is always found).
@@ -931,24 +942,31 @@ fn render_list_pane<T, C>(
             DisplayRow::Row(idx) => {
                 let idx = *idx;
                 let mut line = line_of(&rows[idx], &ctx, p);
-                let selected = focused && idx >= start_i && idx <= end_i;
+                // Two-tone selection. The CURSOR row (and any row inside an
+                // anchored Shift+Arrow range) gets the bright bar; a MARKED row
+                // that is neither the cursor nor in the range gets the dimmer
+                // muted bar. `sel_positions` (the acted-on set) intentionally
+                // drops the bare cursor row once marks exist, so highlight the
+                // cursor separately here to keep it visible in marks-only mode.
+                let (r_start, r_end) = selection_range(sel);
+                let in_range = sel.anchor.is_some() && idx >= r_start && idx <= r_end;
+                let bright = focused && (idx == cursor || in_range);
+                let muted = focused && !bright && marks.contains(&id_of(&rows[idx]));
                 if dimmed {
                     // Spotlight: another pane is being search-typed — mute this whole
                     // pane (a dimmed pane is never focused, so no selection to show).
                     patch_line(&mut line, p.dim_style());
-                } else if selected {
+                } else if bright || muted {
                     // Pad the line's spans out to the full row width BEFORE patching
-                    // so the selection bg spans the WHOLE row even when the line's
-                    // own spans end early (e.g. a TASKS def row with no cron appends
-                    // nothing past its name) — `Line::style` alone tints only the
-                    // cells a span actually covers, leaving the tail unhighlighted.
+                    // so the bar spans the WHOLE row even when the line's own spans
+                    // end early — `Line::style` alone tints only covered cells.
                     let w = line.width();
                     if w < rows_area.width as usize {
                         line.spans.push(Span::raw(" ".repeat(rows_area.width as usize - w)));
                     }
                     // Patch every span so per-span fg colors don't survive over the
-                    // selection bg (a blue worktree name on blue bg would be unreadable).
-                    patch_line(&mut line, p.selection());
+                    // bar (a colored name on the bar would be unreadable).
+                    patch_line(&mut line, if bright { p.selection() } else { p.selection_muted() });
                 } else if dim_of(&rows[idx]) {
                     // Same reason: force the archived row uniformly dim rather than
                     // leaving colored glyphs/worktree names.
@@ -1046,7 +1064,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     let wt_summary = crate::selectors::wt_pane_summary(&c.worktrees);
 
     if collapsed[ListPane::Queue.idx()] {
-        let title = pane_title(TITLE_QUEUE, &c.queue_sel);
+        let marks = &c.ui.marks[ListPane::Queue.idx()];
+        let n = selected_positions(&c.queue, &c.queue_sel, marks, |r| r.task_id.clone()).len();
+        let bulk = is_bulk_selection(&c.queue_sel, marks);
+        let title = pane_title(TITLE_QUEUE, n, bulk);
         render_collapsed_pane(
             frame,
             regions[0],
@@ -1058,7 +1079,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &mut btn_hits,
             p,
             spotlight && !c.searching[0],
-            is_bulk_selection(&c.queue_sel),
+            bulk,
         );
     } else {
         render_list_pane(
@@ -1074,6 +1095,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             PaneId::Queue,
             ListPane::Queue,
             &c.queue_sel,
+            &c.ui.marks[ListPane::Queue.idx()],
             &c.queue,
             "queue empty — [c]reate a task",
             app.now_epoch_s,
@@ -1085,6 +1107,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             queue_header,
             |row| row.archived,
             |row| row.running,
+            |row| row.task_id.clone(),
             spotlight && !c.searching[0],
             // ACTIVE/FINISHED section divider (drawn only when both sections exist).
             queue_divider_after(&c.queue),
@@ -1092,7 +1115,12 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         );
     }
     if collapsed[ListPane::Tasks.idx()] {
-        let title = pane_title(TITLE_TASKS, &c.tasks_sel);
+        let marks = &c.ui.marks[ListPane::Tasks.idx()];
+        let n =
+            selected_positions(&c.defs, &c.tasks_sel, marks, |d| format!("{}/{}", d.repo, d.name))
+                .len();
+        let bulk = is_bulk_selection(&c.tasks_sel, marks);
+        let title = pane_title(TITLE_TASKS, n, bulk);
         render_collapsed_pane(
             frame,
             regions[1],
@@ -1104,7 +1132,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &mut btn_hits,
             p,
             spotlight && !c.searching[1],
-            is_bulk_selection(&c.tasks_sel),
+            bulk,
         );
     } else {
         render_list_pane(
@@ -1120,6 +1148,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             PaneId::Tasks,
             ListPane::Tasks,
             &c.tasks_sel,
+            &c.ui.marks[ListPane::Tasks.idx()],
             &c.defs,
             "no task definitions",
             app.now_epoch_s,
@@ -1131,13 +1160,17 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             def_header,
             |_| false,
             |_| false,
+            |d| format!("{}/{}", d.repo, d.name),
             spotlight && !c.searching[1],
             None, // tasks pane has no section divider
             |_, _, _, _| {}, // no per-row extra hits on TASKS
         );
     }
     if collapsed[ListPane::Worktrees.idx()] {
-        let title = pane_title(TITLE_WORKTREES, &c.wt_sel);
+        let marks = &c.ui.marks[ListPane::Worktrees.idx()];
+        let n = selected_positions(&c.worktrees, &c.wt_sel, marks, |r| r.raw_name.clone()).len();
+        let bulk = is_bulk_selection(&c.wt_sel, marks);
+        let title = pane_title(TITLE_WORKTREES, n, bulk);
         render_collapsed_pane(
             frame,
             regions[2],
@@ -1149,7 +1182,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &mut btn_hits,
             p,
             spotlight && !c.searching[2],
-            is_bulk_selection(&c.wt_sel),
+            bulk,
         );
     } else {
         render_list_pane(
@@ -1165,6 +1198,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             PaneId::Worktrees,
             ListPane::Worktrees,
             &c.wt_sel,
+            &c.ui.marks[ListPane::Worktrees.idx()],
             &c.worktrees,
             "no worktrees",
             app.now_epoch_s,
@@ -1176,6 +1210,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             wt_header,
             |_| false,
             |_| false,
+            |row| row.raw_name.clone(),
             spotlight && !c.searching[2],
             None, // worktrees pane has no section divider
             // PR-link cell: when the PR column is present and the row has BOTH a

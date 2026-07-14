@@ -3,9 +3,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{App, PaneId};
+use crate::app::{App, ListPane, PaneId};
 use crate::view::theme::Palette;
-use crate::view::{Computed, selection_range};
+use crate::view::{Computed, is_bulk_selection, selected_positions};
 
 /// Style a hint string so the key tokens stand out instead of the whole line
 /// rendering dim: `[key]` chunks get the accent color (bold), `·` separators
@@ -84,21 +84,9 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
         );
         return;
     }
-    // Selection count of the focused list pane.
-    let sel = match c.ui.focus {
-        PaneId::Queue => Some((&c.queue_sel, c.queue.len())),
-        PaneId::Tasks => Some((&c.tasks_sel, c.defs.len())),
-        PaneId::Worktrees => Some((&c.wt_sel, c.worktrees.len())),
-        PaneId::Detail => None,
-    };
-    let count = sel
-        .filter(|(_, len)| *len > 0)
-        .map(|(s, _)| {
-            let (a, b) = selection_range(s);
-            b - a + 1
-        })
-        .unwrap_or(0);
-    if count > 1 {
+    // Selection count of the focused list pane — marks-aware, so this agrees
+    // with the pane title bar it is describing (see `footer_bulk_count`).
+    if let Some(count) = footer_bulk_count(c) {
         frame.render_widget(
             Paragraph::new(hint_line(
                 &format!("{count} selected · [a]bulk actions · [shift+↑↓]extend · [esc]clear"),
@@ -109,4 +97,124 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
         return;
     }
     frame.render_widget(Paragraph::new(hint_line(GLOBAL_HINT, p)), area);
+}
+
+/// The focused list pane's effective bulk-selection count, or `None` when
+/// there is nothing to show. Mirrors `selectors::pane_title`'s marks-aware
+/// rule exactly (`is_bulk_selection` + `selected_positions`), so the footer
+/// hint never disagrees with the pane title bar it is describing: a
+/// marks-only selection (no anchored range) now reads as a selection here too,
+/// and a mark that resolves to no visible row (filtered out by search) hides
+/// the hint rather than showing a nonsensical "0 selected".
+fn footer_bulk_count(c: &Computed) -> Option<usize> {
+    let (count, bulk) = match c.ui.focus {
+        PaneId::Queue => {
+            let marks = &c.ui.marks[ListPane::Queue.idx()];
+            let n = selected_positions(&c.queue, &c.queue_sel, marks, |r| r.task_id.clone()).len();
+            (n, is_bulk_selection(&c.queue_sel, marks))
+        }
+        PaneId::Tasks => {
+            let marks = &c.ui.marks[ListPane::Tasks.idx()];
+            let n = selected_positions(&c.defs, &c.tasks_sel, marks, |d| {
+                format!("{}/{}", d.repo, d.name)
+            })
+            .len();
+            (n, is_bulk_selection(&c.tasks_sel, marks))
+        }
+        PaneId::Worktrees => {
+            let marks = &c.ui.marks[ListPane::Worktrees.idx()];
+            let n =
+                selected_positions(&c.worktrees, &c.wt_sel, marks, |r| r.raw_name.clone()).len();
+            (n, is_bulk_selection(&c.wt_sel, marks))
+        }
+        PaneId::Detail => return None,
+    };
+    (bulk && count > 0).then_some(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::marker::PhantomData;
+
+    use crate::app::{Selection, TabUiState};
+    use crate::selectors::WorktreeRow;
+
+    use super::*;
+
+    fn computed_with_worktrees(
+        marks: HashSet<String>,
+        wt_sel: Selection,
+        worktrees: Vec<WorktreeRow>,
+    ) -> Computed<'static> {
+        let mut ui = TabUiState::default();
+        ui.focus = PaneId::Worktrees;
+        ui.marks[ListPane::Worktrees.idx()] = marks;
+        Computed {
+            palette: Palette::default(),
+            active_name: None,
+            tab_names: Vec::new(),
+            active_index: 0,
+            ui,
+            queue: Vec::new(),
+            defs: Vec::new(),
+            worktrees,
+            queue_sel: Selection::default(),
+            tasks_sel: Selection::default(),
+            wt_sel,
+            searching: [false; 3],
+            _marker: PhantomData,
+        }
+    }
+
+    fn wrow(raw_name: &str) -> WorktreeRow {
+        WorktreeRow { raw_name: raw_name.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn plain_cursor_no_marks_is_not_a_selection() {
+        // No anchor, no marks — the cursor is just a viewport, matching
+        // `pane_title`'s non-bulk case. Old footer behavior for a lone row.
+        let c = computed_with_worktrees(
+            HashSet::new(),
+            Selection { cursor: 0, anchor: None },
+            vec![wrow("w0")],
+        );
+        assert_eq!(footer_bulk_count(&c), None);
+    }
+
+    #[test]
+    fn a_single_mark_counts_as_a_selection_like_the_pane_title_does() {
+        // THE bug this fix closes: a lone Space-marked row is bulk (see
+        // `selectors::pane_title_selection_count`'s same assertion) — the
+        // footer must agree instead of reading the range alone.
+        let c = computed_with_worktrees(
+            HashSet::from(["w0".to_string()]),
+            Selection { cursor: 5, anchor: None },
+            vec![wrow("w0"), wrow("w1")],
+        );
+        assert_eq!(footer_bulk_count(&c), Some(1));
+    }
+
+    #[test]
+    fn a_mark_that_resolves_to_no_visible_row_hides_the_hint() {
+        // Mark present (bulk) but filtered out of the current view — mirrors
+        // `pane_title_bulk_but_zero_resolved_hides_the_ghost_count`.
+        let c = computed_with_worktrees(
+            HashSet::from(["gone".to_string()]),
+            Selection { cursor: 0, anchor: None },
+            vec![wrow("w0")],
+        );
+        assert_eq!(footer_bulk_count(&c), None);
+    }
+
+    #[test]
+    fn an_anchored_range_counts_normally() {
+        let c = computed_with_worktrees(
+            HashSet::new(),
+            Selection { cursor: 2, anchor: Some(0) },
+            vec![wrow("w0"), wrow("w1"), wrow("w2")],
+        );
+        assert_eq!(footer_bulk_count(&c), Some(3));
+    }
 }

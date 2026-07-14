@@ -635,7 +635,11 @@ impl App {
         true
     }
 
-    /// Staged esc: close overlay → clear range → clear filter → noop.
+    /// Staged Esc in `Mode::List`: (1) drop the pane's bulk selection — the
+    /// anchored range AND its marks, together, since from the user's side they
+    /// are one selection, not two things to peel back separately; (2) else clear
+    /// the pane's search filter. Returns whether anything changed (an Esc with
+    /// nothing to clear is inert). Any non-List mode is dismissed first.
     fn clear_esc(&mut self) -> bool {
         if !matches!(self.mode, Mode::List) {
             self.mode = Mode::List;
@@ -643,8 +647,10 @@ impl App {
         }
         let Some(pane) = self.focused_list() else { return false };
         let sel = self.ui().selections[pane as usize];
-        if sel.anchor.is_some() {
+        let has_marks = !self.ui().marks[pane as usize].is_empty();
+        if sel.anchor.is_some() || has_marks {
             self.ui().selections[pane as usize] = Selection { cursor: sel.cursor, anchor: None };
+            self.ui().marks[pane as usize].clear();
             return true;
         }
         if !self.ui().search[pane as usize].is_empty() {
@@ -683,6 +689,9 @@ mod input_modal_tests;
 
 #[cfg(test)]
 mod bulk_flow_tests;
+
+#[cfg(test)]
+mod mark_flow_tests;
 
 #[cfg(test)]
 mod def_pick_tests;
