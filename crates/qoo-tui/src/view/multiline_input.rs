@@ -6,6 +6,33 @@
 
 use crate::view::args_form::wrap_value_cursor;
 
+/// Normalize a paste payload for a multiline text field. Terminals translate
+/// line breaks to `\r` in bracketed paste (they emulate the Enter key), so a
+/// multiline paste arrives CR-separated: CRLF/CR become `\n` (preserving the
+/// line structure), tabs expand to 4 spaces, and every other control char
+/// (e.g. ESC from an ANSI-colored dump) is dropped. The renderer skips control
+/// chars it cannot draw, so letting them into a value desyncs the wrap/caret
+/// math from what is on screen — the "pasted text renders garbled" bug.
+pub(crate) fn sanitize_paste(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next(); // CRLF is ONE line break
+                }
+                out.push('\n');
+            }
+            '\n' => out.push('\n'),
+            '\t' => out.push_str("    "),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MultilineInput {
     pub text: String,
@@ -233,6 +260,16 @@ mod tests {
         assert_eq!(m.cursor, 5);
         m.move_home();
         assert_eq!(m.cursor, 0);
+    }
+
+    #[test]
+    fn sanitize_paste_normalizes_line_endings_tabs_and_control_chars() {
+        // CRLF and lone CR are each ONE line break; tabs expand; ESC (and any
+        // other control char) drops while its printable tail stays.
+        assert_eq!(sanitize_paste("a\r\nb\rc\nd"), "a\nb\nc\nd");
+        assert_eq!(sanitize_paste("x\ty"), "x    y");
+        assert_eq!(sanitize_paste("red\u{1b}[31mtext\u{7}"), "red[31mtext");
+        assert_eq!(sanitize_paste("plain"), "plain");
     }
 
     #[test]

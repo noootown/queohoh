@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use crate::hit::{ButtonKind, HitMap, HitTarget};
 use crate::view::args_form::{caret_line, wrap_value_cursor};
 use crate::view::modal::{render_button_row, DIALOG_WIDTH, MODAL_PADDING};
-use crate::view::multiline_input::MultilineInput;
+use crate::view::multiline_input::{sanitize_paste, MultilineInput};
 use crate::view::theme::{GLYPH_CHEVRON_DOWN, Palette};
 
 /// The three field shapes. Shape alone signals the type — a one-row box is an
@@ -320,10 +320,12 @@ impl FormState {
     fn is_textarea_focused(&self) -> bool {
         matches!(self.focus_kind(), FocusKind::Field(i) if matches!(self.fields[i].kind, FieldKind::Textarea))
     }
-    /// Insert a pasted string into the focused text field. A Textarea takes it
-    /// verbatim (newlines preserved); an Input collapses control chars to spaces
-    /// so a multiline paste can't smuggle a newline into a one-line field. Inert
-    /// off a text field.
+    /// Insert a pasted string into the focused text field, sanitized via
+    /// [`sanitize_paste`] (CR/CRLF → `\n`, tabs expanded, other control chars
+    /// dropped — unrenderable chars in a value garble the wrap math). A
+    /// Textarea keeps the line structure; an Input then flattens each line
+    /// break to a space so a multiline paste can't smuggle a newline into a
+    /// one-line field. Inert off a text field.
     pub fn insert_str(&mut self, s: &str) {
         let (is_text, is_textarea) = match self.focus_kind() {
             FocusKind::Field(i) => (
@@ -335,11 +337,10 @@ impl FormState {
         if !is_text {
             return;
         }
-        let payload: String = if is_textarea {
-            s.to_string()
-        } else {
-            s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
-        };
+        let mut payload = sanitize_paste(s);
+        if !is_textarea {
+            payload = payload.replace('\n', " ");
+        }
         self.edit(|mi| mi.insert_str(&payload));
     }
 
@@ -1009,6 +1010,30 @@ mod tests {
         assert_eq!(textarea_rows("a\nb\nc\nd\ne\nf", 40), 6); // 6 logical lines
         assert_eq!(textarea_rows("", 40), 3);                 // floor at 3
         assert_eq!(textarea_rows("x", 40), 3);
+    }
+
+    #[test]
+    fn paste_normalizes_cr_line_endings_and_tabs_in_textarea() {
+        // Terminals translate `\n` → `\r` in bracketed paste (they emulate the
+        // Enter key), so a multiline paste arrives CR-separated. The textarea
+        // must keep the LINE STRUCTURE (CR/CRLF → `\n`), expand tabs, and drop
+        // other control chars — the renderer skips control chars it can't
+        // draw, so letting them into the value garbles the wrap math.
+        let mut f = sample();
+        f.focus = 2; // the prompt textarea
+        f.land_caret();
+        f.insert_str("line one\r\nline two\rline three\tend\u{1b}[31m");
+        assert_eq!(f.fields[2].value, "line one\nline two\nline three    end[31m");
+        assert_eq!(f.caret, f.fields[2].value.chars().count());
+    }
+
+    #[test]
+    fn paste_collapses_a_crlf_to_one_space_in_input() {
+        // A single-line Input flattens line breaks; a CRLF pair is ONE break,
+        // so it must become one space, not two.
+        let mut f = sample(); // focus starts on field 0 (an input)
+        f.insert_str("a\r\nb\rc");
+        assert_eq!(f.fields[0].value, "a b c");
     }
 
     #[test]

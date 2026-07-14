@@ -331,25 +331,27 @@ impl App {
                     _ => Update { dirty: false, cmds: vec![] },
                 }
             }
-            // Bracketed paste. The run form's free-text field takes the payload
-            // verbatim (newlines preserved — this is the "paste your bug report"
-            // flow). The single-line prompt/worktree/branch inputs take it with
-            // control chars (newlines/tabs) collapsed to spaces so a multiline
-            // paste can't smuggle a newline into a one-line field. Every other
-            // mode ignores paste (List has no text target).
+            // Bracketed paste. Every text target sanitizes the payload
+            // (`sanitize_paste`: CR/CRLF → newline — terminals send CR for
+            // line breaks — tabs expanded, other control chars dropped so the
+            // wrap math matches what the renderer can draw). A textarea keeps
+            // the line structure (the "paste your bug report" flow); the
+            // single-line prompt/worktree/branch inputs flatten line breaks to
+            // spaces so a multiline paste can't smuggle a newline into a
+            // one-line field. Every other mode ignores paste (List has no text
+            // target).
             Event::Paste(s) => match &mut self.mode {
                 Mode::DefArgs { state, .. } => {
                     state.insert_str(&s);
                     Update { dirty: !s.is_empty(), cmds: vec![] }
                 }
-                // The multiline prompt editor takes the payload verbatim
-                // (newlines preserved — this is the "paste your bug report" flow).
+                // The multiline prompt editor keeps the sanitized line structure.
                 Mode::AddTask { editor, .. } => {
-                    editor.insert_str(&s);
+                    editor.insert_str(&crate::view::multiline_input::sanitize_paste(&s));
                     Update { dirty: !s.is_empty(), cmds: vec![] }
                 }
                 // The form routes paste to its focused text field (textarea
-                // verbatim; single-line input collapses control chars).
+                // keeps line structure; single-line input flattens it).
                 Mode::Form { state, .. } => {
                     state.insert_str(&s);
                     Update { dirty: !s.is_empty(), cmds: vec![] }
