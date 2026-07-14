@@ -82,6 +82,12 @@ pub struct TaskInstance {
     pub target: TaskTarget,
     pub priority: String,
     pub created: String,
+    /// Start timestamp (ISO UTC) of the CURRENT run, re-stamped by the daemon each
+    /// time the worker flips the task to `running`. `None` on an old daemon that
+    /// omits it (via the container `default`) or on a task that has never run —
+    /// the live `⏱` timer falls back to `created` in that case. Re-stamping on a
+    /// re-run is what restarts the timer from the re-run, not the original create.
+    pub started_at: Option<String>,
     /// Completion timestamp (ISO UTC), present once the task reaches a terminal
     /// status. `None` on an old daemon that omits it (via the container `default`)
     /// or on a task that hasn't finished — drives the FINISHED-section ordering.
@@ -314,6 +320,7 @@ mod tests {
             "target": {"repo": "platform", "ref": "worktree:platform.feat-a", "worktree": "platform.feat-a"},
             "priority": "normal",
             "created": "2026-07-08T10:00:00.000Z",
+            "startedAt": "2026-07-08T10:00:30.000Z",
             "finishedAt": "2026-07-08T10:05:00.000Z",
             "source": "tui",
             "ephemeralWorktree": false,
@@ -361,6 +368,7 @@ mod tests {
         assert_eq!(t.resume_session_id.as_deref(), Some("sess-1"));
         assert_eq!(t.model.as_deref(), Some("opus"));
         assert_eq!(t.prompt, "do the thing\n");
+        assert_eq!(t.started_at.as_deref(), Some("2026-07-08T10:00:30.000Z"));
         assert_eq!(t.finished_at.as_deref(), Some("2026-07-08T10:05:00.000Z"));
         assert_eq!(t.verify.as_deref(), Some(
             "gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review",
@@ -399,7 +407,8 @@ mod tests {
         // status absent → Unknown (default); target.worktree absent → None.
         assert_eq!(s.tasks[0].status, TaskStatus::Unknown);
         assert_eq!(s.tasks[0].target.worktree, None);
-        // finishedAt absent on an old daemon → None (additive field).
+        // startedAt/finishedAt absent on an old daemon → None (additive fields).
+        assert_eq!(s.tasks[0].started_at, None);
         assert_eq!(s.tasks[0].finished_at, None);
         // verify fields absent on an old daemon → None (additive fields).
         assert_eq!(s.tasks[0].verify, None);

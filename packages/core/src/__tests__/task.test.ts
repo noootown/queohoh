@@ -11,6 +11,7 @@ const sample: TaskInstance = {
 	target: { repo: "platform", ref: "pr:1423", worktree: null },
 	priority: "normal",
 	created: "2026-07-08T10:12:00.000Z",
+	startedAt: null,
 	finishedAt: null,
 	source: "mcp",
 	ephemeralWorktree: false,
@@ -134,6 +135,24 @@ describe("timeout_ms field", () => {
 		const withTimeout: TaskInstance = { ...sample, timeoutMs: 1_800_000 };
 		const reparsed = parseTaskFile(serializeTaskFile(withTimeout));
 		expect(reparsed.timeoutMs).toBe(1_800_000);
+	});
+});
+
+describe("started_at field", () => {
+	it("defaults to null when absent (legacy task files)", () => {
+		const legacy = serializeTaskFile(sample).replace(/^started_at: .*\n/m, "");
+		expect(legacy).not.toContain("started_at:");
+		expect(parseTaskFile(legacy).startedAt).toBeNull();
+	});
+
+	it("round-trips when set (a running task)", () => {
+		const withStart: TaskInstance = {
+			...sample,
+			status: "running",
+			startedAt: "2026-07-08T10:13:00.000Z",
+		};
+		const reparsed = parseTaskFile(serializeTaskFile(withStart));
+		expect(reparsed.startedAt).toBe("2026-07-08T10:13:00.000Z");
 	});
 });
 

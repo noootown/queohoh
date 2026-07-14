@@ -251,7 +251,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
         // — the ✓/✗/? glyph already says the outcome and the full error/status
         // lives in the DETAIL pane; a trailing "done"/"exit code 1" duplicated it.
         let detail = match task.status {
-            TaskStatus::Running => elapsed_label(parse_iso_epoch_s(&task.created), now_epoch_s),
+            TaskStatus::Running => elapsed_label(run_start_epoch_s(task), now_epoch_s),
             TaskStatus::Queued => {
                 let lane = lane_label(task);
                 let position = queued_position.get(&lane).copied().unwrap_or(0) + 1;
@@ -357,14 +357,15 @@ fn queued_on_lane(snapshot: &StateSnapshot, lane: &str) -> usize {
         .count()
 }
 
-/// Creation epoch of a task RUNNING on `lane` (the first in snapshot order), or
-/// None. Drives the worktree row's live `⏱` timer.
+/// Run-start epoch of a task RUNNING on `lane` (the first in snapshot order), or
+/// None. Drives the worktree row's live `⏱` timer — anchored on `started_at` so a
+/// re-run's clock restarts from the re-run (see [`run_start_epoch_s`]).
 fn running_elapsed_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<u64> {
     snapshot
         .tasks
         .iter()
         .find(|t| task_lane(t).as_deref() == Some(lane) && t.status == TaskStatus::Running)
-        .map(|t| parse_iso_epoch_s(&t.created))
+        .map(run_start_epoch_s)
 }
 
 /// Display name of the head-of-lane queued task (first in snapshot order): the
@@ -419,7 +420,7 @@ pub(crate) fn lane_task_display(task: &TaskInstance) -> (char, String, bool, u64
 /// Queued task.
 pub(crate) fn lane_task_live(task: &TaskInstance, now_epoch_s: u64, queue_pos: usize) -> String {
     match task.status {
-        TaskStatus::Running => elapsed_label(parse_iso_epoch_s(&task.created), now_epoch_s),
+        TaskStatus::Running => elapsed_label(run_start_epoch_s(task), now_epoch_s),
         TaskStatus::Queued => format!("#{queue_pos} in lane"),
         _ => String::new(),
     }
@@ -807,6 +808,16 @@ pub fn elapsed_label(created_epoch_s: u64, now_epoch_s: u64) -> String {
     } else {
         format!("⏱ {seconds}s")
     }
+}
+
+/// Epoch (seconds) the task's CURRENT run started: its `started_at` (re-stamped
+/// on every (re-)run when the worker flips it to `running`), falling back to
+/// `created` when absent — a task that never ran, or an old daemon that omits the
+/// field. Anchoring the live `⏱` timer here means a re-run's clock restarts from
+/// the re-run, not the original creation — so a re-run doesn't inherit hours of
+/// phantom elapsed and read as if it were about to hit the 3h wall-clock ceiling.
+fn run_start_epoch_s(task: &TaskInstance) -> u64 {
+    parse_iso_epoch_s(task.started_at.as_deref().unwrap_or(&task.created))
 }
 
 /// Parse a daemon ISO-8601 UTC timestamp ("YYYY-MM-DDTHH:MM:SS[.mmm]Z") into
@@ -1525,6 +1536,7 @@ mod tests {
             },
             priority: "normal".into(),
             created: "2026-07-08T10:00:00.000Z".into(),
+            started_at: None,
             finished_at: None,
             source: "tui".into(),
             ephemeral_worktree: false,
@@ -1976,6 +1988,12 @@ mod tests {
         // Running → elapsed against `now` (created default is 3m12s before now).
         let running = task_on(TaskStatus::Running, "t1", "platform", Some("wt-a"));
         assert_eq!(lane_task_live(&running, now(), 0), "⏱ 3m12s");
+        // A re-run stamps `started_at` LATER than `created`: the timer anchors on
+        // the re-run (47s ago), not the original creation — so it never inherits
+        // the phantom elapsed that would race it to the 3h ceiling.
+        let mut rerun = running.clone();
+        rerun.started_at = Some("2026-07-08T10:02:25.000Z".into()); // now - 47s
+        assert_eq!(lane_task_live(&rerun, now(), 0), "⏱ 47s");
         // Queued → `#N in lane` using the caller-supplied 1-based position (the
         // elapsed clock is never consulted for a queued row).
         let queued = task_on(TaskStatus::Queued, "t2", "platform", Some("wt-a"));

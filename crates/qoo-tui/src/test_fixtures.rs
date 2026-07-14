@@ -35,6 +35,7 @@ fn task(
         },
         priority: "normal".to_string(),
         created: created.to_string(),
+        started_at: None,
         finished_at: finished.map(str::to_string),
         source: "tui".to_string(),
         ephemeral_worktree: false,

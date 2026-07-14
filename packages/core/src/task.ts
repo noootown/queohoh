@@ -49,6 +49,13 @@ const TaskMetaSchema = z
 			.strict(),
 		priority: PrioritySchema.default("normal"),
 		created: z.string().min(1),
+		// Start timestamp (ISO, like `created`), stamped every time the worker flips
+		// the task to `running` — so a RE-run re-stamps it and the live `⏱` timer
+		// restarts from the re-run rather than the original creation. Absent on
+		// legacy task files that predate the field, or on a task that has never run
+		// → null (additive; old rows must not break). Drives the TUI live timer;
+		// `created` is the fallback so a stale daemon still shows something sane.
+		started_at: z.string().nullable().default(null),
 		// Completion timestamp (ISO, like `created`), stamped when the task
 		// transitions to a terminal status (done/failed). Absent on legacy task
 		// files that predate the field → null (additive; old rows must not break).
@@ -92,6 +99,11 @@ export interface TaskInstance {
 	target: { repo: string; ref: string; worktree: string | null };
 	priority: Priority;
 	created: string;
+	/** ISO start timestamp of the current run, re-stamped each time the worker
+	 * flips the task to `running`; null when it has never run (or on a legacy
+	 * file that predates the field). Drives the live timer (falls back to
+	 * `created`). Optional so pre-run callers and test literals need not set it. */
+	startedAt?: string | null;
 	finishedAt: string | null;
 	source: TaskSource;
 	ephemeralWorktree: boolean;
@@ -135,6 +147,7 @@ export function parseTaskFile(content: string): TaskInstance {
 		target: m.target,
 		priority: m.priority,
 		created: m.created,
+		startedAt: m.started_at,
 		finishedAt: m.finished_at,
 		source: m.source,
 		ephemeralWorktree: m.ephemeral_worktree,
@@ -163,6 +176,7 @@ export function serializeTaskFile(task: TaskInstance): string {
 		target: task.target,
 		priority: task.priority,
 		created: task.created,
+		started_at: task.startedAt ?? null,
 		finished_at: task.finishedAt,
 		source: task.source,
 		ephemeral_worktree: task.ephemeralWorktree,

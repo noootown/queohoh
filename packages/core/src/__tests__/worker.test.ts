@@ -109,6 +109,27 @@ describe("runTask", () => {
 		expect(runStore.readWorkerPid(t.id)).toBe(process.pid);
 	});
 
+	it("stamps startedAt at run start, re-stamping on a re-run", async () => {
+		const { deps, store } = makeDeps();
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		const first = await runTask(t.id, deps);
+		// Stamped, and no earlier than the task's creation.
+		expect(first.startedAt).toBeTruthy();
+		expect(Date.parse(first.startedAt ?? "")).toBeGreaterThanOrEqual(
+			Date.parse(first.created),
+		);
+		// Simulate a re-run of a task whose prior run started long ago: the timer
+		// must anchor on THIS run, not the stale stamp.
+		const stale = "2020-01-01T00:00:00.000Z";
+		store.update(t.id, { status: "queued", startedAt: stale });
+		const second = await runTask(t.id, deps);
+		expect(second.startedAt).not.toBe(stale);
+		expect(Date.parse(second.startedAt ?? "")).toBeGreaterThan(
+			Date.parse(stale),
+		);
+	});
+
 	it("nonzero exit → failed with exit reason", async () => {
 		const { deps, store } = makeDeps({
 			executeClaude: async () => ({ ...okResult, exitCode: 3 }),

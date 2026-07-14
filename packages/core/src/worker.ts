@@ -75,9 +75,13 @@ export async function runTask(
 	if (!task) throw new Error(`task not found: ${taskId}`);
 	// A (re-)run clears the previous verify verdict; it is re-stamped only if this
 	// run reaches the verify gate below. `verify` (the configured command) is left
-	// untouched — it is configuration, not a per-run result.
+	// untouched — it is configuration, not a per-run result. `startedAt` is stamped
+	// NOW (re-stamped on every re-run) so the live `⏱` timer counts from this run,
+	// not the original creation — keeping it honest against the 3h wall-clock
+	// ceiling, which the runner likewise measures fresh from this spawn.
 	deps.store.update(taskId, {
 		status: "running",
+		startedAt: new Date().toISOString(),
 		error: null,
 		verified: null,
 		verifyExitCode: null,
