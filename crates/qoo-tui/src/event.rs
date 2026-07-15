@@ -112,11 +112,13 @@ pub enum Cmd {
     /// worktree — resolving its name from the reply `path` basename — and skips
     /// the auto-open (the task owns the worktree).
     CreateWorktree { repo: String, name: String, enqueue: Option<EnqueueAfter> },
-    OpenTmux { path: String },
+    OpenTmux { path: String, goto_command: Option<String> },
     /// Resume a task's Claude session in a NEW tmux tab (window) rooted at its
-    /// worktree: `tmux new-window -c <path> 'claude --resume <session_id>'`. Fired by the
-    /// queue "Resume" action; gated on being inside tmux + a known session/path.
-    TmuxResume { path: String, session_id: String },
+    /// worktree. With no `goto_command`, runs `tmux new-window -c <path>
+    /// 'claude --resume <session_id>'`; with one, opens a plain window and types
+    /// the (substituted) command into it. Fired by the queue "Resume"/goto
+    /// action; gated on being inside tmux + a known session/path.
+    TmuxResume { path: String, session_id: String, goto_command: Option<String> },
     /// Write-through of the per-project pane layout. Fire-and-forget off the UI
     /// thread; a failed write is silently tolerated (layout is a convenience).
     SaveLayout { path: PathBuf, json: String },
@@ -301,6 +303,102 @@ async fn open_tmux_window(path: &str) -> Option<String> {
     }
 }
 
+/// The tmux invocation shape for a `goto`, derived purely from the target and
+/// the optional workspace `goto_command` override. `event.rs` executes it; the
+/// split keeps the (untested) tmux side effects thin and this derivation unit-
+/// tested.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum GotoPlan {
+    /// No override: a single, fully-formed `tmux new-window …` invocation —
+    /// byte-for-byte today's behavior.
+    Simple { args: Vec<String> },
+    /// Override present: create a window capturing `#{window_id}`, then type
+    /// `send_line` into it so the operator's interactive-shell functions/aliases
+    /// resolve. `event.rs` substitutes the real window id (from the first
+    /// invocation's stdout) into the follow-up `send-keys -t <id>` calls.
+    CreateAndSend { new_window_args: Vec<String>, send_line: String },
+}
+
+/// Execute a [`GotoPlan`] off the UI thread. On any tmux failure, reports the
+/// stderr as a status line (mirrors `open_tmux_window`); success is silent.
+async fn run_goto(plan: GotoPlan, tx: UnboundedSender<Event>) {
+    async fn tmux(args: &[&str]) -> Result<std::process::Output, std::io::Error> {
+        tokio::process::Command::new("tmux").args(args).output().await
+    }
+    let status = match plan {
+        GotoPlan::Simple { args } => {
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            match tmux(&argv).await {
+                Ok(out) if out.status.success() => None,
+                Ok(out) => Some(format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim())),
+                Err(e) => Some(format!("tmux: {e}")),
+            }
+        }
+        GotoPlan::CreateAndSend { new_window_args, send_line } => {
+            let argv: Vec<&str> = new_window_args.iter().map(String::as_str).collect();
+            match tmux(&argv).await {
+                Ok(out) if out.status.success() => {
+                    let win = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if win.is_empty() {
+                        // An empty captured window id means `send-keys -t ""`
+                        // would retarget the CURRENT pane instead of the new
+                        // window — silently injecting the command (and Enter)
+                        // into the operator's own TUI pane. Bail out instead of
+                        // sending anything.
+                        Some("tmux: new-window returned no window id".to_string())
+                    } else {
+                        // `-l` = literal keys (no key-name lookup on the text);
+                        // `--` guards a leading '-'. Enter is a separate
+                        // key-name call.
+                        let _ = tmux(&["send-keys", "-t", &win, "-l", "--", &send_line]).await;
+                        let _ = tmux(&["send-keys", "-t", &win, "Enter"]).await;
+                        None
+                    }
+                }
+                Ok(out) => Some(format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim())),
+                Err(e) => Some(format!("tmux: {e}")),
+            }
+        }
+    };
+    if let Some(status) = status {
+        let _ = tx.send(Event::ActionResult { status: Some(status), invalidate_defs_for: None });
+    }
+}
+
+/// Build the goto plan. `session_id` = `Some` for a queue goto (resume Claude),
+/// `None` for a worktree goto. The template's `{cmd}` placeholder becomes the
+/// resume command (queue) or the empty string (worktree).
+pub(crate) fn goto_tmux_plan(
+    path: &str,
+    session_id: Option<&str>,
+    goto_command: Option<&str>,
+) -> GotoPlan {
+    let cmd = match session_id {
+        Some(id) => format!("claude --resume {id}"),
+        None => String::new(),
+    };
+    match goto_command {
+        Some(template) => GotoPlan::CreateAndSend {
+            new_window_args: vec![
+                "new-window".into(),
+                "-P".into(),
+                "-F".into(),
+                "#{window_id}".into(),
+                "-c".into(),
+                path.into(),
+            ],
+            send_line: template.replace("{cmd}", &cmd),
+        },
+        None => {
+            let mut args = vec!["new-window".into(), "-c".into(), path.into()];
+            if !cmd.is_empty() {
+                args.push(cmd);
+            }
+            GotoPlan::Simple { args }
+        }
+    }
+}
+
 /// Perform one Cmd on a detached tokio task; results come back as Events.
 /// The UI thread never blocks (mutations are fire-and-forget).
 pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: PathBuf) {
@@ -467,38 +565,17 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 }
             });
         }
-        Cmd::OpenTmux { path } => {
-            tokio::spawn(async move {
-                if let Some(status) = open_tmux_window(&path).await {
-                    let _ = tx.send(Event::ActionResult {
-                        status: Some(status),
-                        invalidate_defs_for: None,
-                    });
-                }
-            });
+        Cmd::OpenTmux { path, goto_command } => {
+            tokio::spawn(run_goto(
+                goto_tmux_plan(&path, None, goto_command.as_deref()),
+                tx,
+            ));
         }
-        Cmd::TmuxResume { path, session_id } => {
-            tokio::spawn(async move {
-                // A new tmux window (tab), rooted at the worktree, running
-                // `claude --resume <session>` as its command.
-                let result = tokio::process::Command::new("tmux")
-                    .args([
-                        "new-window",
-                        "-c",
-                        &path,
-                        &format!("claude --resume {session_id}"),
-                    ])
-                    .output()
-                    .await;
-                let status = match result {
-                    Ok(out) if out.status.success() => None,
-                    Ok(out) => Some(format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim())),
-                    Err(e) => Some(format!("tmux: {e}")),
-                };
-                if status.is_some() {
-                    let _ = tx.send(Event::ActionResult { status, invalidate_defs_for: None });
-                }
-            });
+        Cmd::TmuxResume { path, session_id, goto_command } => {
+            tokio::spawn(run_goto(
+                goto_tmux_plan(&path, Some(&session_id), goto_command.as_deref()),
+                tx,
+            ));
         }
         Cmd::SaveLayout { path, json } => {
             tokio::spawn(async move {
@@ -609,6 +686,59 @@ mod tests {
         assert_eq!(
             seq_summary("skipped", 0, &["first".to_string(), "second".to_string()]),
             "skipped 0, 2 failed: first"
+        );
+    }
+}
+
+#[cfg(test)]
+mod goto_plan_tests {
+    use super::{goto_tmux_plan, GotoPlan};
+
+    fn v(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn worktree_no_override_is_plain_new_window() {
+        assert_eq!(
+            goto_tmux_plan("/wt/a", None, None),
+            GotoPlan::Simple { args: v(&["new-window", "-c", "/wt/a"]) }
+        );
+    }
+
+    #[test]
+    fn queue_no_override_appends_resume_command() {
+        assert_eq!(
+            goto_tmux_plan("/wt/a", Some("sess1"), None),
+            GotoPlan::Simple {
+                args: v(&["new-window", "-c", "/wt/a", "claude --resume sess1"])
+            }
+        );
+    }
+
+    #[test]
+    fn worktree_override_substitutes_empty_cmd() {
+        assert_eq!(
+            goto_tmux_plan("/wt/a", None, Some("init-tab {cmd}")),
+            GotoPlan::CreateAndSend {
+                new_window_args: v(&[
+                    "new-window", "-P", "-F", "#{window_id}", "-c", "/wt/a"
+                ]),
+                send_line: "init-tab ".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn queue_override_substitutes_resume_command() {
+        assert_eq!(
+            goto_tmux_plan("/wt/a", Some("sess1"), Some("init-tab {cmd}")),
+            GotoPlan::CreateAndSend {
+                new_window_args: v(&[
+                    "new-window", "-P", "-F", "#{window_id}", "-c", "/wt/a"
+                ]),
+                send_line: "init-tab claude --resume sess1".to_string(),
+            }
         );
     }
 }

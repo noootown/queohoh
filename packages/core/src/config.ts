@@ -21,6 +21,13 @@ const GlobalConfigSchema = z
 		archive_after_days: z.number().int().positive().default(7),
 		vars: z.record(z.string(), z.string()).default({}),
 		models: z.record(z.string(), z.unknown()).default({}),
+		// A line of shell typed into the tmux window that `goto` opens (worktree-
+		// goto and queue-goto). The `{cmd}` placeholder is substituted downstream:
+		// the `claude --resume <session>` command for queue-goto, empty for
+		// worktree-goto. Absent → the TUI keeps its built-in `tmux new-window`
+		// behavior. NOTE: a template without `{cmd}` means queue-goto will not
+		// resume Claude (nothing to substitute the resume command into).
+		goto_command: z.string().optional(),
 	})
 	.superRefine((config, ctx) => {
 		const seen = new Set<string>();
@@ -44,6 +51,8 @@ export interface GlobalConfig {
 	archiveAfterDays: number;
 	vars: Record<string, string>;
 	models: Record<string, string>;
+	/** Workspace-level override for the command `goto` runs — see the schema. */
+	gotoCommand?: string;
 }
 
 function expandTilde(path: string): string {
@@ -75,6 +84,7 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 		archiveAfterDays: config.archive_after_days,
 		vars: config.vars,
 		models,
+		gotoCommand: config.goto_command,
 	};
 }
 

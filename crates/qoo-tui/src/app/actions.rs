@@ -939,7 +939,9 @@ impl App {
             self.status_line = Some("no worktree selected".into());
             return Update { dirty: true, cmds: vec![] };
         };
-        Update { dirty: true, cmds: vec![Cmd::OpenTmux { path: row.path.clone() }] }
+        let path = row.path.clone();
+        let goto_command = self.snapshot.as_ref().and_then(|s| s.goto_command.clone());
+        Update { dirty: true, cmds: vec![Cmd::OpenTmux { path, goto_command }] }
     }
 
     /// `g` on QUEUE (and the `[g]oto` chip): resume the selected task's Claude
@@ -972,7 +974,8 @@ impl App {
                 Update { dirty: true, cmds: vec![] }
             }
             QueueGotoTarget::Ready(session_id, path) => {
-                Update { dirty: true, cmds: vec![Cmd::TmuxResume { path, session_id }] }
+                let goto_command = self.snapshot.as_ref().and_then(|s| s.goto_command.clone());
+                Update { dirty: true, cmds: vec![Cmd::TmuxResume { path, session_id, goto_command }] }
             }
         }
     }

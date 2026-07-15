@@ -58,6 +58,13 @@ export interface StateSnapshot {
 	 * treats `undefined` as stale (it definitionally predates this field).
 	 */
 	buildId?: string;
+	/**
+	 * Workspace-level override for the command `goto` opens in the new tmux
+	 * window (see GlobalConfig.gotoCommand). Optional/additive — absent config
+	 * omits the field, old TUIs ignore it, and the TUI falls back to its
+	 * built-in `tmux new-window` behavior.
+	 */
+	gotoCommand?: string;
 }
 
 interface ApiDeps {
@@ -123,6 +130,7 @@ export class ApiServer {
 			})),
 			worktrees: this.deps.engine.worktreesByRepo(),
 			buildId: this.buildId,
+			gotoCommand: this.deps.config.gotoCommand,
 		};
 	}
 

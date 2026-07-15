@@ -145,6 +145,7 @@ pub fn fixture_snapshot() -> StateSnapshot {
         }],
         worktrees,
         build_id: Some("build-1".to_string()),
+        goto_command: None,
     }
 }
 

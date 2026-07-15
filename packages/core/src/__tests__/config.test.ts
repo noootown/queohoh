@@ -62,6 +62,20 @@ describe("loadGlobalConfig", () => {
 			"duplicate project name: platform",
 		);
 	});
+
+	it("parses goto_command when present and omits it when absent", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-goto-"));
+		const withCmd = join(dir, "with.yaml");
+		writeFileSync(
+			withCmd,
+			["projects: []", 'goto_command: "init-tab {cmd}"'].join("\n"),
+		);
+		expect(loadGlobalConfig(withCmd).gotoCommand).toBe("init-tab {cmd}");
+
+		const without = join(dir, "without.yaml");
+		writeFileSync(without, "projects: []\n");
+		expect(loadGlobalConfig(without).gotoCommand).toBeUndefined();
+	});
 });
 
 describe("workspace", () => {

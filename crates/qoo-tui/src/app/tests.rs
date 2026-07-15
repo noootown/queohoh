@@ -478,7 +478,7 @@ fn queue_nav_crosses_divider_onto_a_real_finished_row() {
         }),
     ));
     let up = press(&mut app, KeyCode::Char('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id }]
+    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id, .. }]
         if path == "/repos/acme-flaky" && session_id == "sess-flaky"));
 }
 
@@ -733,7 +733,7 @@ fn double_click_same_row_within_window_resumes_its_session() {
     app.status_line = None;
     app.now_ms = 1_200; // 200ms later (< 400ms) → double-click
     let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
-    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id }]
+    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id, .. }]
         if path == "/repos/acme-docs" && session_id == "sess-docs"));
 }
 

@@ -40,6 +40,7 @@ async function setup(opts?: {
 	vars?: Record<string, string>;
 	models?: Record<string, string>;
 	claudeProjectsDir?: string;
+	gotoCommand?: string;
 }) {
 	const base = mkdtempSync(join(tmpdir(), "qo-api-"));
 	const repoPath = join(base, "repo");
@@ -63,6 +64,7 @@ async function setup(opts?: {
 		archiveAfterDays: 7,
 		vars: opts?.vars ?? {},
 		models: opts?.models ?? {},
+		gotoCommand: opts?.gotoCommand,
 	};
 	const okResult: RunResult = {
 		exitCode: 0,
@@ -155,6 +157,18 @@ describe("ApiServer", () => {
 		expect(state.projects).toEqual([{ name: "platform" }]);
 		expect(state.worktrees).toEqual(engine.worktreesByRepo());
 		expect(state.maxConcurrent).toBe(3);
+	});
+
+	it("surfaces gotoCommand from config in the state snapshot", async () => {
+		const { client } = await setup({ gotoCommand: "init-tab {cmd}" });
+		const state = (await client.call("state")) as { gotoCommand?: string };
+		expect(state.gotoCommand).toBe("init-tab {cmd}");
+	});
+
+	it("omits gotoCommand when config has none", async () => {
+		const { client } = await setup();
+		const state = (await client.call("state")) as { gotoCommand?: string };
+		expect(state.gotoCommand).toBeUndefined();
 	});
 
 	it("omits githubId when the project has no vars.yaml setting", async () => {

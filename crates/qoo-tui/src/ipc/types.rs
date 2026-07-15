@@ -32,6 +32,13 @@ pub struct StateSnapshot {
     #[serde(deserialize_with = "nullable_default")]
     pub worktrees: HashMap<String, Vec<WorktreeInfo>>,
     pub build_id: Option<String>,
+    /// Workspace-level override for the command `goto` runs (its `gotoCommand`
+    /// on the wire — see api.ts). `None` on an old daemon that omits it (via the
+    /// container `default`) or when no override is configured; then the TUI
+    /// keeps its built-in `tmux new-window` behavior. `{cmd}` inside is
+    /// substituted to `claude --resume <session>` (queue-goto) or empty
+    /// (worktree-goto) when the window is driven in `event.rs`.
+    pub goto_command: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -458,6 +465,19 @@ mod tests {
         assert_eq!(s.max_concurrent, None);
         // buildId absent → None means "stale" for self-heal — must NOT default to "".
         assert_eq!(s.build_id, None);
+    }
+
+    #[test]
+    fn goto_command_present_deserializes_to_some() {
+        let s: StateSnapshot =
+            serde_json::from_str(r#"{"gotoCommand":"init-tab {cmd}"}"#).unwrap();
+        assert_eq!(s.goto_command.as_deref(), Some("init-tab {cmd}"));
+    }
+
+    #[test]
+    fn goto_command_absent_deserializes_to_none() {
+        let s: StateSnapshot = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.goto_command, None);
     }
 
     #[test]

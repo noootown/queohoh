@@ -503,8 +503,34 @@ fn queue_g_resumes_the_selected_tasks_session() {
         }),
     ));
     let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id }]
+    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id, .. }]
         if path == "/repos/acme-flaky" && session_id == "sess-flaky"));
+}
+
+#[test]
+fn queue_g_threads_goto_command_into_tmux_resume() {
+    // Sibling of g_on_worktree_threads_goto_command_into_open_tmux (worktree
+    // path): identical happy-path setup to
+    // queue_g_resumes_the_selected_tasks_session above, but with a workspace
+    // goto_command override configured on the snapshot — the emitted
+    // TmuxResume must carry it through, same as OpenTmux does for worktrees.
+    let snap = StateSnapshot { goto_command: Some("init-tab {cmd}".into()), ..failed_task_snapshot() };
+    let mut a = app_with(snap);
+    a.inside_tmux = true;
+    a.run_files = Some((
+        "t1".to_string(),
+        Box::new(RunFiles {
+            session_id: Some("sess-flaky".into()),
+            worktree_path: Some("/repos/acme-flaky".into()),
+            ..Default::default()
+        }),
+    ));
+    let up = a.update(key('g'));
+    assert!(matches!(&up.cmds[..],
+        [Cmd::TmuxResume { path, session_id, goto_command }]
+        if path == "/repos/acme-flaky"
+        && session_id == "sess-flaky"
+        && goto_command.as_deref() == Some("init-tab {cmd}")));
 }
 
 #[test]
@@ -711,7 +737,22 @@ fn g_on_worktree_row_opens_tmux_when_inside_tmux() {
     a.inside_tmux = true;
     focus_worktrees(&mut a);
     let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::OpenTmux { path }] if path == "/wt/wt-a"));
+    assert!(matches!(&up.cmds[..], [Cmd::OpenTmux { path, .. }] if path == "/wt/wt-a"));
+}
+
+#[test]
+fn g_on_worktree_threads_goto_command_into_open_tmux() {
+    let snap = StateSnapshot {
+        goto_command: Some("init-tab {cmd}".into()),
+        ..worktree_snapshot()
+    };
+    let mut a = app_with(snap);
+    a.inside_tmux = true;
+    focus_worktrees(&mut a);
+    let up = a.update(key('g'));
+    assert!(matches!(&up.cmds[..],
+        [Cmd::OpenTmux { path, goto_command }]
+        if path == "/wt/wt-a" && goto_command.as_deref() == Some("init-tab {cmd}")));
 }
 
 #[test]
@@ -768,7 +809,7 @@ fn r_and_x_are_noops_on_session_rows_but_g_works() {
 
     // `g`: opens the session's cwd in tmux (works for session rows too).
     let gu = a.update(key('g'));
-    assert!(matches!(&gu.cmds[..], [Cmd::OpenTmux { path }] if path == "/wt/wt-a/nested"));
+    assert!(matches!(&gu.cmds[..], [Cmd::OpenTmux { path, .. }] if path == "/wt/wt-a/nested"));
 }
 
 #[test]
