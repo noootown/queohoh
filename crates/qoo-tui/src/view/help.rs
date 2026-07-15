@@ -7,7 +7,7 @@ use crate::hit::{HitMap, HitTarget};
 use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 21] = [
+const HELP_ROWS: [(&str, &str); 23] = [
     ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
     ("1–9 / 0", "switch project tab (0 = 10th)"),
     ("ctrl+s then n/p", "next / previous project tab"),
@@ -20,6 +20,8 @@ const HELP_ROWS: [(&str, &str); 21] = [
     ("r", "run: new task on worktree (worktrees) · rerun (queue) · run def (tasks)"),
     ("g", "goto: resume task's Claude session (queue) · open worktree in tmux (worktrees)"),
     ("x", "cancel (queue) · remove worktree (worktrees)"),
+    ("a", "archive / unarchive selected task (queue)"),
+    ("d", "discover: fan out one task per discovered item (tasks)"),
     ("c", "create (queue: adhoc task · worktrees: worktree)"),
     ("t", "task menu (worktrees)"),
     ("z", "collapse / expand focused list pane"),
@@ -33,12 +35,13 @@ const HELP_ROWS: [(&str, &str); 21] = [
 
 /// Glyph legend shown under the keymap (the WORKTREES columns especially are
 /// dense with markers; this is their one written explanation).
-const LEGEND_ROWS: [(&str, &str); 6] = [
+const LEGEND_ROWS: [(&str, &str); 7] = [
     ("● ✗ ⊘ ⊝", "task done / failed / cancelled / skipped"),
     ("○ ‼ ▶", "queued / needs-input / running"),
     ("● / N", "worktree: green dot idle · yellow N = running + queued tasks"),
     ("⏱", "elapsed time of the running task on that lane"),
     ("±", "worktree has uncommitted changes"),
+    ("↣", "worktree merged into the default branch"),
     ("ian · 3d ago", "last commit author · last commit age"),
 ];
 

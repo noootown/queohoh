@@ -16,6 +16,11 @@ export interface WorktreeInfo {
 	branch: string;
 	/** Working tree has uncommitted changes (git status --porcelain non-empty). null = unknown. */
 	dirty?: boolean | null;
+	/** Worktree HEAD is an ancestor of the project's default branch (vars.yaml
+	 * `default_branch`, fallback `main`) — its committed work has been merged
+	 * back. null/absent = unknown, or the default-branch checkout itself.
+	 * Drives the TUI's `↣` front-column marker. */
+	merged?: boolean | null;
 	/** Unix epoch SECONDS of the last commit (git log -1 --format=%ct). null = unknown. */
 	lastCommitEpoch?: number | null;
 	/** Author name of the last commit (git log -1 --format=%an). null = unknown. */

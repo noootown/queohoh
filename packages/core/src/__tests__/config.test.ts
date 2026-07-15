@@ -6,6 +6,7 @@ import type { GlobalConfig } from "../config.js";
 import {
 	globalWorkspaceDir,
 	loadGlobalConfig,
+	loadProjectDefaultBranch,
 	loadProjectDefaultModel,
 	loadProjectGithubId,
 	loadProjectModels,
@@ -229,6 +230,49 @@ describe("loadProjectDefaultModel", () => {
 		);
 		expect(loadProjectDefaultModel(dir)).toBe("opus");
 		expect(loadProjectModels(dir)).toEqual({ opus: "claude-opus-4-8" });
+	});
+});
+
+describe("loadProjectDefaultBranch", () => {
+	it("reads a string default_branch from vars.yaml", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-db-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"default_branch: develop\ngithub_id: noootown\n",
+		);
+		expect(loadProjectDefaultBranch(dir)).toBe("develop");
+	});
+
+	it("falls back to main for absent file, absent key, empty string, or non-string", () => {
+		const absent = mkdtempSync(join(tmpdir(), "queohoh-db-"));
+		expect(loadProjectDefaultBranch(absent)).toBe("main");
+
+		const noKey = mkdtempSync(join(tmpdir(), "queohoh-db-"));
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		expect(loadProjectDefaultBranch(noKey)).toBe("main");
+
+		const blank = mkdtempSync(join(tmpdir(), "queohoh-db-"));
+		writeFileSync(join(blank, "vars.yaml"), "default_branch: ''\n");
+		expect(loadProjectDefaultBranch(blank)).toBe("main");
+
+		const nested = mkdtempSync(join(tmpdir(), "queohoh-db-"));
+		writeFileSync(join(nested, "vars.yaml"), "default_branch:\n  a: b\n");
+		expect(loadProjectDefaultBranch(nested)).toBe("main");
+	});
+
+	it("falls back to main (never throws) for a non-mapping vars.yaml", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-db-"));
+		writeFileSync(join(dir, "vars.yaml"), "[not, a, map]\n");
+		expect(loadProjectDefaultBranch(dir)).toBe("main");
+	});
+
+	it("is not surfaced as a template var by loadProjectVars", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-db-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"ticket: JUS-1\ndefault_branch: develop\n",
+		);
+		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
 	});
 });
 

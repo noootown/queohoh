@@ -62,6 +62,11 @@ pub enum AppAction {
     /// chip): queued/needs-input → skip, running → stop, terminal → no-op. A
     /// range stops each eligible member. Routes to `App::cancel_selected`.
     CancelSelected,
+    /// Archive TOGGLE on the QUEUE pane's selected row (`a`, and the queue's
+    /// `[a]rchive` chip): an archived row restores to the live list, a terminal
+    /// live row archives out of it; active rows (queued/running/needs-input)
+    /// refuse with a status line. Routes to `App::archive_selected`.
+    ArchiveSelected,
     /// New adhoc task on the selected WORKTREES row (`r`, and the worktrees
     /// `[r]un` chip): opens the session picker (`Mode::SessionPick`) for the
     /// worktree, which then leads to the multiline `Mode::AddTask` prompt.
@@ -129,7 +134,7 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         // keymap — so this bare arm can't shadow it.
         KeyCode::Char('s') => AppAction::Settings,
         // Pane-action verbs, each gated on the focused pane's chip set:
-        // QUEUE {r,x,g,c,z} · TASKS {r,d,z} · WORKTREES {r,g,x,t,c,z}.
+        // QUEUE {r,x,g,a,c,z} · TASKS {r,d,z} · WORKTREES {r,g,x,t,c,z}.
         KeyCode::Char('t') => gated(PaneButton::Tasks, AppAction::OpenTaskMenu),
         // `r` is a Run chip on all three panes, but means different things:
         // QUEUE re-queues the selected task(s), TASKS runs the highlighted def,
@@ -156,6 +161,8 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
             PaneId::Worktrees => gated(PaneButton::Remove, AppAction::RemoveSelectedWorktree),
             _ => gated(PaneButton::Cancel, AppAction::CancelSelected),
         },
+        // `a` is a QUEUE-only chip: archive/unarchive toggle on the selected row.
+        KeyCode::Char('a') => gated(PaneButton::Archive, AppAction::ArchiveSelected),
         KeyCode::Char('c') => gated(PaneButton::Create, AppAction::Create),
         // `z` (plain) toggles collapse.
         KeyCode::Char('z') => AppAction::ToggleCollapse,
@@ -313,12 +320,15 @@ mod tests {
             assert_eq!(list_mode_action(&k(KeyCode::Esc), f), AppAction::ClearEsc);
             assert_eq!(list_mode_action(&k(KeyCode::Char('/')), f), AppAction::OpenSearch);
         }
-        // `a` is unbound everywhere now — the queue `[a]ctions` (Resume) menu was
-        // retired in favor of the `[g]oto` chip, mirroring the worktrees `[a]ctions`
-        // retirement before it.
-        for f in LISTS {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('a')), f), AppAction::None);
-        }
+        // `a` is the QUEUE archive/unarchive toggle (the old queue `[a]ctions`
+        // menu was retired in favor of `[g]oto` long before); inert on the other
+        // panes (no `[a]rchive` chip there).
+        assert_eq!(
+            list_mode_action(&k(KeyCode::Char('a')), PaneId::Queue),
+            AppAction::ArchiveSelected
+        );
+        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Tasks), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Worktrees), AppAction::None);
         // `c` (create) is a QUEUE-only chip now (the worktrees create modal was
         // folded into the launcher's `r` → Create Worktree row); inert on
         // WORKTREES and TASKS.

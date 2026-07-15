@@ -517,6 +517,46 @@ mod tests {
     }
 
     #[test]
+    fn discovering_def_swaps_the_marker_glyph_for_the_throbber() {
+        // While a `d`-discover RPC is in flight the def row's `⌕` marker yields
+        // to the animated throbber (queue running-row parity) — the visible
+        // "search is happening" feedback between the keypress and the fan-out.
+        let buffer_text = |t: &Terminal<TestBackend>| {
+            let buf = t.backend().buffer();
+            let area = *buf.area();
+            let mut s = String::new();
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    s.push_str(buf[(x, y)].symbol());
+                }
+            }
+            s
+        };
+        let mut app = fixture_app();
+        app.defs_by_project.insert(
+            "acme".to_string(),
+            vec![crate::ipc::types::DefinitionSummary {
+                repo: "acme".into(),
+                name: "pr-review".into(),
+                scope: "project".into(),
+                has_discovery: true,
+                ..Default::default()
+            }],
+        );
+        let (idle, _) = render_at(&app, 120, 40);
+        assert!(
+            buffer_text(&idle).contains(crate::view::theme::GLYPH_DISCOVER),
+            "idle discovery def shows the ⌕ marker"
+        );
+        app.discovering.insert("acme/pr-review".into());
+        let (busy, _) = render_at(&app, 120, 40);
+        assert!(
+            !buffer_text(&busy).contains(crate::view::theme::GLYPH_DISCOVER),
+            "an in-flight discover replaces ⌕ with the throbber"
+        );
+    }
+
+    #[test]
     fn snapshot_default_80x24() {
         let (terminal, _hits) = render_at(&fixture_app(), 80, 24);
         insta::assert_snapshot!("view_default_80x24", terminal.backend());
@@ -567,9 +607,10 @@ mod tests {
         // Widened enough to clear the labeled-chip threshold AND leave the
         // WORKTREES pane room for the author + commit-age columns (they drop
         // first under the width ladder — before queued — so a too-narrow left
-        // column hides them behind the busy row's queued·next cell). 100 (was
-        // 98) since the `⛨` protected front slot reserved 2 more cells.
-        app.left_cols = Some(100);
+        // column hides them behind the busy row's queued·next cell). 102 (was
+        // 100, was 98) — the `⛨` protected and `↣` merged front slots each
+        // reserved 2 more cells.
+        app.left_cols = Some(102);
         // Seed the TASKS pane with defs that exercise the schedule column:
         // discovery + humanized cron (cron text then the `⌕` marker), humanized
         // cron only (no marker), discovery with no cron (bare `⌕` marker), and a
@@ -628,6 +669,8 @@ mod tests {
                     w.last_commit_epoch = Some(app.now_epoch_s - 3 * 86_400);
                     w.dirty = Some(true);
                     w.protected = true;
+                    // …and merged, so all three front markers render side by side.
+                    w.merged = Some(true);
                 }
                 if let Some(w) = wts.get_mut(1) {
                     w.last_commit_author = Some("ada".into());

@@ -58,6 +58,14 @@ pub struct App {
     /// set. `reconcile_defs` inserts before emitting; `Event::Definitions`
     /// clears on arrival (Task 18).
     pub defs_inflight: HashSet<String>,
+    /// `"repo/name"` keys with a `d`-discover RPC in flight — TUI-local
+    /// optimistic state so the def row's `⌕` marker animates (throbber) while
+    /// the daemon runs the discovery command. Set by `discover_selected_def`;
+    /// cleared by `Event::Definitions` for the repo, which ALWAYS follows the
+    /// discover RPC (success, error, or client timeout all send `ActionResult`
+    /// with `invalidate_defs_for`, and `FetchDefinitions` emits `Definitions`
+    /// even on fetch failure) — so a spinner can never stick.
+    pub discovering: HashSet<String>,
     pub full_defs: HashMap<String, TaskDefinition>, // keyed "repo/name"
     /// `"repo/name"` keys with a `FetchDefinition` in flight — the lazy detail
     /// fetch dedup set (mirrors `defs_inflight`), shared by the task-menu
@@ -191,6 +199,7 @@ impl App {
             defs_by_project: HashMap::new(),
             settings: None,
             defs_inflight: HashSet::new(),
+            discovering: HashSet::new(),
             full_defs: HashMap::new(),
             full_defs_inflight: HashSet::new(),
             now_epoch_s: now_epoch_s(),
@@ -377,6 +386,12 @@ impl App {
     /// True while the ACTIVE project has a running task — the only time the 1s
     /// Tick (elapsed-label repaint) is armed. Re-evaluated after every event.
     pub fn wants_tick(&self) -> bool {
+        // An in-flight `d`-discover animates the def row's `⌕`-throbber, which
+        // is repainted on the tick — without this the spinner would freeze on
+        // its first frame whenever no task happens to be running.
+        if !self.discovering.is_empty() {
+            return true;
+        }
         let Some(snapshot) = &self.snapshot else {
             return false;
         };

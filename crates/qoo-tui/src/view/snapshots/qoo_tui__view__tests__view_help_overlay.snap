@@ -16,12 +16,12 @@ expression: terminal.backend()
 "│       │   r               run: new task on worktree (worktrees) · r  │       │"
 "╰───────│   g               goto: resume task's Claude session (queue  │       │"
 "╭⚡TASKS│   x               cancel (queue) · remove worktree (worktre  │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│   c               create (queue: adhoc task · worktrees: wo  │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no tas│   t               task menu (worktrees)                      │       │"
-"│       │   z               collapse / expand focused list pane        │       │"
-"╰───────│   /               filter focused pane                        │       │"
-"╭🌲 WORK│   esc             clear range+marks → clear filter → close   │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│   Home/End        detail pane top / bottom                   │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]│   a               archive / unarchive selected task (queue)  │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no tas│   d               discover: fan out one task per discovered  │       │"
+"│       │   c               create (queue: adhoc task · worktrees: wo  │       │"
+"╰───────│   t               task menu (worktrees)                      │       │"
+"╭🌲 WORK│   z               collapse / expand focused list pane        │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│   /               filter focused pane                        │       │" Hidden by multi-width symbols: [(3, " ")]
 "│ 2 feat│                                                              │       │"
 "│ ● hotf│  [ Back ]                                                    │       │"
 "╰───────│                                                              │───────╯"

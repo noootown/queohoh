@@ -467,8 +467,10 @@ describe("Engine.worktreesByRepo", () => {
 		await engine.tick();
 		await engine.refreshGitEnrichment();
 		// With the default all-zero-exit / empty-stdout exec stub: status "" → not
-		// dirty; log "" → epoch parseInt(NaN) → null, empty author/hash → null; and
-		// `gh pr list` "" → JSON.parse throws → prNumber/prUrl null (failure-tolerant).
+		// dirty; the `merge-base --is-ancestor` probe (branch "JUS-1" ≠ default
+		// "main") exits 0 → merged true; log "" → epoch parseInt(NaN) → null, empty
+		// author/hash → null; and `gh pr list` "" → JSON.parse throws → prNumber/prUrl
+		// null (failure-tolerant).
 		expect(engine.worktreesByRepo()).toEqual({
 			platform: [
 				{
@@ -476,6 +478,7 @@ describe("Engine.worktreesByRepo", () => {
 					path: join(base, "wt-jus1"),
 					branch: "JUS-1",
 					dirty: false,
+					merged: true,
 					lastCommitEpoch: null,
 					lastCommitAuthor: null,
 					lastCommitAuthorEmail: null,
@@ -855,6 +858,103 @@ describe("Engine git enrichment", () => {
 		expect(list.find((w) => w.branch === "JUS-2")?.prNumber).toBeNull();
 		expect(list.find((w) => w.branch === "JUS-2")?.prUrl).toBeNull();
 	});
+
+	it("marks a branch merged when its HEAD is an ancestor of the default branch (merge-base exit 0)", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]?.merged).toBe(true);
+	});
+
+	it("marks a branch not merged when merge-base --is-ancestor exits 1", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]?.merged).toBe(false);
+	});
+
+	it("nulls merged when merge-base fails with an unexpected exit code (e.g. 128)", async () => {
+		// 128 = unknown ref / not a repo: a real failure, distinct from the
+		// 0/1 ancestor verdict, so the marker is unknown rather than false.
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "fatal: bad revision\n", exitCode: 128 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]?.merged).toBeNull();
+	});
+
+	it("nulls merged when the merge-base probe throws (e.g. missing git binary)", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => {
+				throw new Error("spawn git ENOENT");
+			},
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]?.merged).toBeNull();
+	});
+
+	it("nulls merged for the default-branch checkout itself, without a merge-base call", async () => {
+		// A worktree whose branch IS the default branch would be its own ancestor
+		// (always "merged"), so the marker is meaningless there — computed as null
+		// with no git shell-out at all.
+		const calls: string[] = [];
+		const { engine, base } = setup({
+			resolverIO: {
+				listWorktrees: async () => [
+					{ name: "platform", path: join(base, "repo"), branch: "main" },
+				],
+			},
+			exec: gitExec(
+				{ log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }) },
+				(key) => calls.push(key),
+			),
+		});
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]?.merged).toBeNull();
+		expect(calls).not.toContain("merge-base");
+	});
+
+	it("passes the vars.yaml default_branch to the merge-base probe", async () => {
+		// The merged marker compares HEAD against the project's configured default
+		// branch, not a hard-coded "main".
+		let mergeBaseTarget: string | null = null;
+		const exec: Exec = async (command, args) => {
+			if (command === "git" && args[2] === "merge-base") {
+				mergeBaseTarget = args[5] ?? null;
+				return { stdout: "", exitCode: 0 };
+			}
+			if (command === "git" && args[2] === "log") {
+				return { stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 };
+			}
+			return { stdout: "", exitCode: 0 };
+		};
+		const { engine, base } = setup({ exec });
+		mkdirSync(join(base, "ws", "platform"), { recursive: true });
+		writeFileSync(
+			join(base, "ws", "platform", "vars.yaml"),
+			"default_branch: develop\n",
+		);
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		// JUS-1 ≠ develop, so the probe ran and targeted the configured branch.
+		expect(mergeBaseTarget).toBe("develop");
+		expect(engine.worktreesByRepo().platform?.[0]?.merged).toBe(true);
+	});
 });
 
 describe("Engine task chains", () => {
@@ -1050,9 +1150,12 @@ describe("worktree-deletion archive", () => {
 
 		await engine.tick();
 
-		expect(store.list().map((x) => x.id).sort()).toEqual(
-			[sentinel.id, noWt.id].sort(),
-		);
+		expect(
+			store
+				.list()
+				.map((x) => x.id)
+				.sort(),
+		).toEqual([sentinel.id, noWt.id].sort());
 		expect(store.listArchived()).toHaveLength(0);
 	});
 

@@ -401,6 +401,12 @@ impl App {
                     defs.into_iter().filter(|d| d.repo == repo).collect();
                 self.defs_by_project.insert(repo.clone(), defs);
                 self.defs_inflight.remove(&repo);
+                // A landed refetch means any `d`-discover on this repo has
+                // resolved (the discover RPC's ActionResult triggers exactly
+                // this refetch, on success AND on error/timeout) — stop the
+                // def rows' `⌕`-spinner.
+                let prefix = format!("{repo}/");
+                self.discovering.retain(|k| !k.starts_with(&prefix));
                 Update { dirty: true, cmds: vec![] }
             }
             Event::Settings { payload } => {

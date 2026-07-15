@@ -168,6 +168,11 @@ pub struct WorktreeInfo {
     /// old daemon → `false` via the container `default` (removable affordance;
     /// the daemon guard is the real block).
     pub protected: bool,
+    /// Worktree HEAD is an ancestor of the project's default branch (vars.yaml
+    /// `default_branch`, fallback `main`) — its committed work has been merged
+    /// back. `None`/null = unknown, an old daemon, or the default-branch
+    /// checkout itself. Drives the `↣` front-column marker.
+    pub merged: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]

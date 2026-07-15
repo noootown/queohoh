@@ -878,6 +878,46 @@ describe("ApiServer", () => {
 		expect(store.list()).toEqual([]);
 	});
 
+	it("archive dismisses a terminal task; unarchive restores it with status intact", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "failed", error: "boom" });
+		await client.call("archive", { id: t.id });
+		expect(store.list()).toEqual([]);
+		expect(store.listArchived().map((a) => a.id)).toEqual([t.id]);
+		await client.call("unarchive", { id: t.id });
+		expect(store.listArchived()).toEqual([]);
+		expect(store.get(t.id)?.status).toBe("failed");
+	});
+
+	it("archive refuses a non-terminal task (queued/running/needs-input)", async () => {
+		const { client, store } = await setup();
+		for (const status of ["queued", "running", "needs-input"] as const) {
+			const t = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			store.update(t.id, { status });
+			await expect(client.call("archive", { id: t.id })).rejects.toThrow(
+				`cannot archive task in status ${status}`,
+			);
+		}
+	});
+
+	it("unarchive rejects an id that is not in the archive", async () => {
+		const { client } = await setup();
+		await expect(client.call("unarchive", { id: "nope" })).rejects.toThrow(
+			/task not found in archive/,
+		);
+	});
+
 	it("retry re-queues every non-running status (done/skipped/queued included)", async () => {
 		const { client, store } = await setup();
 		for (const status of ["done", "skipped", "queued"] as const) {

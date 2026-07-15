@@ -73,6 +73,10 @@ pub struct WorktreeRow {
     /// uncommitted changes, last-commit epoch, last-commit author name + email.
     /// The author name/email feed the WORKTREES "mine-first" sort.
     pub dirty: Option<bool>,
+    /// Worktree HEAD is an ancestor of the project's default branch — committed
+    /// work merged back (`None` = unknown / old daemon / the default-branch
+    /// checkout itself). Drives the `↣` front-column marker.
+    pub merged: Option<bool>,
     pub last_commit_epoch: Option<u64>,
     pub last_commit_author: Option<String>,
     pub last_commit_author_email: Option<String>,
@@ -224,16 +228,22 @@ pub fn queue_divider_after(rows: &[QueueRow]) -> Option<usize> {
 /// (running/needs-input/queued) sorts first — by status, then priority, then id
 /// (ULID, stable). FINISHED (done/failed/cancelled/skipped/unknown + the archived
 /// tail) sorts after
-/// — by completion timestamp DESCENDING (most recently finished first); a row
-/// without `finished_epoch_s` falls back to its id, newest first.
+/// — live rows before the dimmed ARCHIVED rows (user request: archived is
+/// dismissed clutter, it must never interleave with finished tasks that still
+/// want a look), then within each half by completion timestamp DESCENDING
+/// (most recently finished first); a row without `finished_epoch_s` falls back
+/// to its id, newest first.
 fn queue_sort(a: &QueueRow, b: &QueueRow) -> std::cmp::Ordering {
     let (fa, fb) = (queue_row_finished(a), queue_row_finished(b));
     fa.cmp(&fb).then_with(|| {
         if fa {
-            // Both finished: newest completion first, then newest id first.
-            b.finished_epoch_s
-                .unwrap_or(0)
-                .cmp(&a.finished_epoch_s.unwrap_or(0))
+            // Both finished: live before archived, then newest completion
+            // first, then newest id first.
+            a.archived
+                .cmp(&b.archived)
+                .then_with(|| {
+                    b.finished_epoch_s.unwrap_or(0).cmp(&a.finished_epoch_s.unwrap_or(0))
+                })
                 .then_with(|| b.task_id.cmp(&a.task_id))
         } else {
             // Both active: status, then priority, then id ascending (stable).
@@ -275,9 +285,10 @@ pub fn active_count_for(snapshot: &StateSnapshot, project: &str) -> usize {
 
 pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> Vec<QueueRow> {
     // Live rows plus the last 10 archived rows (dimmed by the view via
-    // `archived: true`), then sorted into an ACTIVE section (running/needs-input/
-    // queued) followed by a FINISHED section (done/failed/cancelled/skipped/
-    // unknown + archived).
+    // `archived: true`; archived rows whose worktree was deleted are hidden
+    // outright — see the filter below), then sorted into an ACTIVE section
+    // (running/needs-input/queued) followed by a FINISHED section
+    // (done/failed/cancelled/skipped/unknown + archived).
     // The per-lane queue position (`#N in lane`) is computed in snapshot order
     // (creation order) BEFORE the display sort so it reflects execution order,
     // not the re-sorted display position.
@@ -317,10 +328,25 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
             finished_epoch_s: task.finished_at.as_deref().map(parse_iso_epoch_s),
         });
     }
+    // Archived rows whose spawned worktree has since been DELETED are hidden
+    // entirely, not dimmed (user request: deleting the worktree is the "I'm
+    // done with this" signal — the daemon archives the task on deletion, and a
+    // grayed leftover row is just clutter). The check is against the repo's
+    // worktree listing in the snapshot; a repo with NO listing (`None` — old
+    // daemon, or the cache hasn't populated) hides nothing, mirroring the
+    // daemon sweep's cold-cache guard. `null`/`@repo` targets have no worktree
+    // to delete and keep the dimmed display, as do age-swept rows whose
+    // worktree still exists. Filtered BEFORE the last-10 cap so hidden rows
+    // never consume display slots.
+    let repo_worktrees = snapshot.worktrees.get(project);
     let archived: Vec<&TaskInstance> = snapshot
         .archived_recent
         .iter()
         .filter(|t| t.target.repo == project)
+        .filter(|t| match (t.target.worktree.as_deref(), repo_worktrees) {
+            (Some(wt), Some(list)) if wt != REPO_SENTINEL => list.iter().any(|w| w.name == wt),
+            _ => true,
+        })
         .collect();
     let start = archived.len().saturating_sub(10);
     for task in &archived[start..] {
@@ -563,6 +589,7 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                     .unwrap_or(false),
                 last: last_finished_on_lane(snapshot, &lane),
                 dirty: wt.dirty,
+                merged: wt.merged,
                 last_commit_epoch: wt.last_commit_epoch,
                 last_commit_author: wt.last_commit_author.clone(),
                 last_commit_author_email: wt.last_commit_author_email.clone(),
@@ -1401,8 +1428,8 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 /// the column is omitted this frame.
 ///
 /// Columns, left→right (identity → content → time → live):
-///   `● ± ⛨ name` (anchor; the `±` dirty marker and the `⛨` protected marker
-///   are single-cell front slots after the dot, per user request),
+///   `● ± ⛨ ↣ name` (anchor; the `±` dirty, `⛨` protected and `↣` merged-back
+///   markers are single-cell front slots after the dot, per user request),
 ///   last-finished (FILL), PR `#<n>` (fixed `PR_W`), last-commit author
 ///   (fixed `AUTHOR_W`), last-commit age (fixed `COMMIT_AGE_W`),
 ///   `next: <name>` (fixed `WT_QUEUED_W`), live `⏱` (fixed `TIMER_W`,
@@ -1416,14 +1443,15 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 /// row gaining a value never shifts any column; `name_w` stays content-capped
 /// and `last_w` is the FILL column (absorbs the remaining width, like the queue
 /// pane's summary — per user request the last task's description gets the
-/// slack). The front `±`/`⛨` marker slots and the live timer are ALWAYS
+/// slack). The front `±`/`⛨`/`↣` marker slots and the live timer are ALWAYS
 /// reserved when the ladder keeps them (per user request — data-gated slots
 /// made the name column shift as scroll/data changed); pr/queued/author/
 /// commit-age stay pane-gated (reserved only while some visible row carries
 /// the value).
 /// Degradation drop priority (first dropped first): commit-age → author → PR
-/// → queued·next → protected → dirty → last-finished → live; only after all of
-/// those drop does `name_w` shrink. PR outlives author/commit-age dropping.
+/// → queued·next → merged → protected → dirty → last-finished → live; only
+/// after all of those drop does `name_w` shrink. PR outlives author/commit-age
+/// dropping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WtColLayout {
     pub name_w: usize,
@@ -1432,6 +1460,10 @@ pub struct WtColLayout {
     /// cell (plus its embedded separator) statically reserved like `dirty_w`,
     /// so a protected worktree shows both markers at once.
     pub protected_w: usize,
+    /// Front `↣` merged-marker slot beside `±`/`⛨` — a single cell (plus its
+    /// embedded separator) statically reserved like the other two, marking a
+    /// worktree whose committed work is merged into the default branch.
+    pub merged_w: usize,
     pub elapsed_w: usize,
     pub queued_w: usize,
     pub last_w: usize,
@@ -1454,6 +1486,7 @@ impl WtColLayout {
         let anchor = 2
             + if self.dirty_w > 0 { 2 } else { 0 }
             + if self.protected_w > 0 { 2 } else { 0 }
+            + if self.merged_w > 0 { 2 } else { 0 }
             + self.name_w;
         let after_last = if self.last_w > 0 { COL_GAP + self.last_w } else { 0 };
         anchor + after_last + COL_GAP
@@ -1478,6 +1511,9 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // `±` (per user request — same size, same column treatment), statically
     // reserved for the same no-shift reason.
     let protected_w0 = if rows.is_empty() { 0 } else { 1 };
+    // The `↣` merged-back marker gets the third single-cell front slot (same
+    // treatment as `±`/`⛨`), statically reserved for the same no-shift reason.
+    let merged_w0 = if rows.is_empty() { 0 } else { 1 };
     let elapsed_w0 = TIMER_W; // live timer: always reserved when the ladder keeps it
     // Queued·next is pane-gated like dirty/author/commit-age: its fixed slot is
     // reserved only while some visible row actually has a queued task. Always
@@ -1492,18 +1528,22 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // drops third, after them) — an open PR is the more actionable signal.
     let pr_w0 = if rows.iter().any(|r| r.pr_number.is_some()) { PR_W } else { 0 };
 
-    // Anchor width: `● ` (dot + space) + the `± ` (dirty) and `⛨ ` (protected)
-    // front markers — a single cell + space each when present — then the name.
-    // The markers sit up front per user request, not as mid-row columns.
-    let anchor = |name_w: usize, dirty: bool, protected: bool| {
-        2 + if dirty { 2 } else { 0 } + if protected { 2 } else { 0 } + name_w
+    // Anchor width: `● ` (dot + space) + the `± ` (dirty), `⛨ ` (protected) and
+    // `↣ ` (merged) front markers — a single cell + space each when present —
+    // then the name. The markers sit up front per user request, not as mid-row
+    // columns.
+    let anchor = |name_w: usize, dirty: bool, protected: bool, merged: bool| {
+        2 + if dirty { 2 } else { 0 }
+            + if protected { 2 } else { 0 }
+            + if merged { 2 } else { 0 }
+            + name_w
     };
     // Used cells for a set of column widths and whether the last-task FILL is
     // reserved (at its `WT_LAST_MIN` floor — the actual fill absorbs the slack).
     // cols = [queued, author, commit]; `pr` is the fixed PR column and `elapsed`
     // the trailing fixed live column (both position-independent in the total).
-    let used = |name_w: usize, dirty: bool, protected: bool, cols: [usize; 3], pr_w: usize, elapsed_w: usize, last: bool| -> usize {
-        let mut u = anchor(name_w, dirty, protected);
+    let used = |name_w: usize, dirty: bool, protected: bool, merged: bool, cols: [usize; 3], pr_w: usize, elapsed_w: usize, last: bool| -> usize {
+        let mut u = anchor(name_w, dirty, protected, merged);
         for w in cols {
             if w > 0 {
                 u += COL_GAP + w;
@@ -1521,21 +1561,23 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         u
     };
 
-    // Degrade in drop order: commit → author → pr → queued → protected → dirty
-    // → last → elapsed. cols = [queued(0), author(1), commit(2)]; PR drops
-    // after author (so it outlives the who·when pair) but before queued·next;
-    // the protected marker drops just before the dirty one (dirty is the more
-    // actionable of the two front slots).
+    // Degrade in drop order: commit → author → pr → queued → merged →
+    // protected → dirty → last → elapsed. cols = [queued(0), author(1),
+    // commit(2)]; PR drops after author (so it outlives the who·when pair) but
+    // before queued·next; among the three front slots merged drops first (a
+    // cleanup hint), then protected, then dirty (the most actionable).
     let mut cols = [queued_w0, author_w0, commit_w0];
     let mut pr_w = pr_w0;
     let mut dirty = dirty_w0 > 0;
     let mut protected = protected_w0 > 0;
+    let mut merged = merged_w0 > 0;
     let mut elapsed_w = elapsed_w0;
     let mut last = true;
     #[derive(Clone, Copy)]
     enum Drop {
         Col(usize),
         Pr,
+        Merged,
         Protected,
         Dirty,
         Last,
@@ -1546,26 +1588,28 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         Drop::Col(1),
         Drop::Pr,
         Drop::Col(0),
+        Drop::Merged,
         Drop::Protected,
         Drop::Dirty,
         Drop::Last,
         Drop::Elapsed,
     ] {
-        if used(name_w0, dirty, protected, cols, pr_w, elapsed_w, last) <= avail {
+        if used(name_w0, dirty, protected, merged, cols, pr_w, elapsed_w, last) <= avail {
             break;
         }
         match op {
             Drop::Col(i) => cols[i] = 0,
             Drop::Pr => pr_w = 0,
+            Drop::Merged => merged = false,
             Drop::Protected => protected = false,
             Drop::Dirty => dirty = false,
             Drop::Last => last = false,
             Drop::Elapsed => elapsed_w = 0,
         }
     }
-    // Still too wide with only `● ± ⛨ name` left → shrink the name column.
+    // Still too wide with only `● ± ⛨ ↣ name` left → shrink the name column.
     let mut name_w = name_w0;
-    let u = used(name_w, dirty, protected, cols, pr_w, elapsed_w, last);
+    let u = used(name_w, dirty, protected, merged, cols, pr_w, elapsed_w, last);
     if u > avail {
         name_w = name_w.saturating_sub(u - avail);
     }
@@ -1575,7 +1619,7 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // never any other column's offset — and the trailing live timer stays
     // right-pinned at the row edge.
     let last_w = if last {
-        let base = used(name_w, dirty, protected, cols, pr_w, elapsed_w, false);
+        let base = used(name_w, dirty, protected, merged, cols, pr_w, elapsed_w, false);
         avail.saturating_sub(base + COL_GAP)
     } else {
         0
@@ -1585,6 +1629,7 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         name_w,
         dirty_w: if dirty { 1 } else { 0 },
         protected_w: if protected { 1 } else { 0 },
+        merged_w: if merged { 1 } else { 0 },
         elapsed_w,
         queued_w: cols[0],
         last_w,
@@ -1907,6 +1952,72 @@ mod tests {
     }
 
     #[test]
+    fn queue_rows_hide_archived_whose_worktree_was_deleted() {
+        // The repo HAS a worktree listing; wt-a exists, wt-gone doesn't. The
+        // archived row on the deleted worktree is hidden outright (not dimmed);
+        // the one whose worktree survives keeps the dimmed display, and the
+        // `@repo` sentinel (nothing to delete) is untouched.
+        let mut s = snap(
+            vec![],
+            vec![
+                task_on(TaskStatus::Done, "t1", "platform", Some("wt-a")),
+                task_on(TaskStatus::Failed, "t2", "platform", Some("wt-gone")),
+                task_on(TaskStatus::Done, "t3", "platform", Some(REPO_SENTINEL)),
+            ],
+        );
+        s.worktrees = platform_worktrees();
+        let rows = queue_rows(&s, "platform", now());
+        let ids: Vec<&str> = rows.iter().map(|r| r.task_id.as_str()).collect();
+        assert!(!ids.contains(&"t2"), "deleted-worktree archived row is hidden: {ids:?}");
+        assert!(ids.contains(&"t1") && ids.contains(&"t3"), "survivors keep the dimmed display");
+    }
+
+    #[test]
+    fn queue_rows_keep_archived_when_repo_has_no_worktree_listing() {
+        // No `worktrees` entry for the repo (old daemon / cache not populated
+        // yet) → hide nothing, mirroring the daemon sweep's cold-cache guard.
+        let rows = queue_rows(
+            &snap(vec![], vec![task_on(TaskStatus::Done, "t1", "platform", Some("wt-gone"))]),
+            "platform",
+            now(),
+        );
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].archived);
+    }
+
+    #[test]
+    fn queue_rows_deleted_worktree_filter_never_touches_live_tasks() {
+        // A LIVE task on a missing worktree stays visible — archiving on
+        // deletion is the daemon's call (engine sweep), never a display trick;
+        // a running task on a vanished worktree is a bug to surface.
+        let mut s = snap(
+            vec![task_on(TaskStatus::Running, "t1", "platform", Some("wt-gone"))],
+            vec![],
+        );
+        s.worktrees = platform_worktrees();
+        let rows = queue_rows(&s, "platform", now());
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].archived);
+    }
+
+    #[test]
+    fn queue_rows_hidden_archived_do_not_consume_the_last_10_cap() {
+        // 5 archived on a deleted worktree + 10 on a live one: the deleted ones
+        // are filtered BEFORE the cap, so all 10 survivors still show.
+        let mut archived: Vec<TaskInstance> = (0..5)
+            .map(|i| task_on(TaskStatus::Done, &format!("gone{i:02}"), "platform", Some("wt-gone")))
+            .collect();
+        archived.extend(
+            (0..10).map(|i| task_on(TaskStatus::Done, &format!("kept{i:02}"), "platform", Some("wt-a"))),
+        );
+        let mut s = snap(vec![], archived);
+        s.worktrees = platform_worktrees();
+        let rows = queue_rows(&s, "platform", now());
+        assert_eq!(rows.len(), 10);
+        assert!(rows.iter().all(|r| r.task_id.starts_with("kept")), "cap spent on survivors only");
+    }
+
+    #[test]
     fn queue_rows_strip_repo_prefix_in_lane() {
         let running = task_on(
             TaskStatus::Running,
@@ -2091,10 +2202,11 @@ mod tests {
     }
 
     #[test]
-    fn queue_archived_rows_join_the_finished_section_sorted_with_live() {
+    fn queue_archived_rows_sink_below_live_finished_rows() {
         // A live failed task (finished 12:00) and an archived done task (finished
-        // 13:00) both land in the FINISHED section, ordered by completion — the
-        // newer archived row leads even though it lives in a different list.
+        // 13:00) both land in the FINISHED section, but archived rows sink to
+        // the BOTTOM (dismissed clutter never interleaves with finished tasks
+        // that still want a look) — even though the archived row finished later.
         let rows = queue_rows(
             &snap(
                 vec![
@@ -2108,10 +2220,30 @@ mod tests {
         );
         assert_eq!(
             rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
-            vec!["01RUN", "01ARCH", "01FAIL"]
+            vec!["01RUN", "01FAIL", "01ARCH"]
         );
-        assert!(rows[1].archived && !rows[2].archived);
+        assert!(!rows[1].archived && rows[2].archived);
         assert_eq!(queue_divider_after(&rows), Some(0)); // after the single active row
+    }
+
+    #[test]
+    fn queue_archived_tail_keeps_completion_order_within_itself() {
+        // Within the archived tail the existing completion-desc order holds.
+        let rows = queue_rows(
+            &snap(
+                vec![],
+                vec![
+                    qtask(TaskStatus::Done, "01OLD", "normal", Some("2026-07-09T11:00:00.000Z")),
+                    qtask(TaskStatus::Done, "01NEW", "normal", Some("2026-07-09T13:00:00.000Z")),
+                ],
+            ),
+            "platform",
+            now(),
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["01NEW", "01OLD"]
+        );
     }
 
     // ---- lane_task_live / lane_task_cols (worktree detail lane list) ----
@@ -3029,10 +3161,10 @@ mod tests {
     #[test]
     fn wt_col_layout_degrades_columns_from_the_right() {
         // One fully-loaded row: every optional column populated.
-        // Fixed widths: dirty=1, protected=1, last-min=12, author=AUTHOR_W(14),
-        // commit=8, live=8; anchor = `● ± ⛨ name` = 2+2+2+9 = 15. Full reserved
-        // = anchor(15) + queued(2+30) + author(2+14) + commit(2+8) +
-        // last-min(2+12) + live(2+8) = 97.
+        // Fixed widths: dirty=1, protected=1, merged=1, last-min=12,
+        // author=AUTHOR_W(14), commit=8, live=8; anchor = `● ± ⛨ ↣ name` =
+        // 2+2+2+2+9 = 17. Full reserved = anchor(17) + queued(2+30) +
+        // author(2+14) + commit(2+8) + last-min(2+12) + live(2+8) = 99.
         let row = WorktreeRow {
             name: "feature-x".into(), // 9 cells
             raw_name: "feature-x".into(),
@@ -3043,17 +3175,19 @@ mod tests {
             next_is_def: false,
             last: Some(('✓', "pr-ready".into(), now() - 7200, true)), // "✓ pr-ready 2h ago" = 17
             dirty: Some(true),                       // ± = 1
+            merged: Some(true),                      // ↣ = 1
             last_commit_author: Some("koshea".into()), // author column fixed AUTHOR_W
             last_commit_epoch: Some(now() - 3 * 86_400), // commit-age fixed COMMIT_AGE_W
             ..Default::default()
         };
         let rows = [row];
-        // (dirty, protected, live, queued, last, author, commit) presence tuple.
+        // (dirty, protected, merged, live, queued, last, author, commit) presence.
         let present = |a: usize| {
             let l = wt_col_layout(&rows, a);
             (
                 l.dirty_w > 0,
                 l.protected_w > 0,
+                l.merged_w > 0,
                 l.elapsed_w > 0,
                 l.queued_w > 0,
                 l.last_w > 0,
@@ -3062,23 +3196,25 @@ mod tests {
             )
         };
         // Wide: everything shown, name at full width. All reserved widths sum to
-        // 97; at 120 the last-task FILL absorbs the slack.
-        assert_eq!(present(97), (true, true, true, true, true, true, true));
+        // 99; at 120 the last-task FILL absorbs the slack.
+        assert_eq!(present(99), (true, true, true, true, true, true, true, true));
         assert_eq!(wt_col_layout(&rows, 120).name_w, 9);
-        assert_eq!(wt_col_layout(&rows, 120).last_w, 35, "last-task fill absorbs the slack");
+        assert_eq!(wt_col_layout(&rows, 120).last_w, 33, "last-task fill absorbs the slack");
         assert_eq!(wt_col_layout(&rows, 120).queued_w, 30, "queued is a fixed slot");
-        // Drop in ladder order: commit → author → queued → protected → dirty →
-        // last → live. The last-task fill outlives queued/protected/dirty (it is
-        // the summary-equivalent), the live timer is the last optional to go, and
-        // only after everything drops does the name column shrink.
-        assert_eq!(present(96), (true, true, true, true, true, true, false)); // commit dropped (< 97)
-        assert_eq!(present(86), (true, true, true, true, true, false, false)); // author dropped (< 87)
-        assert_eq!(present(70), (true, true, true, false, true, false, false)); // queued dropped (< 71)
-        assert_eq!(present(38), (true, false, true, false, true, false, false)); // protected dropped (< 39)
-        assert_eq!(present(36), (false, false, true, false, true, false, false)); // dirty dropped (< 37)
-        assert_eq!(present(34), (false, false, true, false, false, false, false)); // last dropped (< 35)
+        // Drop in ladder order: commit → author → queued → merged → protected →
+        // dirty → last → live. The last-task fill outlives queued/merged/
+        // protected/dirty (it is the summary-equivalent), the live timer is the
+        // last optional to go, and only after everything drops does the name
+        // column shrink.
+        assert_eq!(present(98), (true, true, true, true, true, true, true, false)); // commit dropped (< 99)
+        assert_eq!(present(88), (true, true, true, true, true, true, false, false)); // author dropped (< 89)
+        assert_eq!(present(72), (true, true, true, true, false, true, false, false)); // queued dropped (< 73)
+        assert_eq!(present(40), (true, true, false, true, false, true, false, false)); // merged dropped (< 41)
+        assert_eq!(present(38), (true, false, false, true, false, true, false, false)); // protected dropped (< 39)
+        assert_eq!(present(36), (false, false, false, true, false, true, false, false)); // dirty dropped (< 37)
+        assert_eq!(present(34), (false, false, false, true, false, false, false, false)); // last dropped (< 35)
         // Only ⏱ + `● name` remain; the timer is the last optional to go.
-        assert_eq!(present(20), (false, false, false, false, false, false, false)); // live dropped (< 21)
+        assert_eq!(present(20), (false, false, false, false, false, false, false, false)); // live dropped (< 21)
         assert_eq!(wt_col_layout(&rows, 20).name_w, 9);
         // Below that, the name column shrinks (anchor `● name` = 2 + name_w).
         assert_eq!(wt_col_layout(&rows, 10).name_w, 8);

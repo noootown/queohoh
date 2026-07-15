@@ -54,6 +54,12 @@ pub const GLYPH_DIRTY: char = '±';
 pub const GLYPH_PROTECTED: char = '⛨';
 /// Discovery-backed task definition — front marker slot, mirroring `GLYPH_DIRTY`.
 pub const GLYPH_DISCOVER: char = '⌕';
+/// Worktree's committed work has been merged into the project's default branch
+/// (vars.yaml `default_branch`) — front marker column beside `±`/`⛨`, in ok
+/// green: "safe to clean up". `↣` (rightwards arrow with tail, single-width):
+/// the branch flowed into the default branch. User-picked over `✓` (too
+/// status-like) and `⎇`/`⋔` (read as "branch exists", not "merged").
+pub const GLYPH_MERGED: char = '↣';
 /// Filled dot — colored by context (connection indicator, worktree state).
 pub const GLYPH_DOT: char = '●';
 /// Magnifier prefixing the inline search-hint/input row. Double-width, but it is
@@ -98,6 +104,11 @@ pub const BTN_LABEL_DISCOVER: &str = "discover";
 pub const BTN_LABEL_RERUN: &str = "rerun";
 pub const BTN_LABEL_GOTO: &str = "goto";
 pub const BTN_LABEL_STOP: &str = "stop";
+/// QUEUE archive/unarchive toggle. One static label for both halves — the verb
+/// resolves per-row (archived → restore, terminal → archive), and a
+/// state-swapped label would need the selected row threaded into the chip
+/// renderer for no real gain (collapse/expand swaps on PANE state, not row).
+pub const BTN_LABEL_ARCHIVE: &str = "archive";
 pub const BTN_LABEL_REMOVE: &str = "remove";
 pub const BTN_LABEL_COLLAPSE: &str = "collapse";
 pub const BTN_LABEL_EXPAND: &str = "expand";

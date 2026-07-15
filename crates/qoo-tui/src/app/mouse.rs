@@ -505,6 +505,10 @@ impl App {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::CancelSelected);
                         }
+                        crate::hit::PaneButton::Archive => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::ArchiveSelected);
+                        }
                         crate::hit::PaneButton::Remove => {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::RemoveSelectedWorktree);

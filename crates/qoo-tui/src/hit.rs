@@ -25,6 +25,9 @@ pub enum PaneButton {
     Discover,
     Goto,
     Cancel,
+    /// QUEUE `[a]rchive` — a TOGGLE: archives the selected terminal row, or
+    /// restores it when the row is already archived (dimmed FINISHED tail).
+    Archive,
     Remove,
     Collapse,
 }
@@ -39,7 +42,7 @@ pub enum PaneButton {
 pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     use PaneButton::*;
     match pane {
-        PaneId::Queue => &[Run, Cancel, Goto, Create, Collapse],
+        PaneId::Queue => &[Run, Cancel, Goto, Archive, Create, Collapse],
         PaneId::Tasks => &[Run, Discover, Collapse],
         PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Collapse],
         PaneId::Detail => &[],

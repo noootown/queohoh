@@ -215,6 +215,18 @@ export class QueueStore {
 		renameSync(this.taskPath(id), join(this.archiveDir, `${id}.md`));
 	}
 
+	/** Reverse of `archive`: move the task file back into the live queue. Throws
+	 * a task-not-found error (matching the API's `mustGet` wording) when the id
+	 * isn't in the archive, so a stale TUI row surfaces a clear message instead
+	 * of a raw ENOENT. */
+	unarchive(id: string): void {
+		try {
+			renameSync(join(this.archiveDir, `${id}.md`), this.taskPath(id));
+		} catch {
+			throw new Error(`task not found in archive: ${id}`);
+		}
+	}
+
 	listArchived(): TaskInstance[] {
 		const tasks: TaskInstance[] = [];
 		for (const file of readdirSync(this.archiveDir).sort()) {

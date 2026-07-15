@@ -95,6 +95,68 @@ fn queue_r_confirms_then_requeues_the_selected_failed_task() {
 }
 
 #[test]
+fn queue_a_archives_the_selected_terminal_task() {
+    // `a` on a live terminal row fires the archive half of the toggle directly
+    // (no confirm dialog — unarchive is the built-in undo).
+    let mut a = app_with(failed_task_snapshot());
+    let u = a.update(key('a'));
+    assert!(matches!(a.mode, Mode::List));
+    assert!(
+        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+            if call.method == "archive" && call.params == serde_json::json!({ "id": "t1" }))),
+        "expected an archive dispatch, got {:?}",
+        u.cmds,
+    );
+}
+
+#[test]
+fn queue_a_on_an_archived_row_unarchives_it() {
+    // The toggle's other half: `a` on a dimmed archived row restores it.
+    let mut t = TaskInstance::default();
+    t.id = "t1".into();
+    t.status = TaskStatus::Done;
+    t.target.repo = "platform".into();
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        archived_recent: vec![t],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    let u = a.update(key('a'));
+    assert!(
+        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+            if call.method == "unarchive" && call.params == serde_json::json!({ "id": "t1" }))),
+        "expected an unarchive dispatch, got {:?}",
+        u.cmds,
+    );
+}
+
+#[test]
+fn queue_a_refuses_active_rows_with_a_status_line() {
+    // Archiving live work (queued/running/needs-input) is refused locally.
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].status = TaskStatus::Running;
+    let mut a = app_with(snap);
+    let u = a.update(key('a'));
+    assert!(u.cmds.is_empty(), "no RPC for an active row");
+    assert_eq!(a.status_line.as_deref(), Some("cannot archive a running task"));
+}
+
+#[test]
+fn queue_a_refuses_a_bulk_selection() {
+    // Archive is single-row only (not in `bulk_allowed`): a range refuses.
+    let mut snap = failed_task_snapshot();
+    let mut t2 = snap.tasks[0].clone();
+    t2.id = "t2".into();
+    snap.tasks.push(t2);
+    let mut a = app_with(snap);
+    a.update(shift_down()); // extend the selection into a 2-row range
+    let u = a.update(key('a'));
+    assert!(u.cmds.is_empty(), "no RPC on a bulk range");
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+}
+
+#[test]
 fn queue_r_noop_on_running_sets_status_line() {
     let mut snap = failed_task_snapshot();
     snap.tasks[0].status = TaskStatus::Running;
@@ -694,6 +756,30 @@ fn tasks_pane_d_dispatches_discover_for_a_discovery_def() {
         "expected a discoverDefinition dispatch, got {:?}",
         u.cmds,
     );
+    // The optimistic in-flight marker drives the `⌕`-spinner (and the tick
+    // that animates it) until the repo's def refetch lands.
+    assert!(a.discovering.contains("platform/pr-review"));
+    assert!(a.wants_tick(), "an in-flight discover must keep the tick alive for the throbber");
+}
+
+#[test]
+fn discover_spinner_clears_when_repo_defs_refetch_lands() {
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.discovering.insert("platform/pr-review".into());
+    a.discovering.insert("other/pr-review".into());
+    // The discover RPC's ActionResult invalidates + refetches the repo's defs;
+    // the landing `Definitions` event is the single clear point (it fires on
+    // success, RPC error, AND client timeout — so the spinner can't stick).
+    a.update(Event::Definitions { repo: "platform".into(), defs: vec![] });
+    assert!(!a.discovering.contains("platform/pr-review"), "landed refetch stops the spinner");
+    assert!(
+        a.discovering.contains("other/pr-review"),
+        "another repo's in-flight discover is untouched"
+    );
 }
 
 #[test]
@@ -714,5 +800,6 @@ fn tasks_pane_d_on_a_no_discovery_def_sets_status_line_no_rpc() {
     let u = a.update(key('d'));
     assert!(u.cmds.is_empty(), "no RPC for a def without discovery");
     assert_eq!(a.status_line.as_deref(), Some("lint has no discovery"));
+    assert!(a.discovering.is_empty(), "a refused discover must not start the spinner");
 }
 

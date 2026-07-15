@@ -22,6 +22,7 @@ import {
 	isProtectedWorktree,
 	laneKey,
 	listDefinitions,
+	loadProjectDefaultBranch,
 	loadProjectDefaultModel,
 	loadProjectModels,
 	loadProjectProtectedWorktrees,
@@ -39,6 +40,11 @@ import {
 /** Per-worktree git/PR facts merged onto WorktreeInfo. Each field null = unknown. */
 interface GitEnrichment {
 	dirty: boolean | null;
+	/** Worktree HEAD is an ancestor of the project's default branch (vars.yaml
+	 * `default_branch`, fallback `main`) — its committed work has been merged
+	 * back. null = unknown / not meaningful (the default-branch checkout
+	 * itself, where "merged into yourself" would always be true). */
+	merged: boolean | null;
 	lastCommitEpoch: number | null;
 	lastCommitAuthor: string | null;
 	lastCommitAuthorEmail: string | null;
@@ -526,6 +532,12 @@ export class Engine {
 				| null
 				| undefined;
 			const repoPath = this.repoPath(repo);
+			// The branch the merged-back marker compares against — one vars.yaml
+			// read per repo per sweep (same cadence as the protected-names read
+			// in worktreesByRepo; a file read is noise next to the git calls).
+			const defaultBranch = loadProjectDefaultBranch(
+				projectWorkspaceDir(this.deps.config, repo),
+			);
 			for (const wt of list) {
 				live.add(wt.path);
 				if (
@@ -536,7 +548,11 @@ export class Engine {
 				if (prMap === undefined) {
 					prMap = repoPath === null ? null : await this.ghPrMap(repoPath);
 				}
-				const facts = await this.computeGitEnrichment(wt.path);
+				const facts = await this.computeGitEnrichment(
+					wt.path,
+					wt.branch,
+					defaultBranch,
+				);
 				const pr = prMap?.get(wt.branch) ?? null;
 				const prNumber = pr?.number ?? null;
 				const prUrl = pr?.url ?? null;
@@ -546,6 +562,7 @@ export class Engine {
 				if (
 					!prev ||
 					prev.dirty !== e.dirty ||
+					prev.merged !== e.merged ||
 					prev.lastCommitEpoch !== e.lastCommitEpoch ||
 					prev.lastCommitAuthor !== e.lastCommitAuthor ||
 					prev.lastCommitAuthorEmail !== e.lastCommitAuthorEmail ||
@@ -568,8 +585,13 @@ export class Engine {
 		if (changed) this.deps.onChange?.();
 	}
 
-	private async computeGitEnrichment(path: string): Promise<GitCommitFacts> {
+	private async computeGitEnrichment(
+		path: string,
+		branch: string,
+		defaultBranch: string,
+	): Promise<GitCommitFacts> {
 		const dirty = await this.gitDirty(path);
+		const merged = await this.gitMerged(path, branch, defaultBranch);
 		const {
 			epoch: lastCommitEpoch,
 			author: lastCommitAuthor,
@@ -578,11 +600,40 @@ export class Engine {
 		} = await this.gitLastCommit(path);
 		return {
 			dirty,
+			merged,
 			lastCommitEpoch,
 			lastCommitAuthor,
 			lastCommitAuthorEmail,
 			lastCommitHash,
 		};
+	}
+
+	/** Whether the worktree's HEAD is an ancestor of the project's default
+	 * branch — i.e. its committed work has been merged back. null on the
+	 * default-branch checkout itself (trivially its own ancestor — the marker
+	 * would be permanent noise there), on a missing default branch, or on any
+	 * git failure. NOTE: an ancestry check — a squash-merged branch reads as
+	 * NOT merged, because its commits genuinely aren't on the default branch. */
+	private async gitMerged(
+		path: string,
+		branch: string,
+		defaultBranch: string,
+	): Promise<boolean | null> {
+		if (branch.length === 0 || branch === defaultBranch) return null;
+		try {
+			const { exitCode } = await this.deps.exec(
+				"git",
+				["-C", path, "merge-base", "--is-ancestor", "HEAD", defaultBranch],
+				{ cwd: path },
+			);
+			// merge-base exits 0 = ancestor, 1 = not an ancestor; anything else
+			// (128: unknown ref, not a repo) is a real failure → unknown.
+			if (exitCode === 0) return true;
+			if (exitCode === 1) return false;
+			return null;
+		} catch {
+			return null;
+		}
 	}
 
 	/** True when the working tree has uncommitted changes; null on failure. */

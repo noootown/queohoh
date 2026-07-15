@@ -130,6 +130,7 @@ export function loadProjectVars(projectDir: string): Record<string, string> {
 		if (key === "github_id") continue; // reserved: read by loadProjectGithubId
 		if (key === "default_model") continue; // reserved: read by loadProjectDefaultModel
 		if (key === "protected_worktrees") continue; // reserved: read by loadProjectProtectedWorktrees
+		if (key === "default_branch") continue; // reserved: read by loadProjectDefaultBranch
 		if (value !== null && typeof value === "object") {
 			throw new Error(`non-scalar var: ${key}`);
 		}
@@ -198,6 +199,20 @@ export function loadProjectDefaultModel(
  * entry is skipped. It never throws, so a malformed value only disables the
  * extra protections (the main checkout stays protected via path-equality) rather
  * than wedging config loading or snapshot generation. */
+/** The project's optional `default_branch` from vars.yaml — the branch the
+ * worktree "merged back" marker compares against. Falls back to `main` when the
+ * file/key is absent or malformed (tolerant like the other loaders: a bad value
+ * only mis-targets the marker, never wedges config loading). */
+export function loadProjectDefaultBranch(projectDir: string): string {
+	const path = join(projectDir, "vars.yaml");
+	if (!existsSync(path)) return "main";
+	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+		return "main";
+	const value = (raw as Record<string, unknown>).default_branch;
+	return typeof value === "string" && value.length > 0 ? value : "main";
+}
+
 export function loadProjectProtectedWorktrees(projectDir: string): string[] {
 	const path = join(projectDir, "vars.yaml");
 	if (!existsSync(path)) return [];

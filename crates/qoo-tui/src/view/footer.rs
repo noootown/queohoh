@@ -89,7 +89,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
     if let Some(count) = footer_bulk_count(c) {
         frame.render_widget(
             Paragraph::new(hint_line(
-                &format!("{count} selected · [a]bulk actions · [shift+↑↓]extend · [esc]clear"),
+                // No verb hint here: which verbs accept a bulk selection is the
+                // pane title bar's story (chips stay lit vs dim) — a footer `[a]`
+                // hint went stale when `a` became the archive toggle.
+                &format!("{count} selected · [shift+↑↓]extend · [esc]clear"),
                 p,
             )),
             area,

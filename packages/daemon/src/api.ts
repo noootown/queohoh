@@ -641,6 +641,31 @@ export class ApiServer {
 				}
 				throw new Error(`cannot skip task in status ${task.status}`);
 			}
+			case "archive": {
+				// The TUI's `[a]rchive` toggle, archive half: dismiss a TERMINAL
+				// task out of the live queue (same eligibility as `skip`'s dismiss
+				// role — hiding a queued/running/needs-input task would bury live
+				// work). Recoverable via `unarchive`.
+				const task = this.mustGet(String(params.id));
+				if (
+					!["failed", "verify-failed", "done", "skipped", "cancelled"].includes(
+						task.status,
+					)
+				) {
+					throw new Error(`cannot archive task in status ${task.status}`);
+				}
+				deps.store.archive(task.id);
+				deps.onMutation();
+				return true;
+			}
+			case "unarchive": {
+				// The toggle's other half: restore an archived task to the live
+				// queue (it re-enters `archivedRecent`-free display with its
+				// terminal status intact — nothing re-runs).
+				deps.store.unarchive(String(params.id));
+				deps.onMutation();
+				return true;
+			}
 			case "stop": {
 				const task = this.mustGet(String(params.id));
 				if (task.status !== "running") {

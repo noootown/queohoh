@@ -18,10 +18,11 @@ use crate::selectors::{
     wt_author_text, wt_col_layout,
 };
 use crate::view::theme::{
-    BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_DISCOVER, BTN_LABEL_EXPAND,
+    BTN_LABEL_ARCHIVE, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_DISCOVER, BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
-    GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_PROTECTED, GLYPH_SEARCH, Palette, RULE_CHAR,
+    GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_PROTECTED, GLYPH_SEARCH, Palette,
+    RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
 
@@ -35,7 +36,7 @@ use crate::view::theme::{
 // shows only while chips from BOTH groups remain (see [`build_header`]);
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
-const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x]stop [g]oto · [c]reate [z]
+const QUEUE_ROW_SCOPED: usize = 4; // [r]un [x]stop [g]oto [a]rchive · [c]reate [z]
 const TASKS_ROW_SCOPED: usize = 2; // [r]un [d]iscover · [z]
 const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [c]reate [z]
 
@@ -103,6 +104,7 @@ fn button_chip(
         PaneButton::Discover => ('d', BTN_LABEL_DISCOVER),
         PaneButton::Goto => ('g', BTN_LABEL_GOTO),
         PaneButton::Cancel => ('x', BTN_LABEL_STOP),
+        PaneButton::Archive => ('a', BTN_LABEL_ARCHIVE),
         PaneButton::Remove => ('x', BTN_LABEL_REMOVE),
         PaneButton::Collapse => {
             ('z', if collapsed { BTN_LABEL_EXPAND } else { BTN_LABEL_COLLAPSE })
@@ -490,6 +492,9 @@ fn wt_header(layout: &WtColLayout, p: &Palette) -> Line<'static> {
     if layout.protected_w > 0 {
         spans.push(Span::raw("  ")); // ⛨ slot + separator
     }
+    if layout.merged_w > 0 {
+        spans.push(Span::raw("  ")); // ↣ slot + separator
+    }
     spans.push(Span::styled(pad_clip("Name", layout.name_w), p.dim_style()));
     if layout.last_w > 0 {
         header_col(&mut spans, "Last Task", layout.last_w, p);
@@ -557,6 +562,16 @@ fn worktree_line(
     if layout.protected_w > 0 {
         if row.protected {
             spans.push(Span::styled(GLYPH_PROTECTED.to_string(), meta));
+        } else {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::raw(" "));
+    }
+    // `↣` merged-back marker (ok green — "committed work is in the default
+    // branch, safe to clean up"); blank for unmerged/unknown/old daemons.
+    if layout.merged_w > 0 {
+        if row.merged == Some(true) {
+            spans.push(Span::styled(GLYPH_MERGED.to_string(), Style::default().fg(p.ok)));
         } else {
             spans.push(Span::raw(" "));
         }
@@ -667,14 +682,24 @@ fn worktree_line(
     Line::from(spans)
 }
 
-fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line<'static> {
+fn def_line(
+    def: &DefinitionSummary,
+    layout: &DefColLayout,
+    p: &Palette,
+    discovering: bool,
+) -> Line<'static> {
     let gap = " ".repeat(crate::selectors::COL_GAP);
     // Front marker slot — the `⌕` discovery marker (single-cell glyph +
     // separator, statically reserved pane-wide) — mirrors the WORKTREES `±`
-    // dirty-marker slot.
+    // dirty-marker slot. While the def's `d`-discover RPC is in flight the
+    // glyph yields to a placeholder space and the generic running-row throbber
+    // animates in its cell (queue-row parity), so the user sees the search
+    // running before the fan-out lands.
     let mut spans = Vec::new();
     if layout.marker_w > 0 {
-        if def.has_discovery {
+        if discovering {
+            spans.push(Span::raw(" "));
+        } else if def.has_discovery {
             spans.push(Span::styled(GLYPH_DISCOVER.to_string(), Style::default().fg(p.info)));
         } else {
             spans.push(Span::raw(" "));
@@ -1189,10 +1214,14 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             TASKS_ROW_SCOPED,
             &mut btn_hits,
             def_col_layout,
-            def_line,
+            |d, layout, p| {
+                def_line(d, layout, p, app.discovering.contains(&format!("{}/{}", d.repo, d.name)))
+            },
             def_header,
             |_| false,
-            |_| false,
+            // "Running" here = the def's `d`-discover RPC is in flight — the
+            // generic throbber paints over the row's front `⌕`-marker cell.
+            |d| app.discovering.contains(&format!("{}/{}", d.repo, d.name)),
             |d| format!("{}/{}", d.repo, d.name),
             spotlight && !c.searching[1],
             None, // tasks pane has no section divider
@@ -1306,6 +1335,7 @@ mod tests {
             branch: "legal-lake".into(),
             protected: true,
             dirty: Some(true),
+            merged: Some(true),
             ..Default::default()
         };
         let plain = WorktreeRow {
@@ -1327,9 +1357,11 @@ mod tests {
         let prot_text = text(&protected);
         assert!(prot_text.contains(GLYPH_DIRTY));
         assert!(prot_text.contains(GLYPH_PROTECTED));
+        assert!(prot_text.contains(GLYPH_MERGED));
         let plain_text = text(&plain);
         assert!(!plain_text.contains(GLYPH_DIRTY));
         assert!(!plain_text.contains(GLYPH_PROTECTED));
+        assert!(!plain_text.contains(GLYPH_MERGED));
         // Both markers are single-width and the slots are statically reserved,
         // so the name lands at the same char offset on every row.
         assert_eq!(

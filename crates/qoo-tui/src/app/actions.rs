@@ -286,6 +286,12 @@ impl App {
                 cmds.extend(u.cmds);
                 u.dirty
             }
+            // `a` on QUEUE: archive/unarchive toggle on the selected row.
+            A::ArchiveSelected => {
+                let u = self.archive_selected();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
             // `r` on WORKTREES: open the session picker for a new task on the worktree.
             A::NewTaskOnWorktree => {
                 let u = self.new_task_on_worktree();
@@ -467,6 +473,51 @@ impl App {
             focus: crate::hit::ButtonKind::Confirm,
         };
         Update { dirty: true, cmds: vec![] }
+    }
+
+    /// `a` on QUEUE (and the `[a]rchive` chip): archive/unarchive TOGGLE on the
+    /// selected row. An archived row restores to the live list (`unarchive`); a
+    /// terminal live row archives out of it. Active rows (queued/running/
+    /// needs-input) refuse locally with a status line — hiding live work is
+    /// never right — while any other status goes to the daemon, which owns the
+    /// real eligibility rule (forward-compat: a status this TUI doesn't know
+    /// gets the daemon's verdict, not a stale local one). No confirm dialog:
+    /// the toggle is its own undo. Single-row only, like every non-bulk verb.
+    pub(super) fn archive_selected(&mut self) -> Update {
+        let Some((rows, is_bulk)) = self.queue_selection_rows() else {
+            return Update::default();
+        };
+        if is_bulk {
+            self.status_line = Some(BULK_NOT_APPLICABLE.into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let Some((id, status, archived)) = rows.into_iter().next() else {
+            return Update::default();
+        };
+        let method = if archived {
+            "unarchive"
+        } else {
+            if matches!(status, TaskStatus::Queued | TaskStatus::Running | TaskStatus::NeedsInput)
+            {
+                self.status_line =
+                    Some(format!("cannot archive a {} task", status_kebab(status)));
+                return Update { dirty: true, cmds: vec![] };
+            }
+            "archive"
+        };
+        Update {
+            dirty: true,
+            cmds: vec![Cmd::Rpc {
+                label: method.into(),
+                call: RpcCall {
+                    method: method.into(),
+                    params: serde_json::json!({ "id": id }),
+                },
+                timeout_ms: 5000,
+                timeout_is_ok: false,
+                invalidate_defs_for: None,
+            }],
+        }
     }
 
     /// `j`/`k` in list mode. When the detail pane shows the worktree lane-task
@@ -651,13 +702,21 @@ impl App {
             self.status_line = Some(format!("{} has no discovery", def.name));
             return Update { dirty: true, cmds: vec![] };
         }
+        // Optimistic in-flight marker: the def row's `⌕` animates (throbber)
+        // until the repo's def summaries refetch lands (`Event::Definitions`),
+        // so the user sees the search running before the fan-out appears.
+        self.discovering.insert(format!("{}/{}", def.repo, def.name));
         Update { dirty: true, cmds: vec![Self::discover_definition_cmd(&def.repo, &def.name)] }
     }
 
     /// Build the fire-and-forget `discoverDefinition` command. Same client
     /// contract as [`Self::run_definition_cmd`]: timeout is treated as success
     /// (discovery can outlive it; the push subscription re-syncs) and a
-    /// successful call invalidates the repo's def summaries.
+    /// successful call invalidates the repo's def summaries. The timeout is
+    /// generous (vs the 5 s default) because the daemon RPC returns only when
+    /// the discovery command has run — and the response is what stops the
+    /// `⌕`-spinner (`App::discovering`), so a slow `gh`-backed discover should
+    /// keep spinning until it actually finishes, not for a token 5 s.
     pub(super) fn discover_definition_cmd(repo: &str, name: &str) -> Cmd {
         Cmd::Rpc {
             label: "discover".into(),
@@ -665,7 +724,7 @@ impl App {
                 method: "discoverDefinition".into(),
                 params: serde_json::json!({ "repo": repo, "name": name, "source": "tui" }),
             },
-            timeout_ms: 5000,
+            timeout_ms: 120_000,
             timeout_is_ok: true,
             invalidate_defs_for: Some(repo.to_string()),
         }
