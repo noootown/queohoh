@@ -631,6 +631,7 @@ mod tests {
                     cron: Some("30 13 * * *".into()),
                     description: Some("Review an open PR end to end.".into()),
                     model: Some("claude-opus-4-8".into()),
+                    worktree: None,
                 },
                 crate::ipc::types::DefinitionSummary {
                     repo: "acme".into(),

@@ -12,7 +12,7 @@ fn arg(name: &str) -> ArgSpec {
 }
 
 fn dsum(repo: &str, name: &str, scope: &str, args: Vec<ArgSpec>) -> DefinitionSummary {
-    DefinitionSummary { repo: repo.into(), name: name.into(), scope: scope.into(), args, has_discovery: false, cron: None, description: None, model: None }
+    DefinitionSummary { repo: repo.into(), name: name.into(), scope: scope.into(), args, has_discovery: false, cron: None, description: None, model: None, worktree: None }
 }
 
 fn fixture_app_one_project(name: &str) -> App {
@@ -250,6 +250,75 @@ fn task_menu_from_worktrees_pane_carries_worktree_and_branch() {
         }
         other => panic!("expected DefPick, got {other:?}"),
     }
+}
+
+#[test]
+fn def_uses_worktree_context_predicate() {
+    let wt = |d: DefinitionSummary, w: &str| DefinitionSummary { worktree: Some(w.into()), ..d };
+    // `worktree: repo` + no context-fillable args → agnostic.
+    assert!(!def_uses_worktree_context(&wt(dsum("p", "sanitize-project", "global", vec![]), "repo")));
+    // Any non-repo worktree setting consumes the context (target override applies).
+    assert!(def_uses_worktree_context(&wt(dsum("p", "autofix", "project", vec![arg("situation")]), "auto")));
+    assert!(def_uses_worktree_context(&wt(dsum("p", "adhoc", "project", vec![]), "temp")));
+    // `worktree: repo` but a context-fillable arg (source/branch/ticket) → kept.
+    assert!(def_uses_worktree_context(&wt(dsum("p", "squash-merge", "global", vec![arg("source")]), "repo")));
+    // A worktree-TYPED arg → kept regardless of the worktree setting.
+    let target = ArgSpec { r#type: Some("worktree".into()), ..arg("target") };
+    assert!(def_uses_worktree_context(&wt(dsum("p", "pr-review", "project", vec![target]), "repo")));
+    // Old daemon (no worktree field on the summary) → never hide on missing data.
+    assert!(def_uses_worktree_context(&dsum("p", "unknown", "project", vec![])));
+}
+
+#[test]
+fn task_menu_on_a_worktree_hides_worktree_agnostic_defs() {
+    // With a worktree context, repo-pinned no-arg defs are filtered out; defs
+    // that consume the context (non-repo worktree, or a source arg) remain.
+    let repo_noargs =
+        DefinitionSummary { worktree: Some("repo".into()), ..dsum("platform", "sanitize-project", "global", vec![]) };
+    let auto = DefinitionSummary { worktree: Some("auto".into()), ..dsum("platform", "autofix", "project", vec![arg("situation")]) };
+    let repo_source =
+        DefinitionSummary { worktree: Some("repo".into()), ..dsum("platform", "squash-merge", "global", vec![arg("source")]) };
+    let mut app = fixture_app_with_defs_and_worktree(
+        "platform",
+        vec![repo_noargs.clone(), auto, repo_source],
+        ("wt-a", "jus-4-x"),
+    );
+    app.set_focus(PaneId::Worktrees);
+    app.update(key(KeyCode::Char('t')));
+    match &app.mode {
+        Mode::DefPick { defs, worktree, .. } => {
+            assert!(worktree.is_some());
+            assert_eq!(
+                defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+                vec!["autofix", "squash-merge"],
+                "repo-pinned no-arg def is hidden on a worktree-scoped menu"
+            );
+        }
+        other => panic!("expected DefPick, got {other:?}"),
+    }
+    // Contextless open (no worktree rows) keeps the full list, agnostic included.
+    let mut app = fixture_app_with_defs("platform", vec![repo_noargs]);
+    app.set_focus(PaneId::Worktrees);
+    app.update(key(KeyCode::Char('t')));
+    match &app.mode {
+        Mode::DefPick { defs, worktree, .. } => {
+            assert_eq!(worktree.as_deref(), None);
+            assert_eq!(defs.len(), 1, "contextless menu keeps worktree-agnostic defs");
+        }
+        other => panic!("expected DefPick, got {other:?}"),
+    }
+}
+
+#[test]
+fn task_menu_on_a_worktree_with_only_agnostic_defs_refuses() {
+    let repo_noargs =
+        DefinitionSummary { worktree: Some("repo".into()), ..dsum("platform", "seed-data-sync", "project", vec![]) };
+    let mut app = fixture_app_with_defs_and_worktree("platform", vec![repo_noargs], ("wt-a", "jus-4-x"));
+    app.set_focus(PaneId::Worktrees);
+    let update = app.update(key(KeyCode::Char('t')));
+    assert!(matches!(app.mode, Mode::List));
+    assert!(update.cmds.is_empty());
+    assert_eq!(app.status_line.as_deref(), Some("no worktree-scoped task definitions"));
 }
 
 #[test]

@@ -17,6 +17,7 @@ fn def_pick_popup_snapshot() {
                 cron: None,
                 description: None,
                 model: None,
+                worktree: None,
             },
             DefinitionSummary {
                 repo: "platform".into(),
@@ -30,6 +31,7 @@ fn def_pick_popup_snapshot() {
                 cron: None,
                 description: None,
                 model: None,
+                worktree: Some("repo".into()),
             },
         ],
         index: 1,

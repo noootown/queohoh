@@ -411,6 +411,11 @@ export class ApiServer {
 					cron: string | null;
 					description: string | null;
 					model: string;
+					/** The def's `worktree:` setting (schema default "temp"). The TUI's
+					 * worktree-scoped task menu keeps only defs that consume the
+					 * selected worktree — `worktree !== "repo"` (target override
+					 * applies) or a context-fillable arg. */
+					worktree: string;
 				};
 				const out: Summary[] = [];
 				for (const project of deps.config.projects) {
@@ -437,6 +442,7 @@ export class ApiServer {
 								cron: def.cron,
 								description: def.description,
 								model: resolveModel(def.model, table),
+								worktree: def.worktree,
 							});
 						}
 						for (const def of listDefinitions(
@@ -452,6 +458,7 @@ export class ApiServer {
 								cron: def.cron,
 								description: def.description,
 								model: resolveModel(def.model, table),
+								worktree: def.worktree,
 							});
 						}
 						for (const summary of [...byName.values()].sort((a, b) =>

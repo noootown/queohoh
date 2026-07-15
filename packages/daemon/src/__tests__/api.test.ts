@@ -465,6 +465,9 @@ describe("ApiServer", () => {
 				description: "Greet someone by name.",
 				// summary carries the RESOLVED id (built-in default sonnet alias).
 				model: "claude-sonnet-5",
+				// schema default when the def omits `worktree:` — the TUI's
+				// worktree-scoped task menu keys off this field.
+				worktree: "temp",
 			},
 		]);
 	});

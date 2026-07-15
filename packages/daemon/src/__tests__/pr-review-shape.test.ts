@@ -147,6 +147,7 @@ describe("agent247 pr-review port shape", () => {
 				description: null,
 				// summary carries the RESOLVED id (built-in default opus alias).
 				model: "claude-opus-4-8",
+				worktree: "pr:{{number}}",
 			},
 		]);
 	});

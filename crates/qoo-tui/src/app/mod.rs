@@ -170,6 +170,22 @@ pub struct App {
     pub inside_tmux: bool,
 }
 
+/// Whether a def consumes the worktree context a WORKTREES-scoped task menu
+/// carries — the filter behind `t`-on-a-worktree (user request: repo-pinned
+/// no-arg defs are worktree-agnostic clutter there). A def consumes the context
+/// when its `worktree:` setting is anything but `"repo"` (the daemon's
+/// `runDefinition` applies the target override to every non-repo def — temp/
+/// auto/templates all run ON the selected worktree), or when it declares an arg
+/// the context fills: a worktree-typed arg, or one named `source`/`branch`/
+/// `ticket` (the `context_arg_values` set). `None` (old daemon without the
+/// summary field) counts as consuming — never hide on missing data.
+fn def_uses_worktree_context(def: &DefinitionSummary) -> bool {
+    def.worktree.as_deref().is_none_or(|w| w != "repo")
+        || def.args.iter().any(|a| {
+            a.is_worktree() || matches!(a.name.as_str(), "source" | "branch" | "ticket")
+        })
+}
+
 fn now_epoch_s() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -589,6 +605,19 @@ impl App {
         } else {
             (None, None)
         };
+        // A worktree-scoped menu lists only defs that CONSUME the selected
+        // worktree (user request — repo-pinned no-arg defs like sanitize-project
+        // read as runnable "on JUS-1816" when the context means nothing to
+        // them). Contextless opens keep the full list.
+        let defs: Vec<_> = if worktree.is_some() {
+            defs.into_iter().filter(def_uses_worktree_context).collect()
+        } else {
+            defs
+        };
+        if defs.is_empty() {
+            self.status_line = Some("no worktree-scoped task definitions".into());
+            return Vec::new();
+        }
         self.mode = Mode::DefPick { defs, index: 0, worktree, branch, query: String::new(), preview_scroll: 0 };
         self.prefetch_full_def()
     }

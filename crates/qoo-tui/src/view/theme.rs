@@ -78,9 +78,6 @@ pub const GLYPH_CREATE_WORKTREE: char = '⊕';
 /// Dropdown affordance — a down chevron on the right of a closed select field.
 pub const GLYPH_CHEVRON_DOWN: char = '▾';
 
-/// Global-scope marker trailing a def-pick row (project-local defs render blank).
-pub const MARKER_GLOBAL: &str = "(g)";
-
 /// Horizontal-rule glyph. Matches the pane-border char so transcript code-fence
 /// rules and the pane borders read as one system.
 pub const RULE_CHAR: char = '─';

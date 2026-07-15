@@ -226,6 +226,11 @@ pub struct DefinitionSummary {
     /// the container `default`) — a modern daemon always sends it (config default
     /// `"sonnet"`), so this is `Option` purely for backward compatibility.
     pub model: Option<String>,
+    /// The def's `worktree:` setting (`"repo"`, `"temp"`, `"auto"`, or a
+    /// `pr:{{…}}`-style template; schema default `"temp"`). `None` on an old
+    /// daemon that omits it. The worktree-scoped task menu keeps only defs that
+    /// consume the selected worktree — see `def_uses_worktree_context`.
+    pub worktree: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]

@@ -24,7 +24,7 @@ use crate::markup::{fence_states, style_transcript_line, wrap_lines, LineCtx};
 use crate::selectors::{absolute_local_label, arg_summary, clip, filter_rows, pad_clip};
 use crate::view::modal::{render_button_row, DIALOG_WIDTH, MODAL_PADDING};
 use crate::view::theme::{
-    GLYPH_CREATE_WORKTREE, GLYPH_CURSOR, GLYPH_NEW_SESSION, MARKER_GLOBAL, Palette,
+    GLYPH_CREATE_WORKTREE, GLYPH_CURSOR, GLYPH_NEW_SESSION, Palette,
     RULE_CHAR,
 };
 
@@ -559,7 +559,7 @@ pub fn render_session_pick(
 }
 
 /// Big lazyvim-style task menu / def picker. Left panel = search prompt +
-/// FILTERED def rows (name + arg summary + `(g)` global marker; selected row a
+/// FILTERED def rows (name + arg summary; selected row a
 /// full-width inverse bar); right panel = the
 /// highlighted def's description (dim "no description" when unset), a blank
 /// line, a bold "Prompt" heading, then the full definition's prompt —
@@ -598,10 +598,8 @@ pub fn render_def_pick(
             if !def.args.is_empty() {
                 text.push_str(&format!(" ({})", arg_summary(&def.args)));
             }
-            if def.scope == "global" {
-                text.push(' ');
-                text.push_str(MARKER_GLOBAL);
-            }
+            // No global-scope `(g)` marker — it carried no meaning for the user
+            // (a def is a def; where it is defined doesn't change how it runs).
             text
         },
         |pos| if pos == index { p.selection() } else { Style::default().fg(p.fg) },
