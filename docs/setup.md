@@ -98,7 +98,7 @@ queohoh reload              # after changing daemon code: rebuild + restart
 claude mcp add queohoh -- queohoh mcp
 ```
 
-The `/qoo` skill itself is not part of this repo — it's a personal skill (lives in the user's own skills workspace) that talks to the daemon purely through the MCP server above.
+A minimal reference `/qoo` skill ships in `library/skills/qoo/` — copy it into `~/.claude/skills/` and it routes requests to the daemon purely through the MCP server above. It's intentionally simple; grow your own from it (see `library/README.md`).
 
 Interactive-session awareness (the scheduler won't run tasks in a worktree you're actively using) — add to `~/.claude/settings.json` hooks:
 
