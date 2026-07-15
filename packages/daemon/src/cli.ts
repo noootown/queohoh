@@ -50,16 +50,15 @@ program
 	)
 	.option(
 		"--force",
-		"restart even if tasks are running (they will be marked failed)",
+		"(no-op, kept for compatibility) reload always proceeds now",
 		false,
 	)
-	.action(async (opts: { force: boolean }) => {
+	.action(async () => {
 		const cliPath = fileURLToPath(import.meta.url);
-		process.exitCode = await runReload(
-			{ force: opts.force },
-			defaultReloadSteps(cliPath),
-			{ info: console.log, error: console.error },
-		);
+		process.exitCode = await runReload(defaultReloadSteps(cliPath), {
+			info: console.log,
+			error: console.error,
+		});
 	});
 
 program

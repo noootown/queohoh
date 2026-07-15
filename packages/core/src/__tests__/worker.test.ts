@@ -11,7 +11,7 @@ import { SessionLineageStore } from "../session-lineage.js";
 import { QueueStore } from "../store.js";
 import type { SessionMode } from "../task.js";
 import type { WorkerDeps } from "../worker.js";
-import { runTask } from "../worker.js";
+import { finalizeRun, runTask, startRun } from "../worker.js";
 
 const okResult: RunResult = {
 	exitCode: 0,
@@ -1049,5 +1049,53 @@ describe("runTask verify (done-condition)", () => {
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("verify-failed");
 		expect(result.verifyOutput).not.toContain("sk-secret-123");
+	});
+});
+
+describe("startRun / finalizeRun split", () => {
+	it("startRun returns a SpawnSpec carrying the rendered prompt + resolved model", async () => {
+		const { deps, store } = makeDeps({
+			modelTable: { sonnet: "claude-sonnet-4-6" },
+		});
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		const s = await startRun(t.id, deps);
+		expect(s.kind).toBe("spawn");
+		if (s.kind !== "spawn") throw new Error("expected spawn");
+		expect(s.spec.model).toBe("claude-sonnet-4-6");
+		expect(s.spec.prompt).toBe("do it\n");
+		expect(store.get(t.id)?.status).toBe("running");
+	});
+
+	it("startRun settles a def-load failure without spawning", async () => {
+		const { deps, store } = makeDeps({ loadDef: () => null });
+		const t = enqueue(store, "platform/ghost");
+		withWorktree(store, t.id);
+		const s = await startRun(t.id, deps);
+		expect(s.kind).toBe("settled");
+		expect(store.get(t.id)?.status).toBe("failed");
+		expect(store.get(t.id)?.error).toContain("definition not found");
+	});
+
+	it("finalizeRun classifies a nonzero exit as failed and writes the report", async () => {
+		const { deps, store, runStore } = makeDeps();
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		await startRun(t.id, deps); // stamps running + snapshot
+		const settled = await finalizeRun(t.id, { ...okResult, exitCode: 3 }, deps);
+		expect(settled.status).toBe("failed");
+		expect(settled.error).toBe("exit code 3");
+		expect(runStore.readRunMeta(t.id)?.outcome).toBe("failed");
+	});
+
+	it("finalizeRun does not re-stamp startedAt (adopted runs keep the original)", async () => {
+		const { deps, store } = makeDeps();
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		await startRun(t.id, deps);
+		const startedAt = store.get(t.id)?.startedAt;
+		await new Promise((r) => setTimeout(r, 5));
+		await finalizeRun(t.id, okResult, deps);
+		expect(store.get(t.id)?.startedAt).toBe(startedAt);
 	});
 });

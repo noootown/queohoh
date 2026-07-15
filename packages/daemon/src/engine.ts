@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type {
 	ClaudeExecutor,
 	Exec,
@@ -11,12 +12,14 @@ import type {
 	TaskDefinition,
 	TaskInstance,
 	VerifyExecutor,
+	WorkerDeps,
 	WorktreeInfo,
 } from "@queohoh/core";
 import {
 	buildLiveState,
 	cronDue,
 	effectiveModelTable,
+	finalizeRun,
 	globalWorkspaceDir,
 	instantiateDefinition,
 	isProtectedWorktree,
@@ -33,9 +36,53 @@ import {
 	REPO_SENTINEL,
 	resolveDefinition,
 	resolveTarget,
-	runTask,
 	schedule,
+	startRun,
 } from "@queohoh/core";
+import { inProcessSpawner, type ShimSpawner } from "./shim-host.js";
+
+/**
+ * Adoption verdict for a task that is `running` on disk but not managed by THIS
+ * process (fresh boot, reload, or crash recovery). Pure so it can be unit-tested
+ * away from the disk/pid machinery.
+ * - `result.json` present → the shim finished while we were away → `finalize`.
+ * - no result, but the recorded pid is alive AND its argv is a shim (guarding
+ *   pid reuse — a recycled pid pointing at some unrelated process) → `adopt`.
+ * - neither → the supervisor is gone → `orphan` (settle as `worker died`).
+ */
+export function adoptionDecision(
+	hasResult: boolean,
+	pidAlive: boolean,
+	argvLooksLikeShim: boolean,
+): "finalize" | "adopt" | "orphan" {
+	if (hasResult) return "finalize";
+	if (pidAlive && argvLooksLikeShim) return "adopt";
+	return "orphan";
+}
+
+/** Default liveness probe: `kill(pid, 0)` throws iff the pid is dead/unowned. */
+function defaultPidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Default shim-argv probe: `ps -p <pid> -o command=` prints the process's
+ * command line; a live shim's argv contains `shim.js`. Any failure (ps missing,
+ * pid gone between checks) → false, so a non-shim/dead pid never gets adopted. */
+function defaultIsShimPid(pid: number): boolean {
+	try {
+		const out = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+			encoding: "utf-8",
+		});
+		return out.includes("shim.js");
+	} catch {
+		return false;
+	}
+}
 
 /** Per-worktree git/PR facts merged onto WorktreeInfo. Each field null = unknown. */
 interface GitEnrichment {
@@ -96,6 +143,17 @@ export interface EngineDeps {
 	/** Wall-clock seam for cron evaluation; defaults to Date.now. Tests inject a
 	 * controllable clock. */
 	now?: () => number;
+	/** Spawns a run's per-run process (production: `makeShimSpawner`, a detached
+	 * `dist/shim.js` that owns the claude child). Absent → the Engine builds an
+	 * in-process spawner from `executeClaude`, so existing callers/tests that only
+	 * inject `executeClaude` keep their deterministic in-process behavior. */
+	spawnShim?: ShimSpawner;
+	/** Liveness probe for the adoption sweep; default `process.kill(pid, 0)`.
+	 * Injected by tests to force a decision without a real process. */
+	pidAlive?: (pid: number) => boolean;
+	/** Argv probe distinguishing a live shim from a reused pid; default a
+	 * `ps -p <pid> -o command=` check for `shim.js`. Injected by tests. */
+	isShimPid?: (pid: number) => boolean;
 }
 
 export class Engine {
@@ -109,6 +167,11 @@ export class Engine {
 	// `cancelled` rather than `failed`. Populated by stopTask, cleared when the
 	// run settles (startWorker's finally-then).
 	private cancelledTaskIds = new Set<string>();
+	// Adopt/finalize promises in flight from the adoption sweep, keyed by task id.
+	// Guards a slow async finalize from being fired twice on consecutive ticks
+	// (the sweep runs every tick); also awaited by `drain` so shutdown/tests wait
+	// for an adopted finalize to settle, not just live workers.
+	private finalizing = new Map<string, Promise<void>>();
 	private ticking = false;
 	// Cron fire-timing dedup: definition key ("repo/name") -> epoch ms of last
 	// evaluation. In-memory by design — survives macOS sleep (process suspended,
@@ -128,7 +191,15 @@ export class Engine {
 	private gitEnrichFetchedAt = new Map<string, number>(); // path -> last fetch (ms)
 	private enrichInFlight: Promise<void> | null = null; // single-flight guard (mirrors `ticking`)
 
-	constructor(private readonly deps: EngineDeps) {}
+	// Resolved once: the production spawner if injected, else an in-process
+	// spawner built from executeClaude/redact so the daemon is agnostic of the
+	// shim path and existing tests stay deterministic.
+	private readonly spawnShim: ShimSpawner;
+
+	constructor(private readonly deps: EngineDeps) {
+		this.spawnShim =
+			deps.spawnShim ?? inProcessSpawner(deps.executeClaude, deps.redact);
+	}
 
 	runningTaskIds(): string[] {
 		return [...this.running.keys()];
@@ -161,9 +232,9 @@ export class Engine {
 		return out;
 	}
 
-	/** Await all in-flight workers (test helper / shutdown). */
+	/** Await all in-flight workers AND adopted finalizes (test helper / shutdown). */
 	async drain(): Promise<void> {
-		await Promise.all([...this.running.values()]);
+		await Promise.all([...this.running.values(), ...this.finalizing.values()]);
 	}
 
 	laneOfCwd(cwd: string): string | null {
@@ -311,13 +382,41 @@ export class Engine {
 		// is TTL-throttled and single-flighted, and pushes onChange when it moves.
 		void this.refreshGitEnrichment();
 
-		// Orphan sweep: running on disk but not in this process.
+		// Adoption sweep: a task that is `running` on disk but not managed by THIS
+		// process (fresh boot, reload, or crash recovery). result.json present → the
+		// shim finished while we were away, finalize now; shim pid still alive (and
+		// its argv is a shim, guarding pid reuse) → re-adopt, keep polling via the
+		// tick; neither → the supervisor is gone, fail it.
 		for (const t of deps.store.list()) {
-			if (t.status === "running" && !this.running.has(t.id)) {
-				deps.store.update(t.id, {
-					status: "failed",
-					error: "orphaned by daemon restart",
-				});
+			if (
+				t.status !== "running" ||
+				this.running.has(t.id) ||
+				this.finalizing.has(t.id)
+			) {
+				continue;
+			}
+			const hasResult = deps.runStore.readResultJson(t.id) !== null;
+			const pid = deps.runStore.readWorkerPid(t.id);
+			const alive = pid !== null && this.isPidAlive(pid);
+			const shimArgv = alive && this.isShimPidCheck(pid as number);
+			const decision = adoptionDecision(hasResult, alive, shimArgv);
+			if (decision === "finalize") {
+				const deps2 = this.buildWorkerDeps(t);
+				if (deps2) {
+					const p = this.adoptAndFinalize(t.id, deps2).finally(() =>
+						this.finalizing.delete(t.id),
+					);
+					this.finalizing.set(t.id, p);
+				}
+			} else if (decision === "adopt") {
+				// Idempotent re-registration so Stop works and the lane stays busy.
+				if (pid !== null) this.childPids.set(t.id, pid);
+				const lane = laneKey(t) ?? t.id;
+				deps.registry.registerWorker(t.id, lane, pid ?? process.pid);
+			} else {
+				deps.store.update(t.id, { status: "failed", error: "worker died" });
+				this.childPids.delete(t.id);
+				deps.registry.unregisterWorker(t.id);
 			}
 		}
 
@@ -813,7 +912,16 @@ export class Engine {
 		}
 	}
 
-	private startWorker(task: TaskInstance): void {
+	/**
+	 * Build the per-task WorkerDeps shared by a live run (`runLive`) and an adopted
+	 * finalize (`adoptAndFinalize`). Returns null AFTER having already marked the
+	 * task failed + fired onChange on a malformed vars.yaml — the sole pre-spawn
+	 * failure that must fail the task rather than wedge startup. `onSpawned` and the
+	 * shim spawn are NOT here (they are per-call, only for the live path); the
+	 * `isCancelled` closure reads both the in-memory Stop set AND the persisted
+	 * cancel marker, so a Stop that raced a daemon death still settles `cancelled`.
+	 */
+	private buildWorkerDeps(task: TaskInstance): WorkerDeps | null {
 		const { deps } = this;
 
 		// Load project vars before registering the worker; a malformed vars.yaml
@@ -829,7 +937,7 @@ export class Engine {
 				error: err instanceof Error ? err.message : String(err),
 			});
 			deps.onChange?.();
-			return;
+			return null;
 		}
 
 		// Effective alias→id table for this task's repo. Computed outside the
@@ -848,10 +956,8 @@ export class Engine {
 				projectWorkspaceDir(deps.config, task.target.repo),
 			) ?? "opus";
 
-		const lane = laneKey(task) ?? task.id;
-		deps.registry.registerWorker(task.id, lane, process.pid);
 		const repoPath = this.repoPath(task.target.repo);
-		const promise = runTask(task.id, {
+		return {
 			store: deps.store,
 			runStore: deps.runStore,
 			exec: deps.exec,
@@ -867,8 +973,11 @@ export class Engine {
 				...deps.config.vars,
 			},
 			repoVars,
-			onSpawned: (id, pid) => this.childPids.set(id, pid),
-			isCancelled: (id) => this.cancelledTaskIds.has(id),
+			// A Stop settles as `cancelled` (not `failed`). Read BOTH the in-memory
+			// set (live Stop) and the persisted marker (a Stop that raced a daemon
+			// death, replayed on adoption).
+			isCancelled: (id) =>
+				this.cancelledTaskIds.has(id) || deps.runStore.readCancelMarker(id),
 			modelTable,
 			loadDef: (definition) => {
 				const [repo, ...nameParts] = definition.split("/");
@@ -887,24 +996,108 @@ export class Engine {
 			// not the primary reaper — for a run that keeps streaming but never
 			// actually finishes.
 			defaults: { model: defaultModel, timeoutMs: 10_800_000 },
-		})
+		};
+	}
+
+	private startWorker(task: TaskInstance): void {
+		const deps = this.buildWorkerDeps(task);
+		if (deps === null) return; // already marked failed + onChange fired
+		const lane = laneKey(task) ?? task.id;
+		this.deps.registry.registerWorker(task.id, lane, process.pid);
+		const promise = this.runLive(task.id, deps)
 			.catch((err) => {
 				try {
-					deps.store.update(task.id, {
+					this.deps.store.update(task.id, {
 						status: "failed",
 						error: err instanceof Error ? err.message : String(err),
 					});
 				} catch {}
 			})
-			.then(() => {
-				this.running.delete(task.id);
-				this.childPids.delete(task.id);
-				this.cancelledTaskIds.delete(task.id);
-				deps.registry.unregisterWorker(task.id);
-				deps.onChange?.();
-			});
+			.then(() => this.cleanupRun(task.id));
 		this.running.set(task.id, promise);
-		deps.onChange?.();
+		this.deps.onChange?.();
+	}
+
+	/** Drive one run to settlement: pre-spawn prep (`startRun`), then the shim
+	 * spawn. A null shim result means the supervisor died with no result.json →
+	 * settle as `worker died`; otherwise finalize with the shim's result. The shim
+	 * pid (production) or the claude child pid (in-process) is tracked for Stop and
+	 * persisted so a returning daemon's adoption sweep can find it. */
+	private async runLive(taskId: string, deps: WorkerDeps): Promise<void> {
+		const start = await startRun(taskId, deps);
+		if (start.kind === "settled") return; // failed pre-spawn; nothing spawned
+		const result = await this.spawnShim(taskId, start.spec, (pid) => {
+			this.childPids.set(taskId, pid);
+			deps.runStore.writeWorkerPid(taskId, pid); // shim pid (production)
+		});
+		if (result === null) {
+			await this.settleWorkerDied(taskId, deps);
+			return;
+		}
+		await finalizeRun(taskId, result, deps);
+	}
+
+	private cleanupRun(taskId: string): void {
+		this.running.delete(taskId);
+		this.childPids.delete(taskId);
+		this.cancelledTaskIds.delete(taskId);
+		this.deps.registry.unregisterWorker(taskId);
+		this.deps.onChange?.();
+	}
+
+	/** No result.json and the shim is gone: settle as worker died (a report is
+	 * still written so the detail pane isn't blank). Mirrors the sweep's orphan. */
+	private async settleWorkerDied(
+		taskId: string,
+		deps: WorkerDeps,
+	): Promise<void> {
+		deps.runStore.finishRun(
+			taskId,
+			{
+				result: {
+					exitCode: 1,
+					timedOut: false,
+					signal: null,
+					sessionId: null,
+					resultText: "",
+					stderr: "worker died",
+					usage: { costUsd: null, turns: null, durationMs: null },
+				},
+				outcome: "failed",
+				reason: "worker died",
+			},
+			deps.redact,
+		);
+		deps.store.update(taskId, { status: "failed", error: "worker died" });
+	}
+
+	/** Adopt a run the sweep found `finalize`-able: read its result.json and
+	 * finalize (or settle `worker died` if the result vanished between the sweep's
+	 * probe and here), then release its lane/pid tracking. */
+	private async adoptAndFinalize(
+		taskId: string,
+		deps: WorkerDeps,
+	): Promise<void> {
+		const result = deps.runStore.readResultJson(taskId);
+		if (result === null) {
+			await this.settleWorkerDied(taskId, deps);
+		} else {
+			await finalizeRun(taskId, result, deps);
+		}
+		this.childPids.delete(taskId);
+		this.cancelledTaskIds.delete(taskId);
+		this.deps.registry.unregisterWorker(taskId);
+		this.deps.onChange?.();
+	}
+
+	/** Liveness probe honoring an injected `pidAlive`; default `kill(pid, 0)`. */
+	private isPidAlive(pid: number): boolean {
+		return (this.deps.pidAlive ?? defaultPidAlive)(pid);
+	}
+
+	/** Shim-argv probe honoring an injected `isShimPid`; default a `ps` check. */
+	private isShimPidCheck(pid: number): boolean {
+		return (this.deps.isShimPid ?? defaultIsShimPid)(pid);
 	}
 
 	/**
@@ -921,6 +1114,10 @@ export class Engine {
 			throw new Error(`no running child tracked for task: ${taskId}`);
 		}
 		this.cancelledTaskIds.add(taskId);
+		// Persist the Stop BEFORE signalling: if the daemon dies between here and
+		// the run settling, the adoption sweep replays the marker and settles the
+		// run as `cancelled` rather than `failed` / `worker died`.
+		this.deps.runStore.writeCancelMarker(taskId);
 		try {
 			process.kill(-pid, "SIGTERM");
 		} catch {

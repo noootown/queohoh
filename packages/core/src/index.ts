@@ -55,6 +55,7 @@ export {
 	defaultExec,
 	parseWorktreePorcelain,
 } from "./resolver-io.js";
+export type { SpawnSpec } from "./run-store.js";
 export { RunStore } from "./run-store.js";
 export type {
 	ExecuteClaudeOptions,
@@ -99,6 +100,11 @@ export {
 	TaskStatusSchema,
 } from "./task.js";
 export { render } from "./template.js";
-export type { ClaudeExecutor, VerifyExecutor, WorkerDeps } from "./worker.js";
-export { runTask, VERIFY_TIMEOUT_MS } from "./worker.js";
+export type {
+	ClaudeExecutor,
+	StartRunResult,
+	VerifyExecutor,
+	WorkerDeps,
+} from "./worker.js";
+export { finalizeRun, runTask, startRun, VERIFY_TIMEOUT_MS } from "./worker.js";
 export { contextArgValues, extractTicket } from "./worktree-context.js";

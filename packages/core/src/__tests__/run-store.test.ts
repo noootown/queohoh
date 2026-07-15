@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -112,5 +112,57 @@ describe("RunStore", () => {
 
 	it("readRunMeta returns null for unknown task", () => {
 		expect(fresh().readRunMeta("01NOPE")).toBeNull();
+	});
+});
+
+describe("RunStore shim contract files", () => {
+	const spec = {
+		prompt: "do it with shh-token",
+		model: "opus",
+		cwd: "/wt/x",
+		timeoutMs: 60_000,
+		resumeSessionId: "sess-1",
+		eventsPath: "/wt/x/events.jsonl",
+		transcriptPath: "/wt/x/transcript.md",
+	};
+	const result = {
+		exitCode: 0,
+		timedOut: false,
+		signal: null,
+		sessionId: "s1",
+		resultText: "ok",
+		stderr: "",
+		usage: { costUsd: 1, turns: 2, durationMs: 3 },
+	};
+
+	it("spawn.json round-trips UNREDACTED and is mode 0600", () => {
+		const rs = fresh();
+		rs.writeSpawnJson(task.id, spec);
+		const back = rs.readSpawnJson(task.id);
+		expect(back).toEqual(spec);
+		// Unredacted on disk: the shim needs the real prompt.
+		const raw = readFileSync(rs.spawnJsonPath(task.id), "utf-8");
+		expect(raw).toContain("shh-token");
+		const mode = statSync(rs.spawnJsonPath(task.id)).mode & 0o777;
+		expect(mode).toBe(0o600);
+	});
+
+	it("readSpawnJson returns null for missing/malformed", () => {
+		const rs = fresh();
+		expect(rs.readSpawnJson("01NOPE")).toBeNull();
+	});
+
+	it("result.json round-trips and readResultJson is null when absent", () => {
+		const rs = fresh();
+		expect(rs.readResultJson(task.id)).toBeNull();
+		rs.writeResultJson(task.id, result);
+		expect(rs.readResultJson(task.id)).toEqual(result);
+	});
+
+	it("cancel marker: absent → false, written → true", () => {
+		const rs = fresh();
+		expect(rs.readCancelMarker(task.id)).toBe(false);
+		rs.writeCancelMarker(task.id);
+		expect(rs.readCancelMarker(task.id)).toBe(true);
 	});
 });

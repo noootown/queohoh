@@ -3,6 +3,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +11,24 @@ import type { TaskDefinition } from "./definition.js";
 import type { Redactor } from "./redact.js";
 import type { RunResult } from "./runner.js";
 import type { TaskInstance } from "./task.js";
+
+/**
+ * The exact inputs the shim needs to reconstruct an `executeClaude` call: the
+ * rendered prompt, resolved model/cwd/timeout, optional resume id, and the two
+ * run-file paths. Written to `spawn.json` by the shim spawner (0600, unredacted
+ * — the shim needs the real prompt) and unlinked by the shim after it reads it.
+ * `redact`/`onSpawned` are NOT here: the shim builds its own redactor from its
+ * inherited env and tracks the claude pid itself.
+ */
+export interface SpawnSpec {
+	prompt: string;
+	model: string;
+	cwd: string;
+	timeoutMs: number;
+	resumeSessionId?: string;
+	eventsPath: string;
+	transcriptPath: string;
+}
 
 export class RunStore {
 	constructor(readonly runsDir: string) {
@@ -77,6 +96,64 @@ export class RunStore {
 		} catch {
 			return null;
 		}
+	}
+
+	spawnJsonPath(taskId: string): string {
+		return join(this.runDir(taskId), "spawn.json");
+	}
+
+	/** Write the shim's launch spec. 0600 + UNREDACTED: it holds the real
+	 * prompt, which the shim needs; the shim unlinks it immediately after read. */
+	writeSpawnJson(taskId: string, spec: SpawnSpec): void {
+		writeFileSync(this.spawnJsonPath(taskId), JSON.stringify(spec), {
+			mode: 0o600,
+		});
+	}
+
+	readSpawnJson(taskId: string): SpawnSpec | null {
+		const path = this.spawnJsonPath(taskId);
+		if (!existsSync(path)) return null;
+		try {
+			return JSON.parse(readFileSync(path, "utf-8")) as SpawnSpec;
+		} catch {
+			return null;
+		}
+	}
+
+	private resultJsonPath(taskId: string): string {
+		return join(this.runDir(taskId), "result.json");
+	}
+
+	/** Atomic (tmp + rename): the daemon must never read a torn result. */
+	writeResultJson(taskId: string, result: RunResult): void {
+		const path = this.resultJsonPath(taskId);
+		const tmp = `${path}.tmp`;
+		writeFileSync(tmp, JSON.stringify(result));
+		renameSync(tmp, path);
+	}
+
+	readResultJson(taskId: string): RunResult | null {
+		const path = this.resultJsonPath(taskId);
+		if (!existsSync(path)) return null;
+		try {
+			return JSON.parse(readFileSync(path, "utf-8")) as RunResult;
+		} catch {
+			return null;
+		}
+	}
+
+	private cancelMarkerPath(taskId: string): string {
+		return join(this.runDir(taskId), "cancelled");
+	}
+
+	/** Persist a user Stop BEFORE signalling, so a stop that races a daemon death
+	 * still settles the run as `cancelled` (not `failed`) on adoption. */
+	writeCancelMarker(taskId: string): void {
+		writeFileSync(this.cancelMarkerPath(taskId), "");
+	}
+
+	readCancelMarker(taskId: string): boolean {
+		return existsSync(this.cancelMarkerPath(taskId));
 	}
 
 	finishRun(

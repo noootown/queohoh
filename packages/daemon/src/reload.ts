@@ -17,38 +17,8 @@ export function repoRootFromCli(
 	return exists(join(root, "pnpm-workspace.yaml")) ? root : null;
 }
 
-export interface BusyVerdict {
-	proceed: boolean;
-	message: string | null;
-}
-
-/** Decide whether reload may proceed given the daemon's running set. */
-export function busyVerdict(
-	running: string[] | null,
-	force: boolean,
-): BusyVerdict {
-	if (running === null) {
-		return {
-			proceed: true,
-			message: "daemon not reachable — nothing running",
-		};
-	}
-	if (running.length === 0) return { proceed: true, message: null };
-	if (force) {
-		return {
-			proceed: true,
-			message: `--force: restarting with ${running.length} running task(s) (${running.join(", ")}) — they will be marked failed by the orphan sweep`,
-		};
-	}
-	return {
-		proceed: false,
-		message: `refusing to reload: ${running.length} task(s) running (${running.join(", ")}). Re-run with --force to restart anyway.`,
-	};
-}
-
 export interface ReloadSteps {
 	repoRoot: () => string | null;
-	runningTasks: () => Promise<string[] | null>;
 	build: (repoRoot: string) => Promise<number>;
 	restart: () => Promise<void>;
 	verify: () => Promise<boolean>;
@@ -61,11 +31,13 @@ export interface ReloadLog {
 }
 
 /**
- * Orchestrate reload: locate root → busy guard → build → restart → verify.
- * Build failures abort before any daemon is touched. Returns the exit code.
+ * Orchestrate reload: locate root → build → restart → verify. Build failures
+ * abort before any daemon is touched. Reload always proceeds regardless of
+ * running tasks now — the detached shim survives a daemon restart, and the
+ * returning daemon re-adopts in-flight runs via the adoption sweep, so there
+ * is no longer anything to guard against. Returns the exit code.
  */
 export async function runReload(
-	opts: { force: boolean },
 	steps: ReloadSteps,
 	log: ReloadLog,
 ): Promise<number> {
@@ -77,28 +49,11 @@ export async function runReload(
 		return 1;
 	}
 
-	const verdict = busyVerdict(await steps.runningTasks(), opts.force);
-	if (verdict.message !== null) {
-		(verdict.proceed ? log.info : log.error)(verdict.message);
-	}
-	if (!verdict.proceed) return 1;
-
 	log.info(`building ${root}`);
 	const buildExit = await steps.build(root);
 	if (buildExit !== 0) {
 		log.error(`build failed (exit ${buildExit}) — daemon left untouched`);
 		return 1;
-	}
-
-	if (!opts.force) {
-		const postBuild = busyVerdict(await steps.runningTasks(), false);
-		if (!postBuild.proceed) {
-			log.error(postBuild.message ?? "refusing to reload: tasks running");
-			log.error(
-				"build succeeded — re-run reload once idle and it will restart quickly.",
-			);
-			return 1;
-		}
 	}
 
 	await steps.restart();
@@ -140,19 +95,6 @@ export function defaultReloadSteps(cliPath: string): ReloadSteps {
 
 	return {
 		repoRoot: () => repoRootFromCli(cliPath),
-
-		runningTasks: async () => {
-			const client = new ApiClient();
-			try {
-				await client.connect(sock);
-				const s = (await client.call("state")) as { running: string[] };
-				return s.running;
-			} catch {
-				return null;
-			} finally {
-				client.close();
-			}
-		},
 
 		build: (root) =>
 			new Promise((res) => {

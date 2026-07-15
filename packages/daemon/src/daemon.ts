@@ -25,6 +25,7 @@ import {
 	socketPath,
 	statePath,
 } from "./paths.js";
+import { makeShimSpawner } from "./shim-host.js";
 
 const STARTER_CONFIG = `# queohoh global config
 # workspace: ~/workspace/queohoh
@@ -76,6 +77,10 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		redact,
 		lineage,
 		onChange: () => broadcastRef(),
+		// Detached per-run shim: a daemon reload/crash never kills a live run, and
+		// the adoption sweep re-adopts it on return. executeClaude stays wired as
+		// the in-process fallback the Engine builds when no spawnShim is present.
+		spawnShim: makeShimSpawner({ runStore }),
 	});
 
 	const server = new ApiServer({

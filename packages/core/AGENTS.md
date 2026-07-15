@@ -15,10 +15,11 @@ src/
                      listArchived, finishedAt stamping. Monotonic ulid ids.
   scheduler.ts       schedule(): PURE decision fn → {start, resolve, skip}. All
                      gating + chain ordering. No side effects.
-  worker.ts          runTask(): the full single-run lifecycle (resolve cwd →
-                     render → pre_run → claude → dirty-tree check → verify
-                     (done-condition gate) → post_run → terminal status). Reads
-                     injected deps only.
+  worker.ts          startRun() → SpawnSpec (resolve cwd → render → pre_run) +
+                     finalizeRun() (classify → verify (done-condition gate) →
+                     post_run → lineage → terminal status). runTask() composes
+                     the two in-process (tests); the daemon spawns the shim
+                     between them. Reads injected deps only.
   runner.ts          executeClaude() + executeVerify(): the ONLY process spawns
                      in core. executeClaude: stream-json parse,
                      timeout→SIGTERM→SIGKILL, returns RunResult. executeVerify:

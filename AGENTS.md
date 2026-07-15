@@ -62,6 +62,8 @@ Dependency direction: `view → selectors → ipc/types`, `app/update → select
 ## Architectural invariants
 
 - **Daemon is the single writer.** The TUI never touches git, task state, or the filesystem beyond layout/run-file reads. Anything needing `git`/`gh` belongs in `engine.ts`.
+- **Runs are detached via a per-run shim.** The daemon spawns a detached `dist/shim.js` (`shim-host.ts`) that owns the `claude -p` child, so a daemon reload/crash never kills a run. A returning daemon re-adopts via the adoption sweep in `engine.ts` (`adoptionDecision`): `result.json` present → finalize; shim pid alive & argv is a shim → adopt; else → `worker died`. `runTask` splits into `startRun` (→`SpawnSpec`) and `finalizeRun`; the shim writes only run-dir files, never task state.
+- **Run-dir contract.** `spawn.json` (0600, daemon→shim, unlinked after read), `result.json` (shim→daemon, atomic tmp+rename), `worker.json` (shim pid), `cancelled` (Stop marker, persisted before the signal so a stop surviving a daemon death still settles `cancelled`).
 - **Wire compat is one-directional.** Every field a newer daemon adds must be `Option` in `ipc/types.rs` so an old daemon keeps working (container-level `serde(default)`). Never remove/rename wire fields.
 - **TUI is Elm-style and single-threaded.** State changes only in `App::update`; side effects only via `Cmd` variants executed in `event.rs::execute` (fire-and-forget, off the UI thread). Views are pure.
 - **Mouse = HitMap.** Views register hit rects painter's-order each frame; `hit()` scans in reverse so the topmost wins. Sub-rects (chips, links) must be registered AFTER the row/pane beneath them; overlays own every click while open via early returns in `app/mouse.rs`.

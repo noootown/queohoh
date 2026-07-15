@@ -17,7 +17,7 @@ import {
 	SessionRegistry,
 } from "@queohoh/core";
 import { describe, expect, it } from "vitest";
-import { Engine } from "../engine.js";
+import { adoptionDecision, Engine } from "../engine.js";
 
 const okResult: RunResult = {
 	exitCode: 0,
@@ -37,6 +37,8 @@ function setup(
 		exec?: Exec;
 		executeClaude?: ClaudeExecutor;
 		executeVerify?: VerifyExecutor;
+		pidAlive?: (pid: number) => boolean;
+		isShimPid?: (pid: number) => boolean;
 	} = {},
 ) {
 	const base = mkdtempSync(join(tmpdir(), "qo-engine-"));
@@ -90,8 +92,19 @@ function setup(
 			})),
 		redact: makeRedactor(new Map()),
 		lineage,
+		pidAlive: overrides.pidAlive,
+		isShimPid: overrides.isShimPid,
 	});
 	return { engine, store, base, lineage };
+}
+
+/** `setup` with adoption-sweep probes injected, so a test can force the
+ * finalize/adopt/orphan branch without a real process. */
+function setupWith(overrides: {
+	pidAlive?: (pid: number) => boolean;
+	isShimPid?: (pid: number) => boolean;
+}) {
+	return setup(overrides);
 }
 
 describe("Engine.tick", () => {
@@ -312,7 +325,7 @@ describe("Engine.tick", () => {
 		);
 	});
 
-	it("marks running tasks with no live worker as orphaned", async () => {
+	it("marks a running task with no result and no live shim as worker died", async () => {
 		const { engine, store } = setup();
 		const t = store.create({
 			prompt: "p",
@@ -326,7 +339,46 @@ describe("Engine.tick", () => {
 		});
 		await engine.tick();
 		expect(store.get(t.id)?.status).toBe("failed");
-		expect(store.get(t.id)?.error).toBe("orphaned by daemon restart");
+		expect(store.get(t.id)?.error).toBe("worker died");
+	});
+
+	it("finalizes an adopted task whose result.json is already present", async () => {
+		const { engine, store, base } = setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "running",
+			target: { repo: "platform", ref: "temp", worktree: "JUS-1" },
+		});
+		const rs = new RunStore(join(base, "runs"));
+		rs.writeResultJson(t.id, { ...okResult, resultText: "done" });
+		await engine.tick();
+		await engine.drain();
+		expect(store.get(t.id)?.status).toBe("done");
+	});
+
+	it("adopts a live shim (result absent, pid alive & argv is shim) and leaves it running", async () => {
+		const { engine, store, base } = setupWith({
+			pidAlive: () => true,
+			isShimPid: () => true,
+		});
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "running",
+			target: { repo: "platform", ref: "temp", worktree: "JUS-1" },
+		});
+		new RunStore(join(base, "runs")).writeWorkerPid(t.id, 999999);
+		await engine.tick();
+		expect(store.get(t.id)?.status).toBe("running"); // still adopted, not settled
 	});
 
 	it("archives old done tasks", async () => {
@@ -344,6 +396,22 @@ describe("Engine.tick", () => {
 		await engine.tick();
 		expect(store.list()).toEqual([]);
 		expect(store.listArchived().map((a) => a.id)).toEqual([t.id]);
+	});
+});
+
+describe("adoptionDecision", () => {
+	it("result present → finalize regardless of pid", () => {
+		expect(adoptionDecision(true, false, false)).toBe("finalize");
+		expect(adoptionDecision(true, true, true)).toBe("finalize");
+	});
+	it("no result, live shim → adopt", () => {
+		expect(adoptionDecision(false, true, true)).toBe("adopt");
+	});
+	it("no result, live pid but not a shim (reuse) → orphan", () => {
+		expect(adoptionDecision(false, true, false)).toBe("orphan");
+	});
+	it("no result, dead pid → orphan", () => {
+		expect(adoptionDecision(false, false, false)).toBe("orphan");
 	});
 });
 
