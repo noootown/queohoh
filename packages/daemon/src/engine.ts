@@ -63,6 +63,18 @@ type GitCommitFacts = Omit<GitEnrichment, "prNumber" | "prUrl">;
  * negligible at a dozen worktrees. */
 const GIT_ENRICH_TTL_MS = 10_000;
 
+/**
+ * Terminal statuses — a task in one of these will never run again. Mirrors the
+ * dismiss list in api.ts. Used by the worktree-deletion archive sweep.
+ */
+const TERMINAL_STATUSES: ReadonlySet<TaskInstance["status"]> = new Set([
+	"done",
+	"failed",
+	"skipped",
+	"cancelled",
+	"verify-failed",
+]);
+
 export interface EngineDeps {
 	store: QueueStore;
 	runStore: RunStore;
@@ -101,6 +113,10 @@ export class Engine {
 	// from being fired twice on consecutive ticks.
 	private cronInFlight = new Set<string>();
 	private worktreeCache = new Map<string, WorktreeInfo[]>(); // repo name -> worktrees
+	// Repos whose `listWorktrees` has succeeded at least once this process. Guards
+	// the worktree-deletion sweep against a seeded-empty cache (cold start or a
+	// never-listable repo), where "worktree absent" would be a false positive.
+	private worktreeListingOk = new Set<string>();
 	// Git enrichment, keyed by worktree PATH, refreshed off the hot pass() path.
 	private gitEnrichCache = new Map<string, GitEnrichment>();
 	private gitEnrichFetchedAt = new Map<string, number>(); // path -> last fetch (ms)
@@ -307,6 +323,26 @@ export class Engine {
 			}
 		}
 
+		// Archive terminal tasks whose spawned worktree has been deleted. Deleting
+		// a worktree is a deliberate act (only the removeWorktree RPC), so it reads
+		// as "I'm done with this" and outranks the age sweep's "keep failed
+		// visible" — this catches the failed/skipped set the age timer never sweeps.
+		for (const t of deps.store.list()) {
+			const wt = t.target.worktree;
+			if (
+				!TERMINAL_STATUSES.has(t.status) ||
+				wt === null ||
+				wt === REPO_SENTINEL ||
+				!this.worktreeListingOk.has(t.target.repo)
+			) {
+				continue;
+			}
+			const known = this.worktreeCache.get(t.target.repo) ?? [];
+			if (!known.some((w) => w.name === wt)) {
+				deps.store.archive(t.id);
+			}
+		}
+
 		const tasks = deps.store.list();
 		const live = buildLiveState(deps.registry.list(), tasks, (cwd) =>
 			this.laneOfCwd(cwd),
@@ -438,6 +474,7 @@ export class Engine {
 					project.name,
 					await this.deps.resolverIO.listWorktrees(project.path),
 				);
+				this.worktreeListingOk.add(project.name);
 			} catch {
 				// Transient git failure (e.g. index.lock contention): KEEP the
 				// last-known list instead of clobbering it with [] — the clobber

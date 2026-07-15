@@ -322,7 +322,7 @@ describe("Engine.tick", () => {
 		});
 		store.update(t.id, {
 			status: "running",
-			target: { repo: "platform", ref: "temp", worktree: "x" },
+			target: { repo: "platform", ref: "temp", worktree: "JUS-1" },
 		});
 		await engine.tick();
 		expect(store.get(t.id)?.status).toBe("failed");
@@ -932,4 +932,199 @@ describe("Engine.stopTask", () => {
 		expect(t?.error).toBe("stopped by user");
 		expect(t?.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
 	}, 15_000);
+});
+
+describe("worktree-deletion archive", () => {
+	it("archives a terminal task whose worktree was deleted", async () => {
+		// Worktree "JUS-1" is gone from the listing.
+		const { engine, store } = setup({
+			resolverIO: { listWorktrees: async () => [] },
+		});
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "failed",
+			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+		});
+
+		await engine.tick();
+
+		expect(store.list()).toHaveLength(0);
+		expect(store.listArchived().map((a) => a.id)).toContain(t.id);
+	});
+
+	it("keeps a terminal task whose worktree still exists", async () => {
+		// Default listWorktrees returns [{ name: "JUS-1", … }] — worktree present.
+		const { engine, store } = setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "failed",
+			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+		});
+
+		await engine.tick();
+
+		expect(store.list().map((x) => x.id)).toContain(t.id);
+		expect(store.listArchived()).toHaveLength(0);
+	});
+
+	it("does not archive a non-terminal task with a deleted worktree", async () => {
+		const { engine, store } = setup({
+			resolverIO: { listWorktrees: async () => [] },
+		});
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "needs-input",
+			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+		});
+
+		await engine.tick();
+
+		expect(store.list()[0]?.status).toBe("needs-input");
+		expect(store.listArchived()).toHaveLength(0);
+	});
+
+	it("does not archive @repo or null-worktree terminal tasks", async () => {
+		const { engine, store } = setup({
+			resolverIO: { listWorktrees: async () => [] },
+		});
+		const sentinel = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "repo",
+			source: "tui",
+		});
+		store.update(sentinel.id, {
+			status: "failed",
+			target: { repo: "platform", ref: "repo", worktree: "@repo" },
+		});
+		const noWt = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:X",
+			source: "tui",
+		});
+		store.update(noWt.id, {
+			status: "failed",
+			target: { repo: "platform", ref: "worktree:X", worktree: null },
+		});
+
+		await engine.tick();
+
+		expect(store.list().map((x) => x.id).sort()).toEqual(
+			[sentinel.id, noWt.id].sort(),
+		);
+		expect(store.listArchived()).toHaveLength(0);
+	});
+
+	it("archives every terminal status on worktree deletion", async () => {
+		const statuses = [
+			"done",
+			"failed",
+			"skipped",
+			"cancelled",
+			"verify-failed",
+		] as const;
+		for (const status of statuses) {
+			const { engine, store } = setup({
+				resolverIO: { listWorktrees: async () => [] },
+			});
+			const t = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "worktree:JUS-1",
+				source: "tui",
+			});
+			store.update(t.id, {
+				status,
+				target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			});
+
+			await engine.tick();
+
+			expect(store.list(), `status ${status} should be archived`).toHaveLength(
+				0,
+			);
+			expect(store.listArchived().map((a) => a.id)).toContain(t.id);
+		}
+	});
+
+	it("does not archive when the repo has never listed successfully", async () => {
+		// listWorktrees always throws → refreshWorktreeCache seeds [] for the repo,
+		// but the listing never succeeded, so "absent" must NOT count as deleted.
+		const { engine, store } = setup({
+			resolverIO: {
+				listWorktrees: async () => {
+					throw new Error("git unavailable");
+				},
+			},
+		});
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "failed",
+			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+		});
+
+		await engine.tick();
+
+		expect(store.list().map((x) => x.id)).toContain(t.id);
+		expect(store.listArchived()).toHaveLength(0);
+	});
+
+	it("keeps a terminal task when listing fails after a prior success", async () => {
+		// First tick: listWorktrees succeeds (worktree present) → cache is
+		// seeded and worktreeListingOk is set. Second tick: listWorktrees
+		// throws (transient git hiccup) → refreshWorktreeCache's catch branch
+		// keeps the last-known list instead of clobbering it with []. The
+		// worktree must still be found in that last-known list, so the task
+		// must NOT be archived on the second tick.
+		let shouldThrow = false;
+		const { engine, store } = setup({
+			resolverIO: {
+				listWorktrees: async (path) => {
+					if (shouldThrow) throw new Error("git unavailable");
+					return [{ name: "JUS-1", path, branch: "JUS-1" }];
+				},
+			},
+		});
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "failed",
+			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+		});
+
+		await engine.tick();
+		expect(store.list().map((x) => x.id)).toContain(t.id);
+		expect(store.listArchived()).toHaveLength(0);
+
+		shouldThrow = true;
+		await engine.tick();
+
+		expect(store.list().map((x) => x.id)).toContain(t.id);
+		expect(store.listArchived()).toHaveLength(0);
+	});
 });
