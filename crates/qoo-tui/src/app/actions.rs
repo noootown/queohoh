@@ -475,21 +475,29 @@ impl App {
         Update { dirty: true, cmds: vec![] }
     }
 
-    /// `a` on QUEUE (and the `[a]rchive` chip): archive/unarchive TOGGLE on the
-    /// selected row. An archived row restores to the live list (`unarchive`); a
-    /// terminal live row archives out of it. Active rows (queued/running/
-    /// needs-input) refuse locally with a status line — hiding live work is
-    /// never right — while any other status goes to the daemon, which owns the
-    /// real eligibility rule (forward-compat: a status this TUI doesn't know
-    /// gets the daemon's verdict, not a stale local one). No confirm dialog:
-    /// the toggle is its own undo. Single-row only, like every non-bulk verb.
+    /// `a` on QUEUE (and the `[a]rchive`/`[a]unarchive` chip): archive/unarchive
+    /// TOGGLE on the selected row(s). An archived row restores to the live list
+    /// (`unarchive`); a terminal live row archives out of it. Active rows
+    /// (queued/running/needs-input) refuse locally with a status line — hiding
+    /// live work is never right — while any other status goes to the daemon,
+    /// which owns the real eligibility rule (forward-compat: a status this TUI
+    /// doesn't know gets the daemon's verdict, not a stale local one). No confirm
+    /// dialog: the toggle is its own undo.
+    ///
+    /// A BULK selection fans the same toggle over every eligible row. Its
+    /// DIRECTION is fixed by the FIRST (topmost) selected row — the same row the
+    /// title-bar chip's `[a]rchive`/`[a]unarchive` label reflects: an archived
+    /// first row means `unarchive` (restore every archived row in the range,
+    /// skipping live ones); a live first row means `archive` (archive every
+    /// terminal row, skipping active work and already-archived rows). Rows the
+    /// direction doesn't apply to are silently dropped, matching the stop/rerun
+    /// verbs; a selection with nothing eligible sets a status line instead.
     pub(super) fn archive_selected(&mut self) -> Update {
         let Some((rows, is_bulk)) = self.queue_selection_rows() else {
             return Update::default();
         };
         if is_bulk {
-            self.status_line = Some(BULK_NOT_APPLICABLE.into());
-            return Update { dirty: true, cmds: vec![] };
+            return self.archive_selected_bulk(rows);
         }
         let Some((id, status, archived)) = rows.into_iter().next() else {
             return Update::default();
@@ -517,6 +525,48 @@ impl App {
                 timeout_is_ok: false,
                 invalidate_defs_for: None,
             }],
+        }
+    }
+
+    /// The BULK half of [`Self::archive_selected`]. `rows` are the selected
+    /// QUEUE rows in view (topmost-first) order — `rows[0]` is the direction
+    /// anchor. Fans one `archive`/`unarchive` RPC per eligible row out through a
+    /// range-clearing [`Cmd::RpcSeq`] (verb "archived"/"unarchived"), mirroring
+    /// the bulk stop/rerun path but with no confirm — the toggle is its own undo.
+    fn archive_selected_bulk(&mut self, rows: Vec<QueueSelRow>) -> Update {
+        let Some(&(_, _, first_archived)) = rows.first() else {
+            return Update::default();
+        };
+        let active =
+            |s: TaskStatus| matches!(s, TaskStatus::Queued | TaskStatus::Running | TaskStatus::NeedsInput);
+        let (method, verb): (&str, &str) =
+            if first_archived { ("unarchive", "unarchived") } else { ("archive", "archived") };
+        let ids: Vec<String> = rows
+            .into_iter()
+            .filter(|(_, status, archived)| {
+                if first_archived {
+                    // Unarchive direction: only the already-archived rows.
+                    *archived
+                } else {
+                    // Archive direction: live terminal rows — skip active work
+                    // (can't hide it) and already-archived rows (opposite half).
+                    !*archived && !active(*status)
+                }
+            })
+            .map(|(id, _, _)| id)
+            .collect();
+        if ids.is_empty() {
+            self.status_line = Some(format!("nothing to {method} in selection"));
+            return Update { dirty: true, cmds: vec![] };
+        }
+        self.clear_range_and_marks(ListPane::Queue);
+        let calls = ids
+            .into_iter()
+            .map(|id| RpcCall { method: method.into(), params: serde_json::json!({ "id": id }) })
+            .collect();
+        Update {
+            dirty: true,
+            cmds: vec![Cmd::RpcSeq { verb: verb.into(), calls, invalidate_defs_for: None }],
         }
     }
 

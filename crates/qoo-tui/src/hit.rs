@@ -50,19 +50,23 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
 }
 
 /// Whether `btn` may act on a BULK (multi-row) selection in `pane` — the only
-/// verbs that stay live during a range: QUEUE's `Run` (re-queue, `[r]erun`)
-/// and `Cancel` (stop, `[x]stop`) already fan the RPC out over every row in
-/// the range; WORKTREES' `Remove` opens its own bulk-remove menu. Everything
-/// else — including the pane-scoped `Goto`/`Create`/`Collapse` chips that
-/// don't even read the selection — is bulk-disabled: the title bar dims it
-/// (see [`crate::view::panes::button_chip`]) and its key/click refuses with a
-/// status line (`App::apply_action`) instead of silently acting on just the
-/// cursor row. SINGLE SOURCE OF TRUTH for both.
+/// verbs that stay live during a range: QUEUE's `Run` (re-queue, `[r]erun`),
+/// `Cancel` (stop, `[x]stop`), and `Archive` (`[a]rchive`/`[a]unarchive`) each
+/// fan the RPC out over every eligible row in the range; WORKTREES' `Remove`
+/// opens its own bulk-remove menu. Everything else — including the pane-scoped
+/// `Goto`/`Create`/`Collapse` chips that don't even read the selection — is
+/// bulk-disabled: the title bar dims it (see
+/// [`crate::view::panes::button_chip`]) and its key/click refuses with a status
+/// line (`App::apply_action`) instead of silently acting on just the cursor
+/// row. SINGLE SOURCE OF TRUTH for both.
 pub(crate) fn bulk_allowed(pane: PaneId, btn: PaneButton) -> bool {
     use PaneButton::*;
     matches!(
         (pane, btn),
-        (PaneId::Queue, Run) | (PaneId::Queue, Cancel) | (PaneId::Worktrees, Remove)
+        (PaneId::Queue, Run)
+            | (PaneId::Queue, Cancel)
+            | (PaneId::Queue, Archive)
+            | (PaneId::Worktrees, Remove)
     )
 }
 
@@ -154,9 +158,10 @@ mod tests {
     #[test]
     fn bulk_allowed_matrix_matches_the_doable_lists() {
         use PaneButton::*;
-        // QUEUE: only rerun/stop.
+        // QUEUE: rerun/stop/archive.
         assert!(bulk_allowed(PaneId::Queue, Run));
         assert!(bulk_allowed(PaneId::Queue, Cancel));
+        assert!(bulk_allowed(PaneId::Queue, Archive));
         for btn in [Goto, Create, Collapse] {
             assert!(!bulk_allowed(PaneId::Queue, btn), "{btn:?} should be bulk-disabled on QUEUE");
         }

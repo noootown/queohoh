@@ -101,11 +101,13 @@ pub const BTN_LABEL_DISCOVER: &str = "discover";
 pub const BTN_LABEL_RERUN: &str = "rerun";
 pub const BTN_LABEL_GOTO: &str = "goto";
 pub const BTN_LABEL_STOP: &str = "stop";
-/// QUEUE archive/unarchive toggle. One static label for both halves — the verb
-/// resolves per-row (archived → restore, terminal → archive), and a
-/// state-swapped label would need the selected row threaded into the chip
-/// renderer for no real gain (collapse/expand swaps on PANE state, not row).
+/// QUEUE archive/unarchive toggle. The label swaps on the FIRST (topmost)
+/// selected row's state — `unarchive` when that row is already archived (the
+/// verb `a` will restore it / the range), `archive` otherwise — so the chip
+/// always reads as the action the key will take. The direction is threaded from
+/// the selection into the chip renderer (see `view::panes::render_list_pane`).
 pub const BTN_LABEL_ARCHIVE: &str = "archive";
+pub const BTN_LABEL_UNARCHIVE: &str = "unarchive";
 pub const BTN_LABEL_REMOVE: &str = "remove";
 pub const BTN_LABEL_COLLAPSE: &str = "collapse";
 pub const BTN_LABEL_EXPAND: &str = "expand";

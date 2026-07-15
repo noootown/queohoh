@@ -20,6 +20,7 @@ use crate::selectors::{
 use crate::view::theme::{
     BTN_LABEL_ARCHIVE, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_DISCOVER, BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
+    BTN_LABEL_UNARCHIVE,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_PROTECTED, GLYPH_SEARCH, Palette,
     RULE_CHAR,
@@ -95,6 +96,10 @@ fn button_chip(
     collapsed: bool,
     labeled: bool,
     bulk: bool,
+    // The QUEUE `[a]rchive` chip flips to `[a]unarchive` when the first selected
+    // row is already archived (the direction `a` will take — see
+    // [`render_list_pane`]). Ignored by every non-Archive chip.
+    archive_unarchive: bool,
     p: &Palette,
 ) -> (Vec<Span<'static>>, u16) {
     let (key, label) = match b {
@@ -104,7 +109,9 @@ fn button_chip(
         PaneButton::Discover => ('d', BTN_LABEL_DISCOVER),
         PaneButton::Goto => ('g', BTN_LABEL_GOTO),
         PaneButton::Cancel => ('x', BTN_LABEL_STOP),
-        PaneButton::Archive => ('a', BTN_LABEL_ARCHIVE),
+        PaneButton::Archive => {
+            ('a', if archive_unarchive { BTN_LABEL_UNARCHIVE } else { BTN_LABEL_ARCHIVE })
+        }
         PaneButton::Remove => ('x', BTN_LABEL_REMOVE),
         PaneButton::Collapse => {
             ('z', if collapsed { BTN_LABEL_EXPAND } else { BTN_LABEL_COLLAPSE })
@@ -186,6 +193,8 @@ fn build_header(
     row_scoped: usize,
     collapsed: bool,
     bulk: bool,
+    // Flips the QUEUE `[a]rchive` chip to `[a]unarchive` (see `button_chip`).
+    archive_unarchive: bool,
     p: &Palette,
 ) -> (Line<'static>, Vec<(Rect, PaneButton)>) {
     let x0 = area.x + 1;
@@ -203,14 +212,14 @@ fn build_header(
     let labeled: Vec<(Vec<Span<'static>>, usize)> = buttons
         .iter()
         .map(|&b| {
-            let (spans, w) = button_chip(b, pane, collapsed, true, bulk, p);
+            let (spans, w) = button_chip(b, pane, collapsed, true, bulk, archive_unarchive, p);
             (spans, w as usize)
         })
         .collect();
     let compact: Vec<(Vec<Span<'static>>, usize)> = buttons
         .iter()
         .map(|&b| {
-            let (spans, w) = button_chip(b, pane, collapsed, false, bulk, p);
+            let (spans, w) = button_chip(b, pane, collapsed, false, bulk, archive_unarchive, p);
             (spans, w as usize)
         })
         .collect();
@@ -337,8 +346,21 @@ fn render_collapsed_pane(
     // affordance and must never be the one dropped for width (create/goto
     // return with the pane).
     let _ = buttons;
-    let (mut header, rects) =
-        build_header(area, title, Some(summary), focused, pane, &[PaneButton::Collapse], 1, true, bulk, p);
+    // A collapsed bar shows only the Collapse chip, so the archive direction is
+    // irrelevant here.
+    let (mut header, rects) = build_header(
+        area,
+        title,
+        Some(summary),
+        focused,
+        pane,
+        &[PaneButton::Collapse],
+        1,
+        true,
+        bulk,
+        false,
+        p,
+    );
     if dimmed {
         patch_line(&mut header, p.dim_style());
     }
@@ -889,6 +911,14 @@ fn render_list_pane<T, C>(
         selected_positions(rows, sel, marks, &id_of).into_iter().collect();
     let bulk = is_bulk_selection(sel, marks);
     let title = pane_title(title_base, sel_positions.len(), bulk);
+    // The QUEUE `[a]rchive` chip mirrors the verb the `a` key will run on the
+    // FIRST (topmost) selected row: `unarchive` when that row is dimmed
+    // (archived), `archive` otherwise. `dim_of` is `row.archived` on QUEUE (the
+    // only pane with the chip); other panes never read this. The topmost
+    // selected position is the min of `sel_positions` — the same anchor
+    // `archive_selected` uses (its rows come back in the same ascending order).
+    let archive_unarchive =
+        sel_positions.iter().min().map(|&i| dim_of(&rows[i])).unwrap_or(false);
     let (mut header, rects) = build_header(
         area,
         &title,
@@ -899,6 +929,7 @@ fn render_list_pane<T, C>(
         row_scoped,
         false,
         bulk,
+        archive_unarchive,
         p,
     );
     if dimmed {
@@ -1378,7 +1409,7 @@ mod tests {
         // (row-scoped [g]oto first, then [c]reate [z]).
         let area = Rect { x: 0, y: 0, width: 30, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, false, &p);
         assert_eq!(rects.len(), 3);
         // avail=28, title "Q"=1, each compact chip=3 cells, base strip=3*(1+3)=12,
         // plus the ` · ` divider (+2, both groups shown) = 14. filler=28-1-14=13.
@@ -1401,7 +1432,7 @@ mod tests {
         // order (row-scoped [g]oto first, then [c]reate [z]).
         let area = Rect { x: 0, y: 0, width: 60, height: 8 };
         let (line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, false, &p);
         assert_eq!(rects.len(), 3);
         // Labeled widths — `[g]oto`/`[c]reate` merge the key into the word
         // (goto 3+3=6, create 3+5=8); collapse fuses the same way
@@ -1436,6 +1467,7 @@ mod tests {
             2,
             false,
             true, // bulk
+            false,
             &p,
         );
         let accent_key = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
@@ -1457,6 +1489,7 @@ mod tests {
             2,
             false,
             false, // no bulk selection
+            false,
             &p,
         );
         let key_spans: Vec<&Span> = line.spans.iter().filter(|s| s.content.starts_with('[')).collect();
@@ -1472,7 +1505,7 @@ mod tests {
         // folded into the launcher's `r` → Create Worktree row.)
         let area = Rect { x: 0, y: 0, width: 100, height: 8 };
         let (line, rects) =
-            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, &p);
+            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, &p);
         assert_eq!(rects.len(), 5);
         assert_eq!(rects[0].1, PaneButton::Run);
         assert_eq!(rects[1].1, PaneButton::Goto);
@@ -1539,7 +1572,7 @@ mod tests {
         // Only the leftmost (row-scoped [g]oto) stays.
         let area = Rect { x: 0, y: 0, width: 10, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, false, &p);
         assert_eq!(rects.len(), 1, "only the leftmost (goto) button survives");
         assert_eq!(rects[0].1, PaneButton::Goto);
     }
@@ -1550,7 +1583,7 @@ mod tests {
         // Title alone overflows the 6-cell interior → no buttons; title truncates.
         let area = Rect { x: 0, y: 0, width: 8, height: 8 };
         let (_line, rects) =
-            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, &p);
+            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, &p);
         assert!(rects.is_empty());
     }
 
@@ -1559,11 +1592,30 @@ mod tests {
         let p = Palette::default();
         let area = Rect { x: 0, y: 0, width: 40, height: 8 };
         let (expanded, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, false, &p);
         let (collapsed, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, true, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, true, false, false, &p);
         let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text(&expanded).contains(BTN_LABEL_COLLAPSE));
         assert!(text(&collapsed).contains(BTN_LABEL_EXPAND));
+    }
+
+    #[test]
+    fn build_header_archive_label_flips_with_first_selected_row() {
+        // The `[a]rchive` chip reads `archive` by default and `unarchive` when
+        // the first selected row is archived (the `archive_unarchive` flag).
+        let p = Palette::default();
+        let area = Rect { x: 0, y: 0, width: 60, height: 8 };
+        // The key `a` renders inside `[…]`, so the chip reads `[a]rchive` /
+        // `[a]unarchive` (assert the rendered forms, not the bare labels — the
+        // bracketed key splits the label so "archive" isn't a raw substring).
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
+        let (archive, _) =
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Archive], 1, false, false, false, &p);
+        assert!(text(&archive).contains("[a]rchive"), "default: {}", text(&archive));
+        assert!(!text(&archive).contains("[a]unarchive"));
+        let (unarchive, _) =
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Archive], 1, false, false, true, &p);
+        assert!(text(&unarchive).contains("[a]unarchive"), "flipped: {}", text(&unarchive));
     }
 }

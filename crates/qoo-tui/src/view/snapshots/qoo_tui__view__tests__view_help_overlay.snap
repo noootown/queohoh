@@ -16,7 +16,7 @@ expression: terminal.backend()
 "│       │   r               run: new task on worktree (worktrees) · r  │       │"
 "╰───────│   g               goto: resume task's Claude session (queue  │       │"
 "╭⚡TASKS│   x               cancel (queue) · remove worktree (worktre  │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│   a               archive / unarchive selected task (queue)  │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ 🔍 [/]│   a               archive / unarchive selection (queue)      │       │" Hidden by multi-width symbols: [(3, " ")]
 "│ no tas│   d               discover: fan out one task per discovered  │       │"
 "│       │   c               create (queue: adhoc task · worktrees: wo  │       │"
 "╰───────│   t               task menu (worktrees)                      │       │"

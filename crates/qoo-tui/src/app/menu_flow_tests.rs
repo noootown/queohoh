@@ -142,18 +142,105 @@ fn queue_a_refuses_active_rows_with_a_status_line() {
     assert_eq!(a.status_line.as_deref(), Some("cannot archive a running task"));
 }
 
+// --- bulk archive helpers -------------------------------------------------
+fn terminal_task(id: &str, status: TaskStatus) -> TaskInstance {
+    let mut t = TaskInstance::default();
+    t.id = id.into();
+    t.status = status;
+    t.target.repo = "platform".into();
+    t
+}
+fn rpcseq_methods<'a>(cmds: &'a [Cmd], want_verb: &str) -> Vec<(String, String)> {
+    // (method, id) pairs for the single RpcSeq matching `want_verb`.
+    cmds.iter()
+        .find_map(|c| match c {
+            Cmd::RpcSeq { verb, calls, .. } if verb == want_verb => Some(
+                calls
+                    .iter()
+                    .map(|c| (c.method.clone(), c.params["id"].as_str().unwrap_or("").to_string()))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 #[test]
-fn queue_a_refuses_a_bulk_selection() {
-    // Archive is single-row only (not in `bulk_allowed`): a range refuses.
-    let mut snap = failed_task_snapshot();
-    let mut t2 = snap.tasks[0].clone();
-    t2.id = "t2".into();
-    snap.tasks.push(t2);
+fn queue_a_bulk_archives_every_terminal_row() {
+    // A range of two live terminal rows: `a` fans one `archive` out per row
+    // through an RpcSeq (verb "archived"), no confirm — mirrors the bulk
+    // stop/rerun path.
+    let snap = StateSnapshot {
+        tasks: vec![terminal_task("t1", TaskStatus::Failed), terminal_task("t2", TaskStatus::Done)],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
     let mut a = app_with(snap);
-    a.update(shift_down()); // extend the selection into a 2-row range
+    a.update(shift_down()); // extend into a 2-row range
     let u = a.update(key('a'));
-    assert!(u.cmds.is_empty(), "no RPC on a bulk range");
-    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+    let calls = rpcseq_methods(&u.cmds, "archived");
+    assert!(calls.iter().all(|(m, _)| m == "archive"), "all archive: {calls:?}");
+    let ids: std::collections::HashSet<&str> = calls.iter().map(|(_, id)| id.as_str()).collect();
+    assert_eq!(ids, ["t1", "t2"].into_iter().collect(), "both rows archived: {calls:?}");
+}
+
+#[test]
+fn queue_a_bulk_unarchives_when_first_selected_is_archived() {
+    // Direction is fixed by the first (topmost) selected row. A range over two
+    // archived rows (nothing live) unarchives every one (verb "unarchived").
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        archived_recent: vec![
+            terminal_task("t1", TaskStatus::Done),
+            terminal_task("t2", TaskStatus::Done),
+        ],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.update(shift_down());
+    let u = a.update(key('a'));
+    let calls = rpcseq_methods(&u.cmds, "unarchived");
+    assert!(calls.iter().all(|(m, _)| m == "unarchive"), "all unarchive: {calls:?}");
+    let ids: std::collections::HashSet<&str> = calls.iter().map(|(_, id)| id.as_str()).collect();
+    assert_eq!(ids, ["t1", "t2"].into_iter().collect(), "both rows unarchived: {calls:?}");
+}
+
+#[test]
+fn queue_a_bulk_archive_skips_active_rows() {
+    // Archive direction (first selected is a live running row) archives the
+    // terminal rows and skips the active one — active work is never hidden.
+    let snap = StateSnapshot {
+        tasks: vec![
+            terminal_task("run", TaskStatus::Running),
+            terminal_task("done", TaskStatus::Failed),
+        ],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.update(shift_down()); // running (ACTIVE, topmost) + failed (FINISHED)
+    let u = a.update(key('a'));
+    let calls = rpcseq_methods(&u.cmds, "archived");
+    assert_eq!(calls, vec![("archive".into(), "done".into())], "only the terminal row: {calls:?}");
+}
+
+#[test]
+fn queue_a_bulk_sets_status_line_when_nothing_eligible() {
+    // A range with only active rows has nothing to archive — no RPC, a status
+    // line instead (parity with bulk stop/rerun).
+    let snap = StateSnapshot {
+        tasks: vec![
+            terminal_task("r1", TaskStatus::Running),
+            terminal_task("r2", TaskStatus::Running),
+        ],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.update(shift_down());
+    let u = a.update(key('a'));
+    assert!(u.cmds.is_empty(), "no RPC when nothing is eligible");
+    assert_eq!(a.status_line.as_deref(), Some("nothing to archive in selection"));
 }
 
 #[test]

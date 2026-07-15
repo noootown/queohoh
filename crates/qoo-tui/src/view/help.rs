@@ -20,7 +20,7 @@ const HELP_ROWS: [(&str, &str); 23] = [
     ("r", "run: new task on worktree (worktrees) · rerun (queue) · run def (tasks)"),
     ("g", "goto: resume task's Claude session (queue) · open worktree in tmux (worktrees)"),
     ("x", "cancel (queue) · remove worktree (worktrees)"),
-    ("a", "archive / unarchive selected task (queue)"),
+    ("a", "archive / unarchive selection (queue)"),
     ("d", "discover: fan out one task per discovered item (tasks)"),
     ("c", "create (queue: adhoc task · worktrees: worktree)"),
     ("t", "task menu (worktrees)"),
