@@ -47,6 +47,11 @@ pub const GLYPH_OUT_OF_BUDGET: char = '¤';
 pub const GLYPH_RUNNING: char = '▶';
 /// Worktree has uncommitted changes (git status --porcelain non-empty).
 pub const GLYPH_DIRTY: char = '±';
+/// Worktree is protected from deletion (the project's main checkout or a name in
+/// the project's `protected_worktrees`). Double-width emoji — it fills the whole
+/// 2-cell front marker slot (glyph + separator), same as `GLYPH_SEARCH`, so it
+/// needs no trailing space.
+pub const GLYPH_PROTECTED: char = '🔒';
 /// Filled dot — colored by context (connection indicator, worktree state).
 pub const GLYPH_DOT: char = '●';
 /// Magnifier prefixing the inline search-hint/input row. Double-width, but it is

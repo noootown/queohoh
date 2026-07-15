@@ -879,6 +879,10 @@ impl App {
             self.status_line = Some("not a worktree".into());
             return Update { dirty: true, cmds: vec![] };
         }
+        if row.protected {
+            self.status_line = Some("worktree is protected".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
         if matches!(row.state, crate::selectors::WtState::Busy) {
             self.status_line = Some("a task is running here".into());
             return Update { dirty: true, cmds: vec![] };

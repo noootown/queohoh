@@ -84,6 +84,10 @@ pub struct WorktreeRow {
     /// or when there is no open PR). Drives the clickable `#<n>` link in the
     /// detail info tab and the WORKTREES PR column — a click opens it.
     pub pr_url: Option<String>,
+    /// True when the daemon flagged this worktree as protected from deletion.
+    /// Drives the 🔒 marker and gates the remove action. Session rows default
+    /// `false` (never removable anyway).
+    pub protected: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -551,6 +555,7 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 last_commit_hash: wt.last_commit_hash.clone(),
                 pr_number: wt.pr_number,
                 pr_url: wt.pr_url.clone(),
+                protected: wt.protected,
             }
         })
         .collect();
@@ -2864,6 +2869,34 @@ mod tests {
         assert_eq!(name, long, "full prompt summary reaches the fill column");
         assert!(name.chars().count() > NEXT_NAME_CAP);
         assert!(!is_def);
+    }
+
+    #[test]
+    fn worktree_rows_carry_protected_flag() {
+        let mut wts = HashMap::new();
+        wts.insert(
+            "platform".to_string(),
+            vec![
+                WorktreeInfo {
+                    name: "legal-lake".into(),
+                    path: "/repos/platform.legal-lake".into(),
+                    branch: "legal-lake".into(),
+                    protected: true,
+                    ..Default::default()
+                },
+                wt("JUS-1", "/repos/platform.JUS-1", "JUS-1"),
+            ],
+        );
+        let s = StateSnapshot {
+            projects: projects(&["platform"]),
+            worktrees: wts,
+            ..Default::default()
+        };
+        let rows = worktree_rows(&s, "platform");
+        let by: HashMap<_, _> =
+            rows.iter().map(|r| (r.raw_name.clone(), r.protected)).collect();
+        assert!(by["legal-lake"]);
+        assert!(!by["JUS-1"]);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::view::theme::{
     BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
-    GLYPH_DIRTY, GLYPH_DOT, GLYPH_SEARCH, Palette, RULE_CHAR,
+    GLYPH_DIRTY, GLYPH_DOT, GLYPH_PROTECTED, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
 
@@ -538,12 +538,18 @@ fn worktree_line(
     // the accent-colored worktree identity name.
     let mut spans = vec![lead, Span::raw(" ")];
     if layout.dirty_w > 0 {
-        if row.dirty == Some(true) {
-            spans.push(Span::styled(GLYPH_DIRTY.to_string(), warn));
+        if row.protected {
+            // 🔒 is 2 display columns — it fills the whole [glyph][space] slot,
+            // so no trailing space. Protected wins over the dirty ± marker.
+            spans.push(Span::styled(GLYPH_PROTECTED.to_string(), meta));
         } else {
+            if row.dirty == Some(true) {
+                spans.push(Span::styled(GLYPH_DIRTY.to_string(), warn));
+            } else {
+                spans.push(Span::raw(" "));
+            }
             spans.push(Span::raw(" "));
         }
-        spans.push(Span::raw(" "));
     }
     spans.push(Span::styled(pad_clip(&row.name, layout.name_w), Style::default().fg(p.worktree)));
     // Last finished lane task: status glyph (status-colored) + name (mauve when a
@@ -1263,6 +1269,38 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_line_shows_lock_for_protected_row() {
+        use crate::selectors::{wt_col_layout, WorktreeRow};
+        let p = Palette::default();
+        let protected = WorktreeRow {
+            name: "legal-lake".into(),
+            raw_name: "legal-lake".into(),
+            path: "/x".into(),
+            branch: "legal-lake".into(),
+            protected: true,
+            ..Default::default()
+        };
+        let plain = WorktreeRow {
+            name: "JUS-1".into(),
+            raw_name: "JUS-1".into(),
+            path: "/y".into(),
+            branch: "JUS-1".into(),
+            ..Default::default()
+        };
+        let rows = vec![protected.clone(), plain.clone()];
+        let layout = wt_col_layout(&rows, 120);
+        let text = |r: &WorktreeRow| {
+            worktree_line(r, &layout, &p, 0)
+                .spans
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<String>()
+        };
+        assert!(text(&protected).contains(GLYPH_PROTECTED));
+        assert!(!text(&plain).contains(GLYPH_PROTECTED));
+    }
 
     #[test]
     fn build_header_keeps_all_buttons_right_aligned_against_the_corner() {

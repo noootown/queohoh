@@ -9,6 +9,7 @@ import {
 	loadProjectDefaultModel,
 	loadProjectGithubId,
 	loadProjectModels,
+	loadProjectProtectedWorktrees,
 	loadProjectVars,
 	projectWorkspaceDir,
 	resolveDefinition,
@@ -331,5 +332,57 @@ describe("loadProjectModels", () => {
 			].join("\n"),
 		);
 		expect(loadProjectModels(dir)).toEqual({ sonnet: "claude-sonnet-4-6" });
+	});
+});
+
+describe("loadProjectProtectedWorktrees", () => {
+	it("reads a string list from vars.yaml", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"protected_worktrees:\n  - legal-lake\n  - testing1\n",
+		);
+		expect(loadProjectProtectedWorktrees(dir)).toEqual([
+			"legal-lake",
+			"testing1",
+		]);
+	});
+
+	it("returns [] for absent file or absent key", () => {
+		const absent = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
+		expect(loadProjectProtectedWorktrees(absent)).toEqual([]);
+
+		const noKey = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		expect(loadProjectProtectedWorktrees(noKey)).toEqual([]);
+	});
+
+	it("tolerates a non-list value and skips non-string/empty entries", () => {
+		const scalar = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
+		writeFileSync(
+			join(scalar, "vars.yaml"),
+			"protected_worktrees: legal-lake\n",
+		);
+		expect(loadProjectProtectedWorktrees(scalar)).toEqual([]);
+
+		const mixed = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
+		writeFileSync(
+			join(mixed, "vars.yaml"),
+			"protected_worktrees:\n  - legal-lake\n  - ''\n  - 12345\n",
+		);
+		expect(loadProjectProtectedWorktrees(mixed)).toEqual(["legal-lake"]);
+
+		const notMap = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
+		writeFileSync(join(notMap, "vars.yaml"), "[not, a, map]\n");
+		expect(loadProjectProtectedWorktrees(notMap)).toEqual([]);
+	});
+
+	it("is not surfaced as a template var by loadProjectVars", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"ticket: JUS-1\nprotected_worktrees:\n  - legal-lake\n",
+		);
+		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
 	});
 });

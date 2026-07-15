@@ -7,6 +7,7 @@ export {
 	loadProjectDefaultModel,
 	loadProjectGithubId,
 	loadProjectModels,
+	loadProjectProtectedWorktrees,
 	loadProjectVars,
 	projectWorkspaceDir,
 	resolveDefinition,
@@ -42,7 +43,11 @@ export { buildSecretMap, makeRedactor, redact } from "./redact.js";
 export type { TargetRef } from "./ref.js";
 export { extractTicketId, formatRef, parseRef } from "./ref.js";
 export type { Resolution, ResolverIO, WorktreeInfo } from "./resolver.js";
-export { REPO_SENTINEL, resolveTarget } from "./resolver.js";
+export {
+	isProtectedWorktree,
+	REPO_SENTINEL,
+	resolveTarget,
+} from "./resolver.js";
 export type { Exec } from "./resolver-io.js";
 export {
 	createResolverIO,

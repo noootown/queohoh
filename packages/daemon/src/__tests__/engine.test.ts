@@ -347,6 +347,64 @@ describe("Engine.tick", () => {
 	});
 });
 
+describe("Engine.removeWorktree protection", () => {
+	function protSetup() {
+		const base = mkdtempSync(join(tmpdir(), "qo-eng-rm-prot-"));
+		const repoPath = join(base, "repo");
+		mkdirSync(repoPath, { recursive: true });
+		const wsProject = join(base, "ws", "platform");
+		mkdirSync(wsProject, { recursive: true });
+		writeFileSync(
+			join(wsProject, "vars.yaml"),
+			"protected_worktrees:\n  - legal-lake\n",
+		);
+		let removed: string | null = null;
+		const { engine } = setup({
+			config: {
+				workspace: join(base, "ws"),
+				projects: [{ name: "platform", path: repoPath }],
+			},
+			resolverIO: {
+				listWorktrees: async () => [
+					{ name: "platform", path: repoPath, branch: "main" },
+					{
+						name: "legal-lake",
+						path: join(base, "wt-ll"),
+						branch: "legal-lake",
+					},
+					{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+				],
+				removeWorktree: async (_r, wt) => {
+					removed = wt.name;
+				},
+			},
+		});
+		return { engine, removed: () => removed };
+	}
+
+	it("refuses to remove the main checkout", async () => {
+		const { engine, removed } = protSetup();
+		await expect(engine.removeWorktree("platform", "platform")).rejects.toThrow(
+			/protected/,
+		);
+		expect(removed()).toBeNull();
+	});
+
+	it("refuses to remove a configured protected worktree", async () => {
+		const { engine, removed } = protSetup();
+		await expect(
+			engine.removeWorktree("platform", "legal-lake"),
+		).rejects.toThrow(/protected/);
+		expect(removed()).toBeNull();
+	});
+
+	it("still removes an unprotected worktree", async () => {
+		const { engine, removed } = protSetup();
+		await engine.removeWorktree("platform", "JUS-1");
+		expect(removed()).toBe("JUS-1");
+	});
+});
+
 describe("Engine.createWorktree", () => {
 	it("delegates to spawnWorktree with the resolved repo path", async () => {
 		const spawned: { repoPath: string; name: string }[] = [];
@@ -407,8 +465,46 @@ describe("Engine.worktreesByRepo", () => {
 					lastCommitHash: null,
 					prNumber: null,
 					prUrl: null,
+					protected: false,
 				},
 			],
+		});
+	});
+
+	it("marks the main checkout and configured names as protected", async () => {
+		const base = mkdtempSync(join(tmpdir(), "qo-eng-prot-"));
+		const repoPath = join(base, "repo");
+		mkdirSync(repoPath, { recursive: true });
+		const wsProject = join(base, "ws", "platform");
+		mkdirSync(wsProject, { recursive: true });
+		writeFileSync(
+			join(wsProject, "vars.yaml"),
+			"protected_worktrees:\n  - legal-lake\n",
+		);
+		const { engine } = setup({
+			config: {
+				workspace: join(base, "ws"),
+				projects: [{ name: "platform", path: repoPath }],
+			},
+			resolverIO: {
+				listWorktrees: async () => [
+					{ name: "platform", path: repoPath, branch: "main" },
+					{
+						name: "legal-lake",
+						path: join(base, "wt-ll"),
+						branch: "legal-lake",
+					},
+					{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+				],
+			},
+		});
+		await engine.tick();
+		const list = engine.worktreesByRepo().platform ?? [];
+		const byName = Object.fromEntries(list.map((w) => [w.name, w.protected]));
+		expect(byName).toEqual({
+			platform: true,
+			"legal-lake": true,
+			"JUS-1": false,
 		});
 	});
 });

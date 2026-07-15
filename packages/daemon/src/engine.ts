@@ -19,10 +19,12 @@ import {
 	effectiveModelTable,
 	globalWorkspaceDir,
 	instantiateDefinition,
+	isProtectedWorktree,
 	laneKey,
 	listDefinitions,
 	loadProjectDefaultModel,
 	loadProjectModels,
+	loadProjectProtectedWorktrees,
 	loadProjectVars,
 	parseCron,
 	projectWorkspaceDir,
@@ -118,9 +120,15 @@ export class Engine {
 	worktreesByRepo(): Record<string, WorktreeInfo[]> {
 		const out: Record<string, WorktreeInfo[]> = {};
 		for (const [repo, list] of this.worktreeCache) {
+			const repoPath = this.repoPath(repo);
+			const protectedNames = loadProjectProtectedWorktrees(
+				projectWorkspaceDir(this.deps.config, repo),
+			);
 			out[repo] = list.map((wt) => {
 				const e = this.gitEnrichCache.get(wt.path);
-				return e ? { ...wt, ...e } : wt;
+				const base: WorktreeInfo = e ? { ...wt, ...e } : { ...wt };
+				base.protected = isProtectedWorktree(repoPath, protectedNames, wt);
+				return base;
 			});
 		}
 		return out;
@@ -196,6 +204,14 @@ export class Engine {
 			(w) => w.name === name || w.name === `${repo}.${name}`,
 		);
 		if (!wt) throw new Error(`worktree not found: ${repo}:${name}`);
+		const protectedNames = loadProjectProtectedWorktrees(
+			projectWorkspaceDir(this.deps.config, repo),
+		);
+		if (isProtectedWorktree(repoPath, protectedNames, wt)) {
+			throw new Error(
+				`Worktree "${wt.name}" is protected and cannot be removed`,
+			);
+		}
 		const lanes = new Set([`${repo}:${wt.name}`, `${repo}:${name}`]);
 		const busy = this.deps.store
 			.list()

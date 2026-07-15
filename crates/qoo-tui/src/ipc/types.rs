@@ -163,6 +163,11 @@ pub struct WorktreeInfo {
     /// `pr_number` so the `#<n>` chip in the detail info tab and the WORKTREES
     /// PR column open the PR in a browser on a click.
     pub pr_url: Option<String>,
+    /// True when queohoh must never delete this worktree (the project's main
+    /// checkout or a name in the project's `protected_worktrees`). Absent on an
+    /// old daemon → `false` via the container `default` (removable affordance;
+    /// the daemon guard is the real block).
+    pub protected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -470,6 +475,20 @@ mod tests {
         assert_eq!(wt.dirty, None);
         assert_eq!(wt.last_commit_epoch, None);
         assert_eq!(wt.last_commit_author, None);
+    }
+
+    #[test]
+    fn worktree_protected_defaults_false_and_parses_true() {
+        // Absent (old daemon) → false via the container `default`.
+        let old: WorktreeInfo =
+            serde_json::from_str(r#"{"name":"a","path":"/a","branch":"a"}"#).unwrap();
+        assert!(!old.protected);
+        // Present → parsed.
+        let new: WorktreeInfo = serde_json::from_str(
+            r#"{"name":"a","path":"/a","branch":"a","protected":true}"#,
+        )
+        .unwrap();
+        assert!(new.protected);
     }
 
     #[test]

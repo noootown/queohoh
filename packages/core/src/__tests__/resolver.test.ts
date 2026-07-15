@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ResolverIO, WorktreeInfo } from "../resolver.js";
-import { resolveTarget } from "../resolver.js";
+import { isProtectedWorktree, resolveTarget } from "../resolver.js";
 
 function stubIO(overrides: Partial<ResolverIO> = {}): ResolverIO & {
 	spawned: { name: string; branch?: string }[];
@@ -150,5 +150,50 @@ describe("resolveTarget", () => {
 	it("garbage ref: needs-input, never throws", async () => {
 		const result = await resolveTarget("wat:?", ctx, stubIO());
 		expect(result.outcome).toBe("needs-input");
+	});
+});
+
+describe("isProtectedWorktree", () => {
+	const mkWt = (name: string, path: string): WorktreeInfo => ({
+		name,
+		path,
+		branch: name,
+	});
+
+	it("protects the main checkout by path-equality even when name differs", () => {
+		const repoPath = "/repos/platform";
+		expect(
+			isProtectedWorktree(repoPath, [], mkWt("platform", "/repos/platform")),
+		).toBe(true);
+		expect(
+			isProtectedWorktree(repoPath, [], mkWt("main", "/repos/platform")),
+		).toBe(true);
+	});
+
+	it("protects a worktree whose name is in the configured list", () => {
+		expect(
+			isProtectedWorktree(
+				"/repos/platform",
+				["legal-lake"],
+				mkWt("legal-lake", "/repos/platform.legal-lake"),
+			),
+		).toBe(true);
+	});
+
+	it("does not protect an unlisted feature worktree", () => {
+		expect(
+			isProtectedWorktree(
+				"/repos/platform",
+				["legal-lake"],
+				mkWt("JUS-1", "/repos/platform.JUS-1"),
+			),
+		).toBe(false);
+	});
+
+	it("tolerates a null repoPath (no path match, list still applies)", () => {
+		expect(isProtectedWorktree(null, [], mkWt("JUS-1", "/x"))).toBe(false);
+		expect(isProtectedWorktree(null, ["JUS-1"], mkWt("JUS-1", "/x"))).toBe(
+			true,
+		);
 	});
 });

@@ -33,6 +33,28 @@ export interface WorktreeInfo {
 	 * unknown / no open PR / gh unavailable. Paired with prNumber so the TUI can
 	 * open the PR in a browser on a click. */
 	prUrl?: string | null;
+	/** True when queohoh must never delete this worktree — the project's main
+	 * checkout (path-equality) or a name in the project's `protected_worktrees`.
+	 * Computed by the daemon and carried to the TUI. Absent/undefined = not
+	 * protected (an old daemon that predates the field). */
+	protected?: boolean;
+}
+
+/**
+ * Whether `wt` is protected from deletion: it is the project's main checkout
+ * (its path equals the project's registered checkout path) OR its name is in the
+ * project's configured `protected_worktrees`. Path-equality — not name equality —
+ * identifies the main checkout, because a project's name is a user label while a
+ * worktree's name is `basename(path)`; the two can differ. `repoPath` is null for
+ * an unknown repo, in which case only the name list applies.
+ */
+export function isProtectedWorktree(
+	repoPath: string | null,
+	protectedNames: string[],
+	wt: WorktreeInfo,
+): boolean {
+	if (repoPath !== null && wt.path === repoPath) return true;
+	return protectedNames.includes(wt.name);
 }
 
 export interface ResolverIO {
