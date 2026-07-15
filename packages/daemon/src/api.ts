@@ -567,17 +567,15 @@ export class ApiServer {
 			}
 			case "retry": {
 				const task = this.mustGet(String(params.id));
-				// `verify-failed` re-queues like `failed` — both are non-success
-				// terminal outcomes a user may want to re-run after a fix.
-				// `cancelled` too: a user-cancelled task is a terminal row the
-				// user can revive (mirrors the TUI rerun eligibility).
-				if (
-					task.status !== "failed" &&
-					task.status !== "verify-failed" &&
-					task.status !== "needs-input" &&
-					task.status !== "cancelled"
-				) {
-					throw new Error(`cannot retry task in status ${task.status}`);
+				// Any status re-queues EXCEPT `running`: its in-flight worker owns
+				// the status (a settle would clobber the re-queue and the lane
+				// would double-run) — stop it first. Terminal successes (done/
+				// skipped) revive like failures, and a `queued` retry is an
+				// idempotent no-op, so bulk rerun selections never error.
+				if (task.status === "running") {
+					throw new Error(
+						`cannot retry task in status ${task.status} — stop it first`,
+					);
 				}
 				const updated = deps.store.update(task.id, {
 					status: "queued",

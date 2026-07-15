@@ -28,10 +28,12 @@ fn two_queue_one_failed() -> StateSnapshot {
 
 #[test]
 fn queue_range_requeue_via_r_hits_only_eligible_and_clears_range() {
-    // t0 failed (eligible), t1 queued (ineligible). `r` over the 2-row range
-    // opens the confirm freezing only t0; Enter re-queues it with the "reran"
-    // count feedback and clears the range.
-    let mut a = app_with(two_queue_one_failed());
+    // t0 failed (eligible), t1 running (the ONE ineligible status). `r` over
+    // the 2-row range opens the confirm freezing only t0; Enter re-queues it
+    // with the "reran" count feedback and clears the range.
+    let mut snap = two_queue_one_failed();
+    snap.tasks[1].status = TaskStatus::Running;
+    let mut a = app_with(snap);
     a.update(shift_down()); // extend queue selection to 2 rows
     a.update(key('r')); // opens the confirm dialog (freezing the calls)
     assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }));

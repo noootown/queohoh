@@ -122,6 +122,23 @@ fn queue_r_confirms_on_cancelled_task() {
 }
 
 #[test]
+fn queue_r_confirms_on_every_non_running_status() {
+    // Rerun is allowed in ANY status except running (whose in-flight worker
+    // owns the row — stop it first): done, skipped, and even queued (an
+    // idempotent no-op daemon-side) all open the confirm dialog.
+    for status in [TaskStatus::Done, TaskStatus::Skipped, TaskStatus::Queued] {
+        let mut snap = failed_task_snapshot();
+        snap.tasks[0].status = status;
+        let mut a = app_with(snap);
+        a.update(key('r'));
+        assert!(
+            matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }),
+            "{status:?} task should open the rerun confirm, got {:?}", a.mode,
+        );
+    }
+}
+
+#[test]
 fn queue_x_confirms_then_stops_a_running_task() {
     // `x` always opens the confirm dialog first; Enter fires the stop.
     let mut snap = failed_task_snapshot();
@@ -206,8 +223,9 @@ fn queue_needs_input_is_requeueable_and_cancellable_via_skip() {
 
 #[test]
 fn queue_range_requeue_with_no_eligible_sets_status_line() {
-    // A range of only queued/running rows has nothing to re-queue.
-    let mut t0 = TaskInstance::default(); t0.id = "t0".into(); t0.status = TaskStatus::Queued; t0.target.repo = "platform".into();
+    // A range of only running rows (the ONE ineligible status) has nothing to
+    // re-queue.
+    let mut t0 = TaskInstance::default(); t0.id = "t0".into(); t0.status = TaskStatus::Running; t0.target.repo = "platform".into();
     let mut t1 = TaskInstance::default(); t1.id = "t1".into(); t1.status = TaskStatus::Running; t1.target.repo = "platform".into();
     let snap = StateSnapshot { tasks: vec![t0, t1], projects: vec![Project { name: "platform".into(), github_id: None }], ..Default::default() };
     let mut a = app_with(snap);

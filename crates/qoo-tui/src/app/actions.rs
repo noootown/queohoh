@@ -12,7 +12,7 @@ use super::*;
 type QueueSelRow = (String, TaskStatus, bool);
 
 /// Kebab-case status name for the queue `r`/`x` no-op status lines
-/// ("cannot rerun a queued task").
+/// ("cannot rerun a running task").
 fn status_kebab(s: TaskStatus) -> &'static str {
     match s {
         TaskStatus::Queued => "queued",
@@ -348,24 +348,15 @@ impl App {
 
     /// `r` on QUEUE (and the `[r]un`/re-run chip). Re-queue ALWAYS confirms first
     /// (parity with the stop verb and the worktree remove): it freezes the
-    /// per-task `retry` RPCs and opens `Mode::Confirm`. Terminal (done/failed/
-    /// cancelled/unknown) and needs-input tasks are eligible; queued/running
-    /// (and archived) rows are ineligible. Enter/y in that dialog dispatches the `RpcSeq` (verb
+    /// per-task `retry` RPCs and opens `Mode::Confirm`. EVERY status is
+    /// eligible except `running` (its in-flight worker owns the row — stop it
+    /// first) and archived rows; a `queued` retry is an idempotent no-op
+    /// daemon-side. Enter/y in that dialog dispatches the `RpcSeq` (verb
     /// "reran", see `update`); a single ineligible row explains why with a
     /// per-status no-op line, and a selection with nothing re-queueable never
     /// opens the dialog — it sets a status line instead.
     pub(super) fn requeue_selected(&mut self) -> Update {
-        let requeue_ok = |s: TaskStatus| {
-            matches!(
-                s,
-                TaskStatus::Failed
-                    | TaskStatus::VerifyFailed
-                    | TaskStatus::NeedsInput
-                    | TaskStatus::Done
-                    | TaskStatus::Cancelled
-                    | TaskStatus::Unknown
-            )
-        };
+        let requeue_ok = |s: TaskStatus| !matches!(s, TaskStatus::Running);
         let Some((rows, is_bulk)) = self.queue_selection_rows() else {
             return Update::default();
         };

@@ -811,7 +811,24 @@ describe("ApiServer", () => {
 		expect(store.list()).toEqual([]);
 	});
 
-	it("retry rejects tasks that are not failed/needs-input", async () => {
+	it("retry re-queues every non-running status (done/skipped/queued included)", async () => {
+		const { client, store } = await setup();
+		for (const status of ["done", "skipped", "queued"] as const) {
+			const t = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			store.update(t.id, { status, error: null });
+			const retried = (await client.call("retry", { id: t.id })) as {
+				status: string;
+			};
+			expect(retried.status).toBe("queued");
+		}
+	});
+
+	it("retry rejects only a running task (its in-flight worker owns the status)", async () => {
 		const { client, store } = await setup();
 		const t = store.create({
 			prompt: "p",
@@ -819,6 +836,7 @@ describe("ApiServer", () => {
 			ref: "temp",
 			source: "tui",
 		});
+		store.update(t.id, { status: "running" });
 		await expect(client.call("retry", { id: t.id })).rejects.toThrow(
 			/cannot retry/,
 		);
