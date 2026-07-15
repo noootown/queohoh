@@ -932,6 +932,26 @@ describe("runTask verify (done-condition)", () => {
 		expect(runStore.readRunMeta(t.id)?.outcome).toBe("verify-failed");
 	});
 
+	it("verify output is stored ANSI-stripped with \\r overwrites resolved", async () => {
+		// Test runners (vitest) emit colored, spinner-overwritten output; stored
+		// raw it renders as garbage in the TUI (ratatui drops the ESC byte and
+		// prints the `[2m` tail literally). Capture must strip ANSI sequences and
+		// keep only the final \r-overwrite segment per line.
+		const { deps, store } = makeDeps({
+			executeVerify: fakeVerify({
+				exitCode: 2,
+				output:
+					"\x1b[90mstderr\x1b[2m | api.test.ts\x1b[22m gone\nspin\rspun\rfinal\ncrlf line\r\n",
+			}),
+		});
+		const t = enqueueVerify(store, "check.sh");
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.verifyOutput).toBe(
+			"stderr | api.test.ts gone\nfinal\ncrlf line\n",
+		);
+	});
+
 	it("verify times out → verify-failed with a timed-out reason and null exit", async () => {
 		const { deps, store } = makeDeps({
 			executeVerify: fakeVerify({

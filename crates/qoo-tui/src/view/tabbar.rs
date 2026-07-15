@@ -14,7 +14,18 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     let mut spans: Vec<Span> = Vec::new();
     let mut x = area.x;
     for (i, name) in c.tab_names.iter().enumerate() {
-        let label = format!(" {}:{} ", i + 1, name);
+        // Scheduled (queued) + running count for the project, e.g.
+        // `1:platform (2)`; a quiet project keeps the bare chip.
+        let active = app
+            .snapshot
+            .as_ref()
+            .map(|s| crate::selectors::active_count_for(s, name))
+            .unwrap_or(0);
+        let label = if active > 0 {
+            format!(" {}:{} ({}) ", i + 1, name, active)
+        } else {
+            format!(" {}:{} ", i + 1, name)
+        };
         let w = label.chars().count() as u16;
         let style = if i == c.active_index {
             Style::default()

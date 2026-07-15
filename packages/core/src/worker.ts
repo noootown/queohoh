@@ -10,6 +10,7 @@ import type { QueueStore } from "./store.js";
 import type { TaskInstance } from "./task.js";
 import { laneKey } from "./task.js";
 import { render } from "./template.js";
+import { cleanCapturedOutput } from "./text.js";
 import { extractTicket } from "./worktree-context.js";
 
 export type ClaudeExecutor = typeof executeClaude;
@@ -289,7 +290,9 @@ export async function runTask(
 				command: verifyCmd,
 				verified: passed,
 				exitCode: v.timedOut ? null : v.exitCode,
-				output: v.output,
+				// Test runners emit ANSI colors + \r spinner overwrites; stored raw
+				// they garble the TUI's cell renderer (see cleanCapturedOutput).
+				output: cleanCapturedOutput(v.output),
 			};
 			if (!passed) {
 				outcome = "verify-failed";

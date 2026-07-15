@@ -259,6 +259,20 @@ pub fn running_count_for(snapshot: &StateSnapshot, project: &str) -> usize {
         .count()
 }
 
+/// Scheduled-plus-running task count for a project — the tabbar chip's `(n)`
+/// suffix. Queued and Running rows count (work the scheduler will do or is
+/// doing); needs-input and terminal rows do not.
+pub fn active_count_for(snapshot: &StateSnapshot, project: &str) -> usize {
+    snapshot
+        .tasks
+        .iter()
+        .filter(|t| {
+            t.target.repo == project
+                && matches!(t.status, TaskStatus::Queued | TaskStatus::Running)
+        })
+        .count()
+}
+
 pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> Vec<QueueRow> {
     // Live rows plus the last 10 archived rows (dimmed by the view via
     // `archived: true`), then sorted into an ACTIVE section (running/needs-input/
@@ -1748,6 +1762,27 @@ mod tests {
         let total: usize =
             ["platform", "web", "docs"].iter().map(|p| running_count_for(&s, p)).sum();
         assert_eq!(total, s.running.len());
+    }
+
+    #[test]
+    fn active_count_for_counts_queued_plus_running_per_project() {
+        // The tabbar chip suffix `(n)`: scheduled (queued) + running tasks for
+        // that project. Terminal and needs-input rows never count.
+        let s = StateSnapshot {
+            tasks: vec![
+                task_on(TaskStatus::Running, "r-plat", "platform", Some("wt-a")),
+                task_on(TaskStatus::Queued, "q-plat", "platform", Some("wt-a")),
+                task_on(TaskStatus::Queued, "q2-plat", "platform", None),
+                task_on(TaskStatus::NeedsInput, "n-plat", "platform", None),
+                task_on(TaskStatus::Done, "d-plat", "platform", Some("wt-a")),
+                task_on(TaskStatus::Queued, "q-web", "web", None),
+            ],
+            running: vec!["r-plat".into()],
+            ..Default::default()
+        };
+        assert_eq!(active_count_for(&s, "platform"), 3);
+        assert_eq!(active_count_for(&s, "web"), 1);
+        assert_eq!(active_count_for(&s, "absent"), 0);
     }
 
     #[test]

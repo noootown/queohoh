@@ -65,8 +65,11 @@ pub struct RunMeta {
 /// lazily as the worker writes).
 pub async fn read_run_files(runs_dir: &Path, task_id: &str, tail_lines: usize) -> RunFiles {
     let dir = runs_dir.join(task_id);
+    // Both files can embed captured command output (test runners) carrying
+    // ANSI escapes, \r spinner overwrites, and tabs — sanitize per line so the
+    // cell renderer never sees them (see sanitize_display_line).
     let report = match fs::read_to_string(dir.join("report.md")).await {
-        Ok(s) => s.split('\n').map(str::to_string).collect(),
+        Ok(s) => s.split('\n').map(crate::markup::sanitize_display_line).collect(),
         Err(_) => Vec::new(),
     };
     let transcript_tail = read_tail(&dir.join("transcript.md"), tail_lines)
@@ -144,7 +147,13 @@ async fn read_tail(path: &Path, tail_lines: usize) -> std::io::Result<Vec<String
         lines.remove(0);
     }
     let keep_from = lines.len().saturating_sub(tail_lines);
-    Ok(lines[keep_from..].iter().map(|s| s.to_string()).collect())
+    // Reports/transcripts embed captured command output (test runners) that can
+    // carry ANSI escapes, \r spinner overwrites, and tabs — sanitize per line
+    // so the cell renderer never sees them (see sanitize_display_line).
+    Ok(lines[keep_from..]
+        .iter()
+        .map(|s| crate::markup::sanitize_display_line(s))
+        .collect())
 }
 
 #[cfg(test)]
@@ -173,6 +182,18 @@ mod tests {
         assert_eq!(out.report[0], "# Result");
         assert_eq!(out.transcript_tail.len(), 25);
         assert_eq!(out.transcript_tail[24], "line 39");
+    }
+
+    #[tokio::test]
+    async fn sanitizes_ansi_and_cr_in_read_lines() {
+        // A report whose Verify block captured raw vitest output: ANSI SGR
+        // codes and \r spinner overwrites must never reach the renderer.
+        let report = "## Verify\n\u{1b}[90mstderr\u{1b}[2m | api.test.ts\u{1b}[22m > ok\nspin\rdone\n";
+        let runs = setup("01ANSI", Some("t\u{1b}[31mred\u{1b}[39m"), Some(report));
+        let out = read_run_files(&runs, "01ANSI", 25).await;
+        assert_eq!(out.report[1], "stderr | api.test.ts > ok");
+        assert_eq!(out.report[2], "done");
+        assert_eq!(out.transcript_tail[0], "tred");
     }
 
     #[tokio::test]

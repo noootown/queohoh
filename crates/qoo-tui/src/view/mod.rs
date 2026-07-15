@@ -461,6 +461,19 @@ mod tests {
     }
 
     #[test]
+    fn tabbar_shows_per_project_scheduled_plus_running_count() {
+        // fixture: acme has 1 running + 1 queued task → chip suffix `(2)`.
+        let app = fixture_app();
+        let (terminal, _hits) = render_at(&app, 120, 40);
+        let buf = terminal.backend().buffer().clone();
+        let mut row0 = String::new();
+        for x in 0..120 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        assert!(row0.contains("1:acme (2)"), "tabbar row: {row0:?}");
+    }
+
+    #[test]
     fn apply_osc8_folds_link_into_first_cell_and_skips_the_rest() {
         const URL: &str = "https://github.com/acme/acme/pull/77";
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));

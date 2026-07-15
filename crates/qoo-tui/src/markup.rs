@@ -4,6 +4,56 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::view::theme::{FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, Palette, RULE_CHAR};
 
+/// Normalize one line of arbitrary captured text (test-runner output inside a
+/// report/transcript) for cell rendering: resolve `\r` overwrites the way a
+/// terminal would (keep only the final carriage-return segment), strip ANSI
+/// CSI/OSC/two-byte escape sequences, expand tabs, and drop any remaining
+/// control chars. Without this, ratatui silently skips the zero-width ESC byte
+/// but PRINTS the printable tail of the sequence (`[2m`…) and the wrap math
+/// counts phantom columns — raw ANSI text renders as interleaved garbage.
+pub fn sanitize_display_line(line: &str) -> String {
+    let line = line.strip_suffix('\r').unwrap_or(line); // CRLF file read as \n-split
+    let line = line.rsplit('\r').next().unwrap_or(line); // spinner overwrites: last wins
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.peek() {
+                Some('[') => {
+                    // CSI: consume params/intermediates through the final byte @..~.
+                    chars.next();
+                    for n in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&n) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    // OSC: consume through BEL or the ST (`ESC \`) terminator.
+                    chars.next();
+                    while let Some(n) = chars.next() {
+                        if n == '\x07' {
+                            break;
+                        }
+                        if n == '\x1b' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next(); // two-byte escape (ESC x)
+                }
+                None => {}
+            },
+            '\t' => out.push_str("    "),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Per-line fence context, precomputed over the whole transcript by
 /// [`fence_states`] so a window into the middle of a code block styles
 /// correctly (the renderer only ever sees a slice, [`crate::view::detail`]).
@@ -894,6 +944,29 @@ fn match_token(line: &str, i: usize, p: &Palette) -> Option<(usize, Span<'static
 
 #[cfg(test)]
 mod tests {
+    mod sanitize {
+        use crate::markup::sanitize_display_line;
+
+        #[test]
+        fn strips_ansi_resolves_cr_and_expands_tabs() {
+            // The real bytes from a vitest verify run (report.md line 30/31).
+            assert_eq!(
+                sanitize_display_line("\u{1b}[90mstderr\u{1b}[2m | api.test.ts\u{1b}[22m > ok"),
+                "stderr | api.test.ts > ok"
+            );
+            // Spinner overwrites collapse to the final segment; CRLF tail drops.
+            assert_eq!(sanitize_display_line("spin\rspun\rfinal"), "final");
+            assert_eq!(sanitize_display_line("crlf line\r"), "crlf line");
+            // OSC (hyperlink/title) sequences vanish with both terminators.
+            assert_eq!(sanitize_display_line("\u{1b}]8;;http://x\u{1b}\\link\u{1b}]8;;\u{1b}\\"), "link");
+            assert_eq!(sanitize_display_line("\u{1b}]0;title\u{7}text"), "text");
+            // Tabs expand instead of silently collapsing to width 0.
+            assert_eq!(sanitize_display_line("a\tb"), "a    b");
+            // Plain text is untouched.
+            assert_eq!(sanitize_display_line("plain — text"), "plain — text");
+        }
+    }
+
     use super::*;
 
     fn parts(line: &Line) -> Vec<(String, Style)> {
