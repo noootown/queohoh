@@ -485,6 +485,10 @@ impl App {
                             };
                             return self.apply_action(action);
                         }
+                        crate::hit::PaneButton::Discover => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::DiscoverSelectedDef);
+                        }
                         crate::hit::PaneButton::Goto => {
                             self.set_focus(p);
                             // Goto means resume-the-session on QUEUE, open-in-

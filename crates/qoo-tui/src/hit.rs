@@ -22,6 +22,7 @@ pub enum PaneButton {
     Create,
     Tasks,
     Run,
+    Discover,
     Goto,
     Cancel,
     Remove,
@@ -39,7 +40,7 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     use PaneButton::*;
     match pane {
         PaneId::Queue => &[Run, Cancel, Goto, Create, Collapse],
-        PaneId::Tasks => &[Run, Collapse],
+        PaneId::Tasks => &[Run, Discover, Collapse],
         PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Collapse],
         PaneId::Detail => &[],
     }

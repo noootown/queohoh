@@ -1284,7 +1284,7 @@ pub(crate) fn lane_task_cols(width: usize) -> LaneTaskCols {
 /// slide). The args column was dropped from the row entirely (user request —
 /// args still show in the def picker rows and the detail config tab). The
 /// schedule stays the trailing capped column (`sched_w` sizes the humanized
-/// cron text — plain text, no icon, per user request). Narrow-pane drop order:
+/// cron — see [`def_sched_text`]). Narrow-pane drop order:
 /// the desc FILL shrinks to 0 first, then the model column drops, then `name_w`
 /// shrinks last; the schedule column is always kept. A width of 0 means that
 /// column is omitted.
@@ -1294,6 +1294,10 @@ pub struct DefColLayout {
     pub desc_w: usize,
     pub model_w: usize,
     pub sched_w: usize,
+    /// Front `⌕` discovery-marker slot — 2 cells, glyph + separator — reserved
+    /// pane-wide when any visible def has discovery; 0 otherwise. Mirrors the
+    /// worktree `±` dirty slot (`WtColLayout::dirty_w`).
+    pub marker_w: usize,
 }
 
 /// The description cell text for a def ("" when it has none). Prose, rendered in
@@ -1313,20 +1317,28 @@ pub fn def_model_text(def: &DefinitionSummary) -> String {
     }
 }
 
+/// Trailing schedule-cell text for a def row: the humanized cron schedule, or
+/// empty when the def has none. Single source for BOTH the layout width
+/// ([`def_col_layout`]) and the rendered cell ([`crate::view::panes`]). The
+/// `⌕` discovery marker lives in the row's front marker slot (`marker_w`),
+/// not here.
+pub fn def_sched_text(def: &DefinitionSummary) -> String {
+    def.cron.as_deref().and_then(cron_human).unwrap_or_default()
+}
+
 pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout {
     let name_w0 = capped_max(rows.iter().map(|d| d.name.as_str()), NAME_CAP);
-    let sched_w = rows
-        .iter()
-        .filter_map(|d| d.cron.as_deref().and_then(cron_human))
-        .map(|h| cw(&h))
-        .max()
-        .unwrap_or(0)
-        .min(SCHED_CAP);
+    let sched_w = rows.iter().map(|d| cw(&def_sched_text(d))).max().unwrap_or(0).min(SCHED_CAP);
     // Trailing schedule column footprint (right-pinned by the desc fill): the
-    // humanized text for cron defs; nothing for a discovery-only def or one
-    // with neither (no icon — plain text only, per user request).
-    let has_cron = sched_w > 0;
-    let sched_col = if has_cron { sched_w } else { 0 };
+    // humanized cron (see `def_sched_text` — layout and render share it).
+    // Blank for a def with none.
+    let has_sched = sched_w > 0;
+    let sched_col = if has_sched { sched_w } else { 0 };
+    // Front `⌕` discovery-marker slot: 2 cells (glyph + separator), reserved
+    // pane-wide when any visible def has discovery — mirrors the worktree `±`
+    // dirty slot. It sits before the name with no COL_GAP of its own (the slot
+    // already embeds its separator space).
+    let marker_w = if rows.iter().any(|d| d.has_discovery) { 2 } else { 0 };
     // The desc FILL is present only when some visible def actually has a
     // description (else the schedule keeps its today-position, no layout shift).
     let has_desc = rows.iter().any(|d| d.description.as_deref().is_some_and(|s| !s.is_empty()));
@@ -1336,7 +1348,8 @@ pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout 
 
     // Cells used by the fixed (non-fill) columns for a given name/model width.
     let used_wo_desc = |name_w: usize, model_w: usize| -> usize {
-        name_w
+        marker_w
+            + name_w
             + if model_w > 0 { COL_GAP + model_w } else { 0 }
             + if sched_col > 0 { COL_GAP + sched_col } else { 0 }
     };
@@ -1360,7 +1373,7 @@ pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout 
         0
     };
 
-    DefColLayout { name_w, desc_w, model_w, sched_w }
+    DefColLayout { name_w, desc_w, model_w, sched_w, marker_w }
 }
 
 /// The last-commit author cell text, or None when the daemon didn't supply it
@@ -3186,6 +3199,37 @@ mod tests {
     }
 
     #[test]
+    fn def_sched_text_is_cron_only() {
+        let mut d = crate::ipc::types::DefinitionSummary::default();
+        // neither → empty
+        assert_eq!(def_sched_text(&d), "");
+        // discovery only → still empty (the marker lives in the front slot now)
+        d.has_discovery = true;
+        assert_eq!(def_sched_text(&d), "");
+        // cron only → humanized cron, regardless of discovery
+        d.has_discovery = false;
+        d.cron = Some("30 15 * * *".into());
+        assert_eq!(def_sched_text(&d), "Everyday 3:30pm");
+        // both → cron only, no marker appended
+        d.has_discovery = true;
+        assert_eq!(def_sched_text(&d), "Everyday 3:30pm");
+    }
+
+    #[test]
+    fn def_marker_slot_reserved_when_any_def_has_discovery() {
+        let mut plain = crate::ipc::types::DefinitionSummary::default();
+        plain.name = "aa".into();
+        let mut disc = crate::ipc::types::DefinitionSummary::default();
+        disc.name = "bb".into();
+        disc.has_discovery = true;
+        // No discovery anywhere → no slot.
+        assert_eq!(def_col_layout(&[plain.clone()], 80).marker_w, 0);
+        // Any discovery def visible → 2-cell slot (glyph + separator), pane-wide.
+        let l = def_col_layout(&[plain, disc], 80).marker_w;
+        assert_eq!(l, 2);
+    }
+
+    #[test]
     fn def_col_layout_sizes_and_caps_schedule_column() {
         let defs = vec![
             DefinitionSummary {
@@ -3201,7 +3245,9 @@ mod tests {
             },
             DefinitionSummary { name: "deploy".into(), ..Default::default() }, // no cron
         ];
-        assert_eq!(def_col_layout(&defs, 120).sched_w, 15); // widest humanized text
+        let l = def_col_layout(&defs, 120);
+        assert_eq!(l.sched_w, 15); // "Everyday 1:30pm" (cron-only; marker lives in the front slot)
+        assert_eq!(l.marker_w, 2, "pr-review has_discovery reserves the pane-wide front slot");
 
         // A raw-cron fallback longer than SCHED_CAP is clamped to the cap.
         let long = vec![DefinitionSummary {
@@ -3220,8 +3266,12 @@ mod tests {
 
     #[test]
     fn def_col_layout_description_fills_then_degrades() {
-        // name="pr-review"(9), cron→"Everyday 1:30pm"(15), description present.
-        // Schedule footprint = 15 (plain text, no icon).
+        // name="pr-review"(9), cron→"Everyday 1:30pm"(15 cells), plus a 2-cell
+        // front discovery-marker slot (pr-review has_discovery), description
+        // present. Schedule footprint = 15; marker footprint = 2 (no extra
+        // COL_GAP of its own — it embeds its own separator space), so the total
+        // fixed-column budget is unchanged from when the marker lived inside
+        // `sched_w`.
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
@@ -3232,21 +3282,21 @@ mod tests {
             },
             DefinitionSummary { name: "lint".into(), ..Default::default() },
         ];
-        // Wide: name(9), schedule(15), desc is the FILL remainder.
-        // used_wo_desc = 9 + (2+15) = 26; desc = 120 - 26 - 2 = 92.
+        // Wide: marker(2) + name(9) + (2+15 sched) = 28; desc = 120 - 28 - 2 = 90.
         let wide = def_col_layout(&defs, 120);
-        assert_eq!((wide.name_w, wide.sched_w), (9, 15));
-        assert_eq!(wide.desc_w, 92, "description is the fill remainder");
-        // Tighter: the desc fill shrinks toward 0 first (name/schedule kept).
+        assert_eq!((wide.name_w, wide.sched_w, wide.marker_w), (9, 15, 2));
+        assert_eq!(wide.desc_w, 90, "description is the fill remainder");
+        // Tighter: the desc fill shrinks toward 0 first (name/schedule/marker kept).
         let mid = def_col_layout(&defs, 40);
-        assert_eq!((mid.name_w, mid.sched_w), (9, 15));
-        assert_eq!(mid.desc_w, 12, "fill absorbs only what's left: 40 - 26 - 2");
-        // Very narrow: name shrinks next (26 > 20 → shrink by 6 → name_w 3), but
-        // schedule stays. 9 - (26 - 20) = 3.
+        assert_eq!((mid.name_w, mid.sched_w, mid.marker_w), (9, 15, 2));
+        assert_eq!(mid.desc_w, 10, "fill absorbs only what's left: 40 - 28 - 2");
+        // Very narrow: name shrinks next (28 > 20 → shrink by 8 → name_w 1), but
+        // schedule and marker stay. 9 - (28 - 20) = 1.
         let tiny = def_col_layout(&defs, 20);
         assert_eq!(tiny.desc_w, 0);
-        assert_eq!(tiny.name_w, 3, "name shrinks before schedule, which is kept");
+        assert_eq!(tiny.name_w, 1, "name shrinks before schedule/marker, which are kept");
         assert_eq!(tiny.sched_w, 15, "schedule is the trailing kept column");
+        assert_eq!(tiny.marker_w, 2, "marker slot is kept");
         // No description anywhere → no fill; schedule keeps its today-position.
         let no_desc = vec![DefinitionSummary {
             name: "lint".into(),
@@ -3272,8 +3322,9 @@ mod tests {
     #[test]
     fn def_col_layout_model_sizes_and_degrades_before_name() {
         // name="pr-review"(9), model "claude-fable-5"→"fable-5"(7),
-        // cron→"Everyday 1:30pm"(15), description present. Schedule footprint = 15
-        // (plain text, no icon).
+        // cron→"Everyday 1:30pm"(15 cells), plus a 2-cell front discovery-marker
+        // slot (pr-review has_discovery), description present. Schedule
+        // footprint = 15; marker footprint = 2.
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
@@ -3286,19 +3337,20 @@ mod tests {
             DefinitionSummary { name: "lint".into(), model: Some("sonnet".into()), ..Default::default() },
         ];
         // Wide: model sized to the widest cell (7), desc is the fill remainder.
-        // used_wo_desc = 9 + (2+7) + (2+15) = 35; desc = 120 - 35 - 2 = 83.
+        // used_wo_desc = marker(2) + name(9) + (2+7) + (2+15) = 37; desc = 120 - 37 - 2 = 81.
         let wide = def_col_layout(&defs, 120);
-        assert_eq!((wide.name_w, wide.model_w, wide.sched_w), (9, 7, 15));
-        assert_eq!(wide.desc_w, 83, "description is the fill remainder after the model column");
-        // Tighter: name+model+schedule (35) still fit in 40; the fill takes the rest.
+        assert_eq!((wide.name_w, wide.model_w, wide.sched_w, wide.marker_w), (9, 7, 15, 2));
+        assert_eq!(wide.desc_w, 81, "description is the fill remainder after the model column");
+        // Tighter: name+model+schedule+marker (37) still fit in 40; the fill takes the rest.
         let mid = def_col_layout(&defs, 40);
         assert_eq!(mid.model_w, 7, "model kept while the fixed columns fit");
-        assert_eq!(mid.desc_w, 3, "fill absorbs only what's left: 40 - 35 - 2");
+        assert_eq!(mid.desc_w, 1, "fill absorbs only what's left: 40 - 37 - 2");
         // Narrower: the model column drops (before the name shrinks).
-        // used_wo_desc without model = 9 + (2+15) = 26.
+        // used_wo_desc without model = marker(2) + name(9) + (2+15) = 28.
         let narrow = def_col_layout(&defs, 30);
-        assert_eq!((narrow.model_w, narrow.desc_w), (0, 2));
-        assert_eq!(narrow.name_w, 9, "name still fits; schedule kept");
+        assert_eq!((narrow.model_w, narrow.desc_w), (0, 0));
+        assert_eq!(narrow.name_w, 9, "name still fits; schedule/marker kept");
+        assert_eq!(narrow.marker_w, 2, "marker slot survives model drop");
         // No model anywhere → the model column is omitted pane-wide even when wide.
         let no_model = vec![DefinitionSummary { name: "lint".into(), ..Default::default() }];
         assert_eq!(def_col_layout(&no_model, 120).model_w, 0);

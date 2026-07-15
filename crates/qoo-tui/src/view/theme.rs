@@ -52,6 +52,8 @@ pub const GLYPH_DIRTY: char = '±';
 /// 2-cell front marker slot (glyph + separator), same as `GLYPH_SEARCH`, so it
 /// needs no trailing space.
 pub const GLYPH_PROTECTED: char = '🔒';
+/// Discovery-backed task definition — front marker slot, mirroring `GLYPH_DIRTY`.
+pub const GLYPH_DISCOVER: char = '⌕';
 /// Filled dot — colored by context (connection indicator, worktree state).
 pub const GLYPH_DOT: char = '●';
 /// Magnifier prefixing the inline search-hint/input row. Double-width, but it is
@@ -92,6 +94,7 @@ pub const FENCE_RULE_MIN_TRAIL: usize = 3;
 pub const BTN_LABEL_CREATE: &str = "create";
 pub const BTN_LABEL_TASKS: &str = "tasks";
 pub const BTN_LABEL_RUN: &str = "run";
+pub const BTN_LABEL_DISCOVER: &str = "discover";
 pub const BTN_LABEL_RERUN: &str = "rerun";
 pub const BTN_LABEL_GOTO: &str = "goto";
 pub const BTN_LABEL_STOP: &str = "stop";

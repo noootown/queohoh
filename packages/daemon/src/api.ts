@@ -523,9 +523,10 @@ export class ApiServer {
 				}
 				const created = await instantiateDefinition(
 					def,
-					args.length > 0
-						? { mode: "args", values: args.map(String) }
-						: { mode: "discover" },
+					// Always args mode: zero args fill from declared defaults, a
+					// required arg without a default errors with `missing required
+					// arg`. Discovery is an explicit verb — `discoverDefinition`.
+					{ mode: "args", values: args.map(String) },
 					{
 						store: deps.store,
 						exec: defaultExec,
@@ -564,6 +565,37 @@ export class ApiServer {
 					loadProjectModels(projectWorkspaceDir(deps.config, repo)),
 				);
 				return { ...def, modelResolved: resolveModel(def.model, table) };
+			}
+			case "discoverDefinition": {
+				const repo = String(params.repo ?? "");
+				const name = String(params.name ?? "");
+				const project = deps.config.projects.find((p) => p.name === repo);
+				if (!project) throw new Error(`unknown repo: ${repo}`);
+				const projectDir = projectWorkspaceDir(deps.config, repo);
+				const def = resolveDefinition(deps.config, repo, name);
+				const source = params.source === "mcp" ? "mcp" : "tui";
+				// The explicit discover verb: run the def's discovery command and
+				// fan out one task per fresh item. No worktree/ref/cwd overrides —
+				// each item resolves its own ref via the def's `worktree:` setting.
+				// `instantiateDefinition` rejects a def without discovery.
+				const created = await instantiateDefinition(
+					def,
+					{ mode: "discover" },
+					{
+						store: deps.store,
+						exec: defaultExec,
+						cwd: projectDir,
+						source,
+						globalVars: {
+							project: repo,
+							repo_path: project.path,
+							...deps.config.vars,
+						},
+						repoVars: loadProjectVars(projectDir),
+					},
+				);
+				deps.onMutation();
+				return created;
 			}
 			case "retry": {
 				const task = this.mustGet(String(params.id));

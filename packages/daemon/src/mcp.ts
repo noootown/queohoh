@@ -177,7 +177,7 @@ export function createMcpServer(caller: McpCaller): McpServer {
 
 	server.tool(
 		"run_task_definition",
-		"Trigger a task definition. With args, instantiates directly (e.g. pr-review 257). Without args, runs the definition's discovery command which may take a while — if the call times out, the tasks may still be created: verify with list_tasks instead of retrying. Target precedence is cwd > worktree > ref > the definition's own worktree: setting; pass ref to pin the target (e.g. ref 'temp') and override a 'worktree: auto' definition that would otherwise target a PR/ticket URL found in the args. Returns created tasks as JSON.",
+		"Trigger a task definition as a plain run. Args fill the definition's declared args positionally; trailing args fall back to their declared defaults, and a required arg without a default is an error. Target precedence is cwd > worktree > ref > the definition's own worktree: setting; pass ref to pin the target (e.g. ref 'temp') and override a 'worktree: auto' definition that would otherwise target a PR/ticket URL found in the args. Returns created tasks as JSON.",
 		{
 			repo: z.string().describe("Registered project name"),
 			name: z.string().describe("Definition name (e.g. 'pr-review')"),

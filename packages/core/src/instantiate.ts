@@ -81,7 +81,14 @@ export async function instantiateDefinition(
 	}
 
 	const definition = `${def.repo}/${def.name}`;
-	const itemKeyTemplate = def.discovery?.itemKey ?? defaultKeyTemplate(def);
+	// The discovery item_key template only applies to a discover-mode item — an
+	// args-mode item (even on a def that also declares discovery) has no
+	// discovery-shaped fields to render it from, so it must key off the declared
+	// args instead.
+	const itemKeyTemplate =
+		trigger.mode === "discover" && def.discovery
+			? def.discovery.itemKey
+			: defaultKeyTemplate(def);
 	const existing = [...deps.store.list(), ...deps.store.listArchived()];
 	// A discovery-less cron fire always yields the identical item (from arg
 	// defaults / the static `adhoc` key), so `skip_seen` would drop every fire

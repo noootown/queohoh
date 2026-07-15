@@ -395,6 +395,21 @@ pub(crate) fn content_for(
                 let ctxs = vec![LineCtx::Config { key_col }; lines.len()];
                 (lines, ctxs, "")
             }
+            // Sub-tab 2: the full multi-line discovery command + item key
+            // template. The config tab keeps its one-line `discovery` row; this
+            // tab exists because real discovery commands don't fit one line.
+            Some(d) if sub_tab == 2 => match &d.discovery {
+                Some(disc) => {
+                    let mut lines: Vec<String> =
+                        disc.command.split('\n').map(str::to_string).collect();
+                    if !disc.item_key.is_empty() {
+                        lines.push(String::new());
+                        lines.push(format!("item key: {}", disc.item_key));
+                    }
+                    fenced(lines, "")
+                }
+                None => (Vec::new(), Vec::new(), "(no discovery)"),
+            },
             Some(d) => fenced(d.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
         },
         DetailContext::Worktree { row, lane_tasks } => {
@@ -1430,6 +1445,30 @@ mod tests {
         def.model_resolved = None;
         let (lines, _) = config_view(&def);
         assert!(lines.iter().any(|l| l == "model      opus"));
+    }
+
+    #[test]
+    fn definition_discovery_tab_shows_command_and_item_key() {
+        let mut def = crate::ipc::types::TaskDefinition::default();
+        def.discovery = Some(crate::ipc::types::Discovery {
+            command: "gh pr list --json url\njq '.[]'".to_string(),
+            item_key: "{{url}}".to_string(),
+        });
+        let ctx = DetailContext::Definition { repo: "p".into(), name: "pr-review".into() };
+        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, 0, 0);
+        assert_eq!(placeholder, "");
+        assert!(lines.iter().any(|l| l == "gh pr list --json url"), "lines: {lines:?}");
+        assert!(lines.iter().any(|l| l == "jq '.[]'"), "multi-line command preserved");
+        assert!(lines.iter().any(|l| l == "item key: {{url}}"), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn definition_discovery_tab_placeholder_when_no_discovery() {
+        let def = crate::ipc::types::TaskDefinition::default();
+        let ctx = DetailContext::Definition { repo: "p".into(), name: "lint".into() };
+        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, 0, 0);
+        assert!(lines.is_empty());
+        assert_eq!(placeholder, "(no discovery)");
     }
 
     #[test]

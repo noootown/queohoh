@@ -151,9 +151,9 @@ describe("agent247 pr-review port shape", () => {
 		]);
 	});
 
-	it("runDefinition discovers via discover.sh (cwd = project workspace dir) and instantiates with rendered prompt, ref, key", async () => {
+	it("discoverDefinition discovers via discover.sh (cwd = project workspace dir) and instantiates with rendered prompt, ref, key", async () => {
 		const { client, store } = await setup();
-		const created = (await client.call("runDefinition", {
+		const created = (await client.call("discoverDefinition", {
 			repo: "platform",
 			name: "pr-review",
 		})) as { prompt: string }[];
@@ -173,8 +173,11 @@ describe("agent247 pr-review port shape", () => {
 
 	it("re-running dedups on url", async () => {
 		const { client } = await setup();
-		await client.call("runDefinition", { repo: "platform", name: "pr-review" });
-		const second = (await client.call("runDefinition", {
+		await client.call("discoverDefinition", {
+			repo: "platform",
+			name: "pr-review",
+		});
+		const second = (await client.call("discoverDefinition", {
 			repo: "platform",
 			name: "pr-review",
 		})) as unknown[];

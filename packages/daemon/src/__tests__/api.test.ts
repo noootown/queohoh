@@ -289,6 +289,28 @@ describe("ApiServer", () => {
 		writeFileSync(join(dir, "prompt.md"), "Fix: {{situation}}\n");
 	}
 
+	// A zero-arg def with a discovery block. Plain run (r) must create exactly ONE
+	// task from the static prompt; discover (d) must fan out one task per item the
+	// discovery command prints.
+	function writeDiscoveryDef(workspace: string): void {
+		const dir = join(workspace, "platform", "tasks", "sweep");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "config.yaml"),
+			'discovery:\n  command: echo \'[{"n":"1"},{"n":"2"}]\'\n  item_key: "{{n}}"\ndedup: none\n',
+		);
+		writeFileSync(join(dir, "prompt.md"), "Static run.\n");
+	}
+
+	// The bug's regression fixture: zero args, no discovery — the shape of a plain
+	// cron def (slack-react-release-notes / workspace-sanitize).
+	function writePlainZeroArgDef(workspace: string): void {
+		const dir = join(workspace, "platform", "tasks", "daily");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "config.yaml"), "dedup: none\n");
+		writeFileSync(join(dir, "prompt.md"), "Do the daily thing.\n");
+	}
+
 	it("run_task_definition: ref overrides a worktree:auto def's URL extraction", async () => {
 		const { client, workspace } = await setup();
 		writeAutoDef(workspace);
@@ -638,6 +660,51 @@ describe("ApiServer", () => {
 		})) as { target: { ref: string } }[];
 		expect(created).toHaveLength(1);
 		expect(created[0]?.target.ref).toBe("repo");
+	});
+
+	it("runDefinition with zero args on a no-discovery def plain-runs (regression: 'has no discovery')", async () => {
+		const { client, workspace } = await setup();
+		writePlainZeroArgDef(workspace);
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "daily",
+			args: [],
+		})) as { prompt: string }[];
+		expect(created).toHaveLength(1);
+		expect(created[0]?.prompt).toBe("Do the daily thing.\n");
+	});
+
+	it("runDefinition with zero args on a DISCOVERY def plain-runs (never discovers implicitly)", async () => {
+		const { client, workspace } = await setup();
+		writeDiscoveryDef(workspace);
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "sweep",
+			args: [],
+		})) as { prompt: string }[];
+		// Discovery would fan out 2 tasks; a plain run creates exactly 1.
+		expect(created).toHaveLength(1);
+		expect(created[0]?.prompt).toBe("Static run.\n");
+	});
+
+	it("discoverDefinition runs discovery and fans out one task per item", async () => {
+		const { client, workspace } = await setup();
+		writeDiscoveryDef(workspace);
+		const created = (await client.call("discoverDefinition", {
+			repo: "platform",
+			name: "sweep",
+		})) as { prompt: string; source: string; itemKey: string }[];
+		expect(created).toHaveLength(2);
+		expect(created.map((t) => t.itemKey).sort()).toEqual(["1", "2"]);
+		expect(created[0]?.source).toBe("tui");
+	});
+
+	it("discoverDefinition on a def without discovery rejects", async () => {
+		const { client, workspace } = await setup();
+		writePlainZeroArgDef(workspace);
+		await expect(
+			client.call("discoverDefinition", { repo: "platform", name: "daily" }),
+		).rejects.toThrow(/has no discovery/);
 	});
 
 	it("definition returns the full loaded definition", async () => {

@@ -49,6 +49,11 @@ pub enum AppAction {
     /// pane's `[r]un` chip): a zero-arg def dispatches immediately, a def with
     /// args opens the run form. Routes to `App::run_selected_task_def`.
     RunSelectedDef,
+    /// Run the TASKS pane's highlighted definition's DISCOVERY (`d`, and the
+    /// tasks `[d]iscover` chip): fan out one task per discovered item. Defs
+    /// without a discovery block refuse with a status line. Routes to
+    /// `App::discover_selected_def`.
+    DiscoverSelectedDef,
     /// Re-queue the QUEUE pane's selected task(s) (`r`, and the queue's `[r]un`
     /// chip): terminal / needs-input tasks re-run; queued/running are a no-op. A
     /// range re-queues every eligible member. Routes to `App::requeue_selected`.
@@ -124,7 +129,7 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         // keymap — so this bare arm can't shadow it.
         KeyCode::Char('s') => AppAction::Settings,
         // Pane-action verbs, each gated on the focused pane's chip set:
-        // QUEUE {r,x,g,c,z} · TASKS {r,z} · WORKTREES {r,g,x,t,c,z}.
+        // QUEUE {r,x,g,c,z} · TASKS {r,d,z} · WORKTREES {r,g,x,t,c,z}.
         KeyCode::Char('t') => gated(PaneButton::Tasks, AppAction::OpenTaskMenu),
         // `r` is a Run chip on all three panes, but means different things:
         // QUEUE re-queues the selected task(s), TASKS runs the highlighted def,
@@ -134,6 +139,8 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
             PaneId::Worktrees => gated(PaneButton::Run, AppAction::NewTaskOnWorktree),
             _ => gated(PaneButton::Run, AppAction::RunSelectedDef),
         },
+        // `d` is a TASKS-only chip: run the highlighted def's discovery fan-out.
+        KeyCode::Char('d') => gated(PaneButton::Discover, AppAction::DiscoverSelectedDef),
         // `g` is a Goto chip on QUEUE and WORKTREES, but means different things:
         // QUEUE resumes the selected task's Claude session, WORKTREES opens the
         // worktree in a fresh tmux window. Inert on TASKS (no Goto chip there).
@@ -395,6 +402,17 @@ mod tests {
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Tasks), AppAction::RunSelectedDef);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Queue), AppAction::RequeueSelected);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);
+    }
+
+    #[test]
+    fn d_discovers_on_tasks_only() {
+        assert_eq!(
+            list_mode_action(&k(KeyCode::Char('d')), PaneId::Tasks),
+            AppAction::DiscoverSelectedDef
+        );
+        // No Discover chip on QUEUE / WORKTREES → the gate leaves `d` inert there.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('d')), PaneId::Queue), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('d')), PaneId::Worktrees), AppAction::None);
     }
 
     #[test]

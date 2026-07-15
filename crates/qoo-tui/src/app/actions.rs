@@ -227,6 +227,13 @@ impl App {
                 cmds.extend(u.cmds);
                 u.dirty
             }
+            A::DiscoverSelectedDef => {
+                // `d` is a TASKS chip (keymap-gated there): explicit discovery
+                // fan-out for the highlighted def. Single-row only.
+                let u = self.discover_selected_def();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
             A::Create => {
                 // `Create` (`c`) is a QUEUE chip only — it opens the adhoc-task
                 // prompt. The worktrees pane's standalone create modal was folded
@@ -614,6 +621,54 @@ impl App {
         let cmds = self
             .open_def_args(def.repo, def.name, args, HashMap::new(), initial, None, worktrees, branches);
         Update { dirty: true, cmds }
+    }
+
+    /// `d` on TASKS (and the `[d]iscover` chip): run the highlighted def's
+    /// discovery command daemon-side and fan out one task per item. Mirrors
+    /// [`Self::run_selected_task_def`]'s selection resolution; a def without a
+    /// discovery block refuses with a status line (no RPC), and a bulk range
+    /// refuses like every non-bulk verb.
+    pub(super) fn discover_selected_def(&mut self) -> Update {
+        let ui = self.active_ui();
+        let sel = ui.selections[ListPane::Tasks.idx()];
+        let marks = &ui.marks[ListPane::Tasks.idx()];
+        if crate::view::is_bulk_selection(&sel, marks) {
+            self.status_line = Some(BULK_NOT_APPLICABLE.into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let Some(repo) = self.active_repo() else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        let ui = self.active_ui();
+        let defs = self.defs_by_project.get(&repo).cloned().unwrap_or_default();
+        let vis = crate::selectors::filter_rows(&defs, &ui.search[ListPane::Tasks.idx()], |d| d.name.clone());
+        let cursor = ui.selections[ListPane::Tasks.idx()].cursor.min(vis.len().saturating_sub(1));
+        let Some(def) = vis.get(cursor).and_then(|&i| defs.get(i)).cloned() else {
+            self.status_line = Some("nothing selected".into());
+            return Update { dirty: true, cmds: vec![] };
+        };
+        if !def.has_discovery {
+            self.status_line = Some(format!("{} has no discovery", def.name));
+            return Update { dirty: true, cmds: vec![] };
+        }
+        Update { dirty: true, cmds: vec![Self::discover_definition_cmd(&def.repo, &def.name)] }
+    }
+
+    /// Build the fire-and-forget `discoverDefinition` command. Same client
+    /// contract as [`Self::run_definition_cmd`]: timeout is treated as success
+    /// (discovery can outlive it; the push subscription re-syncs) and a
+    /// successful call invalidates the repo's def summaries.
+    pub(super) fn discover_definition_cmd(repo: &str, name: &str) -> Cmd {
+        Cmd::Rpc {
+            label: "discover".into(),
+            call: RpcCall {
+                method: "discoverDefinition".into(),
+                params: serde_json::json!({ "repo": repo, "name": name, "source": "tui" }),
+            },
+            timeout_ms: 5000,
+            timeout_is_ok: true,
+            invalidate_defs_for: Some(repo.to_string()),
+        }
     }
 
     /// Build the fire-and-forget `runDefinition` command. Client timeout is

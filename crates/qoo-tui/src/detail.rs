@@ -22,7 +22,7 @@ impl DetailContext {
 }
 
 const RUN_TABS: &[&str] = &["report", "transcript", "prompt", "info"];
-const DEF_TABS: &[&str] = &["prompt", "config"];
+const DEF_TABS: &[&str] = &["prompt", "config", "discovery"];
 const WT_TABS: &[&str] = &["info"];
 const NO_TABS: &[&str] = &[];
 
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn sub_tab_names_per_kind() {
         assert_eq!(sub_tab_names(DetailKind::Run), &["report", "transcript", "prompt", "info"]);
-        assert_eq!(sub_tab_names(DetailKind::Definition), &["prompt", "config"]);
+        assert_eq!(sub_tab_names(DetailKind::Definition), &["prompt", "config", "discovery"]);
         assert_eq!(sub_tab_names(DetailKind::Worktree), &["info"]);
         assert_eq!(sub_tab_names(DetailKind::Empty), &[] as &[&str]);
     }
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(clamp_sub_tab(0, DetailKind::Run), 0);
         assert_eq!(clamp_sub_tab(3, DetailKind::Run), 3);
         assert_eq!(clamp_sub_tab(5, DetailKind::Run), 3); // clamps to `info` (last)
-        assert_eq!(clamp_sub_tab(3, DetailKind::Definition), 1);
+        assert_eq!(clamp_sub_tab(3, DetailKind::Definition), 2);
         assert_eq!(clamp_sub_tab(1, DetailKind::Worktree), 0);
         assert_eq!(clamp_sub_tab(0, DetailKind::Empty), 0);
         assert_eq!(clamp_sub_tab(4, DetailKind::Empty), 0);

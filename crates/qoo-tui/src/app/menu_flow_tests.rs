@@ -668,3 +668,51 @@ fn tasks_pane_run_zero_arg_def_dispatches_and_closes() {
     );
 }
 
+#[test]
+fn tasks_pane_d_dispatches_discover_for_a_discovery_def() {
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.defs_by_project.insert("platform".into(), vec![{
+        let mut d = crate::ipc::types::DefinitionSummary::default();
+        d.repo = "platform".into();
+        d.name = "pr-review".into();
+        d.has_discovery = true;
+        d
+    }]);
+    focus_tasks(&mut a);
+    let u = a.update(key('d'));
+    assert!(matches!(a.mode, Mode::List));
+    assert!(
+        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, invalidate_defs_for, .. }
+            if call.method == "discoverDefinition"
+                && call.params["name"] == "pr-review"
+                && call.params["source"] == "tui"
+                && invalidate_defs_for.as_deref() == Some("platform"))),
+        "expected a discoverDefinition dispatch, got {:?}",
+        u.cmds,
+    );
+}
+
+#[test]
+fn tasks_pane_d_on_a_no_discovery_def_sets_status_line_no_rpc() {
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.defs_by_project.insert("platform".into(), vec![{
+        let mut d = crate::ipc::types::DefinitionSummary::default();
+        d.repo = "platform".into();
+        d.name = "lint".into();
+        // has_discovery: false (default)
+        d
+    }]);
+    focus_tasks(&mut a);
+    let u = a.update(key('d'));
+    assert!(u.cmds.is_empty(), "no RPC for a def without discovery");
+    assert_eq!(a.status_line.as_deref(), Some("lint has no discovery"));
+}
+

@@ -13,15 +13,15 @@ use crate::hit::{HitMap, HitTarget, PaneButton, pane_buttons};
 use crate::ipc::types::DefinitionSummary;
 use crate::selectors::{
     COLLAPSED_H, DefColLayout, QueueColLayout, QueueRow, WorktreeRow, WtColLayout,
-    absolute_local_label, cron_human, def_col_layout, elapsed_label, pad_clip,
+    absolute_local_label, def_col_layout, elapsed_label, pad_clip,
     pane_layout, pane_title, queue_col_layout, queue_divider_after, relative_age_label,
     wt_author_text, wt_col_layout,
 };
 use crate::view::theme::{
-    BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_EXPAND,
+    BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_DISCOVER, BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
-    GLYPH_DIRTY, GLYPH_DOT, GLYPH_PROTECTED, GLYPH_SEARCH, Palette, RULE_CHAR,
+    GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_PROTECTED, GLYPH_SEARCH, Palette, RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
 
@@ -36,7 +36,7 @@ use crate::view::theme::{
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
 const QUEUE_ROW_SCOPED: usize = 3; // [r]un [x]stop [g]oto · [c]reate [z]
-const TASKS_ROW_SCOPED: usize = 1; // [r]un · [z]
+const TASKS_ROW_SCOPED: usize = 2; // [r]un [d]iscover · [z]
 const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [c]reate [z]
 
 /// Scope divider drawn between the row-scoped and pane-scoped chip groups (the
@@ -100,6 +100,7 @@ fn button_chip(
         PaneButton::Create => ('c', BTN_LABEL_CREATE),
         PaneButton::Tasks => ('t', BTN_LABEL_TASKS),
         PaneButton::Run => ('r', if pane == PaneId::Queue { BTN_LABEL_RERUN } else { BTN_LABEL_RUN }),
+        PaneButton::Discover => ('d', BTN_LABEL_DISCOVER),
         PaneButton::Goto => ('g', BTN_LABEL_GOTO),
         PaneButton::Cancel => ('x', BTN_LABEL_STOP),
         PaneButton::Remove => ('x', BTN_LABEL_REMOVE),
@@ -460,9 +461,13 @@ fn queue_header(layout: &QueueColLayout, p: &Palette) -> Line<'static> {
 }
 
 /// TASKS column-header row (`Name | Model | Description | Cron`), mirroring
-/// `def_line`'s span structure.
+/// `def_line`'s span structure (the front `⌕` discovery-marker slot stays blank).
 fn def_header(layout: &DefColLayout, p: &Palette) -> Line<'static> {
-    let mut spans = vec![Span::styled(pad_clip("Name", layout.name_w), p.dim_style())];
+    let mut spans = Vec::new();
+    if layout.marker_w > 0 {
+        spans.push(Span::raw("  ")); // ⌕ slot + separator
+    }
+    spans.push(Span::styled(pad_clip("Name", layout.name_w), p.dim_style()));
     if layout.model_w > 0 {
         header_col(&mut spans, "Model", layout.model_w, p);
     }
@@ -658,9 +663,21 @@ fn worktree_line(
 
 fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line<'static> {
     let gap = " ".repeat(crate::selectors::COL_GAP);
+    // Front marker slot — the `⌕` discovery marker (single-cell glyph +
+    // separator, statically reserved pane-wide) — mirrors the WORKTREES `±`
+    // dirty-marker slot.
+    let mut spans = Vec::new();
+    if layout.marker_w > 0 {
+        if def.has_discovery {
+            spans.push(Span::styled(GLYPH_DISCOVER.to_string(), Style::default().fg(p.info)));
+        } else {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::raw(" "));
+    }
     // Task/definition names read in mauve — the single semantic color for a def
     // name across QUEUE, TASKS, and the WORKTREES next/last cells.
-    let mut spans = vec![Span::styled(pad_clip(&def.name, layout.name_w), Style::default().fg(p.mauve))];
+    spans.push(Span::styled(pad_clip(&def.name, layout.name_w), Style::default().fg(p.mauve)));
     // Model column: the def's model (`claude-` prefix stripped), right after the
     // name (user request — the model matters more than anything else on the
     // row). Padded to the reserved width so a def without a model leaves it
@@ -681,13 +698,13 @@ fn def_line(def: &DefinitionSummary, layout: &DefColLayout, p: &Palette) -> Line
         // Task description = default grey (white is reserved for actions/tabs).
         spans.push(Span::raw(pad_clip(&crate::selectors::def_desc_text(def), layout.desc_w)));
     }
-    // Schedule column: the humanized cron text when the def has one (no leading
-    // icon — user request: drop the clock emoji); a def with a discovery command
-    // but no cron, or neither, leaves the column blank. Teal/info like the args
-    // column.
-    if let Some(human) = def.cron.as_deref().and_then(cron_human) {
+    // Schedule column: humanized cron only (see `def_sched_text` — layout and
+    // render share it; the `⌕` discovery marker lives in the front slot above).
+    // Teal/info like the args column. Blank for a def with none.
+    let sched = crate::selectors::def_sched_text(def);
+    if !sched.is_empty() {
         spans.push(Span::raw(gap));
-        spans.push(Span::styled(pad_clip(&human, layout.sched_w), Style::default().fg(p.info)));
+        spans.push(Span::styled(pad_clip(&sched, layout.sched_w), Style::default().fg(p.info)));
     }
     Line::from(spans)
 }
