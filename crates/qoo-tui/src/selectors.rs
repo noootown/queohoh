@@ -85,8 +85,8 @@ pub struct WorktreeRow {
     /// detail info tab and the WORKTREES PR column — a click opens it.
     pub pr_url: Option<String>,
     /// True when the daemon flagged this worktree as protected from deletion.
-    /// Drives the 🔒 marker and gates the remove action. Session rows default
-    /// `false` (never removable anyway).
+    /// Drives the `⛨` front-column marker and gates the remove action. Session
+    /// rows default `false` (never removable anyway).
     pub protected: bool,
 }
 
@@ -1401,8 +1401,8 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 /// the column is omitted this frame.
 ///
 /// Columns, left→right (identity → content → time → live):
-///   `● ± name` (anchor; the `±` dirty marker is a single-cell front slot after
-///   the dot, per user request),
+///   `● ± ⛨ name` (anchor; the `±` dirty marker and the `⛨` protected marker
+///   are single-cell front slots after the dot, per user request),
 ///   last-finished (FILL), PR `#<n>` (fixed `PR_W`), last-commit author
 ///   (fixed `AUTHOR_W`), last-commit age (fixed `COMMIT_AGE_W`),
 ///   `next: <name>` (fixed `WT_QUEUED_W`), live `⏱` (fixed `TIMER_W`,
@@ -1411,22 +1411,27 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 ///   who·when pair; the author sits right before the commit-age so the pair
 ///   reads `koshea  3d ago` = who · when.
 ///
-/// The marker/time columns (`dirty`, `pr`, `queued`, `author`, `commit_age`,
-/// `elapsed`) are FIXED widths — never sized from row data — so a row gaining a
-/// value never shifts any column; `name_w` stays content-capped and `last_w` is
-/// the FILL column (absorbs the remaining width, like the queue pane's summary
-/// — per user request the last task's description gets the slack). The front
-/// `±` marker slot and the live timer are ALWAYS reserved when the ladder
-/// keeps them (per user request — data-gated slots made the name column shift
-/// as scroll/data changed); pr/queued/author/commit-age stay pane-gated
-/// (reserved only while some visible row carries the value).
+/// The marker/time columns (`dirty`, `protected`, `pr`, `queued`, `author`,
+/// `commit_age`, `elapsed`) are FIXED widths — never sized from row data — so a
+/// row gaining a value never shifts any column; `name_w` stays content-capped
+/// and `last_w` is the FILL column (absorbs the remaining width, like the queue
+/// pane's summary — per user request the last task's description gets the
+/// slack). The front `±`/`⛨` marker slots and the live timer are ALWAYS
+/// reserved when the ladder keeps them (per user request — data-gated slots
+/// made the name column shift as scroll/data changed); pr/queued/author/
+/// commit-age stay pane-gated (reserved only while some visible row carries
+/// the value).
 /// Degradation drop priority (first dropped first): commit-age → author → PR
-/// → queued·next → dirty → last-finished → live; only after all of those drop
-/// does `name_w` shrink. PR outlives author/commit-age dropping.
+/// → queued·next → protected → dirty → last-finished → live; only after all of
+/// those drop does `name_w` shrink. PR outlives author/commit-age dropping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WtColLayout {
     pub name_w: usize,
     pub dirty_w: usize,
+    /// Front `⛨` protected-marker slot beside the `±` dirty slot — a single
+    /// cell (plus its embedded separator) statically reserved like `dirty_w`,
+    /// so a protected worktree shows both markers at once.
+    pub protected_w: usize,
     pub elapsed_w: usize,
     pub queued_w: usize,
     pub last_w: usize,
@@ -1442,11 +1447,14 @@ impl WtColLayout {
     /// the SINGLE source of truth shared by `worktree_line` (which lays the cell
     /// out) and `render_rows` (which registers the click rect), so the two can
     /// never drift. Mirrors the span widths `worktree_line` pushes before the PR
-    /// cell: the anchor (`● ` + the `±` front slot + the name), then the
+    /// cell: the anchor (`● ` + the `±`/`⛨` front slots + the name), then the
     /// last-task FILL when present, then the `COL_GAP` before the PR column.
     /// Meaningless when `pr_w == 0` (the column is absent); callers gate on that.
     pub fn pr_col_x(&self) -> usize {
-        let anchor = 2 + if self.dirty_w > 0 { 2 } else { 0 } + self.name_w;
+        let anchor = 2
+            + if self.dirty_w > 0 { 2 } else { 0 }
+            + if self.protected_w > 0 { 2 } else { 0 }
+            + self.name_w;
         let after_last = if self.last_w > 0 { COL_GAP + self.last_w } else { 0 };
         anchor + after_last + COL_GAP
     }
@@ -1466,6 +1474,10 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // changed which rows were visible. The width ladder may still drop it under
     // width pressure (geometry-driven, not data-driven).
     let dirty_w0 = if rows.is_empty() { 0 } else { 1 };
+    // The `⛨` protected marker gets its own single-cell front slot beside the
+    // `±` (per user request — same size, same column treatment), statically
+    // reserved for the same no-shift reason.
+    let protected_w0 = if rows.is_empty() { 0 } else { 1 };
     let elapsed_w0 = TIMER_W; // live timer: always reserved when the ladder keeps it
     // Queued·next is pane-gated like dirty/author/commit-age: its fixed slot is
     // reserved only while some visible row actually has a queued task. Always
@@ -1480,16 +1492,18 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // drops third, after them) — an open PR is the more actionable signal.
     let pr_w0 = if rows.iter().any(|r| r.pr_number.is_some()) { PR_W } else { 0 };
 
-    // Anchor width: `● ` (dot + space) + the `± ` (dirty) front marker — a single
-    // cell + space when present — then the name. The marker sits up front per
-    // user request, not as a mid-row column.
-    let anchor = |name_w: usize, dirty: bool| 2 + if dirty { 2 } else { 0 } + name_w;
+    // Anchor width: `● ` (dot + space) + the `± ` (dirty) and `⛨ ` (protected)
+    // front markers — a single cell + space each when present — then the name.
+    // The markers sit up front per user request, not as mid-row columns.
+    let anchor = |name_w: usize, dirty: bool, protected: bool| {
+        2 + if dirty { 2 } else { 0 } + if protected { 2 } else { 0 } + name_w
+    };
     // Used cells for a set of column widths and whether the last-task FILL is
     // reserved (at its `WT_LAST_MIN` floor — the actual fill absorbs the slack).
     // cols = [queued, author, commit]; `pr` is the fixed PR column and `elapsed`
     // the trailing fixed live column (both position-independent in the total).
-    let used = |name_w: usize, dirty: bool, cols: [usize; 3], pr_w: usize, elapsed_w: usize, last: bool| -> usize {
-        let mut u = anchor(name_w, dirty);
+    let used = |name_w: usize, dirty: bool, protected: bool, cols: [usize; 3], pr_w: usize, elapsed_w: usize, last: bool| -> usize {
+        let mut u = anchor(name_w, dirty, protected);
         for w in cols {
             if w > 0 {
                 u += COL_GAP + w;
@@ -1507,39 +1521,51 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         u
     };
 
-    // Degrade in drop order: commit → author → pr → queued → dirty → last →
-    // elapsed. cols = [queued(0), author(1), commit(2)]; PR drops after author
-    // (so it outlives the who·when pair) but before queued·next.
+    // Degrade in drop order: commit → author → pr → queued → protected → dirty
+    // → last → elapsed. cols = [queued(0), author(1), commit(2)]; PR drops
+    // after author (so it outlives the who·when pair) but before queued·next;
+    // the protected marker drops just before the dirty one (dirty is the more
+    // actionable of the two front slots).
     let mut cols = [queued_w0, author_w0, commit_w0];
     let mut pr_w = pr_w0;
     let mut dirty = dirty_w0 > 0;
+    let mut protected = protected_w0 > 0;
     let mut elapsed_w = elapsed_w0;
     let mut last = true;
     #[derive(Clone, Copy)]
     enum Drop {
         Col(usize),
         Pr,
+        Protected,
         Dirty,
         Last,
         Elapsed,
     }
-    for op in
-        [Drop::Col(2), Drop::Col(1), Drop::Pr, Drop::Col(0), Drop::Dirty, Drop::Last, Drop::Elapsed]
-    {
-        if used(name_w0, dirty, cols, pr_w, elapsed_w, last) <= avail {
+    for op in [
+        Drop::Col(2),
+        Drop::Col(1),
+        Drop::Pr,
+        Drop::Col(0),
+        Drop::Protected,
+        Drop::Dirty,
+        Drop::Last,
+        Drop::Elapsed,
+    ] {
+        if used(name_w0, dirty, protected, cols, pr_w, elapsed_w, last) <= avail {
             break;
         }
         match op {
             Drop::Col(i) => cols[i] = 0,
             Drop::Pr => pr_w = 0,
+            Drop::Protected => protected = false,
             Drop::Dirty => dirty = false,
             Drop::Last => last = false,
             Drop::Elapsed => elapsed_w = 0,
         }
     }
-    // Still too wide with only `● ± name` left → shrink the name column.
+    // Still too wide with only `● ± ⛨ name` left → shrink the name column.
     let mut name_w = name_w0;
-    let u = used(name_w, dirty, cols, pr_w, elapsed_w, last);
+    let u = used(name_w, dirty, protected, cols, pr_w, elapsed_w, last);
     if u > avail {
         name_w = name_w.saturating_sub(u - avail);
     }
@@ -1549,7 +1575,7 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // never any other column's offset — and the trailing live timer stays
     // right-pinned at the row edge.
     let last_w = if last {
-        let base = used(name_w, dirty, cols, pr_w, elapsed_w, false);
+        let base = used(name_w, dirty, protected, cols, pr_w, elapsed_w, false);
         avail.saturating_sub(base + COL_GAP)
     } else {
         0
@@ -1558,6 +1584,7 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     WtColLayout {
         name_w,
         dirty_w: if dirty { 1 } else { 0 },
+        protected_w: if protected { 1 } else { 0 },
         elapsed_w,
         queued_w: cols[0],
         last_w,
@@ -3002,10 +3029,10 @@ mod tests {
     #[test]
     fn wt_col_layout_degrades_columns_from_the_right() {
         // One fully-loaded row: every optional column populated.
-        // Fixed widths: dirty=1, last-min=12, author=AUTHOR_W(14), commit=8,
-        // live=8; anchor = `● ± name` = 2+2+9 = 13. Full reserved =
-        // anchor(13) + queued(2+30) + author(2+14) + commit(2+8) + last-min(2+12)
-        // + live(2+8) = 95.
+        // Fixed widths: dirty=1, protected=1, last-min=12, author=AUTHOR_W(14),
+        // commit=8, live=8; anchor = `● ± ⛨ name` = 2+2+2+9 = 15. Full reserved
+        // = anchor(15) + queued(2+30) + author(2+14) + commit(2+8) +
+        // last-min(2+12) + live(2+8) = 97.
         let row = WorktreeRow {
             name: "feature-x".into(), // 9 cells
             raw_name: "feature-x".into(),
@@ -3021,28 +3048,37 @@ mod tests {
             ..Default::default()
         };
         let rows = [row];
-        // (dirty, live, queued, last, author, commit) presence tuple.
+        // (dirty, protected, live, queued, last, author, commit) presence tuple.
         let present = |a: usize| {
             let l = wt_col_layout(&rows, a);
-            (l.dirty_w > 0, l.elapsed_w > 0, l.queued_w > 0, l.last_w > 0, l.author_w > 0, l.commit_age_w > 0)
+            (
+                l.dirty_w > 0,
+                l.protected_w > 0,
+                l.elapsed_w > 0,
+                l.queued_w > 0,
+                l.last_w > 0,
+                l.author_w > 0,
+                l.commit_age_w > 0,
+            )
         };
         // Wide: everything shown, name at full width. All reserved widths sum to
-        // 95; at 120 the last-task FILL absorbs the slack.
-        assert_eq!(present(95), (true, true, true, true, true, true));
+        // 97; at 120 the last-task FILL absorbs the slack.
+        assert_eq!(present(97), (true, true, true, true, true, true, true));
         assert_eq!(wt_col_layout(&rows, 120).name_w, 9);
-        assert_eq!(wt_col_layout(&rows, 120).last_w, 37, "last-task fill absorbs the slack");
+        assert_eq!(wt_col_layout(&rows, 120).last_w, 35, "last-task fill absorbs the slack");
         assert_eq!(wt_col_layout(&rows, 120).queued_w, 30, "queued is a fixed slot");
-        // Drop in ladder order: commit → author → queued → dirty → last →
-        // live. The last-task fill outlives queued/dirty (it is the summary-
-        // equivalent), the live timer is the last optional to go, and only after
-        // everything drops does the name column shrink.
-        assert_eq!(present(94), (true, true, true, true, true, false)); // commit dropped (< 95)
-        assert_eq!(present(84), (true, true, true, true, false, false)); // author dropped (< 85)
-        assert_eq!(present(68), (true, true, false, true, false, false)); // queued dropped (< 69)
-        assert_eq!(present(36), (false, true, false, true, false, false)); // dirty dropped (< 37)
-        assert_eq!(present(34), (false, true, false, false, false, false)); // last dropped (< 35)
+        // Drop in ladder order: commit → author → queued → protected → dirty →
+        // last → live. The last-task fill outlives queued/protected/dirty (it is
+        // the summary-equivalent), the live timer is the last optional to go, and
+        // only after everything drops does the name column shrink.
+        assert_eq!(present(96), (true, true, true, true, true, true, false)); // commit dropped (< 97)
+        assert_eq!(present(86), (true, true, true, true, true, false, false)); // author dropped (< 87)
+        assert_eq!(present(70), (true, true, true, false, true, false, false)); // queued dropped (< 71)
+        assert_eq!(present(38), (true, false, true, false, true, false, false)); // protected dropped (< 39)
+        assert_eq!(present(36), (false, false, true, false, true, false, false)); // dirty dropped (< 37)
+        assert_eq!(present(34), (false, false, true, false, false, false, false)); // last dropped (< 35)
         // Only ⏱ + `● name` remain; the timer is the last optional to go.
-        assert_eq!(present(20), (false, false, false, false, false, false)); // live dropped (< 21)
+        assert_eq!(present(20), (false, false, false, false, false, false, false)); // live dropped (< 21)
         assert_eq!(wt_col_layout(&rows, 20).name_w, 9);
         // Below that, the name column shrinks (anchor `● name` = 2 + name_w).
         assert_eq!(wt_col_layout(&rows, 10).name_w, 8);

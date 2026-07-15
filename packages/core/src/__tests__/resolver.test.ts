@@ -163,10 +163,20 @@ describe("isProtectedWorktree", () => {
 	it("protects the main checkout by path-equality even when name differs", () => {
 		const repoPath = "/repos/platform";
 		expect(
-			isProtectedWorktree(repoPath, [], mkWt("platform", "/repos/platform")),
+			isProtectedWorktree(
+				repoPath,
+				"platform",
+				[],
+				mkWt("platform", "/repos/platform"),
+			),
 		).toBe(true);
 		expect(
-			isProtectedWorktree(repoPath, [], mkWt("main", "/repos/platform")),
+			isProtectedWorktree(
+				repoPath,
+				"platform",
+				[],
+				mkWt("main", "/repos/platform"),
+			),
 		).toBe(true);
 	});
 
@@ -174,8 +184,30 @@ describe("isProtectedWorktree", () => {
 		expect(
 			isProtectedWorktree(
 				"/repos/platform",
+				"platform",
 				["legal-lake"],
 				mkWt("legal-lake", "/repos/platform.legal-lake"),
+			),
+		).toBe(true);
+	});
+
+	it("matches a display-name entry against the repo-prefixed worktree name", () => {
+		// vars.yaml says `legal-lake` (the TUI's stripped display name); the
+		// actual worktree directory is `platform.legal-lake`. Both forms match.
+		expect(
+			isProtectedWorktree(
+				"/repos/platform",
+				"platform",
+				["legal-lake"],
+				mkWt("platform.legal-lake", "/repos/platform.legal-lake"),
+			),
+		).toBe(true);
+		expect(
+			isProtectedWorktree(
+				"/repos/platform",
+				"platform",
+				["platform.legal-lake"],
+				mkWt("platform.legal-lake", "/repos/platform.legal-lake"),
 			),
 		).toBe(true);
 	});
@@ -184,6 +216,7 @@ describe("isProtectedWorktree", () => {
 		expect(
 			isProtectedWorktree(
 				"/repos/platform",
+				"platform",
 				["legal-lake"],
 				mkWt("JUS-1", "/repos/platform.JUS-1"),
 			),
@@ -191,9 +224,11 @@ describe("isProtectedWorktree", () => {
 	});
 
 	it("tolerates a null repoPath (no path match, list still applies)", () => {
-		expect(isProtectedWorktree(null, [], mkWt("JUS-1", "/x"))).toBe(false);
-		expect(isProtectedWorktree(null, ["JUS-1"], mkWt("JUS-1", "/x"))).toBe(
-			true,
+		expect(isProtectedWorktree(null, "platform", [], mkWt("JUS-1", "/x"))).toBe(
+			false,
 		);
+		expect(
+			isProtectedWorktree(null, "platform", ["JUS-1"], mkWt("JUS-1", "/x")),
+		).toBe(true);
 	});
 });

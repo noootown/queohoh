@@ -48,10 +48,10 @@ pub const GLYPH_RUNNING: char = '▶';
 /// Worktree has uncommitted changes (git status --porcelain non-empty).
 pub const GLYPH_DIRTY: char = '±';
 /// Worktree is protected from deletion (the project's main checkout or a name in
-/// the project's `protected_worktrees`). Double-width emoji — it fills the whole
-/// 2-cell front marker slot (glyph + separator), same as `GLYPH_SEARCH`, so it
-/// needs no trailing space.
-pub const GLYPH_PROTECTED: char = '🔒';
+/// the project's `protected_worktrees`). Single-width shield in its own front
+/// marker column beside the `±` dirty slot, mirroring `GLYPH_DIRTY` — so a
+/// protected worktree can show both markers at once.
+pub const GLYPH_PROTECTED: char = '⛨';
 /// Discovery-backed task definition — front marker slot, mirroring `GLYPH_DIRTY`.
 pub const GLYPH_DISCOVER: char = '⌕';
 /// Filled dot — colored by context (connection indicator, worktree state).

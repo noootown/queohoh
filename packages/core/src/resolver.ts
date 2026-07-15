@@ -47,14 +47,22 @@ export interface WorktreeInfo {
  * identifies the main checkout, because a project's name is a user label while a
  * worktree's name is `basename(path)`; the two can differ. `repoPath` is null for
  * an unknown repo, in which case only the name list applies.
+ *
+ * A `protected_worktrees` entry may be written either as the raw worktree name
+ * (the directory basename, e.g. `platform.legal-lake`) or as the TUI's display
+ * name with the `<repo>.` prefix stripped (`legal-lake`) — the same dual-form
+ * convention `removeWorktree` accepts for its name lookup.
  */
 export function isProtectedWorktree(
 	repoPath: string | null,
+	repo: string,
 	protectedNames: string[],
 	wt: WorktreeInfo,
 ): boolean {
 	if (repoPath !== null && wt.path === repoPath) return true;
-	return protectedNames.includes(wt.name);
+	return protectedNames.some(
+		(n) => wt.name === n || wt.name === `${repo}.${n}`,
+	);
 }
 
 export interface ResolverIO {

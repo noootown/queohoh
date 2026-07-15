@@ -487,6 +487,9 @@ fn wt_header(layout: &WtColLayout, p: &Palette) -> Line<'static> {
     if layout.dirty_w > 0 {
         spans.push(Span::raw("  ")); // ± slot + separator
     }
+    if layout.protected_w > 0 {
+        spans.push(Span::raw("  ")); // ⛨ slot + separator
+    }
     spans.push(Span::styled(pad_clip("Name", layout.name_w), p.dim_style()));
     if layout.last_w > 0 {
         header_col(&mut spans, "Last Task", layout.last_w, p);
@@ -538,23 +541,26 @@ fn worktree_line(
     let warn = Style::default().fg(p.warn);
     let mauve = Style::default().fg(p.mauve);
     let fg = Style::default().fg(p.fg);
-    // Anchor: the lead indicator + space, then the front marker — the `±`
-    // uncommitted-changes marker (single-cell slot, statically reserved) — then
+    // Anchor: the lead indicator + space, then the front markers — the `±`
+    // uncommitted-changes marker and the `⛨` protected marker, each a
+    // single-cell slot (statically reserved) so both can show at once — then
     // the accent-colored worktree identity name.
     let mut spans = vec![lead, Span::raw(" ")];
     if layout.dirty_w > 0 {
-        if row.protected {
-            // 🔒 is 2 display columns — it fills the whole [glyph][space] slot,
-            // so no trailing space. Protected wins over the dirty ± marker.
-            spans.push(Span::styled(GLYPH_PROTECTED.to_string(), meta));
+        if row.dirty == Some(true) {
+            spans.push(Span::styled(GLYPH_DIRTY.to_string(), warn));
         } else {
-            if row.dirty == Some(true) {
-                spans.push(Span::styled(GLYPH_DIRTY.to_string(), warn));
-            } else {
-                spans.push(Span::raw(" "));
-            }
             spans.push(Span::raw(" "));
         }
+        spans.push(Span::raw(" "));
+    }
+    if layout.protected_w > 0 {
+        if row.protected {
+            spans.push(Span::styled(GLYPH_PROTECTED.to_string(), meta));
+        } else {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::raw(" "));
     }
     spans.push(Span::styled(pad_clip(&row.name, layout.name_w), Style::default().fg(p.worktree)));
     // Last finished lane task: status glyph (status-colored) + name (mauve when a
@@ -1288,15 +1294,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worktree_line_shows_lock_for_protected_row() {
+    fn worktree_line_shows_protected_marker_in_its_own_slot_beside_dirty() {
         use crate::selectors::{wt_col_layout, WorktreeRow};
         let p = Palette::default();
+        // Protected AND dirty: both single-cell front markers show at once
+        // (the old 🔒 replaced the ± slot; the ⛨ column is independent).
         let protected = WorktreeRow {
             name: "legal-lake".into(),
             raw_name: "legal-lake".into(),
             path: "/x".into(),
             branch: "legal-lake".into(),
             protected: true,
+            dirty: Some(true),
             ..Default::default()
         };
         let plain = WorktreeRow {
@@ -1315,8 +1324,18 @@ mod tests {
                 .map(|s| s.content.clone())
                 .collect::<String>()
         };
-        assert!(text(&protected).contains(GLYPH_PROTECTED));
-        assert!(!text(&plain).contains(GLYPH_PROTECTED));
+        let prot_text = text(&protected);
+        assert!(prot_text.contains(GLYPH_DIRTY));
+        assert!(prot_text.contains(GLYPH_PROTECTED));
+        let plain_text = text(&plain);
+        assert!(!plain_text.contains(GLYPH_DIRTY));
+        assert!(!plain_text.contains(GLYPH_PROTECTED));
+        // Both markers are single-width and the slots are statically reserved,
+        // so the name lands at the same char offset on every row.
+        assert_eq!(
+            prot_text.chars().position(|c| c == 'l').unwrap(),
+            plain_text.chars().position(|c| c == 'J').unwrap()
+        );
     }
 
     #[test]

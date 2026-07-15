@@ -143,7 +143,12 @@ export class Engine {
 			out[repo] = list.map((wt) => {
 				const e = this.gitEnrichCache.get(wt.path);
 				const base: WorktreeInfo = e ? { ...wt, ...e } : { ...wt };
-				base.protected = isProtectedWorktree(repoPath, protectedNames, wt);
+				base.protected = isProtectedWorktree(
+					repoPath,
+					repo,
+					protectedNames,
+					wt,
+				);
 				return base;
 			});
 		}
@@ -223,7 +228,7 @@ export class Engine {
 		const protectedNames = loadProjectProtectedWorktrees(
 			projectWorkspaceDir(this.deps.config, repo),
 		);
-		if (isProtectedWorktree(repoPath, protectedNames, wt)) {
+		if (isProtectedWorktree(repoPath, repo, protectedNames, wt)) {
 			throw new Error(
 				`Worktree "${wt.name}" is protected and cannot be removed`,
 			);

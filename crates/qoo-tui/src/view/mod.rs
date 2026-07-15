@@ -567,8 +567,9 @@ mod tests {
         // Widened enough to clear the labeled-chip threshold AND leave the
         // WORKTREES pane room for the author + commit-age columns (they drop
         // first under the width ladder — before queued — so a too-narrow left
-        // column hides them behind the busy row's queued·next cell).
-        app.left_cols = Some(98);
+        // column hides them behind the busy row's queued·next cell). 100 (was
+        // 98) since the `⛨` protected front slot reserved 2 more cells.
+        app.left_cols = Some(100);
         // Seed the TASKS pane with defs that exercise the schedule column:
         // discovery + humanized cron (cron text then the `⌕` marker), humanized
         // cron only (no marker), discovery with no cron (bare `⌕` marker), and a
@@ -617,13 +618,16 @@ mod tests {
             ],
         );
         // Seed last-commit author + epoch on the acme worktrees so the WORKTREES
-        // AUTHOR column renders (`koshea  3d ago` = who · when). Local to this
-        // snapshot, not the shared fixture.
+        // AUTHOR column renders (`koshea  3d ago` = who · when), and mark the
+        // first worktree dirty + protected so the `±` and `⛨` front markers
+        // render side by side. Local to this snapshot, not the shared fixture.
         if let Some(snap) = app.snapshot.as_mut()
             && let Some(wts) = snap.worktrees.get_mut("acme") {
                 if let Some(w) = wts.get_mut(0) {
                     w.last_commit_author = Some("koshea".into());
                     w.last_commit_epoch = Some(app.now_epoch_s - 3 * 86_400);
+                    w.dirty = Some(true);
+                    w.protected = true;
                 }
                 if let Some(w) = wts.get_mut(1) {
                     w.last_commit_author = Some("ada".into());

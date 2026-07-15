@@ -356,7 +356,7 @@ describe("Engine.removeWorktree protection", () => {
 		mkdirSync(wsProject, { recursive: true });
 		writeFileSync(
 			join(wsProject, "vars.yaml"),
-			"protected_worktrees:\n  - legal-lake\n",
+			"protected_worktrees:\n  - legal-lake\n  - testing1\n",
 		);
 		let removed: string | null = null;
 		const { engine } = setup({
@@ -371,6 +371,14 @@ describe("Engine.removeWorktree protection", () => {
 						name: "legal-lake",
 						path: join(base, "wt-ll"),
 						branch: "legal-lake",
+					},
+					// Real-world shape: the worktree directory (and thus its name)
+					// carries the `<repo>.` prefix while vars.yaml lists the
+					// stripped display name.
+					{
+						name: "platform.testing1",
+						path: join(base, "wt-t1"),
+						branch: "testing1",
 					},
 					{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
 				],
@@ -395,6 +403,15 @@ describe("Engine.removeWorktree protection", () => {
 		await expect(
 			engine.removeWorktree("platform", "legal-lake"),
 		).rejects.toThrow(/protected/);
+		expect(removed()).toBeNull();
+	});
+
+	it("refuses to remove a protected worktree listed by its display name", async () => {
+		// vars.yaml says `testing1`; the worktree is `platform.testing1`.
+		const { engine, removed } = protSetup();
+		await expect(engine.removeWorktree("platform", "testing1")).rejects.toThrow(
+			/protected/,
+		);
 		expect(removed()).toBeNull();
 	});
 
@@ -479,7 +496,7 @@ describe("Engine.worktreesByRepo", () => {
 		mkdirSync(wsProject, { recursive: true });
 		writeFileSync(
 			join(wsProject, "vars.yaml"),
-			"protected_worktrees:\n  - legal-lake\n",
+			"protected_worktrees:\n  - legal-lake\n  - testing1\n",
 		);
 		const { engine } = setup({
 			config: {
@@ -494,6 +511,13 @@ describe("Engine.worktreesByRepo", () => {
 						path: join(base, "wt-ll"),
 						branch: "legal-lake",
 					},
+					// Real-world shape: worktree name carries the `<repo>.` prefix
+					// while vars.yaml lists the stripped display name.
+					{
+						name: "platform.testing1",
+						path: join(base, "wt-t1"),
+						branch: "testing1",
+					},
 					{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
 				],
 			},
@@ -504,6 +528,7 @@ describe("Engine.worktreesByRepo", () => {
 		expect(byName).toEqual({
 			platform: true,
 			"legal-lake": true,
+			"platform.testing1": true,
 			"JUS-1": false,
 		});
 	});
