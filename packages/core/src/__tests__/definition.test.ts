@@ -54,6 +54,7 @@ describe("loadDefinition", () => {
 			args: [{ name: "number" }],
 			dedup: "skip_seen",
 			worktree: "pr:{{number}}",
+			lane: null,
 			preRun: "mise run setup",
 			postRun: null,
 			verify: null,
@@ -146,6 +147,23 @@ describe("loadDefinition", () => {
 			typo: { config: "timout: 5m", prompt: "x" },
 		});
 		expect(() => loadDefinition(projectDir, "platform", "typo")).toThrow();
+	});
+
+	it("loads a lane override, null when absent", () => {
+		const projectDir = makeRepo({
+			autotest: {
+				config: "lane: testing1-stack",
+				prompt: "Test.\n",
+			},
+			plain: {
+				config: "description: no lane here",
+				prompt: "P.\n",
+			},
+		});
+		expect(loadDefinition(projectDir, "platform", "autotest").lane).toBe(
+			"testing1-stack",
+		);
+		expect(loadDefinition(projectDir, "platform", "plain").lane).toBeNull();
 	});
 });
 

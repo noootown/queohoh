@@ -51,6 +51,13 @@ const DefinitionConfigSchema = z
 		// `worktree:{{name}}`) or the literal `auto`, which derives the ref from
 		// the task's arg values at instantiate time (see resolveRef).
 		worktree: z.string().default("temp"),
+		// Optional scheduler-lane override. When set, every instance of this
+		// definition shares one lane (`repo:<lane>`) instead of the default
+		// per-worktree lane — serializing runs across different worktrees.
+		// Motivating case: the autotest task always spawns a stack on
+		// testing1's ports, so two instances must never run concurrently even
+		// though each lives in its own PR worktree.
+		lane: z.string().min(1).optional(),
 		pre_run: z.string().optional(),
 		post_run: z.string().optional(),
 		// Done-condition command. The framework runs it after the worker claims
@@ -75,6 +82,9 @@ export interface TaskDefinition {
 	args: ArgSpec[];
 	dedup: "skip_seen" | "retry_errored" | "none";
 	worktree: string;
+	/** Scheduler-lane override; null = default per-worktree lane. See the
+	 * schema comment — serializes all instances of this definition. */
+	lane: string | null;
 	preRun: string | null;
 	postRun: string | null;
 	verify: string | null;
@@ -159,6 +169,7 @@ export function loadDefinition(
 		args: normalizeArgs(config.args),
 		dedup: config.dedup,
 		worktree: config.worktree,
+		lane: config.lane ?? null,
 		preRun: config.pre_run ?? null,
 		postRun: config.post_run ?? null,
 		verify: config.verify ?? null,

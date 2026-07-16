@@ -17,6 +17,7 @@ function def(overrides: Partial<TaskDefinition> = {}): TaskDefinition {
 		args: [{ name: "number" }],
 		dedup: "skip_seen",
 		worktree: "pr:{{number}}",
+		lane: null,
 		preRun: null,
 		postRun: null,
 		verify: null,
