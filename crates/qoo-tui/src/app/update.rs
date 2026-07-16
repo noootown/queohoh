@@ -115,108 +115,6 @@ impl App {
                     _ => Update { dirty: false, cmds: vec![] },
                 }
             }
-            // Text-input modals. Enter dispatches + closes, Esc cancels, every
-            // other Press forwards to `tui_input`. Mouse never reaches here — the
-            // `Event::Mouse` arm intercepts all mouse events before these fire.
-            Event::Key(k)
-                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::AddTask { .. }) =>
-            {
-                use crossterm::event::{KeyCode::*, KeyModifiers};
-                let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-                match k.code {
-                    // Newline chord first — must win over the plain-Enter submit arm.
-                    Enter if shift => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.insert_newline();
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Enter => {
-                        let (prompt, resume, worktree) = if let Mode::AddTask {
-                            worktree,
-                            resume_session_id,
-                            editor,
-                            ..
-                        } = &self.mode
-                        {
-                            (editor.text.clone(), resume_session_id.clone(), worktree.clone())
-                        } else {
-                            unreachable!()
-                        };
-                        let repo = match self.active_repo() {
-                            Some(r) => r,
-                            None => {
-                                self.mode = Mode::List;
-                                return Update { dirty: true, cmds: vec![] };
-                            }
-                        };
-                        let mut params = serde_json::json!({ "prompt": prompt, "repo": repo });
-                        if let Some(w) = worktree {
-                            params["worktree"] = serde_json::Value::String(w);
-                        }
-                        if let Some(sid) = resume {
-                            params["resume_session_id"] = serde_json::Value::String(sid);
-                        }
-                        self.mode = Mode::List;
-                        let cmd =
-                            self.dispatch_rpc("enqueue task", "enqueue", params, RpcOpts::default());
-                        Update { dirty: true, cmds: vec![cmd] }
-                    }
-                    Esc => {
-                        self.mode = Mode::List;
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Backspace => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.backspace();
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Left => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.move_left();
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Right => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.move_right();
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Up => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.move_up();
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Down => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.move_down();
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Home => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.move_home();
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    End => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.move_end();
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    Char(c) => {
-                        if let Mode::AddTask { editor, .. } = &mut self.mode {
-                            editor.insert_char(c);
-                        }
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                    _ => Update { dirty: false, cmds: vec![] },
-                }
-            }
             // Def-pick popup owns keys while open (checked before generic list
             // handling); key-release falls through to the generic no-op.
             Event::Key(k)
@@ -325,9 +223,9 @@ impl App {
                         up.dirty = up.dirty || had_status;
                         up
                     }
-                    // The overlay modes (Confirm, AddTask, DefPick, DefArgs,
-                    // SessionPick, Form) only reach here on key-release — their
-                    // Press events are handled by the guarded arms above.
+                    // The overlay modes (Confirm, DefPick, DefArgs, SessionPick,
+                    // Form) only reach here on key-release — their Press events
+                    // are handled by the guarded arms above.
                     _ => Update { dirty: false, cmds: vec![] },
                 }
             }
@@ -343,11 +241,6 @@ impl App {
             Event::Paste(s) => match &mut self.mode {
                 Mode::DefArgs { state, .. } => {
                     state.insert_str(&s);
-                    Update { dirty: !s.is_empty(), cmds: vec![] }
-                }
-                // The multiline prompt editor keeps the sanitized line structure.
-                Mode::AddTask { editor, .. } => {
-                    editor.insert_str(&crate::view::multiline_input::sanitize_paste(&s));
                     Update { dirty: !s.is_empty(), cmds: vec![] }
                 }
                 // The form routes paste to its focused text field (textarea

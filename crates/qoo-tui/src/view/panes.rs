@@ -38,7 +38,7 @@ use crate::view::theme::{
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
 const QUEUE_ROW_SCOPED: usize = 4; // [r]un [x]stop [g]oto [a]rchive · [c]reate [z]
-const TASKS_ROW_SCOPED: usize = 2; // [r]un [d]iscover · [z]
+const TASKS_ROW_SCOPED: usize = 2; // [r]un [d]iscover · [c]reate [z]
 const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [c]reate [z]
 
 /// Scope divider drawn between the row-scoped and pane-scoped chip groups (the
@@ -1499,23 +1499,24 @@ mod tests {
     #[test]
     fn build_header_worktrees_includes_row_verbs_and_tasks_chip() {
         let p = Palette::default();
-        // Wide enough for the labeled form: the worktrees strip carries five
-        // chips in scope order — row-scoped [r]un [g]oto [x]remove [t]asks, then
-        // the `·` divider, then pane-scoped [z]collapse. (The [c]reate chip was
-        // folded into the launcher's `r` → Create Worktree row.)
-        let area = Rect { x: 0, y: 0, width: 100, height: 8 };
+        // Wide enough for the labeled form: the worktrees strip carries six chips
+        // in scope order — row-scoped [r]un [g]oto [x]remove [t]asks, then the `·`
+        // divider, then pane-scoped [c]reate [z]collapse.
+        let area = Rect { x: 0, y: 0, width: 110, height: 8 };
         let (line, rects) =
             build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, &p);
-        assert_eq!(rects.len(), 5);
+        assert_eq!(rects.len(), 6);
         assert_eq!(rects[0].1, PaneButton::Run);
         assert_eq!(rects[1].1, PaneButton::Goto);
         assert_eq!(rects[2].1, PaneButton::Remove);
         assert_eq!(rects[3].1, PaneButton::Tasks);
-        assert_eq!(rects[4].1, PaneButton::Collapse);
+        assert_eq!(rects[4].1, PaneButton::Create);
+        assert_eq!(rects[5].1, PaneButton::Collapse);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[g]oto"), "labeled goto chip renders: {text}");
         assert!(text.contains("[x]remove"), "labeled remove chip renders: {text}");
         assert!(text.contains("[t]asks"), "labeled tasks chip renders: {text}");
+        assert!(text.contains("[c]reate"), "labeled create chip renders: {text}");
     }
 
     #[test]

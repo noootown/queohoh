@@ -836,7 +836,7 @@ fn r_and_x_are_noops_on_session_rows_but_g_works() {
 
     // `r`: no mode change, a status line explaining sessions can't host a task.
     let ru = a.update(key('r'));
-    assert!(matches!(a.mode, Mode::List), "r must not open AddTask on a session row");
+    assert!(matches!(a.mode, Mode::List), "r must not open the launcher on a session row");
     assert!(ru.cmds.is_empty());
     assert!(a.status_line.as_deref().unwrap_or("").contains("session"), "status: {:?}", a.status_line);
 

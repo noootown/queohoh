@@ -241,37 +241,7 @@ impl App {
     /// select/switch, the wheel scrolls the pane under the cursor without
     /// stealing focus, and scrollbar drags map proportionally.
     pub(super) fn on_mouse(&mut self, m: crossterm::event::MouseEvent) -> Update {
-        use crossterm::event::{
-            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind as K,
-        };
-        // Text-input modals own the mouse: only a left-click routes (Confirm ≡
-        // Enter, Cancel ≡ Esc, outside ≡ cancel); every other mouse kind is inert
-        // so a move/drag never disturbs the field or closes the popup. Handling
-        // mouse here (before the typing arms) is what keeps clicks out of the
-        // `tui_input` field entirely.
-        if matches!(self.mode, Mode::AddTask { .. }) {
-            if let K::Down(MouseButton::Left) = m.kind {
-                match self.hit.hit(m.column, m.row).cloned() {
-                    // The adhoc-task prompt registers a Confirm button (≡ Enter);
-                    // Modal is inert and an outside click cancels.
-                    Some(HitTarget::Button(crate::hit::ButtonKind::Confirm)) => {
-                        return self
-                            .update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-                    }
-                    Some(HitTarget::Button(crate::hit::ButtonKind::Cancel)) => {
-                        return self
-                            .update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-                    }
-                    Some(HitTarget::Modal) => return Update { dirty: false, cmds: vec![] },
-                    _ => {
-                        // Click outside the popup cancels (same as esc).
-                        self.mode = Mode::List;
-                        return Update { dirty: true, cmds: vec![] };
-                    }
-                }
-            }
-            return Update { dirty: false, cmds: vec![] };
-        }
+        use crossterm::event::{MouseButton, MouseEventKind as K};
         let mut cmds = Vec::new();
         let target = self.hit.hit(m.column, m.row).cloned();
         let dirty = match m.kind {

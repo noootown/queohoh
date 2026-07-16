@@ -69,7 +69,7 @@ pub enum AppAction {
     ArchiveSelected,
     /// New adhoc task on the selected WORKTREES row (`r`, and the worktrees
     /// `[r]un` chip): opens the session picker (`Mode::SessionPick`) for the
-    /// worktree, which then leads to the multiline `Mode::AddTask` prompt.
+    /// worktree, which then leads to a launch `Mode::Form` (model + prompt).
     /// Session rows can't host a task (status line, no mode change). Routes to
     /// `App::new_task_on_worktree`.
     NewTaskOnWorktree,
@@ -329,12 +329,11 @@ mod tests {
         );
         assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Tasks), AppAction::None);
         assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Worktrees), AppAction::None);
-        // `c` (create) is a QUEUE-only chip now (the worktrees create modal was
-        // folded into the launcher's `r` → Create Worktree row); inert on
-        // WORKTREES and TASKS.
+        // `c` (create) is a `[c]reate` chip on EVERY list pane now — the unified
+        // adhoc create form, prefilled per pane.
         assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Queue), AppAction::Create);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Worktrees), AppAction::None);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Tasks), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Worktrees), AppAction::Create);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Tasks), AppAction::Create);
     }
 
     #[test]
@@ -353,8 +352,8 @@ mod tests {
 
     #[test]
     fn worktree_pane_r_g_x_verbs() {
-        // The three worktrees row verbs: `r` opens a fresh worktree-targeted
-        // AddTask, `g` gotos (tmux), `x` removes.
+        // The three worktrees row verbs: `r` opens the worktree's session
+        // launcher, `g` gotos (tmux), `x` removes.
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);
         assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Worktrees), AppAction::GotoWorktree);
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Worktrees), AppAction::RemoveSelectedWorktree);
@@ -408,7 +407,7 @@ mod tests {
     fn r_runs_def_on_tasks_requeues_on_queue_new_task_on_worktrees() {
         // `r` is a Run chip on all three panes, meaning different verbs: TASKS
         // runs the highlighted def; QUEUE re-queues the selected task(s);
-        // WORKTREES opens a fresh worktree-targeted AddTask.
+        // WORKTREES opens the worktree's session launcher.
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Tasks), AppAction::RunSelectedDef);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Queue), AppAction::RequeueSelected);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);

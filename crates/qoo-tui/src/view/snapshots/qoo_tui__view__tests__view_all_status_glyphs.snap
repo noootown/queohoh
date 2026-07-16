@@ -15,7 +15,7 @@ expression: terminal.backend()
 "│ ✗  fai task                  █ ││                                                                │"
 "│ ●  don task                  ▼ ││                                                                │"
 "╰────────────────────────────────╯│                                                                │"
-"╭⚡TASKS · 0 tasks─ [r] [d] · [z]╮│                                                                │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS─────── [r] [d] · [c] [z]╮│                                                                │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter                   ││                                                                │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions            ││                                                                │"
 "│                                ││                                                                │"

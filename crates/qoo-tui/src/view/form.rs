@@ -16,7 +16,7 @@ use crate::hit::{ButtonKind, HitMap, HitTarget};
 use crate::view::args_form::{caret_line, wrap_value_cursor};
 use crate::view::modal::{render_button_row, DIALOG_WIDTH, MODAL_PADDING};
 use crate::view::multiline_input::{sanitize_paste, MultilineInput};
-use crate::view::theme::{GLYPH_CHEVRON_DOWN, Palette};
+use crate::view::theme::{GLYPH_CHEVRON_DOWN, GLYPH_CHEVRON_RIGHT, Palette};
 
 /// The three field shapes. Shape alone signals the type — a one-row box is an
 /// input, a three-row box a textarea, a `▾` a dropdown (no label tags needed).
@@ -30,6 +30,13 @@ pub enum FieldKind {
     /// or type a bare PR number / ticket id and pick the synthetic "use <ref>"
     /// row `combobox_filtered` offers. Renders like an Input with a `▾`.
     Combobox { options: Vec<String> },
+    /// A non-editable, focus-STOP field whose value is a display label and whose
+    /// activation (Enter / click) opens a SEPARATE modal — not an inline
+    /// dropdown. The engine only renders it (label + a right `▸`) and treats it
+    /// as a focus stop; the owning mode intercepts activation (the adhoc-create
+    /// form uses it for session continuation → `Mode::SessionPick`). Typing/
+    /// paste/caret are inert on it; `validate` never blocks on it.
+    Picker,
 }
 
 /// One form field: a `label` (rendered as the box's border title), its `kind`,
@@ -78,6 +85,12 @@ impl Field {
     /// ignore it, validation never blocks on it, and it renders dimmed.
     pub fn readonly(label: &str, value: &str) -> Self {
         Field { label: label.into(), kind: FieldKind::Input, value: value.into(), required: false, readonly: true }
+    }
+    /// A focus-stop [`FieldKind::Picker`] whose activation opens a modal (handled
+    /// by the owning mode). `value` is the display label. Never required; never
+    /// text-edited.
+    pub fn picker(label: &str, value: &str) -> Self {
+        Field { label: label.into(), kind: FieldKind::Picker, value: value.into(), required: false, readonly: false }
     }
     /// Text-editable field kinds (Input, Textarea, and Combobox's value); a
     /// Dropdown value is set by picking, never typed.
@@ -382,6 +395,11 @@ impl FormState {
     /// Whether the focused field is a Combobox (a type-or-pick select).
     pub fn is_combobox_focused(&self) -> bool {
         matches!(self.focus_kind(), FocusKind::Field(i) if matches!(self.fields[i].kind, FieldKind::Combobox { .. }))
+    }
+
+    /// Whether the focused field is a [`FieldKind::Picker`] (modal-opening).
+    pub fn is_picker_focused(&self) -> bool {
+        matches!(self.focus_kind(), FocusKind::Field(i) if matches!(self.fields[i].kind, FieldKind::Picker))
     }
 
     /// The FILTERED option rows for the focused Combobox, in display order:
@@ -709,6 +727,20 @@ pub(crate) fn render_fields(
                     open_anchor = Some((box_rect, options.clone()));
                 }
             }
+            FieldKind::Picker => {
+                // `value` (display label) left, a right-`▸` on the right — the
+                // affordance that activating opens a modal, not an inline list.
+                let val = if f.value.is_empty() { "—" } else { f.value.as_str() };
+                let chev = GLYPH_CHEVRON_RIGHT.to_string();
+                let gap = (content.width as usize)
+                    .saturating_sub(val.chars().count() + chev.chars().count());
+                let line = Line::from(vec![
+                    Span::styled(val.to_string(), Style::default().fg(p.fg)),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(chev, Style::default().fg(p.accent)),
+                ]);
+                frame.render_widget(Paragraph::new(line), content);
+            }
             FieldKind::Combobox { .. } => {
                 // Text-field path (value + caret) with the right-aligned `▾`; the
                 // rightmost 2 cols are reserved for " ▾" so the chevron never
@@ -976,6 +1008,36 @@ mod tests {
         f.set_field_value(0, "45");
         let view = f.combobox_filtered();
         assert!(view.iter().any(|(_, s)| s == "pr:45"));
+    }
+
+    #[test]
+    fn picker_is_a_focus_stop_but_not_text_editable() {
+        // A Picker field participates in Tab focus (so it can be activated) but
+        // typing/newline never mutate it, and validate never blocks on it.
+        let mut f = FormState::new("t", "OK", vec![
+            Field::combobox("target", vec![], ""),
+            Field::picker("session", "New session"),
+            Field::textarea("prompt", "", true),
+        ]);
+        assert_eq!(f.focus_kind(), FocusKind::Field(0));
+        f.focus_next(); // → the Picker (a focus stop)
+        assert_eq!(f.focus_kind(), FocusKind::Field(1));
+        assert!(f.is_picker_focused());
+        f.insert_char('x'); // inert on a Picker
+        assert_eq!(f.fields[1].value, "New session");
+        f.insert_newline(); // inert
+        assert_eq!(f.fields[1].value, "New session");
+        // Only the required empty prompt blocks validation, never the Picker.
+        assert_eq!(f.validate(), Err(2));
+    }
+
+    #[test]
+    fn picker_renders_value_and_right_chevron() {
+        let mut f = FormState::new("t", "OK", vec![Field::picker("session", "↻ Fix parser")]);
+        let (s, _hit) = render(&mut f, 64, 12);
+        assert!(s.contains("session"), "picker label renders");
+        assert!(s.contains("Fix parser"), "picker value renders");
+        assert!(s.contains('▸'), "picker draws the right chevron affordance");
     }
 
     #[test]

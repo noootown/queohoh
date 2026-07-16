@@ -1009,21 +1009,22 @@ fn def_args_paste_inserts_multiline_verbatim() {
     }
 }
 
-// Paste into the multiline AddTask editor keeps newlines verbatim (the prompt
-// is a multiline body now).
+// Paste into the adhoc-create form's prompt textarea keeps newlines verbatim
+// (the prompt is a multiline body).
 #[test]
-fn paste_into_add_task_editor_keeps_newlines() {
+fn paste_into_adhoc_prompt_keeps_newlines() {
+    use crate::app::mode::adhoc_field;
     let mut app = fixture_app_one_project("platform");
-    app.mode = Mode::AddTask {
-        worktree: None,
-        resume_session_id: None,
-        resume_label: None,
-        editor: crate::view::multiline_input::MultilineInput::default(),
-    };
+    app.open_adhoc_create("platform".into(), None);
+    if let Mode::Form { state, .. } = &mut app.mode {
+        state.focus_field(adhoc_field::PROMPT);
+    }
     app.update(Event::Paste("do a\nthen b".into()));
     match &app.mode {
-        Mode::AddTask { editor, .. } => assert_eq!(editor.text, "do a\nthen b"),
-        other => panic!("expected AddTask, got {other:?}"),
+        Mode::Form { state, .. } => {
+            assert_eq!(state.fields[adhoc_field::PROMPT].value, "do a\nthen b");
+        }
+        other => panic!("expected Form, got {other:?}"),
     }
 }
 

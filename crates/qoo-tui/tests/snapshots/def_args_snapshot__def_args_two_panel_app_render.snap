@@ -17,7 +17,7 @@ expression: term.backend()
 "│         │  │ready                      ▾│  ││                                          │         │"
 "│         │  ╰────────────────────────────╯  ││                                          │         │"
 "╰─────────│                                  ││                                          │         │"
-"╭⚡TASKS ·│  ╭ source ────────────────────╮  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS──│  ╭ source ────────────────────╮  ││                                          │         │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]fi│  │wt-a                        │  ││                                          │         │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task │  ╰────────────────────────────╯  ││                                          │         │"
 "│         │                                  ││                                          │         │"

@@ -182,9 +182,9 @@ impl Default for TabUiState {
 }
 
 /// Subset of the contract `Mode`. Variants are only ever
-/// added. `PartialEq` is intentionally not derived: `AddTask` carries a
-/// `MultilineInput` and `Form` a `FormState`, neither of which is `PartialEq`;
-/// nothing compares `Mode` by value (tests use `matches!`).
+/// added. `PartialEq` is intentionally not derived: `Form`/`DefArgs` carry a
+/// `FormState` and `SessionPick` a `SessionPickReturn`, none of which is
+/// `PartialEq`; nothing compares `Mode` by value (tests use `matches!`).
 #[derive(Debug, Clone, Default)]
 pub enum Mode {
     #[default]
@@ -214,16 +214,6 @@ pub enum Mode {
         confirm_label: String,
         action: ConfirmAction,
         focus: crate::hit::ButtonKind,
-    },
-    /// New adhoc-task prompt. Enter submits (enqueue), Shift+Enter inserts a
-    /// newline into the multiline `editor`, Esc cancels.
-    AddTask {
-        worktree: Option<String>,
-        /// Pin: resume this session (lineage-resolved at spawn). None = fresh.
-        resume_session_id: Option<String>,
-        /// Human label of the picked session, for the modal title.
-        resume_label: Option<String>,
-        editor: crate::view::multiline_input::MultilineInput,
     },
     /// Task menu / def picker over the active repo (opened by `t`). Lazyvim-style
     /// picker: `query` filters `defs` by name (empty = all), `index` is the
@@ -258,14 +248,15 @@ pub enum Mode {
         initial_worktree: Option<String>,
         preview_scroll: usize,
     },
-    /// Session picker (`r` on a worktree row): pick a resumable Claude session to
-    /// carry into `Mode::AddTask`, or start fresh. Row 0 is ALWAYS the synthetic
-    /// "New session" (fresh task); the loaded `items` follow it. `query` filters
-    /// the loaded session labels only (row 0 stays visible regardless); `index`
-    /// is the highlighted row over the VIEW (`0` = New session, `1..` = filtered
-    /// items). `loading` gates the placeholder row until [`Event::SessionsLoaded`]
-    /// (matched on `worktree`) fills `items`. `repo`/`worktree` are the frozen
-    /// target the fetch and the chosen AddTask carry.
+    /// Session picker (`r` on a worktree row, or the adhoc-create form's session
+    /// field): pick a resumable Claude session to continue, or start fresh. Row 0
+    /// is ALWAYS the synthetic "New session" (fresh task); the loaded `items`
+    /// follow it. `query` filters the loaded session labels only (row 0 stays
+    /// visible regardless); `index` is the highlighted row over the VIEW (`0` =
+    /// New session, `1..` = filtered items). `loading` gates the placeholder row
+    /// until [`Event::SessionsLoaded`] (matched on `worktree`) fills `items`.
+    /// `repo`/`worktree` are the frozen target the fetch and the resolved pick
+    /// carry; `ret` decides what a pick returns to (see [`SessionPickReturn`]).
     SessionPick {
         repo: String,
         worktree: String,
@@ -276,6 +267,11 @@ pub enum Mode {
         /// Focused button in the bottom row (defaults to `Confirm` = Next on
         /// open). Tab toggles it; Enter fires the focused button.
         focus: crate::hit::ButtonKind,
+        /// What a confirmed pick returns to. `Launch` (the worktrees-pane `[r]`
+        /// flow) builds a fresh launch [`Mode::Form`]; `Adhoc` returns to a
+        /// stashed adhoc-create form, pinning the picked session (or clearing it
+        /// on "New session"). See [`SessionPickReturn`].
+        ret: SessionPickReturn,
     },
     /// Reusable bordered typed form (Phase 4/5). `state` holds the fields, focus,
     /// caret, dropdown, and validation error (see [`crate::view::form::FormState`]);
@@ -304,6 +300,51 @@ pub enum FormAction {
     /// Create a new worktree in `repo`, then enqueue a first task into it.
     /// Fields: `[branch/name input, model dropdown, prompt textarea]`.
     CreateWorktree { repo: String },
+    /// Adhoc task (`c` / Create). The unified target-picking create form —
+    /// Fields, in order (see `adhoc_field`): `[target combobox, session picker,
+    /// model dropdown, prompt textarea]`. The `target` combobox resolves to a
+    /// canonical ref on submit (`resolve_target_ref`); an EMPTY target enqueues
+    /// into a fresh temp worktree (the legacy adhoc behavior). `resume_*` pins a
+    /// session to CONTINUE (only valid — and only sent — when the resolved
+    /// target is `resume_worktree`, an existing worktree); the session picker
+    /// field sets them via a `Mode::SessionPick` round-trip.
+    AdhocTask {
+        repo: String,
+        resume_session_id: Option<String>,
+        resume_label: Option<String>,
+        /// The worktree the pinned session belongs to; the pin is only honored
+        /// on submit when the resolved target names this same worktree.
+        resume_worktree: Option<String>,
+    },
+}
+
+/// Which stop each adhoc-create form field occupies (the positional layout the
+/// `AdhocTask` action reads back). Kept as a single source of truth so the
+/// builder, the submit reader, and the session round-trip stay in lockstep.
+pub mod adhoc_field {
+    pub const TARGET: usize = 0;
+    pub const SESSION: usize = 1;
+    pub const MODEL: usize = 2;
+    pub const PROMPT: usize = 3;
+}
+
+/// What a confirmed [`Mode::SessionPick`] returns to. `PartialEq` is intentionally
+/// not derived (`Adhoc` carries a non-`PartialEq` `FormState`).
+#[derive(Debug, Clone)]
+pub enum SessionPickReturn {
+    /// The worktrees-pane `[r]` launcher: a pick builds a fresh launch
+    /// [`Mode::Form`] (New session / resume → `NewSession`; Create Worktree →
+    /// `CreateWorktree`).
+    Launch,
+    /// Opened from the adhoc-create form's session field: a "New session" /
+    /// resume pick returns to the stashed `state`/`action`, pinning (or
+    /// clearing) the session. `Create Worktree` still builds a `CreateWorktree`
+    /// form (an escape hatch). The stash preserves the target/model/prompt the
+    /// user already entered.
+    Adhoc {
+        state: Box<crate::view::form::FormState>,
+        action: Box<FormAction>,
+    },
 }
 
 /// The frozen payload a [`Mode::Confirm`] fires when confirmed. Each variant

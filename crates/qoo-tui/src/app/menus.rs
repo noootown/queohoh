@@ -172,7 +172,9 @@ impl App {
     /// ctrl+p/n) move `index` circularly over the view; printable chars extend the
     /// filter and Backspace pops it (both auto-highlighting the first matching
     /// session so Enter resumes it, else falling back to "New session"); Enter
-    /// builds `Mode::AddTask` — row 0 → fresh, a session row → that session pinned.
+    /// resolves per the picker's `ret`: `Launch` builds a launch `Mode::Form`
+    /// (row 0 → fresh, a session row → that session pinned); `Adhoc` returns to
+    /// the stashed adhoc-create form with the session pinned/cleared.
     pub(super) fn session_pick_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
         use crate::hit::ButtonKind;
         use crossterm::event::{KeyCode::*, KeyModifiers};
@@ -201,10 +203,19 @@ impl App {
         } else {
             None
         };
+        // Opened from the adhoc-create form's session field: a confirmed "New
+        // session"/resume pick returns to the stashed form; Esc/Cancel restore it
+        // unchanged. (Create Worktree stays an escape hatch in both modes.)
+        let is_adhoc_return =
+            matches!(&self.mode, Mode::SessionPick { ret: SessionPickReturn::Adhoc { .. }, .. });
         match ev.code {
             Esc => {
-                self.mode = Mode::List;
-                Update { dirty: true, cmds: vec![] }
+                if is_adhoc_return {
+                    self.cancel_adhoc_session_pick()
+                } else {
+                    self.mode = Mode::List;
+                    Update { dirty: true, cmds: vec![] }
+                }
             }
             // Tab toggles the focused button (filter + list stay live: typing
             // filters, ↑/↓ move the selection at any time).
@@ -225,8 +236,18 @@ impl App {
             // the highlighted row: New session / Create Worktree / resume.
             Enter => match focus {
                 ButtonKind::Cancel => {
-                    self.mode = Mode::List;
-                    Update { dirty: true, cmds: vec![] }
+                    if is_adhoc_return {
+                        self.cancel_adhoc_session_pick()
+                    } else {
+                        self.mode = Mode::List;
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                }
+                // New session (row 0) / resume (row ≥2) opened from the adhoc form
+                // return to it, pinning (or clearing) the session. Create Worktree
+                // (row 1) still builds its own form (handled below).
+                ButtonKind::Confirm if is_adhoc_return && eff != 1 => {
+                    self.finish_adhoc_session_pick(chosen.map(|(sid, label, _)| (sid, label)))
                 }
                 ButtonKind::Confirm if eff == 1 => {
                     // Create Worktree → the launch form (branch/name + model +
@@ -290,6 +311,56 @@ impl App {
             }
             _ => Update { dirty: false, cmds: vec![] },
         }
+    }
+
+    /// Return from an adhoc-return `Mode::SessionPick` to the stashed create
+    /// form, pinning the chosen session (`Some`) or clearing the pin (`None` =
+    /// "New session"). Restores the target/model/prompt the user already entered
+    /// and lands focus back on the session field.
+    fn finish_adhoc_session_pick(&mut self, resume: Option<(String, String)>) -> Update {
+        let Mode::SessionPick {
+            worktree,
+            ret: SessionPickReturn::Adhoc { state, action },
+            ..
+        } = std::mem::replace(&mut self.mode, Mode::List)
+        else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        let mut state = *state;
+        let mut action = *action;
+        if let FormAction::AdhocTask { resume_session_id, resume_label, resume_worktree, .. } =
+            &mut action
+        {
+            match &resume {
+                Some((sid, label)) => {
+                    *resume_session_id = Some(sid.clone());
+                    *resume_label = Some(label.clone());
+                    *resume_worktree = Some(worktree);
+                }
+                None => {
+                    *resume_session_id = None;
+                    *resume_label = None;
+                    *resume_worktree = None;
+                }
+            }
+        }
+        let label = Self::adhoc_session_label(resume.as_ref().map(|(_, l)| l.as_str()));
+        state.set_field_value(crate::app::mode::adhoc_field::SESSION, &label);
+        state.focus_field(crate::app::mode::adhoc_field::SESSION);
+        self.mode = Mode::Form { state, action };
+        Update { dirty: true, cmds: vec![] }
+    }
+
+    /// Esc / Cancel out of an adhoc-return `Mode::SessionPick`: restore the
+    /// stashed create form UNCHANGED (the pin it already carried is preserved).
+    fn cancel_adhoc_session_pick(&mut self) -> Update {
+        let Mode::SessionPick { ret: SessionPickReturn::Adhoc { state, action }, .. } =
+            std::mem::replace(&mut self.mode, Mode::List)
+        else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        self.mode = Mode::Form { state: *state, action: *action };
+        Update { dirty: true, cmds: vec![] }
     }
 
     /// After a filter edit, land the highlight on the first matching session
@@ -372,16 +443,20 @@ impl App {
                 }
                 fire_next(self)
             }
-            Some(HitTarget::Button(ButtonKind::Cancel)) => {
-                self.mode = Mode::List;
-                Update { dirty: true, cmds: vec![] }
-            }
+            Some(HitTarget::Button(ButtonKind::Cancel)) => self.close_or_cancel_session_pick(),
             Some(HitTarget::Modal) => Update { dirty: false, cmds: vec![] },
-            _ => {
-                self.mode = Mode::List;
-                Update { dirty: true, cmds: vec![] }
-            }
+            _ => self.close_or_cancel_session_pick(),
         }
     }
 
+    /// Close a `Mode::SessionPick` on Cancel / outside-click: an adhoc-return
+    /// picker restores its stashed create form; the launcher just closes to List.
+    fn close_or_cancel_session_pick(&mut self) -> Update {
+        if matches!(&self.mode, Mode::SessionPick { ret: SessionPickReturn::Adhoc { .. }, .. }) {
+            self.cancel_adhoc_session_pick()
+        } else {
+            self.mode = Mode::List;
+            Update { dirty: true, cmds: vec![] }
+        }
+    }
 }

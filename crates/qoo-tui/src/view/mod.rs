@@ -228,18 +228,6 @@ pub fn render(app: &mut App, frame: &mut ratatui::Frame) -> HitMap {
             crate::app::Mode::Confirm { title, body, confirm_label, focus, .. } => {
                 modal::render_confirm(frame, &mut hits, title, body, confirm_label, *focus);
             }
-            crate::app::Mode::AddTask { worktree, resume_label, editor, .. } => {
-                let repo = app.active_repo().unwrap_or_default();
-                let target = match worktree {
-                    Some(w) => format!("{repo}:{}", crate::selectors::strip_repo_prefix(w, &repo)),
-                    None => format!("{repo} (adhoc)"),
-                };
-                let title = match resume_label {
-                    Some(label) => format!("New task — resume: {label} — {target}"),
-                    None => format!("New task — {target}"),
-                };
-                modal::render_prompt_modal(frame, &mut hits, &p, &title, editor);
-            }
             crate::app::Mode::DefPick { defs, index, worktree, branch, query, preview_scroll } => {
                 let repo = app.active_repo().unwrap_or_default();
                 let title = match worktree {
@@ -263,7 +251,7 @@ pub fn render(app: &mut App, frame: &mut ratatui::Frame) -> HitMap {
                 // Render-feedback for wheel clamping (see the App fields).
                 app.menu_preview_max_scroll.set(m.max_scroll);
             }
-            crate::app::Mode::SessionPick { repo, worktree, items, loading, index, query, focus } => {
+            crate::app::Mode::SessionPick { repo, worktree, items, loading, index, query, focus, .. } => {
                 // Title is `{repo} · {worktree display name}`. The relative-age labels
                 // read wall-clock now from `now_epoch_s` (→ ms).
                 let title =

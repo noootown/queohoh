@@ -1,7 +1,6 @@
 //! Shared modal frame + input modals. `modal_frame` draws a Clear + rounded,
-//! accent-bordered, centered popup and returns its interior Rect.
-//! `render_prompt_modal` fills it with a multiline editor body + hint line (the
-//! new-task prompt) and registers a `Modal` body hit target.
+//! accent-bordered, centered popup and returns its interior Rect; the confirm
+//! dialog and button-row helpers build on it.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -103,66 +102,6 @@ pub(crate) fn render_back_button(frame: &mut ratatui::Frame, hit: &mut HitMap, r
     hit.push(rect, HitTarget::Button(ButtonKind::Confirm));
 }
 
-/// Multiline new-task prompt modal. Renders the wrapped `editor` body (with the
-/// caret on its row) inside a `modal_frame`, plus a hint line on the bottom
-/// interior row. Enter submits, Shift+Enter inserts a newline, Esc cancels — all
-/// handled in the update loop; this only draws. Registers the popup body as a
-/// `Modal` hit target so clicks inside are opaque to the panes beneath (mouse
-/// routing treats a click outside the popup as cancel).
-pub fn render_prompt_modal(
-    frame: &mut ratatui::Frame,
-    hit: &mut HitMap,
-    p: &Palette,
-    title: &str,
-    editor: &crate::view::multiline_input::MultilineInput,
-) {
-    use crate::view::args_form::{caret_line, wrap_value_cursor};
-
-    // Replicate modal_frame's padded interior width so we can wrap the body and
-    // size the popup before drawing the frame (border ring 2 + horizontal
-    // padding 4).
-    let area = frame.area();
-    let outer_w = area.width.saturating_sub(8).clamp(20, 72);
-    let interior_w = outer_w.saturating_sub(6);
-    // Reserve one column so the caret can sit past a full row's last char.
-    let wrap_w = (interior_w as usize).saturating_sub(1).max(1);
-    let (lines, cur_row, cur_col) = wrap_value_cursor(&editor.text, editor.cursor, wrap_w);
-
-    // Body height caps at 12 rows (modal_frame further clamps to the frame);
-    // interior = body rows + 1 hint row. `modal_frame` registers the Modal hit
-    // target over the whole popup.
-    let body_h = (lines.len() as u16).clamp(1, 12);
-    let inner = modal_frame(frame, hit, title, body_h + 1);
-
-    // Body rows are everything above the bottom hint row. Window the wrapped
-    // lines so the caret row stays visible when the body overflows.
-    let body_rows = inner.height.saturating_sub(1) as usize;
-    let start = cur_row.saturating_sub(body_rows.saturating_sub(1));
-    for (ri, line) in lines.iter().enumerate().skip(start).take(body_rows) {
-        let y = inner.y + (ri - start) as u16;
-        let row = Rect { x: inner.x, y, width: inner.width, height: 1 };
-        if ri == cur_row {
-            frame.render_widget(caret_line(line, cur_col, p), row);
-        } else {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(line.clone(), Style::default().fg(p.fg)))),
-                row,
-            );
-        }
-    }
-
-    // Hint line on the bottom interior row.
-    let hint = "enter submit · shift+enter newline";
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(hint, p.dim_style()))),
-        Rect {
-            x: inner.x,
-            y: inner.y + inner.height.saturating_sub(1),
-            width: inner.width,
-            height: 1,
-        },
-    );
-}
 
 /// Unified destructive-confirmation dialog (remove worktree, bulk remove, queue
 /// cancel). Warn-colored rounded border + bold `title` and `MODAL_PADDING`; the
@@ -266,64 +205,6 @@ mod modal_view_tests {
     }
 }
 
-#[cfg(test)]
-mod prompt_modal_view_tests {
-    use super::*;
-    use crate::hit::{HitMap, HitTarget};
-    use crate::view::multiline_input::MultilineInput;
-    use ratatui::{Terminal, backend::TestBackend};
-
-    fn render_prompt(cols: u16, rows: u16, text: &str) -> (String, HitMap) {
-        let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
-        let mut hit = HitMap::default();
-        let p = Palette::default();
-        let editor = MultilineInput { text: text.to_string(), cursor: text.chars().count() };
-        term.draw(|f| render_prompt_modal(f, &mut hit, &p, "New task — platform (adhoc)", &editor))
-            .unwrap();
-        let buf = term.backend().buffer().clone();
-        let mut s = String::new();
-        for y in 0..rows {
-            for x in 0..cols {
-                s.push_str(buf[(x, y)].symbol());
-            }
-            s.push('\n');
-        }
-        (s, hit)
-    }
-
-    #[test]
-    fn shows_title_body_and_multiline_hint() {
-        let (s, _hit) = render_prompt(60, 15, "first line\nsecond line");
-        assert!(s.contains("New task — platform (adhoc)"));
-        assert!(s.contains("first line"));
-        assert!(s.contains("second line"));
-        assert!(s.contains("enter submit · shift+enter newline"));
-        // Esc-to-dismiss is universal and deliberately unadvertised.
-        assert!(!s.contains("esc cancel"));
-        // No OK/Cancel buttons on the multiline prompt modal.
-        assert!(!s.contains("[ OK ]"));
-    }
-
-    #[test]
-    fn registers_modal_body_hit_target() {
-        let (_s, hit) = render_prompt(60, 15, "hi");
-        let mut modal = false;
-        for y in 0..15 {
-            for x in 0..60 {
-                if hit.hit(x, y) == Some(&HitTarget::Modal) {
-                    modal = true;
-                }
-            }
-        }
-        assert!(modal);
-    }
-
-    #[test]
-    fn prompt_modal_snapshot() {
-        let (s, _hit) = render_prompt(60, 15, "run this now\nand a second line");
-        insta::assert_snapshot!("prompt_modal", s);
-    }
-}
 
 #[cfg(test)]
 mod button_row_view_tests {

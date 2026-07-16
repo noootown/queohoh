@@ -35,7 +35,7 @@ fn initial_arg_value(
 /// happens to look like a PR/ticket still targets the worktree); else the typed
 /// PR/ticket classification ([`crate::ref_classify::classify_ref`]); else a
 /// literal `worktree:<value>` (create-or-reuse a worktree by that name).
-fn resolve_target_ref(value: &str, worktrees: &[String]) -> String {
+pub(super) fn resolve_target_ref(value: &str, worktrees: &[String]) -> String {
     if worktrees.iter().any(|w| w == value) {
         format!("worktree:{value}")
     } else if let Some(r) = crate::ref_classify::classify_ref(value) {

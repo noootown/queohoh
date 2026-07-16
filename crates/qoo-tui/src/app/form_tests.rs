@@ -282,6 +282,7 @@ fn launcher_app() -> App {
         index: 0,
         query: String::new(),
         focus: ButtonKind::Confirm,
+        ret: SessionPickReturn::Launch,
     };
     app
 }

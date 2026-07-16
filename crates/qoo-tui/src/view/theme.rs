@@ -78,6 +78,11 @@ pub const GLYPH_CREATE_WORKTREE: char = '⊕';
 /// Dropdown affordance — a down chevron on the right of a closed select field.
 pub const GLYPH_CHEVRON_DOWN: char = '▾';
 
+/// Picker affordance — a right chevron on the right of a field whose activation
+/// opens a separate modal (not an inline dropdown), e.g. the adhoc-create form's
+/// session-continuation field, which opens the session picker.
+pub const GLYPH_CHEVRON_RIGHT: char = '▸';
+
 /// Horizontal-rule glyph. Matches the pane-border char so transcript code-fence
 /// rules and the pane borders read as one system.
 pub const RULE_CHAR: char = '─';

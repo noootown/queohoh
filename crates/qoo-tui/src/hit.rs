@@ -43,8 +43,8 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     use PaneButton::*;
     match pane {
         PaneId::Queue => &[Run, Cancel, Goto, Archive, Create, Collapse],
-        PaneId::Tasks => &[Run, Discover, Collapse],
-        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Collapse],
+        PaneId::Tasks => &[Run, Discover, Create, Collapse],
+        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Create, Collapse],
         PaneId::Detail => &[],
     }
 }

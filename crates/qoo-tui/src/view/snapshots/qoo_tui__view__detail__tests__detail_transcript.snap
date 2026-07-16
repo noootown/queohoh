@@ -15,7 +15,7 @@ expression: terminal.backend()
 "│                         ││  line 28                                       ║  │"
 "│                         ││  line 29                                       ║  │"
 "╰─────────────────────────╯│  line 30                                       ║  │"
-"╭⚡TASKS──── [r] [d] · [z]╮│  line 31                                       ║  │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] · [c] [z]╮│  line 31                                       ║  │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││  line 32                                       █  │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││  line 33                                       █  │"
 "│                         ││  line 34                                       █  │"

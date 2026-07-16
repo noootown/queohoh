@@ -15,7 +15,7 @@ expression: terminal.backend()
 "│                         ││  ──────── json ─────────────────────────────────  │"
 "│                         ││  {"name": "qoo", "count": 3, "ok": true}          │"
 "╰─────────────────────────╯│  ───────────────────────────────────────────────  │"
-"╭⚡TASKS──── [r] [d] · [z]╮│  done                                             │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] · [c] [z]╮│  done                                             │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││                                                   │"
 "│                         ││                                                   │"

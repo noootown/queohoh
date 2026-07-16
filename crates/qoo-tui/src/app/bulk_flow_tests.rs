@@ -220,7 +220,7 @@ fn queue_bulk_range_refuses_goto_create_and_collapse() {
 
     a.status_line = None;
     a.update(key('c'));
-    assert!(matches!(a.mode, Mode::List)); // no AddTask prompt opened
+    assert!(matches!(a.mode, Mode::List)); // no adhoc create form opened
     assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
 
     a.status_line = None;

@@ -19,7 +19,7 @@ expression: terminal.backend()
 "│                         ││                                                   │"
 "│                         ││  Details                                          │"
 "╰─────────────────────────╯│    worktree     /repos/acme.feature               │"
-"╭⚡TASKS──── [r] [d] · [z]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] · [c] [z]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││    model        claude-opus-4-8                   │"
 "│ 🔍 [/]filter            ││    exit code    0                                 │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││    cost         $0.42                             │"

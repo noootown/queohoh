@@ -9,7 +9,7 @@
 //! flows land in Phase 5).
 
 use super::*;
-use crate::view::form::{Field, FieldKind, FocusKind};
+use crate::view::form::{Field, FieldKind, FocusKind, FormState};
 
 /// Model dropdown options, most→least powerful (spec-fixed order). Shared by
 /// every launch form.
@@ -59,6 +59,96 @@ impl App {
         Field::dropdown("model", options, &default)
     }
 
+    /// The adhoc-create session field's display label: `New session` when no
+    /// session is pinned, else `↻ <label>` (the session being continued).
+    pub(super) fn adhoc_session_label(resume_label: Option<&str>) -> String {
+        match resume_label {
+            Some(l) => format!("↻ {l}"),
+            None => "New session".into(),
+        }
+    }
+
+    /// Clear a stale adhoc session pin when the target combobox is edited: the
+    /// pinned session belongs to a specific worktree, so any change to the target
+    /// invalidates it (and resets the session field back to "New session").
+    /// No-op unless `action` is an `AdhocTask` currently carrying a pin.
+    fn adhoc_reset_pin(action: &mut FormAction, state: &mut FormState) {
+        if let FormAction::AdhocTask { resume_session_id, resume_label, resume_worktree, .. } = action
+            && resume_session_id.is_some()
+        {
+            *resume_session_id = None;
+            *resume_label = None;
+            *resume_worktree = None;
+            state.set_field_value(
+                crate::app::mode::adhoc_field::SESSION,
+                &Self::adhoc_session_label(None),
+            );
+        }
+    }
+
+    /// Open the unified adhoc-create form (`c` / Create), optionally with the
+    /// `target` combobox prefilled from the invoking pane's selected entity (an
+    /// existing worktree name, or a `pr:N` for a PR-associated row). Fields, in
+    /// `adhoc_field` order: `[target combobox, session picker, model dropdown,
+    /// prompt textarea]`. The target is optional (empty ⇒ a fresh temp worktree,
+    /// the legacy adhoc behavior); the session picker offers continuation when
+    /// the target names an existing worktree.
+    pub(super) fn open_adhoc_create(&mut self, repo: String, prefill_target: Option<String>) {
+        let worktrees = self.active_worktree_names();
+        let state = FormState::new(
+            &format!("New task · {repo}"),
+            "Enqueue",
+            vec![
+                Field::combobox("worktree / PR / ticket", worktrees, prefill_target.as_deref().unwrap_or("")),
+                Field::picker("session", &Self::adhoc_session_label(None)),
+                self.model_field(&repo),
+                Field::textarea("prompt", "", true),
+            ],
+        );
+        self.mode = Mode::Form { state, action: FormAction::AdhocTask {
+            repo,
+            resume_session_id: None,
+            resume_label: None,
+            resume_worktree: None,
+        } };
+    }
+
+    /// Activate the adhoc-create form's session field: when the current `target`
+    /// names an EXISTING worktree, stash the form and open `Mode::SessionPick`
+    /// (return variant `Adhoc`) to pick a session to continue; otherwise leave a
+    /// status hint (a PR/ticket/temp/new-worktree target has no sessions yet).
+    pub(super) fn open_adhoc_session_pick(&mut self) -> Update {
+        // Read the current target against the real worktree set BEFORE taking the
+        // mode by value.
+        let worktrees = self.active_worktree_names();
+        let (repo, target) = match &self.mode {
+            Mode::Form { state, action: FormAction::AdhocTask { repo, .. } } => (
+                repo.clone(),
+                state.fields.get(crate::app::mode::adhoc_field::TARGET).map(|f| f.value.trim().to_string()).unwrap_or_default(),
+            ),
+            _ => return Update { dirty: false, cmds: vec![] },
+        };
+        if !worktrees.contains(&target) {
+            self.status_line = Some("choose an existing worktree to continue a session".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        // Take ownership of the form to stash it on the picker for the round-trip.
+        let Mode::Form { state, action } = std::mem::replace(&mut self.mode, Mode::List) else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        self.mode = Mode::SessionPick {
+            repo: repo.clone(),
+            worktree: target.clone(),
+            items: Vec::new(),
+            loading: true,
+            index: 0,
+            query: String::new(),
+            focus: crate::hit::ButtonKind::Confirm,
+            ret: SessionPickReturn::Adhoc { state: Box::new(state), action: Box::new(action) },
+        };
+        Update { dirty: true, cmds: vec![Cmd::FetchSessions { repo, worktree: target }] }
+    }
+
     /// `Mode::Form` key handling. Dropdown-open: ↑/↓ move the highlight, Enter
     /// picks, Esc closes the dropdown only. Dropdown-closed: Tab/Shift-Tab are
     /// the ONLY focus movers between fields and the bottom buttons (app-wide
@@ -74,7 +164,26 @@ impl App {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
-        let Mode::Form { state, .. } = &mut self.mode else {
+        // A focused Picker (modal-opening field, e.g. the adhoc session field) is
+        // handled before the shared field engine: Enter activates it (opens the
+        // sub-picker); Tab/Shift-Tab move focus; Esc cancels; everything else is
+        // inert (a Picker has no text/caret/inline list).
+        if matches!(&self.mode, Mode::Form { state, .. } if state.is_picker_focused()) {
+            return match ev.code {
+                Enter => self.open_adhoc_session_pick(),
+                Esc => { self.mode = Mode::List; Update { dirty: true, cmds: vec![] } }
+                Tab if !shift => {
+                    if let Mode::Form { state, .. } = &mut self.mode { state.focus_next(); }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                BackTab | Tab => {
+                    if let Mode::Form { state, .. } = &mut self.mode { state.focus_prev(); }
+                    Update { dirty: true, cmds: vec![] }
+                }
+                _ => Update { dirty: false, cmds: vec![] },
+            };
+        }
+        let Mode::Form { state, action } = &mut self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
         let dropdown_open = state.dropdown_open;
@@ -90,7 +199,12 @@ impl App {
                     Update { dirty: true, cmds: vec![] }
                 }
                 Enter => {
-                    if dropdown_open { state.dropdown_pick(); } else { state.open_dropdown(); }
+                    if dropdown_open {
+                        state.dropdown_pick();
+                        Self::adhoc_reset_pin(action, state); // picked a new target
+                    } else {
+                        state.open_dropdown();
+                    }
                     Update { dirty: true, cmds: vec![] }
                 }
                 Up => {
@@ -110,11 +224,13 @@ impl App {
                 Tab if shift => { state.focus_prev(); Update { dirty: true, cmds: vec![] } }
                 Backspace => {
                     state.backspace();
+                    Self::adhoc_reset_pin(action, state); // target text changed
                     state.open_dropdown(); // re-open + reset the filtered highlight
                     Update { dirty: true, cmds: vec![] }
                 }
                 Char(c) if !ctrl && !alt => {
                     state.insert_char(c);
+                    Self::adhoc_reset_pin(action, state); // target text changed
                     state.open_dropdown();
                     Update { dirty: true, cmds: vec![] }
                 }
@@ -216,7 +332,10 @@ impl App {
                 let name = values.first().map(String::as_str).unwrap_or("");
                 crate::worktree_context::validate_branch(name).map(|_| 0)
             }
-            FormAction::NewSession { .. } => None,
+            // The adhoc target combobox accepts a worktree name, a PR/ticket, or
+            // empty (temp) — `resolve_target_ref` normalizes all three, so no
+            // secondary field validation is needed.
+            FormAction::NewSession { .. } | FormAction::AdhocTask { .. } => None,
         }
     }
 
@@ -239,6 +358,11 @@ impl App {
                     if state.is_dropdown_focused() {
                         state.open_dropdown();
                     }
+                }
+                // A click on a Picker field (now focused) activates it, the same
+                // as Enter — opens the session sub-picker.
+                if matches!(&self.mode, Mode::Form { state, .. } if state.is_picker_focused()) {
+                    return self.open_adhoc_session_pick();
                 }
                 Update { dirty: true, cmds: vec![] }
             }
@@ -292,6 +416,40 @@ impl App {
                     &name,
                     Some(crate::event::EnqueueAfter { prompt, model }),
                 );
+                Update { dirty: true, cmds: vec![cmd] }
+            }
+            // Fields: `[target combobox, session picker, model dropdown, prompt
+            // textarea]` (see `adhoc_field`). The target resolves to a canonical
+            // ref (empty → temp); the pinned session is honored only when the
+            // resolved target names the worktree it was picked for.
+            FormAction::AdhocTask { repo, resume_session_id, resume_worktree, .. } => {
+                use crate::app::mode::adhoc_field;
+                let target = values.get(adhoc_field::TARGET).cloned().unwrap_or_default();
+                let model = values.get(adhoc_field::MODEL).cloned().unwrap_or_default();
+                let prompt = values.get(adhoc_field::PROMPT).cloned().unwrap_or_default();
+
+                let mut params = serde_json::json!({ "prompt": prompt, "repo": repo });
+                // A non-empty target → its canonical ref (`worktree:`/`pr:`/
+                // `ticket:`); an empty target sends no ref, so the daemon spawns a
+                // fresh `temp` worktree (the legacy adhoc behavior). Mirrors
+                // `run_definition_cmd`: send `ref`, never `worktree`.
+                let resolved = (!target.trim().is_empty())
+                    .then(|| super::def_args::resolve_target_ref(target.trim(), &self.active_worktree_names()));
+                if let Some(r) = &resolved {
+                    params["ref"] = serde_json::Value::String(r.clone());
+                }
+                if !model.is_empty() {
+                    params["model"] = serde_json::Value::String(model);
+                }
+                // The session pin is only valid on the worktree it was picked for
+                // (`resume_worktree`); honor it only when the resolved target
+                // still names that worktree.
+                if let (Some(sid), Some(wt)) = (resume_session_id, resume_worktree)
+                    && resolved.as_deref() == Some(format!("worktree:{wt}").as_str())
+                {
+                    params["resume_session_id"] = serde_json::Value::String(sid);
+                }
+                let cmd = self.dispatch_rpc("enqueue task", "enqueue", params, RpcOpts::default());
                 Update { dirty: true, cmds: vec![cmd] }
             }
         }

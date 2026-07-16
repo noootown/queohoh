@@ -485,6 +485,41 @@ describe("ApiServer", () => {
 		expect(task.target.ref).toBe("worktree:wt-a");
 	});
 
+	// The adhoc-create dialog (TUI) resolves its target combobox to a canonical
+	// ref (`worktree:`/`pr:`/`ticket:`) and sends it as `params.ref` — the same
+	// param runDefinition uses — instead of a bare `worktree`. Lock that contract.
+	it("enqueue with a canonical pr ref sets the target ref", async () => {
+		const { client } = await setup();
+		const task = (await client.call("enqueue", {
+			prompt: "fix it",
+			repo: "platform",
+			ref: "pr:42",
+		})) as { target: { ref: string } };
+		expect(task.target.ref).toBe("pr:42");
+	});
+
+	it("enqueue with a ticket ref sets the target ref", async () => {
+		const { client } = await setup();
+		const task = (await client.call("enqueue", {
+			prompt: "fix it",
+			repo: "platform",
+			ref: "ticket:JUS-1756",
+		})) as { target: { ref: string } };
+		expect(task.target.ref).toBe("ticket:JUS-1756");
+	});
+
+	it("enqueue with resume_session_id pins the session", async () => {
+		const { client, store } = await setup();
+		await client.call("enqueue", {
+			prompt: "continue",
+			repo: "platform",
+			ref: "worktree:wt-a",
+			resume_session_id: "sess-1",
+		});
+		const task = store.list()[0];
+		expect(task?.resumeSessionId).toBe("sess-1");
+	});
+
 	it("enqueue with session main is deprecated and stored as fresh", async () => {
 		const { client, store } = await setup();
 		await client.call("enqueue", {

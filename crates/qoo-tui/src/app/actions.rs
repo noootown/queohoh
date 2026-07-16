@@ -235,21 +235,17 @@ impl App {
                 u.dirty
             }
             A::Create => {
-                // `Create` (`c`) is a QUEUE chip only — it opens the adhoc-task
-                // prompt. The worktrees pane's standalone create modal was folded
-                // into the launcher (`r` → Create Worktree row), so `c` no longer
-                // shows a chip there and this arm is only reached for QUEUE.
-                // Not in QUEUE's bulk-doable set (only re-queue/stop are), so a
-                // bulk range refuses rather than opening the prompt anyway.
-                if self.active_ui().last_list_pane == ListPane::Queue
-                    && !self.bulk_blocked(ListPane::Queue, crate::hit::PaneButton::Create)
+                // `Create` (`c`, and the `[c]reate` chip) opens the unified adhoc
+                // create form from any list pane, prefilling the target combobox
+                // from the focused pane's selected row (QUEUE task → its worktree;
+                // WORKTREES row → that worktree, sessions then offered). Not a bulk
+                // verb — a bulk range refuses rather than opening the form.
+                let pane = self.active_ui().last_list_pane;
+                if !self.bulk_blocked(pane, crate::hit::PaneButton::Create)
+                    && let Some(repo) = self.active_repo()
                 {
-                    self.mode = Mode::AddTask {
-                        worktree: None,
-                        resume_session_id: None,
-                        resume_label: None,
-                        editor: Default::default(),
-                    };
+                    let prefill = self.adhoc_prefill_target(pane);
+                    self.open_adhoc_create(repo, prefill);
                 }
                 true
             }
@@ -889,12 +885,27 @@ impl App {
         vis.get(cursor).and_then(|&i| rows.get(i)).cloned()
     }
 
+    /// The adhoc-create target to prefill from the focused pane's selected row.
+    /// Only a WORKTREES real-worktree row prefills (its name — so its sessions
+    /// are then offered via the session field); that selection names a concrete
+    /// destination. The QUEUE and TASKS panes prefill nothing: a new adhoc task
+    /// has nothing to do with which past task / definition happens to be under
+    /// the cursor, so those open the form blank.
+    fn adhoc_prefill_target(&self, pane: ListPane) -> Option<String> {
+        match pane {
+            ListPane::Worktrees => {
+                self.selected_worktree_row_filtered().filter(|r| !r.is_session).map(|r| r.raw_name)
+            }
+            ListPane::Queue | ListPane::Tasks => None,
+        }
+    }
+
     /// `r` on WORKTREES (and the `[r]un` chip there): open the session picker
     /// (`Mode::SessionPick`) for the selected worktree and kick off the
     /// `listSessions` fetch. The picker's Enter carries the chosen session (or a
-    /// fresh `Mode::AddTask`) into the worktree-targeted new-task flow. Session
-    /// rows are interactive sessions, not worktrees, so they can't host a task →
-    /// status line, no mode change.
+    /// fresh start) into a launch `Mode::Form` (`SessionPickReturn::Launch`).
+    /// Session rows are interactive sessions, not worktrees, so they can't host a
+    /// task → status line, no mode change.
     pub(super) fn new_task_on_worktree(&mut self) -> Update {
         // A bulk range isn't in the doable set (only `Remove` is) — refuse
         // rather than silently targeting just the cursor row's worktree.
@@ -921,6 +932,7 @@ impl App {
             index: 0,
             query: String::new(),
             focus: crate::hit::ButtonKind::Confirm,
+            ret: SessionPickReturn::Launch,
         };
         Update { dirty: true, cmds: vec![Cmd::FetchSessions { repo, worktree }] }
     }
