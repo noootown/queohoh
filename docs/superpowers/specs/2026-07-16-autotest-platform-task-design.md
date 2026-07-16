@@ -11,7 +11,7 @@ The interactive `/autotest` skill tests one scenario against an already-running 
 
 1. A queohoh `autotest` platform task that owns the full stack lifecycle (spawn `mise run dev` with testing1's env, test, tear down) so nothing must be pre-started.
 2. Keep the interactive `/autotest` skill for in-session use (still assumes services running), hardened with a mutex precheck.
-3. Hard concurrency 1 for anything that spawns the testing1-env stack: a daemon-level lane override plus a filesystem mutex.
+3. Hard concurrency 1 per stack: a daemon-level lane override serializes autotest task instances, and a **port-keyed** filesystem mutex excludes any two e2e runs (task, interactive skill, self-review-e2e) targeting the same stack's ports.
 4. Extend `pr-review` with two opt-in booleans: `static_review` (existing agent-team path) and `e2e_review` (pr-tldr → autotest handoff). Both default false; both false → early terminate; both true → two separate PR comments.
 5. E2e PR comments include only ❌ failed / ⚠️ partial / ✅ works verdicts; 🚧 blocked stays local-only.
 6. A `self-review-e2e` task mirroring `self-review`: offline PR-strengthening — explore the branch's changes e2e against the user's own already-running stack, then pin working flows with committed Playwright specs. Zero GitHub side effects, no stack spawn.
@@ -23,11 +23,11 @@ Three repos, six deliverables:
 | # | Deliverable | Repo |
 |---|---|---|
 | 1 | `lane:` override field on task definitions | daemon source (`~/Downloads/agent247/queohoh`) |
-| 2 | `platform/shared/autotest-core.md` — shared testing brains | config repo (`~/workspace/queohoh`) |
+| 2 | `platform/shared/autotest-core.md` — shared testing brains + `platform/shared/stack-lock.sh` — port-keyed mutex helper | config repo (`~/workspace/queohoh`) |
 | 3 | `tasks/autotest/` — managed-stack e2e task (+ `teardown.sh`) | config repo |
 | 4 | `pr-review` extension (`static_review`, `e2e_review`) | config repo |
 | 5 | `tasks/self-review-e2e/` — offline e2e strengthening task | config repo |
-| 6 | `/autotest` skill update (mutex precheck + shared-core refactor) | skills repo (`~/workspace/claude-code/skills/autotest`) |
+| 6 | `/autotest` skill update (port-lock acquire/release + shared-core refactor) | skills repo (`~/workspace/claude-code/skills/autotest`) |
 
 The split of responsibilities: **autotest-core.md** holds only the testing brains (credentials table, agent-browser conventions, screenshot rules, per-scenario verdict/report template) and assumes a reachable stack. **Stack lifecycle** (mutex, env copy, spawn, readiness, teardown) lives exclusively in the `autotest` task prompt + `teardown.sh`. This lets three consumers share the core in different modes: the autotest task (managed stack), the `/autotest` skill (user's stack), and `self-review-e2e` (user's stack).
 
@@ -56,6 +56,15 @@ Extracted from the `/autotest` skill's subagent prompt body:
 
 The core assumes the stack is reachable and says nothing about spawning or teardown. Consumers `cat` it (task prompts via `{{queohoh_workspace}}`, the skill via the absolute path).
 
+### `platform/shared/stack-lock.sh` — port-keyed mutex helper
+
+The mutex is keyed by **the portal port of the stack being tested**, not by a single global name. One lock per port means: two runs against the same stack exclude each other regardless of which actor they are (autotest task, `/autotest` skill, self-review-e2e), while runs against different-port stacks proceed concurrently.
+
+- Lock path: `~/workspace/queohoh/platform/state/stack-port-<PORT>.lock/` (portable mkdir-lock — macOS has no flock binary) containing `meta.json`: `{owner: "<task-id>" | "interactive" | "self-review-e2e", pid, worktree, port, started}`.
+- Port derivation: the stack's portal port, read from the relevant worktree's `.env.worktree` (offset header / port vars); absence = base ports (per the KB rule). The autotest task derives it from the **copied testing1 env**; the skill and self-review-e2e derive it from the worktree whose stack they test.
+- Helper functions: `acquire <port> <owner-label>`, `release <port>`, `status <port>` — sourced by the task prompts, `teardown.sh`, and the `/autotest` skill so the lock logic exists once.
+- Held lock → abort `🚧 blocked`, reporting the owner from `meta.json`. Dead owner PID → still abort (never auto-reclaim), but the message names it stale and gives the one-line `rm -rf` recovery.
+
 ## 3. `autotest` platform task
 
 ### Definition (config.yaml sketch)
@@ -81,12 +90,12 @@ priority: normal
 
 ### Mutex
 
-Portable mkdir-lock (macOS has no flock binary) at `~/workspace/queohoh/platform/state/testing1-stack.lock/` containing `meta.json`: `{owner: "<task-id>" | "interactive", pid, worktree, started}`. Acquire = atomic `mkdir`. Held → abort `🚧 blocked`, reporting the owner. Dead owner PID → still abort (never auto-reclaim), but the message names it stale and gives the one-line `rm -rf` recovery.
+Uses `stack-lock.sh` keyed by **testing1's portal port** (derived from the copied testing1 env). All autotest task instances share that key, so they exclude each other — and also exclude any interactive `/autotest` or `self-review-e2e` run that happens to be testing a testing1-offset stack.
 
 ### Run sequence
 
-1. **Acquire mutex** (abort blocked if held).
-2. **Port probe** testing1's portal port. Occupied → release mutex, abort blocked: "unmanaged process on port N — probably your interactive stack". The task never kills processes it didn't spawn.
+1. **Acquire the port lock** (abort blocked if held).
+2. **Port probe** testing1's portal port. Occupied → release the lock, abort blocked: "unmanaged process on port N — probably your interactive stack". The task never kills processes it didn't spawn.
 3. **Env swap**: back up any existing `.env.worktree` to `.env.worktree.autotest-bak`, then `cp ../platform.testing1/.env.worktree .` (mirrors the manual flow — PR code on testing1 ports/credentials).
 4. **Spawn** `mise run dev` in the background from the worktree; poll the portal URL until HTTP 200, budget ~10 min. Not ready → teardown, abort blocked.
 5. **Test**: for each scenario in `scenarios`, run a subagent built from `autotest-core.md` (one stack lifecycle amortized across all scenarios). Collect per-scenario verdicts + screenshots.
@@ -100,7 +109,7 @@ Portable mkdir-lock (macOS has no flock binary) at `~/workspace/queohoh/platform
 - Only acts when the lock's `meta.json` `worktree` field matches the hook's cwd (hooks run with cwd = the resolved worktree, so the key is always available; a lock owned by a different worktree's run — or by `interactive` — is left alone).
 - Kills the spawned stack scoped to this worktree (overmind socket(s) in the worktree + orphan reap by worktree path, per the KB's dev:kill/orphan patterns).
 - Restores `.env.worktree.autotest-bak` (or removes the copied file if no backup existed).
-- Removes the lock dir.
+- Releases the port lock via `stack-lock.sh`.
 
 A crashed or timed-out worker therefore never strands the ports, the env file, or the mutex.
 
@@ -136,19 +145,20 @@ Mirrors `self-review`'s conventions: `target` (type worktree, inferred), `worktr
 Flow:
 
 1. **Derive scenarios from the merge-base diff** (no PR required): a condensed pr-tldr-style step embedded in the prompt — walk the diff, identify what a user sees differently, emit 2–3 named scenarios incl. one adjacent regression risk. (Deliberately not shared with the pr-tldr skill: the skill is PR-mechanics-shaped; sharing would be premature.)
-2. **Probe the user's stack** (portal URL from the worktree's own env/ports). Unreachable → abort `blocked` with "start your stack first". Never spawns, never copies env — the user set this stack up correctly for their PR.
-3. **Explore**: run the scenarios via `autotest-core.md`, collect verdicts.
-4. **Pin working flows**: author Playwright e2e specs for the behaviors that passed, following the repo's e2e authoring rules (specs create their own fixture state; extend existing spec files where natural; run only the new specs locally, iterate to green against the running stack). Failed scenarios are NOT codified — they go in the report as findings.
-5. **Commit only its own spec files by explicit path** (never `git add -A`; the WIP worktree's unrelated dirty files are untouched).
-6. **Report locally**: scenario verdict table + list of committed specs + findings for failed flows. Zero GitHub side effects.
+2. **Acquire the port lock** for the target worktree's stack port (via `stack-lock.sh`, owner label `self-review-e2e`). Held — e.g. an interactive `/autotest` run against the same stack — → abort `blocked` reporting the owner. Released at the end of the run (including on failure paths).
+3. **Probe the user's stack** (portal URL from the worktree's own env/ports). Unreachable → release the lock, abort `blocked` with "start your stack first". Never spawns, never copies env — the user set this stack up correctly for their PR.
+4. **Explore**: run the scenarios via `autotest-core.md`, collect verdicts.
+5. **Pin working flows**: author Playwright e2e specs for the behaviors that passed, following the repo's e2e authoring rules (specs create their own fixture state; extend existing spec files where natural; run only the new specs locally, iterate to green against the running stack). Failed scenarios are NOT codified — they go in the report as findings.
+6. **Commit only its own spec files by explicit path** (never `git add -A`; the WIP worktree's unrelated dirty files are untouched).
+7. **Report locally**: scenario verdict table + list of committed specs + findings for failed flows. Zero GitHub side effects. Release the port lock last.
 
-No mutex, no `lane` override: it uses the user's own stack, not the shared testing1 resource.
+No `lane` override: different worktrees have different port offsets, so the port lock provides exactly the exclusion needed (including the testing1-offset edge case), and two self-review-e2e runs on different stacks may legitimately run concurrently. Same-worktree runs are already serialized by the normal `repo:worktree` lane.
 
 ## 6. `/autotest` skill update
 
 Kept for interactive use; two changes:
 
-- **Mutex precheck (check-only, hard abort)**: sanity gate reads the lock dir; if held, print the owner (`meta.json`) and stop. The skill does NOT acquire the lock — it tests against the user's own already-running stack, and holding it for a whole interactive session would starve queued tasks. This closes the wrong-code window (a queohoh autotest stack up on testing1 ports while you test interactively).
+- **Port-lock acquire/release**: the skill derives the portal port of the stack it's about to test (current worktree's `.env.worktree` / base ports) and acquires that port's lock via `stack-lock.sh` (owner `interactive`). Held → print the owner and hard-abort. The lock is held only for the subagent's run (acquired at dispatch, released when the subagent finishes or hits its 8-min timeout), so it never starves queued tasks for a whole interactive session. This makes interactive runs visible to — and protected from — the autotest task and self-review-e2e symmetrically.
 - **Shared-core refactor**: the subagent prompt body becomes `cat /Users/noootown/workspace/queohoh/platform/shared/autotest-core.md` + the skill-specific wrapper (sanity gate, fire-and-forget dispatch, verbatim passthrough — unchanged).
 
 ## Verdict and posting rules (summary)
@@ -162,8 +172,8 @@ Kept for interactive use; two changes:
 
 ## Known risks and accepted limitations
 
-- **localhost cookie clobber**: agent-browser state files are shared and localhost cookies are host-only (port-blind — see KB `select_multiport-cookie-clobber`). The mutex + lane serialize all managed-stack runs, but a `self-review-e2e` run concurrent with an autotest task run can clobber auth state mid-run. The core's re-login fallback recovers; accepted, not serialized.
-- **Stale lock is manual-recovery by design**: never auto-reclaimed, one `rm -rf` documented in the abort message.
+- **localhost cookie clobber**: agent-browser state files are shared and localhost cookies are host-only (port-blind — see KB `select_multiport-cookie-clobber`). The port locks serialize same-stack runs, but concurrent runs against **different-port** stacks (e.g. self-review-e2e on your stack while an autotest task tests testing1) can still clobber auth state mid-run. The core's re-login fallback recovers; accepted, not serialized.
+- **Stale lock is manual-recovery by design**: never auto-reclaimed, one `rm -rf` documented in the abort message. The interactive skill's subagent is the most likely strander (no post_run backstop); its 8-min timeout bounds the window, and the stale-PID message makes recovery obvious.
 - **`.env.worktree` mutation window**: between env swap and teardown the PR worktree carries testing1's env. The backup/restore in both graceful teardown and `teardown.sh` bounds this to the run; a hard daemon kill before `post_run` fires would leave the swap in place (visible, recoverable from `.autotest-bak`).
 - **pr-review cron becomes a no-op** with both defaults false (documented above; deliberate).
 - **Seed/DB state is out of scope**: the managed stack uses whatever DB state the testing1 env points at; scenarios that need special seeding will land `blocked`, which is the correct signal.
@@ -172,7 +182,8 @@ Kept for interactive use; two changes:
 
 - **Daemon**: unit tests in `scheduler`/`task`/`definition` suites for the lane override (serialization, resolve-path preservation, persistence, no cross-def interference).
 - **Config-repo tasks**: exercised by real runs — first an `autotest` run against a known-good small PR (verifying spawn/teardown/lock lifecycle and a clean abort when a manual stack holds the ports), then a `pr-review` run with each boolean combination, then a `self-review-e2e` run on a WIP branch.
-- **teardown.sh**: runnable standalone; verify idempotence (double-run), no-lock no-op, and wrong-owner no-op.
+- **stack-lock.sh**: runnable standalone; verify acquire/release round-trip, contention (second acquire fails with owner report), stale-PID message, and per-port independence (two different ports lock independently).
+- **teardown.sh**: runnable standalone; verify idempotence (double-run), no-lock no-op, and wrong-worktree no-op.
 - **Skill**: manual — run `/autotest` with and without a held lock.
 
 ## Out of scope
