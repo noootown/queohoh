@@ -5,6 +5,7 @@ import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
 import {
 	createResolverIO,
 	DEFAULT_MODEL_ALIASES,
+	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -69,6 +70,7 @@ async function setup(opts?: {
 		vars: opts?.vars ?? {},
 		models: opts?.models ?? {},
 		gotoCommand: opts?.gotoCommand,
+		providers: DEFAULT_PROVIDERS,
 	};
 	const okResult: RunResult = {
 		exitCode: 0,
@@ -629,6 +631,27 @@ describe("ApiServer", () => {
 					source: join(workspace, "platform", "vars.yaml"),
 				},
 			]);
+		});
+
+		it("lists providers in fallback order with enabled flags and model tiers", async () => {
+			const { client } = await setup();
+			const settings = (await client.call("settings")) as {
+				providers: {
+					name: string;
+					enabled: boolean;
+					models: Record<string, string>;
+				}[];
+			};
+			// config.providers is already the global-effective set (loadGlobalConfig
+			// runs it through effectiveProviders); the RPC forwards it as-is rather
+			// than merging again.
+			expect(settings.providers).toEqual(
+				DEFAULT_PROVIDERS.map((p) => ({
+					name: p.name,
+					enabled: p.enabled,
+					models: p.models,
+				})),
+			);
 		});
 	});
 

@@ -156,6 +156,7 @@ mod tests {
                 global: SettingsLayer { entries: BTreeMap::new(), source: "/cfg.yaml".into() },
                 projects: vec![],
             },
+            providers: vec![],
         };
         assert_eq!(
             settings_rows(&p),
@@ -181,6 +182,7 @@ mod tests {
                 },
                 projects: vec![],
             },
+            providers: vec![],
         };
         let rows = settings_rows(&p);
         assert_eq!(rows[0], ("models (global)".to_string(), "/cfg.yaml".to_string()));
@@ -203,6 +205,7 @@ mod tests {
                     source: "/repos/acme/vars.yaml".into(),
                 }],
             },
+            providers: vec![],
         };
         assert_eq!(
             settings_rows(&p),

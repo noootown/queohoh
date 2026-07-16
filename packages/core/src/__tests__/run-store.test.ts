@@ -24,6 +24,7 @@ const task: TaskInstance = {
 	model: null,
 	timeoutMs: null,
 	prompt: "Review PR 257 with secret shh-token.\n",
+	attemptedProviders: [],
 };
 
 const redact = makeRedactor(new Map([["shh-token", "GH_TOKEN"]]));
@@ -113,6 +114,137 @@ describe("RunStore", () => {
 	it("readRunMeta returns null for unknown task", () => {
 		expect(fresh().readRunMeta("01NOPE")).toBeNull();
 	});
+
+	it("writeSnapshot records provider; finishRun renders <provider>/<model>", () => {
+		const rs = fresh();
+		rs.writeSnapshot(
+			task.id,
+			{
+				task,
+				definition: null,
+				resolvedWorktree: "JUS-257",
+				resolvedWorktreePath: "/wt/platform.JUS-257",
+				prompt: task.prompt,
+				model: "grok-composer-2.5-fast",
+				provider: "grok",
+			},
+			redact,
+		);
+		expect(rs.readRunMeta(task.id)?.provider).toBe("grok");
+		rs.finishRun(
+			task.id,
+			{
+				result: {
+					exitCode: 0,
+					timedOut: false,
+					signal: null,
+					sessionId: "s1",
+					resultText: "ok",
+					stderr: "",
+					usage: { costUsd: null, turns: null, durationMs: null },
+				},
+				outcome: "done",
+				reason: null,
+			},
+			redact,
+		);
+		const report = readFileSync(join(rs.runDir(task.id), "report.md"), "utf-8");
+		// Provider recorded on the snapshot → "<provider>/<model>" Stats line.
+		expect(report).toContain("- model: grok/grok-composer-2.5-fast");
+	});
+});
+
+describe("RunStore attempt trail (fallback hops)", () => {
+	const doneResult = {
+		exitCode: 0,
+		timedOut: false,
+		signal: null,
+		sessionId: "s1",
+		resultText: "ok",
+		stderr: "",
+		usage: { costUsd: null, turns: null, durationMs: null },
+	};
+
+	const snapshot = (rs: RunStore) =>
+		rs.writeSnapshot(
+			task.id,
+			{
+				task,
+				definition: null,
+				resolvedWorktree: "JUS-257",
+				resolvedWorktreePath: "/wt/platform.JUS-257",
+				prompt: task.prompt,
+				model: "opus",
+			},
+			redact,
+		);
+
+	it("appendAttempt accumulates a trail that finishRun renders into report.md", () => {
+		const rs = fresh();
+		snapshot(rs);
+		rs.appendAttempt(
+			task.id,
+			"attempt 1: claude — session limit → falling back",
+			redact,
+		);
+		rs.appendAttempt(task.id, "attempt 2: grok — provider unavailable", redact);
+		// Persisted on data.json in order.
+		expect(rs.readRunMeta(task.id)?.attempts).toEqual([
+			"attempt 1: claude — session limit → falling back",
+			"attempt 2: grok — provider unavailable",
+		]);
+		rs.finishRun(
+			task.id,
+			{ result: doneResult, outcome: "failed", reason: "provider unavailable" },
+			redact,
+		);
+		const report = readFileSync(join(rs.runDir(task.id), "report.md"), "utf-8");
+		expect(report).toContain("## Attempts");
+		expect(report).toContain(
+			"- attempt 1: claude — session limit → falling back",
+		);
+		expect(report).toContain("- attempt 2: grok — provider unavailable");
+	});
+
+	it("finishRun omits the Attempts section when no hop was recorded", () => {
+		const rs = fresh();
+		snapshot(rs);
+		rs.finishRun(
+			task.id,
+			{ result: doneResult, outcome: "done", reason: null },
+			redact,
+		);
+		const report = readFileSync(join(rs.runDir(task.id), "report.md"), "utf-8");
+		expect(report).not.toContain("## Attempts");
+	});
+
+	it("writeSnapshot preserves the attempt trail across the next attempt's rewrite", () => {
+		const rs = fresh();
+		snapshot(rs);
+		rs.appendAttempt(
+			task.id,
+			"attempt 1: claude — session limit → falling back",
+			redact,
+		);
+		// A fresh attempt fully rewrites data.json — the trail must survive it,
+		// so the next attempt's finishRun can render the whole history.
+		snapshot(rs);
+		expect(rs.readRunMeta(task.id)?.attempts).toEqual([
+			"attempt 1: claude — session limit → falling back",
+		]);
+		// And it is not double-counted: appending again grows the trail by one.
+		rs.appendAttempt(task.id, "attempt 2: grok — provider unavailable", redact);
+		expect(rs.readRunMeta(task.id)?.attempts).toHaveLength(2);
+	});
+
+	it("the trail is redacted on disk", () => {
+		const rs = fresh();
+		snapshot(rs);
+		rs.appendAttempt(task.id, "attempt 1: leaked shh-token here", redact);
+		const raw = readFileSync(join(rs.runDir(task.id), "data.json"), "utf-8");
+		expect(raw).toContain("[REDACTED:GH_TOKEN]");
+		expect(raw).not.toContain("shh-token");
+	});
 });
 
 describe("RunStore shim contract files", () => {
@@ -157,6 +289,19 @@ describe("RunStore shim contract files", () => {
 		expect(rs.readResultJson(task.id)).toBeNull();
 		rs.writeResultJson(task.id, result);
 		expect(rs.readResultJson(task.id)).toEqual(result);
+	});
+
+	it("clearResultJson removes a stale result.json and tolerates absence", () => {
+		const rs = fresh();
+		// Absent file: best-effort unlink is a no-op, not an error (the common
+		// case — a task's first attempt).
+		expect(() => rs.clearResultJson(task.id)).not.toThrow();
+		rs.writeResultJson(task.id, result);
+		expect(rs.readResultJson(task.id)).toEqual(result);
+		// A fresh attempt clears the prior attempt's result so the adoption
+		// sweep can't finalize with a stale one.
+		rs.clearResultJson(task.id);
+		expect(rs.readResultJson(task.id)).toBeNull();
 	});
 
 	it("cancel marker: absent → false, written → true", () => {

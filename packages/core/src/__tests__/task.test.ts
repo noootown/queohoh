@@ -27,6 +27,7 @@ const sample: TaskInstance = {
 	verified: null,
 	verifyExitCode: null,
 	verifyOutput: null,
+	attemptedProviders: [],
 };
 
 describe("task file", () => {

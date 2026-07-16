@@ -7,7 +7,11 @@ import type {
 	RunStore,
 	SpawnSpec,
 } from "@queohoh/core";
-import { executeClaude as _executeClaude } from "@queohoh/core";
+import {
+	executeClaude as _executeClaude,
+	executeRun,
+	getAdapter,
+} from "@queohoh/core";
 
 /** Spawns a run and resolves when it settles. Returns null when the run
  * produced no result.json (the supervisor died) — the caller then settles
@@ -58,6 +62,20 @@ export function inProcessSpawner(
 	executeClaude: ClaudeExecutor = _executeClaude,
 	redact: Redactor = (s) => s,
 ): ShimSpawner {
-	return (_taskId, spec, onPid) =>
-		executeClaude({ ...spec, redact, onSpawned: onPid });
+	return (_taskId, spec, onPid) => {
+		const provider = spec.provider ?? "claude";
+		const adapter = getAdapter(provider);
+		if (!adapter) return Promise.resolve(null);
+		// Preserve the injected-executeClaude seam for claude (tests inject a
+		// fake); non-claude providers go through executeRun with their adapter.
+		if (provider === "claude") {
+			return executeClaude({ ...spec, redact, onSpawned: onPid });
+		}
+		return executeRun(adapter, {
+			...spec,
+			claudeBin: spec.bin,
+			redact,
+			onSpawned: onPid,
+		});
+	};
 }

@@ -1,7 +1,9 @@
 export type { ClaudeSessionInfo } from "./claude-sessions.js";
 export { encodeProjectDir, listClaudeSessions } from "./claude-sessions.js";
-export type { GlobalConfig } from "./config.js";
+export type { GlobalConfig, ProviderConfig } from "./config.js";
 export {
+	DEFAULT_PROVIDERS,
+	effectiveProviders,
 	globalWorkspaceDir,
 	loadGlobalConfig,
 	loadProjectDefaultBranch,
@@ -9,6 +11,7 @@ export {
 	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectProtectedWorktrees,
+	loadProjectProviderModels,
 	loadProjectTaskRetentionDays,
 	loadProjectVars,
 	projectWorkspaceDir,
@@ -40,6 +43,7 @@ export {
 	effectiveModelTable,
 	resolveModel,
 } from "./models.js";
+export * from "./providers/index.js";
 export type { Redactor } from "./redact.js";
 export { buildSecretMap, makeRedactor, redact } from "./redact.js";
 export type { TargetRef } from "./ref.js";
@@ -60,6 +64,7 @@ export type { SpawnSpec } from "./run-store.js";
 export { RunStore } from "./run-store.js";
 export type {
 	ExecuteClaudeOptions,
+	ExecuteRunOptions,
 	ExecuteVerifyOptions,
 	RunResult,
 	RunUsage,
@@ -67,6 +72,7 @@ export type {
 } from "./runner.js";
 export {
 	executeClaude,
+	executeRun,
 	executeVerify,
 	formatEventToMarkdown,
 	IDLE_TIMEOUT_MS,

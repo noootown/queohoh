@@ -143,6 +143,14 @@ const SESSION_LIMIT_REASON: &str = "session limit";
 /// billing error — distinct from a session limit (that resets on a timer; this
 /// needs an account top-up before a rerun succeeds).
 const OUT_OF_BUDGET_REASON: &str = "out of budget";
+/// The worker's exact `reason` string for a run that failed because its
+/// configured provider/model (a non-claude adapter — Task 9/11's codex/grok
+/// providers) was unavailable — disabled in settings, missing credentials, or
+/// otherwise unable to run. Distinct from a session limit or out-of-budget
+/// failure: those are Claude-account states that clear on their own (a timer
+/// reset or a top-up); this needs the provider itself fixed (re-enabled,
+/// re-authenticated) before a rerun can succeed.
+const PROVIDER_UNAVAILABLE_REASON: &str = "provider unavailable";
 
 // Status glyphs MUST match the `GLYPH_*` consts in `view::theme` char-for-char —
 // `theme::glyph_style` colors a row by matching this char. (Kept as literals to
@@ -162,6 +170,7 @@ fn status_glyph(task: &TaskInstance) -> char {
             Some(SESSION_LIMIT_REASON) => '⊠',
             Some(TIMED_OUT_REASON) => '⧗',
             Some(OUT_OF_BUDGET_REASON) => '¤',
+            Some(PROVIDER_UNAVAILABLE_REASON) => '⊟',
             _ => '✗',
         },
         TaskStatus::Cancelled => '⊘',
@@ -1897,11 +1906,11 @@ mod tests {
     #[test]
     fn queue_rows_sub_classifies_failed_by_error_reason() {
         // `worker.ts` stamps the exact strings "timed out" / "session limit" /
-        // "out of budget" into `task.error` for those failure modes; any other
-        // reason (or none) stays the generic `✗`. All special cases are still red
-        // (see `theme::glyph_style`) — only the glyph differs, so they read apart
-        // at a glance without a color that could be confused for a different
-        // severity.
+        // "out of budget" / "provider unavailable" into `task.error` for those
+        // failure modes; any other reason (or none) stays the generic `✗`. All
+        // special cases are still red (see `theme::glyph_style`) — only the glyph
+        // differs, so they read apart at a glance without a color that could be
+        // confused for a different severity.
         let mut timed_out = task_on(TaskStatus::Failed, "t1", "platform", Some("wt-a"));
         timed_out.error = Some("timed out".into());
         let mut session_limit = task_on(TaskStatus::Failed, "t2", "platform", Some("wt-a"));
@@ -1912,9 +1921,11 @@ mod tests {
         no_reason.error = None;
         let mut out_of_budget = task_on(TaskStatus::Failed, "t5", "platform", Some("wt-a"));
         out_of_budget.error = Some("out of budget".into());
+        let mut provider_unavailable = task_on(TaskStatus::Failed, "t6", "platform", Some("wt-a"));
+        provider_unavailable.error = Some("provider unavailable".into());
         let rows = queue_rows(
             &snap(
-                vec![timed_out, session_limit, generic, no_reason, out_of_budget],
+                vec![timed_out, session_limit, generic, no_reason, out_of_budget, provider_unavailable],
                 vec![],
             ),
             "platform",
@@ -1926,6 +1937,7 @@ mod tests {
         assert_eq!(glyph_for("t3"), '✗');
         assert_eq!(glyph_for("t4"), '✗');
         assert_eq!(glyph_for("t5"), '¤');
+        assert_eq!(glyph_for("t6"), '⊟');
     }
 
     #[test]
@@ -3146,6 +3158,15 @@ mod tests {
         let rows = worktree_rows(&s, "platform");
         let c = rows.iter().find(|r| r.name == "wt-a").unwrap();
         assert_eq!(c.last.as_ref().unwrap().0, '¤');
+
+        let mut provider_unavailable =
+            task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-c"));
+        provider_unavailable.error = Some("provider unavailable".into());
+        let mut s = snap(vec![provider_unavailable], vec![]);
+        s.worktrees = platform_worktrees();
+        let rows = worktree_rows(&s, "platform");
+        let d = rows.iter().find(|r| r.name == "wt-c").unwrap();
+        assert_eq!(d.last.as_ref().unwrap().0, '⊟');
     }
 
     #[test]

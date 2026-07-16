@@ -41,6 +41,35 @@ impl App {
         "opus".into()
     }
 
+    /// Model dropdown options: the four tiers (spec-fixed order) first, then
+    /// `"<provider>/<tier>"` for each enabled NON-claude provider in the cached
+    /// `settings` payload — claude's own tiers ARE the bare tier names, so a
+    /// `claude/opus` entry would be redundant. Only tiers the provider actually
+    /// carries a model id for are listed, in `MODEL_OPTIONS` order. Falls back
+    /// to the bare `MODEL_OPTIONS` list when `settings`/`providers` is absent or
+    /// empty (no settings fetched yet, an old daemon, or a daemon with zero
+    /// configured providers).
+    pub(super) fn model_options(&self) -> Vec<String> {
+        let mut options: Vec<String> = MODEL_OPTIONS.iter().map(|s| s.to_string()).collect();
+        let providers = self
+            .settings
+            .as_ref()
+            .and_then(|s| s.as_ref())
+            .map(|p| p.providers.as_slice())
+            .unwrap_or(&[]);
+        for provider in providers {
+            if !provider.enabled || provider.name == "claude" {
+                continue;
+            }
+            for tier in MODEL_OPTIONS {
+                if provider.models.contains_key(tier) {
+                    options.push(format!("{}/{tier}", provider.name));
+                }
+            }
+        }
+        options
+    }
+
     /// The model dropdown field, preselected to `repo`'s resolved default model.
     pub(super) fn model_field(&self, repo: &str) -> Field {
         self.model_field_defaulting(repo, None)
@@ -49,11 +78,13 @@ impl App {
     /// The model dropdown field, preselected to `preferred` when it names a
     /// known model option (e.g. the model a resumed session already ran on),
     /// else `repo`'s resolved default. `preferred` is validated against
-    /// `MODEL_OPTIONS` so a stale/foreign value can't select a phantom option.
+    /// [`Self::model_options`] (the settings-driven dynamic list, falling back
+    /// to `MODEL_OPTIONS`) so a stale/foreign value can't select a phantom
+    /// option.
     pub(super) fn model_field_defaulting(&self, repo: &str, preferred: Option<&str>) -> Field {
-        let options = MODEL_OPTIONS.iter().map(|s| s.to_string()).collect();
+        let options = self.model_options();
         let default = preferred
-            .filter(|m| MODEL_OPTIONS.contains(m))
+            .filter(|m| options.iter().any(|o| o == m))
             .map(str::to_string)
             .unwrap_or_else(|| self.resolve_default_model(repo));
         Field::dropdown("model", options, &default)

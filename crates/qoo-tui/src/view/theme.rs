@@ -44,6 +44,14 @@ pub const GLYPH_TIMED_OUT: char = '⧗';
 /// attention; the money glyph lets a "rerun the out-of-budget ones after I've
 /// topped up" sweep pick them out at a glance.
 pub const GLYPH_OUT_OF_BUDGET: char = '¤';
+/// Provider-unavailable — `⊟` (squared minus), single-width, in error red. A
+/// `failed` run whose configured provider/model (a non-claude adapter) was
+/// unavailable — disabled in settings, missing credentials, or otherwise unable
+/// to run (`selectors::PROVIDER_UNAVAILABLE_REASON`). Distinct from
+/// `GLYPH_SESSION_LIMIT`/`GLYPH_OUT_OF_BUDGET` because those are Claude-account
+/// states that clear on their own; this needs the provider itself fixed before a
+/// rerun can succeed. Same red because it's still a failure needing attention.
+pub const GLYPH_PROVIDER_UNAVAILABLE: char = '⊟';
 pub const GLYPH_RUNNING: char = '▶';
 /// Worktree has uncommitted changes (git status --porcelain non-empty).
 pub const GLYPH_DIRTY: char = '±';
@@ -144,7 +152,7 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
 /// | `fg`             | prose / summaries      | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
-/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⊠ ⧗ ¤`)                                      |
+/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⊠ ⧗ ¤ ⊟`)                                    |
 ///
 /// `info` is deliberately reserved for timestamp-related text (user request);
 /// every other informational column reads in `meta`.
@@ -364,6 +372,7 @@ pub fn glyph_style(glyph: char, p: &Palette) -> Style {
         GLYPH_SESSION_LIMIT => Style::default().fg(p.error),
         GLYPH_TIMED_OUT => Style::default().fg(p.error),
         GLYPH_OUT_OF_BUDGET => Style::default().fg(p.error),
+        GLYPH_PROVIDER_UNAVAILABLE => Style::default().fg(p.error),
         GLYPH_RUNNING => Style::default().fg(p.warn),
         // Needs-input is bold so the `‼` reads as urgent (also the graceful
         // degradation if a terminal renders it plainer than intended).
@@ -390,6 +399,7 @@ mod tests {
         assert_eq!(glyph_style(GLYPH_SESSION_LIMIT, &p), Style::default().fg(p.error));
         assert_eq!(glyph_style(GLYPH_TIMED_OUT, &p), Style::default().fg(p.error));
         assert_eq!(glyph_style(GLYPH_OUT_OF_BUDGET, &p), Style::default().fg(p.error));
+        assert_eq!(glyph_style(GLYPH_PROVIDER_UNAVAILABLE, &p), Style::default().fg(p.error));
         assert_eq!(glyph_style(GLYPH_RUNNING, &p), Style::default().fg(p.warn));
         assert_eq!(glyph_style(GLYPH_CANCELLED, &p), Style::default().fg(p.warn));
         assert_eq!(glyph_style(GLYPH_SKIPPED, &p), Style::default().fg(p.dim));
@@ -401,19 +411,25 @@ mod tests {
         // Cancelled and skipped use DISTINCT glyphs (glyph_style keys on the char,
         // so they must differ to color differently).
         assert_ne!(GLYPH_CANCELLED, GLYPH_SKIPPED);
-        // Verify-failed, session-limit, timed-out, and out-of-budget all share
-        // the error color with failed but MUST each be a distinct glyph so the
-        // five failure modes read apart in the queue.
+        // Verify-failed, session-limit, timed-out, out-of-budget, and
+        // provider-unavailable all share the error color with failed but MUST
+        // each be a distinct glyph so the six failure modes read apart in the
+        // queue.
         assert_ne!(GLYPH_VERIFY_FAILED, GLYPH_FAILED);
         assert_ne!(GLYPH_SESSION_LIMIT, GLYPH_FAILED);
         assert_ne!(GLYPH_TIMED_OUT, GLYPH_FAILED);
         assert_ne!(GLYPH_OUT_OF_BUDGET, GLYPH_FAILED);
+        assert_ne!(GLYPH_PROVIDER_UNAVAILABLE, GLYPH_FAILED);
         assert_ne!(GLYPH_SESSION_LIMIT, GLYPH_VERIFY_FAILED);
         assert_ne!(GLYPH_TIMED_OUT, GLYPH_VERIFY_FAILED);
         assert_ne!(GLYPH_OUT_OF_BUDGET, GLYPH_VERIFY_FAILED);
+        assert_ne!(GLYPH_PROVIDER_UNAVAILABLE, GLYPH_VERIFY_FAILED);
         assert_ne!(GLYPH_SESSION_LIMIT, GLYPH_TIMED_OUT);
         assert_ne!(GLYPH_OUT_OF_BUDGET, GLYPH_SESSION_LIMIT);
         assert_ne!(GLYPH_OUT_OF_BUDGET, GLYPH_TIMED_OUT);
+        assert_ne!(GLYPH_PROVIDER_UNAVAILABLE, GLYPH_SESSION_LIMIT);
+        assert_ne!(GLYPH_PROVIDER_UNAVAILABLE, GLYPH_TIMED_OUT);
+        assert_ne!(GLYPH_PROVIDER_UNAVAILABLE, GLYPH_OUT_OF_BUDGET);
     }
 
     #[test]
@@ -445,6 +461,7 @@ mod tests {
             GLYPH_SESSION_LIMIT,
             GLYPH_TIMED_OUT,
             GLYPH_OUT_OF_BUDGET,
+            GLYPH_PROVIDER_UNAVAILABLE,
         ] {
             assert_eq!(UnicodeWidthChar::width(g), Some(1), "glyph {g:?} must be single-width");
         }

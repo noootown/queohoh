@@ -87,6 +87,10 @@ const TaskMetaSchema = z
 		verified: z.boolean().nullable().default(null),
 		verify_exit_code: z.number().int().nullable().default(null),
 		verify_output: z.string().nullable().default(null),
+		// Providers already tried for this task (additive; absent on legacy files
+		// → []). Fallback-chain machinery appends to this as it walks provider
+		// candidates so a re-run doesn't retry a provider that already failed.
+		attempted_providers: z.array(z.string()).default([]),
 	})
 	.strict();
 
@@ -133,6 +137,11 @@ export interface TaskInstance {
 	/** Bounded (~4 KB) tail of the last verify command's combined output; null when
 	 * it never ran. */
 	verifyOutput?: string | null;
+	/** Providers already tried for this task; empty on a task that has never
+	 * attempted a provider (or on a legacy file that predates the field). The
+	 * fallback-chain machinery appends to this as it walks provider candidates
+	 * so a re-run doesn't retry a provider that already failed. */
+	attemptedProviders: string[];
 }
 
 export function parseTaskFile(content: string): TaskInstance {
@@ -163,6 +172,7 @@ export function parseTaskFile(content: string): TaskInstance {
 		verified: m.verified,
 		verifyExitCode: m.verify_exit_code,
 		verifyOutput: m.verify_output,
+		attemptedProviders: m.attempted_providers,
 	};
 }
 
@@ -191,6 +201,7 @@ export function serializeTaskFile(task: TaskInstance): string {
 		verified: task.verified ?? null,
 		verify_exit_code: task.verifyExitCode ?? null,
 		verify_output: task.verifyOutput ?? null,
+		attempted_providers: task.attemptedProviders ?? [],
 	};
 	return stringifyFrontmatter(meta, task.prompt);
 }

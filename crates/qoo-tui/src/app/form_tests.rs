@@ -466,6 +466,7 @@ fn resolve_default_model_prefers_project_override_then_global_then_opus() {
     // Global default only.
     app.settings = Some(Some(SettingsPayload {
         models: SettingsModels { default_model: "sonnet".into(), ..Default::default() },
+        ..Default::default()
     }));
     assert_eq!(app.resolve_default_model("platform"), "sonnet");
     // Project override wins over global.
@@ -479,6 +480,103 @@ fn resolve_default_model_prefers_project_override_then_global_then_opus() {
             }],
             ..Default::default()
         },
+        ..Default::default()
     }));
     assert_eq!(app.resolve_default_model("platform"), "haiku");
+}
+
+// --- Task 13: settings-driven model dropdown ---
+
+#[test]
+fn model_options_falls_back_to_four_tiers_when_settings_absent() {
+    let app = launcher_app();
+    assert_eq!(app.settings, None);
+    assert_eq!(app.model_options(), vec!["fable", "opus", "sonnet", "haiku"]);
+}
+
+#[test]
+fn model_options_falls_back_to_four_tiers_when_providers_empty() {
+    use crate::ipc::types::SettingsPayload;
+    let mut app = launcher_app();
+    // A modern daemon that has fetched settings but configured zero providers
+    // (or an old daemon whose `providers` field defaulted to empty) still shows
+    // the bare tiers, not an empty dropdown.
+    app.settings = Some(Some(SettingsPayload::default()));
+    assert_eq!(app.model_options(), vec!["fable", "opus", "sonnet", "haiku"]);
+}
+
+#[test]
+fn model_options_includes_qualified_entries_for_enabled_non_claude_providers() {
+    use crate::ipc::types::{SettingsPayload, SettingsProvider};
+    use std::collections::BTreeMap;
+    let tiers = |ids: &[(&str, &str)]| -> BTreeMap<String, String> {
+        ids.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    };
+    let mut app = launcher_app();
+    app.settings = Some(Some(SettingsPayload {
+        providers: vec![
+            // claude's tiers ARE the bare tier names — no "claude/opus" entry.
+            SettingsProvider {
+                name: "claude".into(),
+                enabled: true,
+                models: tiers(&[
+                    ("fable", "claude-fable-5"),
+                    ("opus", "claude-opus-4-8"),
+                    ("sonnet", "claude-sonnet-5"),
+                    ("haiku", "claude-haiku-4-5"),
+                ]),
+            },
+            SettingsProvider {
+                name: "grok".into(),
+                enabled: true,
+                models: tiers(&[
+                    ("fable", "grok-4"),
+                    ("opus", "grok-code-fast-1"),
+                    ("sonnet", "grok-code-fast-1"),
+                    ("haiku", "grok-4-fast"),
+                ]),
+            },
+            // Disabled provider contributes no entries at all.
+            SettingsProvider {
+                name: "codex".into(),
+                enabled: false,
+                models: tiers(&[("opus", "gpt-5.1-codex")]),
+            },
+        ],
+        ..Default::default()
+    }));
+    let options = app.model_options();
+    assert_eq!(
+        options,
+        vec![
+            "fable", "opus", "sonnet", "haiku", "grok/fable", "grok/opus", "grok/sonnet",
+            "grok/haiku",
+        ]
+    );
+    assert!(options.contains(&"grok/opus".to_string()));
+    assert!(!options.iter().any(|o| o.starts_with("claude/")));
+    assert!(!options.iter().any(|o| o.starts_with("codex/")));
+}
+
+#[test]
+fn model_field_defaulting_validates_preferred_against_dynamic_options() {
+    use crate::ipc::types::{SettingsPayload, SettingsProvider};
+    use std::collections::BTreeMap;
+    let mut app = launcher_app();
+    app.settings = Some(Some(SettingsPayload {
+        providers: vec![SettingsProvider {
+            name: "grok".into(),
+            enabled: true,
+            models: BTreeMap::from([("opus".to_string(), "grok-code-fast-1".to_string())]),
+        }],
+        ..Default::default()
+    }));
+    // A qualified provider entry is a valid `preferred` value once it appears in
+    // the dynamic list (e.g. a resumed session that last ran on `grok/opus`).
+    let field = app.model_field_defaulting("platform", Some("grok/opus"));
+    assert_eq!(field.value, "grok/opus");
+    // A stale/foreign value not in the dynamic list falls back to the resolved
+    // default instead of selecting a phantom option.
+    let field = app.model_field_defaulting("platform", Some("nonexistent/tier"));
+    assert_eq!(field.value, "opus");
 }

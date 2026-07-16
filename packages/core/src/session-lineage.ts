@@ -8,6 +8,11 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 // different session in the same lane can never be hijacked onto this chain.
 export class SessionLineageStore {
 	private forks: Record<string, string> = Object.create(null);
+	// Maps a session id to the name of the provider adapter that produced it
+	// (e.g. "grok", "claude"). Lets a resume task re-pin its provider fallback
+	// chain to the single provider its session actually lives on — resuming
+	// can never hop providers, unlike a fresh run's chain.
+	private providers: Record<string, string> = Object.create(null);
 
 	constructor(readonly filePath: string) {
 		if (existsSync(filePath)) {
@@ -18,15 +23,33 @@ export class SessionLineageStore {
 						if (typeof child === "string") this.forks[parent] = child;
 					}
 				}
+				// Absent on legacy files (pre-Task-11) that only ever wrote
+				// `{ forks }` — those load fine, just with no provider tags.
+				if (
+					parsed &&
+					typeof parsed.providers === "object" &&
+					parsed.providers
+				) {
+					for (const [sessionId, provider] of Object.entries(
+						parsed.providers,
+					)) {
+						if (typeof provider === "string")
+							this.providers[sessionId] = provider;
+					}
+				}
 			} catch {
 				this.forks = Object.create(null);
+				this.providers = Object.create(null);
 			}
 		}
 	}
 
 	private persist(): void {
 		const tmp = `${this.filePath}.tmp`;
-		writeFileSync(tmp, JSON.stringify({ forks: this.forks }, null, 2));
+		writeFileSync(
+			tmp,
+			JSON.stringify({ forks: this.forks, providers: this.providers }, null, 2),
+		);
 		renameSync(tmp, this.filePath);
 	}
 
@@ -46,5 +69,16 @@ export class SessionLineageStore {
 			seen.add(next);
 			current = next;
 		}
+	}
+
+	recordProvider(sessionId: string, provider: string): void {
+		this.providers[sessionId] = provider;
+		this.persist();
+	}
+
+	/** The provider a session was produced by, or `null` when untagged
+	 * (unknown session, or a session recorded before Task 11 shipped). */
+	providerOf(sessionId: string): string | null {
+		return this.providers[sessionId] ?? null;
 	}
 }

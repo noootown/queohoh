@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { GlobalConfig } from "../config.js";
 import {
+	DEFAULT_PROVIDERS,
 	globalWorkspaceDir,
 	loadGlobalConfig,
 	loadProjectDefaultBranch,
@@ -123,6 +124,7 @@ describe("resolveDefinition — project vs global", () => {
 			archiveAfterDays: 7,
 			vars: {},
 			models: {},
+			providers: DEFAULT_PROVIDERS,
 		};
 	}
 

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { ProviderConfig } from "../config.js";
 import {
 	DEFAULT_MODEL_ALIASES,
 	effectiveModelTable,
 	resolveModel,
+	resolveProviderChain,
 } from "../models.js";
 
 describe("resolveModel", () => {
@@ -35,5 +37,62 @@ describe("effectiveModelTable", () => {
 	it("project overrides global for the same key", () => {
 		const t = effectiveModelTable({ sonnet: "a" }, { sonnet: "b" });
 		expect(t.sonnet).toBe("b");
+	});
+});
+
+describe("resolveProviderChain", () => {
+	const PROVIDERS: ProviderConfig[] = [
+		{
+			name: "claude",
+			enabled: true,
+			models: { opus: "claude-opus-4-8", sonnet: "claude-sonnet-5" },
+		},
+		{
+			name: "grok",
+			enabled: true,
+			models: { opus: "grok-4.5", sonnet: "grok-composer-2.5-fast" },
+		},
+		{ name: "codex", enabled: false, models: { opus: "gpt-5.6-terra" } },
+	];
+
+	it("bare tier walks enabled providers in order", () => {
+		expect(resolveProviderChain("opus", PROVIDERS)).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8" },
+				{ provider: "grok", model: "grok-4.5" },
+			],
+		});
+	});
+	it("provider/tier pins one provider, no fallback", () => {
+		expect(resolveProviderChain("grok/opus", PROVIDERS)).toEqual({
+			ok: true,
+			chain: [{ provider: "grok", model: "grok-4.5" }],
+		});
+	});
+	it("provider/exact-id pins an exact model", () => {
+		expect(resolveProviderChain("grok/grok-4.5", PROVIDERS)).toEqual({
+			ok: true,
+			chain: [{ provider: "grok", model: "grok-4.5" }],
+		});
+	});
+	it("raw id with no slash is claude-pinned", () => {
+		expect(resolveProviderChain("claude-opus-4-8", PROVIDERS)).toEqual({
+			ok: true,
+			chain: [{ provider: "claude", model: "claude-opus-4-8" }],
+		});
+	});
+	it("pinning a disabled provider errors", () => {
+		expect(resolveProviderChain("codex/opus", PROVIDERS)).toEqual({
+			ok: false,
+			error: "provider disabled: codex",
+		});
+	});
+	it("unknown provider prefix that is not a known provider passes through as a claude raw id", () => {
+		// 'claude-opus-4-8' has no slash; a slashed unknown like 'foo/bar' → unknown provider
+		expect(resolveProviderChain("foo/bar", PROVIDERS)).toEqual({
+			ok: false,
+			error: "unknown provider: foo",
+		});
 	});
 });

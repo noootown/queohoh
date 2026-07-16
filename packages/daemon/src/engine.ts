@@ -19,6 +19,7 @@ import {
 	buildLiveState,
 	cronDue,
 	effectiveModelTable,
+	effectiveProviders,
 	finalizeRun,
 	globalWorkspaceDir,
 	instantiateDefinition,
@@ -29,6 +30,7 @@ import {
 	loadProjectDefaultModel,
 	loadProjectModels,
 	loadProjectProtectedWorktrees,
+	loadProjectProviderModels,
 	loadProjectTaskRetentionDays,
 	loadProjectVars,
 	parseCron,
@@ -1098,6 +1100,24 @@ export class Engine {
 			) ?? "opus";
 
 		const repoPath = this.repoPath(task.target.repo);
+		// Effective provider table for THIS task's repo: `deps.config.providers`
+		// is already built-in ⊕ config.yaml `providers:` (computed once at
+		// `loadGlobalConfig`), so re-running it through `effectiveProviders` here
+		// only layers the one thing that's still project-scoped — vars.yaml's
+		// `providers:` tier overrides — on top. This is idempotent for the
+		// already-merged `enabled`/`bin`/`systemPrompt`/`args`/`models` fields
+		// (each provider entry re-derives to the same value against its own
+		// DEFAULT_PROVIDERS base), so calling it twice in this chain is safe.
+		// The legacy `models:` alias table (`modelTable` above) is NOT merged in
+		// here — worker.ts's `resolveRunContext` is the single place that folds
+		// it onto the claude provider's tier table, so engine only has to pass
+		// `providers` + `modelTable` and let the worker own that merge.
+		const providers = effectiveProviders(
+			deps.config.providers,
+			loadProjectProviderModels(
+				projectWorkspaceDir(deps.config, task.target.repo),
+			),
+		);
 		return {
 			store: deps.store,
 			runStore: deps.runStore,
@@ -1120,6 +1140,7 @@ export class Engine {
 			isCancelled: (id) =>
 				this.cancelledTaskIds.has(id) || deps.runStore.readCancelMarker(id),
 			modelTable,
+			providers,
 			loadDef: (definition) => {
 				const [repo, ...nameParts] = definition.split("/");
 				const name = nameParts.join("/");
@@ -1175,7 +1196,20 @@ export class Engine {
 			await this.settleWorkerDied(taskId, deps);
 			return;
 		}
-		await finalizeRun(taskId, result, deps);
+		const outcome = await finalizeRun(taskId, result, deps);
+		// `outcome.retry` means an availability failure (session limit / out of
+		// budget / provider unavailable) with a next provider left in the chain:
+		// `finalizeRun` already stamped the task back to `queued` (with this
+		// attempt's provider appended to `attemptedProviders`) instead of
+		// settling it terminal — there is nothing left to do here. The caller's
+		// `.then(() => this.cleanupRun(...))` still runs regardless (frees the
+		// lane/pid tracking), so the next `pass()` sees a `queued` task with a
+		// free lane and schedules it straight back onto `startWorker`, whose
+		// fresh `startRun` → `resolveRunContext` resolves onto the chain's next
+		// candidate (this attempt's provider is now filtered out). A non-retry
+		// outcome needs no extra handling either — the task already settled
+		// terminal inside `finalizeRun`, exactly as before this task's changes.
+		if (outcome.retry) return;
 	}
 
 	private cleanupRun(taskId: string): void {
@@ -1223,6 +1257,11 @@ export class Engine {
 		if (result === null) {
 			await this.settleWorkerDied(taskId, deps);
 		} else {
+			// Same `{ retry }` handling as `runLive` — an adopted run (finalized
+			// after a daemon restart) can retry-signal exactly like a live one, and
+			// the lane/pid release below applies either way, so there is nothing
+			// conditional to do with the outcome itself; see the comment in
+			// `runLive` for the full rationale.
 			await finalizeRun(taskId, result, deps);
 		}
 		this.childPids.delete(taskId);

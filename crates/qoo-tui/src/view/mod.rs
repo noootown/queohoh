@@ -721,6 +721,7 @@ mod tests {
                     source: "acme/vars.yaml".into(),
                 }],
             },
+            providers: vec![],
         }));
         let (terminal, hits) = render_at(&app, 80, 24);
         insta::assert_snapshot!("view_settings_overlay", terminal.backend());

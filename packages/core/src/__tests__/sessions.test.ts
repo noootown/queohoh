@@ -27,6 +27,7 @@ function runningTask(worktree: string): TaskInstance {
 		model: null,
 		timeoutMs: null,
 		prompt: "p",
+		attemptedProviders: [],
 	};
 }
 

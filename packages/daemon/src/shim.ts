@@ -3,7 +3,8 @@ import { unlinkSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import {
 	buildSecretMap,
-	executeClaude,
+	executeRun,
+	getAdapter,
 	makeRedactor,
 	RunStore,
 } from "@queohoh/core";
@@ -40,8 +41,14 @@ async function main(): Promise<void> {
 		}
 	});
 
-	const result = await executeClaude({
+	const adapter = getAdapter(spec.provider ?? "claude");
+	if (!adapter) {
+		console.error(`shim: unknown provider ${spec.provider}`);
+		process.exit(2);
+	}
+	const result = await executeRun(adapter, {
 		...spec,
+		claudeBin: spec.bin,
 		redact,
 		onSpawned: (pid) => {
 			claudePid = pid;

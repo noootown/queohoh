@@ -38,6 +38,7 @@ function task(overrides: {
 		prompt: "p",
 		chainId: overrides.chainId ?? null,
 		chainSeq: overrides.chainSeq ?? null,
+		attemptedProviders: [],
 	};
 }
 

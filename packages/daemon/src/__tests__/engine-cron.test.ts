@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Exec, GlobalConfig, ResolverIO } from "@queohoh/core";
 import {
+	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -40,6 +41,7 @@ function workspaceWith(cronExpr: string) {
 		archiveAfterDays: 7,
 		vars: {},
 		models: {},
+		providers: DEFAULT_PROVIDERS,
 	};
 	return { workspace, config };
 }

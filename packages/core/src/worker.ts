@@ -1,10 +1,13 @@
+import { DEFAULT_PROVIDERS, type ProviderConfig } from "./config.js";
 import type { TaskDefinition } from "./definition.js";
 import { execHook } from "./hooks.js";
-import { resolveModel } from "./models.js";
+import { type ChainEntry, resolveProviderChain } from "./models.js";
+import { getAdapter } from "./providers/index.js";
 import type { Redactor } from "./redact.js";
 import type { Exec } from "./resolver-io.js";
 import type { RunStore, SpawnSpec } from "./run-store.js";
 import type { executeClaude, executeVerify, RunResult } from "./runner.js";
+import { executeRun } from "./runner.js";
 import type { SessionLineageStore } from "./session-lineage.js";
 import type { QueueStore } from "./store.js";
 import type { TaskInstance } from "./task.js";
@@ -22,23 +25,6 @@ export type VerifyExecutor = typeof executeVerify;
  * override it, and the run's own `timeout` already bounds the worker itself. */
 export const VERIFY_TIMEOUT_MS = 600_000;
 
-/** Matches Claude's own "you've hit your session/usage limit" message (e.g.
- * `You've hit your session limit · resets 1pm (America/Chicago)`). Permissive
- * on the noun (session/usage) and the surrounding wording, since the exact
- * phrasing isn't a stable API contract — a false negative just falls back to
- * the generic `exit code N` reason, never a crash. */
-export const SESSION_LIMIT_RE = /\b(?:session|usage)\s+limit\b/i;
-
-/** Matches Anthropic's "you're out of credits/money" billing error (e.g.
- * `Your credit balance is too low to access the Anthropic API`). Distinct from
- * a session/usage limit: that resets on a timer, but this needs a top-up before
- * a rerun can succeed. Permissive on the exact wording (not a stable API
- * contract) — a false negative just falls back to the generic `exit code N`
- * reason, never a crash. Checked BEFORE `SESSION_LIMIT_RE` so the more specific
- * billing signal wins if both somehow appear. */
-export const OUT_OF_BUDGET_RE =
-	/credit balance (?:is )?too low|insufficient credits?|out of credits?/i;
-
 export interface WorkerDeps {
 	store: QueueStore;
 	runStore: RunStore;
@@ -51,8 +37,15 @@ export interface WorkerDeps {
 	globalVars?: Record<string, string>;
 	repoVars?: Record<string, string>;
 	/** Effective alias→id table for the task's repo; absent = no resolution
-	 * (old callers). Already merged (defaults ⊕ global ⊕ project). */
+	 * (old callers). Already merged (defaults ⊕ global ⊕ project). Merged onto
+	 * the CLAUDE provider's tier table in `resolveRunContext` — this is the
+	 * back-compat seam for the legacy `models:` alias config (spec §1). */
 	modelTable?: Record<string, string>;
+	/** Effective provider table (fallback order), already layered by the
+	 * caller (built-in ⊕ global config.yaml ⊕ project vars.yaml — see
+	 * `effectiveProviders` in config.ts). Absent ⇒ `DEFAULT_PROVIDERS` (old
+	 * callers, or a caller that hasn't wired provider config yet). */
+	providers?: ProviderConfig[];
 	lineage?: SessionLineageStore;
 	// Reports the spawned claude child's pid so the engine can track it for a
 	// Stop action. Fires once per run, right after spawn.
@@ -97,6 +90,18 @@ interface RunContext {
 	model: string;
 	timeoutMs: number;
 	resumeSessionId: string | undefined;
+	/** Adapter name for the chain's head entry — what actually spawns. */
+	provider: string;
+	systemPrompt: string | undefined;
+	extraArgs: string[] | undefined;
+	bin: string | undefined;
+	/** Remaining fallback chain (attemptedProviders already filtered out; for
+	 * a resume task, pinned to the single provider its session lineage is
+	 * tagged with — see the resume-resolution block in `resolveRunContext`).
+	 * `chain[0]` is always the entry that produced `provider`/`model` above;
+	 * `chain.length > 1` is what `finalizeRun` checks to decide whether an
+	 * availability failure has somewhere left to fall back to. */
+	chain: ChainEntry[];
 }
 
 /** Shared pre/re-derivation for `startRun` and `finalizeRun`: resolves the
@@ -162,14 +167,29 @@ async function resolveRunContext(
 		if (def === null)
 			return { fail: `definition not found: ${task.definition}` };
 	}
-	const model = resolveModel(
-		def?.model ?? task.model ?? deps.defaults.model,
-		deps.modelTable ?? {},
+
+	// Chain resolution (design spec §4). `deps.providers` is already the
+	// effective (built-in ⊕ global ⊕ project) table — the caller's job, not
+	// this function's. The one merge left to do here is folding the legacy
+	// `models:` alias table onto CLAUDE's tier entries, so `deps.modelTable`
+	// keeps overriding claude model ids exactly like `resolveModel` used to.
+	const modelTable = deps.modelTable ?? {};
+	const providers: ProviderConfig[] = (deps.providers ?? DEFAULT_PROVIDERS).map(
+		(p) =>
+			p.name === "claude"
+				? { ...p, models: { ...p.models, ...modelTable } }
+				: p,
 	);
-	// Precedence: definition's own `timeout:` > per-task override (ad-hoc/chain
-	// step, set via the MCP `timeout` param) > daemon default. Mirrors `model`
-	// immediately above.
-	const timeoutMs = def?.timeoutMs ?? task.timeoutMs ?? deps.defaults.timeoutMs;
+	const modelSpec = def?.model ?? task.model ?? deps.defaults.model;
+	const chainResult = resolveProviderChain(modelSpec, providers);
+	if (!chainResult.ok) return { fail: chainResult.error };
+
+	// Drop providers already attempted for this task, so a retry (or an
+	// adopted mid-chain run after a daemon restart) resolves onto the next
+	// candidate rather than repeating the one that just failed.
+	let chain = chainResult.chain.filter(
+		(e) => !task.attemptedProviders.includes(e.provider),
+	);
 
 	// Resume resolution. A pinned task resumes the TIP of its pin's lineage:
 	// each headless resume of X mints a new session id (the fork is recorded
@@ -180,7 +200,46 @@ async function resolveRunContext(
 	if (task.resumeSessionId !== null) {
 		resumeSessionId =
 			deps.lineage?.tip(task.resumeSessionId) ?? task.resumeSessionId;
+
+		// A resume task never falls back (spec decision 2) — its context lives
+		// in a specific provider's session, so the chain is pinned to exactly
+		// that provider (untagged/unknown sessions default to claude, matching
+		// pre-Task-11 behavior for lineage files that predate provider tags).
+		const pinnedProvider =
+			deps.lineage?.providerOf(resumeSessionId) ?? "claude";
+		const pinnedEntry = chain.find((e) => e.provider === pinnedProvider);
+		if (pinnedEntry !== undefined) {
+			chain = [pinnedEntry];
+		} else {
+			// The pinned provider isn't among the entries resolveProviderChain
+			// produced for this task's model spec (e.g. the spec is a tier only
+			// some OTHER provider has) — build its single entry directly: the
+			// pinned provider's own tier entry for the task's model, or the raw
+			// model spec verbatim when it isn't one of that provider's tiers.
+			const pinnedConfig = providers.find((p) => p.name === pinnedProvider);
+			if (pinnedConfig === undefined || !pinnedConfig.enabled) {
+				return {
+					fail: `resume provider unavailable: ${pinnedProvider}`,
+				};
+			}
+			chain = [
+				{
+					provider: pinnedProvider,
+					model: pinnedConfig.models[modelSpec] ?? modelSpec,
+				},
+			];
+		}
 	}
+	const head = chain[0];
+	if (head === undefined) {
+		return { fail: "no provider available: all providers attempted" };
+	}
+	const providerConfig = providers.find((p) => p.name === head.provider);
+
+	// Precedence: definition's own `timeout:` > per-task override (ad-hoc/chain
+	// step, set via the MCP `timeout` param) > daemon default. Mirrors `model`
+	// immediately above.
+	const timeoutMs = def?.timeoutMs ?? task.timeoutMs ?? deps.defaults.timeoutMs;
 
 	return {
 		ctx: {
@@ -190,9 +249,14 @@ async function resolveRunContext(
 			worktreeContext,
 			def,
 			renderHook,
-			model,
+			model: head.model,
 			timeoutMs,
 			resumeSessionId,
+			provider: head.provider,
+			systemPrompt: providerConfig?.systemPrompt,
+			extraArgs: providerConfig?.args,
+			bin: providerConfig?.bin,
+			chain,
 		},
 	};
 }
@@ -277,6 +341,14 @@ export async function startRun(
 	if ("fail" in c) return fail(c.fail);
 	const { ctx } = c;
 
+	// A chain hop's (or a user rerun's) PRIOR attempt may have left a
+	// result.json behind — only the shim ever unlinks spawn.json, nothing
+	// unlinks result.json. Left in place, a daemon restart during THIS attempt
+	// would let the adoption sweep's `hasResult → "finalize"` check finalize the
+	// task with the stale result while this attempt's shim is still running.
+	// Cleared before any of this attempt's own artifacts are written.
+	deps.runStore.clearResultJson(taskId);
+
 	deps.runStore.writeSnapshot(
 		taskId,
 		{
@@ -286,6 +358,7 @@ export async function startRun(
 			resolvedWorktreePath: ctx.cwd,
 			prompt: ctx.task.prompt,
 			model: ctx.model,
+			provider: ctx.provider,
 		},
 		deps.redact,
 	);
@@ -313,8 +386,23 @@ export async function startRun(
 		resumeSessionId: ctx.resumeSessionId,
 		eventsPath: deps.runStore.eventsPath(taskId),
 		transcriptPath: deps.runStore.transcriptPath(taskId),
+		provider: ctx.provider,
+		systemPrompt: ctx.systemPrompt,
+		extraArgs: ctx.extraArgs,
+		bin: ctx.bin,
 	};
 	return { kind: "spawn", spec };
+}
+
+/** `finalizeRun`'s outcome: the settled (or re-queued, see `retry`) task, plus
+ * whether this was an availability failure with chain remaining. `retry:
+ * true` means the run is NOT settled — the task was stamped back to `queued`
+ * with the failed provider appended to `attemptedProviders` — and the caller
+ * must start a fresh attempt (the engine re-drives; `runTask`'s in-process
+ * caller just invokes `runTask` again) rather than treat this as terminal. */
+export interface FinalizeOutcome {
+	task: TaskInstance;
+	retry: boolean;
 }
 
 /**
@@ -332,7 +420,7 @@ export async function finalizeRun(
 	taskId: string,
 	result: RunResult,
 	deps: WorkerDeps,
-): Promise<TaskInstance> {
+): Promise<FinalizeOutcome> {
 	const c = await resolveRunContext(taskId, deps);
 	if ("fail" in c) {
 		// Defensive — should not happen post-spawn (the same context resolved
@@ -342,12 +430,28 @@ export async function finalizeRun(
 			{ result: EMPTY_RESULT, outcome: "failed", reason: c.fail },
 			deps.redact,
 		);
-		return deps.store.update(taskId, { status: "failed", error: c.fail });
+		const task = deps.store.update(taskId, {
+			status: "failed",
+			error: c.fail,
+		});
+		return { task, retry: false };
 	}
-	const { task, cwd, renderHook, def, resumeSessionId } = c.ctx;
+	const { task, cwd, renderHook, def, resumeSessionId, provider, chain } =
+		c.ctx;
 
 	let outcome: "done" | "failed" | "cancelled" | "verify-failed" = "done";
 	let reason: string | null = null;
+	// Availability failure (session limit / out of budget / provider
+	// unavailable) with a next chain entry to try and no resume pin holding it
+	// on this provider. Set only inside the exit-code branch below.
+	let retry = false;
+	// True whenever `reason` holds a NORMALIZED availability reason
+	// (classifyUnavailable's vocabulary, including the spawn-failure fallback
+	// below) rather than a raw `exit code N`. Drives whether a TERMINAL
+	// availability settle (chain exhausted, or a resume pin that can never
+	// retry) still appends `provider` to `attemptedProviders` — `retry` alone
+	// only covers the hop-eligible case (finding 4).
+	let availabilityClassified = false;
 	// Populated only when the verify gate below actually runs; drives both the
 	// persisted task fields and the run-store report/data.
 	let verifyRun: {
@@ -377,19 +481,40 @@ export async function finalizeRun(
 		reason = `stopped (${result.signal})`;
 	} else if (result.exitCode !== 0) {
 		outcome = "failed";
-		// Claude's own session/usage-limit AND credit-balance messages land in
-		// `resultText` with a generic non-zero exit — no distinct exit code or
-		// event field marks either. Stamping a terse reason (matched verbatim,
-		// not re-derived, by the TUI's glyph selection) lets the queue/worktree
-		// panes show a distinct icon instead of the generic failed ✗, since
-		// retrying immediately won't help. Budget is checked first (more
-		// specific: needs a top-up), then session limit (resets on a timer).
-		if (OUT_OF_BUDGET_RE.test(result.resultText)) {
-			reason = "out of budget";
-		} else if (SESSION_LIMIT_RE.test(result.resultText)) {
-			reason = "session limit";
-		} else {
-			reason = `exit code ${result.exitCode}`;
+		reason = `exit code ${result.exitCode}`;
+		// A missing/unspawnable provider binary (ENOENT et al.) or a run-file-init
+		// failure never reaches any adapter's own wording — it's the RUNNER's
+		// generic `child.on("error")`/pre-spawn message (runner.ts), not the CLI's
+		// stderr. Checked before the adapter so a missing bin still falls through
+		// the chain instead of settling as a generic failure (spec §2 shared
+		// behaviors; finding 2).
+		const spawnFailed =
+			result.stderr.startsWith("Failed to spawn process") ||
+			result.stderr.startsWith("Failed to initialize run files:");
+		// The adapter's own availability wording (session/usage limit, out of
+		// credits, quota/auth failures — see each provider's `classifyUnavailable`)
+		// lands in `resultText`/`stderr` with a generic non-zero exit — no
+		// distinct exit code or event field marks it. A non-null classification
+		// overrides the generic reason (matched verbatim, not re-derived, by
+		// the TUI's glyph selection) so the queue/worktree panes show a
+		// distinct icon instead of the generic failed ✗ — AND, when nothing
+		// pins this task to its current provider and the chain has somewhere
+		// left to go, signals a retry on the next provider instead of settling
+		// failed (spec §4 point 2). A resume task or an exhausted chain still
+		// lands here with the classified reason, just terminal (point 3).
+		const classified = spawnFailed
+			? "provider unavailable"
+			: (getAdapter(provider)?.classifyUnavailable({
+					exitCode: result.exitCode,
+					stderr: result.stderr,
+					resultText: result.resultText,
+				}) ?? null);
+		if (classified !== null) {
+			reason = classified;
+			availabilityClassified = true;
+			if (task.resumeSessionId === null && chain.length > 1) {
+				retry = true;
+			}
 		}
 	}
 
@@ -427,7 +552,8 @@ export async function finalizeRun(
 		}
 	}
 
-	// post_run — always attempted; its failure never flips a done outcome
+	// post_run — always attempted (per attempt, retry or not); its failure
+	// never flips a done outcome
 	if (def?.postRun) {
 		try {
 			await execHook(renderHook(def.postRun), deps.exec, { cwd });
@@ -438,10 +564,51 @@ export async function finalizeRun(
 		}
 	}
 
+	// Availability failure with somewhere left to fall back to: this attempt's
+	// own report/data still lands in the run store (the "attempt 1: claude —
+	// session limit" trail), but the TASK does not settle — it goes back to
+	// `queued` with `provider` recorded so the next `startRun` resolves onto
+	// the chain's next entry. No verify (outcome !== "done" already skipped
+	// it above) and no lineage-fork recording (a retry-eligible failure only
+	// ever happens on a fresh, non-resume run — see the `chain.length > 1`
+	// gate above — so there is no fork to record here).
+	if (retry) {
+		// Log the hop (spec §4: "attempt 1: claude — session limit → falling
+		// back to grok") BEFORE finishRun, so finishRun's own read of data.json
+		// picks it up and renders it into THIS attempt's report.md — and so it's
+		// on disk (via writeSnapshot's preserve-on-rewrite) before the next
+		// attempt's startRun overwrites the rest of the snapshot.
+		deps.runStore.appendAttempt(
+			taskId,
+			`attempt ${task.attemptedProviders.length + 1}: ${provider} — ${reason} → falling back`,
+			deps.redact,
+		);
+		deps.runStore.finishRun(
+			taskId,
+			{ result, outcome: "failed", reason, verify: null },
+			deps.redact,
+		);
+		const task2 = deps.store.update(taskId, {
+			status: "queued",
+			error: reason,
+			attemptedProviders: [...task.attemptedProviders, provider],
+		});
+		return { task: task2, retry: true };
+	}
+
+	// Tag this run's session with the provider that actually produced it —
+	// fresh run or resumed hop alike — so a later resume pinned to it (or to
+	// a descendant, via `tip`) re-pins its fallback chain to this single
+	// provider instead of re-walking the whole ladder from the top.
+	if (deps.lineage && result.sessionId !== null) {
+		deps.lineage.recordProvider(result.sessionId, provider);
+	}
+
 	// Record the fork after any outcome (done OR failed): resuming
 	// `resumeSessionId` produced `result.sessionId`, so future pins anywhere
-	// on this chain resolve to the new tip. Fresh runs record nothing —
-	// their session becomes a lineage root for future picks.
+	// on this chain resolve to the new tip. A fresh run records no fork —
+	// its session becomes a lineage root for future picks (it's still
+	// provider-tagged above, just with no parent to link).
 	if (
 		resumeSessionId !== undefined &&
 		deps.lineage &&
@@ -451,12 +618,36 @@ export async function finalizeRun(
 		deps.lineage.recordFork(resumeSessionId, result.sessionId);
 	}
 
+	// Terminal availability failure — chain exhausted (no next entry) or a
+	// resume pin that can never hop (spec decision 2). `retry` above only
+	// records the hop-eligible attempts in report.md's "## Attempts" trail, so
+	// without this the trail silently drops the LAST provider tried (finding 4).
+	// This ONLY appends to that report trail — it deliberately does NOT append
+	// `provider` to the task's `attemptedProviders`: that field records the
+	// providers a manual re-run must skip (task.ts), and the terminal provider
+	// is exactly the one a re-run should resume on (its rate limit may have
+	// reset). Recording it here would filter it out too, so a chain-exhausted
+	// task's retry would resolve onto an empty chain and fail "all providers
+	// attempted" — see worker-fallback.test.ts's "no third hop recorded". Gated
+	// on non-resume only so a resume task (whose report trail is a single pinned
+	// provider) reads the same as before. No "→ falling back" suffix: there is
+	// nowhere left to go.
+	const terminalAvailabilityFailure =
+		availabilityClassified && task.resumeSessionId === null;
+	if (terminalAvailabilityFailure) {
+		deps.runStore.appendAttempt(
+			taskId,
+			`attempt ${task.attemptedProviders.length + 1}: ${provider} — ${reason}`,
+			deps.redact,
+		);
+	}
+
 	deps.runStore.finishRun(
 		taskId,
 		{ result, outcome, reason, verify: verifyRun },
 		deps.redact,
 	);
-	return deps.store.update(taskId, {
+	const task2 = deps.store.update(taskId, {
 		status: outcome,
 		// `done` clears the error; failed/cancelled/verify-failed carry their reason
 		// (the detail pane shows "stopped by user" for a cancel).
@@ -471,6 +662,46 @@ export async function finalizeRun(
 			verifyExitCode: verifyRun.exitCode,
 			verifyOutput: deps.redact(verifyRun.output),
 		}),
+	});
+	return { task: task2, retry: false };
+}
+
+/**
+ * Dispatch a resolved `SpawnSpec` to the right in-process executor by
+ * `spec.provider` — mirrors the daemon's `inProcessSpawner` (shim-host.ts):
+ * `"claude"`/absent keeps going through `deps.executeClaude` (the injectable
+ * seam tests fake to script a run's outcome); any other provider goes through
+ * `executeRun` with its own adapter, mapping `spec.bin` onto `claudeBin` the
+ * way `executeRun`'s options actually expect it. Before this, `runTask`
+ * always called `deps.executeClaude` regardless of `spec.provider`, so a
+ * chain hop onto e.g. grok would spawn claude with grok's model id and
+ * `spec.bin` would silently no-op (finding 8) — invisible in production
+ * because the daemon always spawns via the shim/`inProcessSpawner`, not this
+ * function, but live for any direct embedder of `runTask`.
+ */
+async function spawnInProcess(
+	taskId: string,
+	spec: SpawnSpec,
+	deps: WorkerDeps,
+): Promise<RunResult> {
+	const provider = spec.provider ?? "claude";
+	const onSpawned = (pid: number) => deps.onSpawned?.(taskId, pid);
+	if (provider === "claude") {
+		return deps.executeClaude({ ...spec, redact: deps.redact, onSpawned });
+	}
+	const adapter = getAdapter(provider);
+	// Defensive: resolveRunContext only ever produces a `provider` from the
+	// effective providers table, whose entries are the registered adapters
+	// (claude/codex/grok) — an unresolvable name here means the table and the
+	// registry have drifted, not a normal runtime failure.
+	if (!adapter) {
+		return { ...EMPTY_RESULT, stderr: `unknown provider: ${provider}` };
+	}
+	return executeRun(adapter, {
+		...spec,
+		claudeBin: spec.bin,
+		redact: deps.redact,
+		onSpawned,
 	});
 }
 
@@ -489,13 +720,15 @@ export async function runTask(
 	if (s.kind === "settled") return deps.store.get(taskId) as TaskInstance;
 	// Written AFTER startRun (not inside it): a pre_run failure never spawns
 	// claude, so there is no pid to record. The pid recorded here is the
-	// current process — `runTask` runs `executeClaude` itself, in-process
-	// (unlike the daemon, which spawns a shim and records ITS pid instead).
+	// current process — `runTask` runs the executor itself, in-process (unlike
+	// the daemon, which spawns a shim and records ITS pid instead).
 	deps.runStore.writeWorkerPid(taskId, process.pid);
-	const result = await deps.executeClaude({
-		...s.spec,
-		redact: deps.redact,
-		onSpawned: (pid) => deps.onSpawned?.(taskId, pid),
-	});
-	return finalizeRun(taskId, result, deps);
+	const result = await spawnInProcess(taskId, s.spec, deps);
+	// `retry: true` means finalizeRun already stamped the task back to
+	// `queued` (with the failed provider appended to attemptedProviders)
+	// rather than settling it failed — return it as-is. The engine (Task 10)
+	// is what actually re-drives a fresh attempt; here in the in-process path
+	// the caller (a test, `qoo run`, ...) simply invokes `runTask` again.
+	const outcome = await finalizeRun(taskId, result, deps);
+	return outcome.task;
 }

@@ -294,6 +294,26 @@ pub struct Discovery {
 pub struct SettingsPayload {
     #[serde(default)]
     pub models: SettingsModels,
+    /// Configured providers (Task 12's `settings` RPC addition), each with its
+    /// alias→model-id table. `#[serde(default)]` so an old daemon that omits the
+    /// field entirely (predates provider adapters) deserializes to an empty vec
+    /// rather than erroring — `form::model_options` then falls back to the
+    /// bare-tier `MODEL_OPTIONS` const.
+    #[serde(default)]
+    pub providers: Vec<SettingsProvider>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+pub struct SettingsProvider {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    /// Tier alias → concrete model id (e.g. `"opus" → "grok-code-fast-1"`),
+    /// mirroring [`SettingsModels::defaults`]'s shape for the built-in claude
+    /// provider.
+    #[serde(default)]
+    pub models: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
@@ -640,6 +660,9 @@ mod tests {
             }}"#,
         )
         .unwrap();
+        // `providers` is absent in this payload (pre-Task-12 daemon shape) → an
+        // old daemon that omits the whole field defaults to an empty vec.
+        assert_eq!(s.providers, vec![]);
         assert_eq!(s.models.defaults.get("opus").map(String::as_str), Some("claude-opus-4-8"));
         assert_eq!(s.models.default_model, "opus");
         assert_eq!(s.models.projects[0].default_model, "sonnet");
@@ -660,12 +683,52 @@ mod tests {
     }
 
     #[test]
+    fn settings_payload_with_providers_parses() {
+        // The exact shape Task 12's daemon settings RPC returns: a `providers`
+        // array alongside `models`, each entry carrying its own tier→model-id
+        // table (claude's mirrors the built-in `models.defaults`; non-claude
+        // adapters carry their own concrete ids).
+        let s: SettingsPayload = serde_json::from_str(
+            r#"{"models": {"defaults": {"opus": "claude-opus-4-8"}},
+                "providers": [
+                    {"name": "claude", "enabled": true,
+                     "models": {"fable": "claude-fable-5", "opus": "claude-opus-4-8",
+                                "sonnet": "claude-sonnet-5", "haiku": "claude-haiku-4-5"}},
+                    {"name": "grok", "enabled": false,
+                     "models": {"fable": "grok-4", "opus": "grok-code-fast-1",
+                                "sonnet": "grok-code-fast-1", "haiku": "grok-4-fast"}},
+                    {"name": "codex", "enabled": false,
+                     "models": {"fable": "gpt-5.1-codex", "opus": "gpt-5.1-codex",
+                                "sonnet": "gpt-5.1-codex-mini", "haiku": "gpt-5.1-codex-mini"}}
+                ]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.providers.len(), 3);
+        assert_eq!(s.providers[0].name, "claude");
+        assert!(s.providers[0].enabled);
+        assert_eq!(
+            s.providers[0].models.get("opus").map(String::as_str),
+            Some("claude-opus-4-8")
+        );
+        assert_eq!(s.providers[1].name, "grok");
+        assert!(!s.providers[1].enabled);
+        assert_eq!(
+            s.providers[1].models.get("opus").map(String::as_str),
+            Some("grok-code-fast-1")
+        );
+        assert_eq!(s.providers[2].name, "codex");
+        assert!(!s.providers[2].enabled);
+    }
+
+    #[test]
     fn settings_payload_empty_object_defaults_without_error() {
         // An old daemon (predating the settings RPC) that somehow returns `{}` —
         // or any partial subtree — must default rather than panic. Every field is
         // `#[serde(default)]`, so the empty object is a fully-defaulted payload.
         let s: SettingsPayload = serde_json::from_str("{}").unwrap();
         assert_eq!(s, SettingsPayload::default());
+        // Pre-Task-12 daemon omits `providers` entirely → empty vec, not an error.
+        assert!(s.providers.is_empty());
         assert!(s.models.defaults.is_empty());
         assert!(s.models.global.entries.is_empty());
         assert_eq!(s.models.global.source, "");

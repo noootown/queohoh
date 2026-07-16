@@ -4,6 +4,7 @@ import {
 	readdirSync,
 	readFileSync,
 	renameSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -28,6 +29,16 @@ export interface SpawnSpec {
 	resumeSessionId?: string;
 	eventsPath: string;
 	transcriptPath: string;
+	/** Provider adapter name (e.g. "claude", "codex", "grok"). Absent ⇒ "claude"
+	 * — adoption-safe for a spawn.json written by an older daemon that predates
+	 * multi-provider support. */
+	provider?: string;
+	/** Appended via `--append-system-prompt` for adapters that support it. */
+	systemPrompt?: string;
+	/** Provider-config `args` — additional adapter-produced argv. */
+	extraArgs?: string[];
+	/** Bin override; undefined ⇒ the adapter's own `defaultBin`. */
+	bin?: string;
 }
 
 export class RunStore {
@@ -61,22 +72,36 @@ export class RunStore {
 			resolvedWorktreePath: string;
 			prompt: string;
 			model: string;
+			/** Adapter name that produced/will produce `model` (spec §5). Optional so
+			 * pre-provider-adapter callers/test literals need not set it — absent ⇒
+			 * report.md's Stats line falls back to the bare model id. */
+			provider?: string;
 		},
 		redact: Redactor,
 	): void {
 		const dir = this.runDir(taskId);
+		const dataPath = join(dir, "data.json");
+		// This write otherwise fully replaces data.json on every fresh attempt —
+		// preserve the prior attempt's hop trail (finding 5's `appendAttempt`)
+		// across that rewrite rather than silently dropping it.
+		let attempts: string[] = [];
+		if (existsSync(dataPath)) {
+			try {
+				const existing = JSON.parse(readFileSync(dataPath, "utf-8"));
+				if (Array.isArray(existing.attempts)) attempts = existing.attempts;
+			} catch {}
+		}
 		const snapshot = {
 			task: data.task,
 			definition: data.definition,
 			resolved_worktree: data.resolvedWorktree,
 			resolved_worktree_path: data.resolvedWorktreePath,
 			model: data.model,
+			provider: data.provider,
 			started_at: new Date().toISOString(),
+			...(attempts.length > 0 && { attempts }),
 		};
-		writeFileSync(
-			join(dir, "data.json"),
-			redact(JSON.stringify(snapshot, null, 2)),
-		);
+		writeFileSync(dataPath, redact(JSON.stringify(snapshot, null, 2)));
 		writeFileSync(join(dir, "prompt.rendered.md"), redact(data.prompt));
 	}
 
@@ -142,6 +167,19 @@ export class RunStore {
 		}
 	}
 
+	/** Best-effort unlink of a stale `result.json` from a PRIOR attempt. Without
+	 * this, attempt N's result.json survives into attempt N+1's window: a daemon
+	 * restart/reload mid-attempt-(N+1) would let the adoption sweep's `hasResult
+	 * → "finalize"` check finalize the task with attempt N's stale result while
+	 * the fresh attempt's detached shim is still running. Called by `startRun`
+	 * right before a fresh attempt's own artifacts are (re-)written. Absent file
+	 * is not an error — the common case (a task's first attempt). */
+	clearResultJson(taskId: string): void {
+		try {
+			unlinkSync(this.resultJsonPath(taskId));
+		} catch {}
+	}
+
 	private cancelMarkerPath(taskId: string): string {
 		return join(this.runDir(taskId), "cancelled");
 	}
@@ -154,6 +192,26 @@ export class RunStore {
 
 	readCancelMarker(taskId: string): boolean {
 		return existsSync(this.cancelMarkerPath(taskId));
+	}
+
+	/** Append one line to the run's persisted attempt trail (finding 5 — the
+	 * fallback-chain hop history, e.g. "attempt 1: claude — session limit →
+	 * falling back"). Read-merge-write like `finishRun`, so it survives both a
+	 * same-attempt `finishRun` call (either call order) and the NEXT attempt's
+	 * `writeSnapshot`, which explicitly preserves `attempts` across its rewrite
+	 * (see above) — the only two writers that touch data.json wholesale.
+	 * `finishRun` renders the trail into report.md's "## Attempts" section. */
+	appendAttempt(taskId: string, line: string, redact: Redactor): void {
+		const dataPath = join(this.runDir(taskId), "data.json");
+		let existing: Record<string, unknown> = {};
+		if (existsSync(dataPath)) {
+			try {
+				existing = JSON.parse(readFileSync(dataPath, "utf-8"));
+			} catch {}
+		}
+		const attempts = Array.isArray(existing.attempts) ? existing.attempts : [];
+		const merged = { ...existing, attempts: [...attempts, line] };
+		writeFileSync(dataPath, redact(JSON.stringify(merged, null, 2)));
 	}
 
 	finishRun(
@@ -202,6 +260,13 @@ export class RunStore {
 		writeFileSync(dataPath, redact(JSON.stringify(merged, null, 2)));
 
 		const { usage } = data.result;
+		// `<provider>/<model>` (spec §5) when the snapshot recorded a provider;
+		// bare model id otherwise (older run, or a caller that predates adapters).
+		const model = typeof existing.model === "string" ? existing.model : null;
+		const provider =
+			typeof existing.provider === "string" ? existing.provider : null;
+		const modelLine =
+			model === null ? "n/a" : provider ? `${provider}/${model}` : model;
 		const lines = [
 			"# Result",
 			"",
@@ -209,12 +274,25 @@ export class RunStore {
 			"",
 			"## Stats",
 			`- outcome: ${data.outcome}${data.reason ? ` (${data.reason})` : ""}`,
-			`- model: ${typeof existing.model === "string" ? existing.model : "n/a"}`,
+			`- model: ${modelLine}`,
 			`- cost: ${usage.costUsd === null ? "n/a" : `$${usage.costUsd}`}`,
 			`- turns: ${usage.turns ?? "n/a"}`,
 			`- duration: ${usage.durationMs === null ? "n/a" : `${Math.round(usage.durationMs / 1000)}s`}`,
 			"",
 		];
+		// Fallback-chain hop trail (finding 5), when any hop was recorded via
+		// appendAttempt — absent for a task that never fell back (the common case).
+		// Read from `existing` (the on-disk snapshot, which `appendAttempt` already
+		// wrote the trail into before finishRun runs) not `merged`: the object spread
+		// that builds `merged` drops the `Record<string, unknown>` index signature,
+		// so `merged.attempts` has no type. `merged` never touches `attempts` anyway,
+		// so the two are identical at runtime.
+		const attempts = Array.isArray(existing.attempts)
+			? (existing.attempts as string[])
+			: [];
+		if (attempts.length > 0) {
+			lines.push("## Attempts", "", ...attempts.map((a) => `- ${a}`), "");
+		}
 		// Done-condition section — mirrors the Stats block's error-display pattern so
 		// the detail pane's report tab shows what was checked and its output tail.
 		if (data.verify) {

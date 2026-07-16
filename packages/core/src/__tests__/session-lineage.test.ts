@@ -60,4 +60,30 @@ describe("SessionLineageStore", () => {
 		expect(s.tip("toString")).toBe("toString");
 		expect(s.tip("__proto__")).toBe("__proto__");
 	});
+
+	it("records and reads a session's provider; unknown → null", () => {
+		const s = new SessionLineageStore(storePath());
+		s.recordProvider("gs1", "grok");
+		expect(s.providerOf("gs1")).toBe("grok");
+		expect(s.providerOf("unknown")).toBeNull();
+	});
+
+	it("persists providers across instances, alongside forks", () => {
+		const path = storePath();
+		const a = new SessionLineageStore(path);
+		a.recordFork("x", "y");
+		a.recordProvider("y", "codex");
+		const b = new SessionLineageStore(path);
+		expect(b.tip("x")).toBe("y");
+		expect(b.providerOf("y")).toBe("codex");
+	});
+
+	it("loads a legacy file containing only { forks } with providerOf → null", () => {
+		const path = storePath();
+		writeFileSync(path, JSON.stringify({ forks: { x: "y" } }));
+		const s = new SessionLineageStore(path);
+		expect(s.tip("x")).toBe("y");
+		expect(s.providerOf("x")).toBeNull();
+		expect(s.providerOf("y")).toBeNull();
+	});
 });

@@ -10,6 +10,7 @@ import type {
 	VerifyExecutor,
 } from "@queohoh/core";
 import {
+	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -54,6 +55,7 @@ function setup(
 		archiveAfterDays: 7,
 		vars: {},
 		models: {},
+		providers: DEFAULT_PROVIDERS,
 		...overrides.config,
 	};
 	const resolverIO: ResolverIO = {
@@ -252,6 +254,7 @@ describe("Engine.tick", () => {
 			archiveAfterDays: 7,
 			vars: {},
 			models: {},
+			providers: DEFAULT_PROVIDERS,
 		};
 		let claudeRan = false;
 		const resolverIO: ResolverIO = {
@@ -429,6 +432,7 @@ describe("Engine.tick", () => {
 			archiveAfterDays: 7,
 			vars: {},
 			models: {},
+			providers: DEFAULT_PROVIDERS,
 		};
 		const lineage = new SessionLineageStore(join(base, "session-lineage.json"));
 		const engine = new Engine({

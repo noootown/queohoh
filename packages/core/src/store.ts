@@ -111,6 +111,7 @@ export class QueueStore {
 			verified: null,
 			verifyExitCode: null,
 			verifyOutput: null,
+			attemptedProviders: [],
 		};
 		this.write(task);
 		return task;
@@ -157,6 +158,7 @@ export class QueueStore {
 				verified: null,
 				verifyExitCode: null,
 				verifyOutput: null,
+				attemptedProviders: [],
 			};
 			this.write(task);
 			return task;

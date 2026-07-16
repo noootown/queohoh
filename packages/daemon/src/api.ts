@@ -237,6 +237,15 @@ export class ApiServer {
 						global: { entries: deps.config.models, source: configPath() },
 						projects,
 					},
+					// deps.config.providers is already the global-effective set
+					// (loadGlobalConfig runs it through effectiveProviders), so this
+					// forwards it as-is — project tier overrides are per-repo and don't
+					// belong in a global RPC payload.
+					providers: deps.config.providers.map((p) => ({
+						name: p.name,
+						enabled: p.enabled,
+						models: p.models,
+					})),
 				};
 			}
 			case "state":

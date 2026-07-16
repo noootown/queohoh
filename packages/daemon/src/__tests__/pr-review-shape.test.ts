@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
 import {
+	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -68,6 +69,7 @@ async function setup() {
 		archiveAfterDays: 7,
 		vars: { github_username: "ianchiu-jb" },
 		models: {},
+		providers: DEFAULT_PROVIDERS,
 	};
 	const okResult: RunResult = {
 		exitCode: 0,

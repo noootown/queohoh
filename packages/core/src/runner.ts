@@ -1,6 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { claudeAdapter, type ProviderAdapter } from "./providers/index.js";
 import type { Redactor } from "./redact.js";
+
+export { formatEventToMarkdown } from "./event-format.js";
 
 export interface RunUsage {
 	costUsd: number | null;
@@ -43,76 +47,43 @@ export interface ExecuteClaudeOptions {
 	idleTimeoutMs?: number;
 }
 
+export interface ExecuteRunOptions extends ExecuteClaudeOptions {
+	/** Appended via `--append-system-prompt` for adapters that support it (claude). */
+	systemPrompt?: string;
+	/** Provider-config `args` — additional adapter-produced argv, distinct from
+	 * `claudeArgs` (which stays a caller-supplied trailing passthrough for
+	 * back-compat with today's claude invocation). */
+	extraArgs?: string[];
+}
+
 /** Default inactivity window for the streaming Claude runner: 12 minutes. Reset
  * on every parsed stream event (see `handleLine` in [`executeClaude`]); a run
  * that goes silent longer than this is presumed wedged and killed, independent
  * of the overall `timeoutMs` ceiling. */
 export const IDLE_TIMEOUT_MS = 12 * 60_000;
 
-export function formatEventToMarkdown(
-	event: Record<string, unknown>,
-): string | null {
-	if ((event.type as string) !== "assistant") return null;
-	const msg = event.message as Record<string, unknown> | undefined;
-	const content = msg?.content as Array<Record<string, unknown>> | undefined;
-	if (!content) return null;
-
-	const parts: string[] = [];
-	for (const block of content) {
-		if (block.type === "thinking" && block.thinking) {
-			parts.push("### Thinking");
-			parts.push(String(block.thinking));
-			parts.push("");
-		}
-		if (block.type === "text" && block.text) {
-			parts.push(String(block.text));
-			parts.push("");
-		}
-		if (block.type === "tool_use") {
-			const name = block.name as string;
-			const input = (block.input as Record<string, unknown>) ?? {};
-			parts.push(`### Tool: ${name}`);
-			const filePath = input.file_path as string | undefined;
-			if (name === "Bash" && input.command) {
-				parts.push("```bash");
-				parts.push(String(input.command));
-				parts.push("```");
-			} else if (["Edit", "Read", "Write"].includes(name) && filePath) {
-				parts.push(`File: \`${filePath}\``);
-			} else if (name === "Grep" && input.pattern) {
-				parts.push(`Pattern: \`${input.pattern}\``);
-			} else {
-				parts.push("```json");
-				parts.push(JSON.stringify(input, null, 2).slice(0, 500));
-				parts.push("```");
-			}
-			parts.push("");
-		}
-	}
-	return parts.length > 0 ? parts.join("\n") : null;
-}
-
-export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
+export function executeRun(
+	adapter: ProviderAdapter,
+	opts: ExecuteRunOptions,
+): Promise<RunResult> {
 	const timeoutMs = Math.max(1000, opts.timeoutMs);
 	const idleTimeoutMs = Math.max(1000, opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
-	const args = [
-		"-p",
-		opts.prompt,
-		"--output-format",
-		"stream-json",
-		"--verbose",
-		"--model",
-		opts.model,
-		...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : []),
-		...(opts.claudeArgs ?? []),
-	];
 
 	return new Promise((resolve) => {
+		// Prompt-file adapters (e.g. grok) want the prompt on disk rather than
+		// inline in argv; the runner owns writing/cleaning that file so adapters
+		// stay pure argv/parse functions.
+		const promptFilePath =
+			adapter.promptFileSuffix !== null
+				? join(dirname(opts.eventsPath), `prompt${adapter.promptFileSuffix}`)
+				: undefined;
+
 		// Initialize run files BEFORE spawning so a failure (e.g. missing parent
 		// dir) never orphans a detached child. On failure, resolve without spawning.
 		try {
 			writeFileSync(opts.eventsPath, "");
 			writeFileSync(opts.transcriptPath, "");
+			if (promptFilePath) writeFileSync(promptFilePath, opts.prompt);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			resolve({
@@ -127,12 +98,28 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 			return;
 		}
 
-		const child: ChildProcess = spawn(opts.claudeBin ?? "claude", args, {
-			env: { ...process.env, ...opts.env },
-			cwd: opts.cwd,
-			stdio: ["ignore", "pipe", "pipe"],
-			detached: true,
-		});
+		const args = [
+			...adapter.buildArgs({
+				prompt: opts.prompt,
+				model: opts.model,
+				resumeSessionId: opts.resumeSessionId,
+				systemPrompt: opts.systemPrompt,
+				extraArgs: opts.extraArgs,
+				promptFilePath,
+			}),
+			...(opts.claudeArgs ?? []),
+		];
+
+		const child: ChildProcess = spawn(
+			opts.claudeBin ?? adapter.defaultBin,
+			args,
+			{
+				env: { ...process.env, ...opts.env },
+				cwd: opts.cwd,
+				stdio: ["ignore", "pipe", "pipe"],
+				detached: true,
+			},
+		);
 		if (child.pid && opts.onSpawned) opts.onSpawned(child.pid);
 
 		let stderr = "";
@@ -141,6 +128,13 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 		let sessionId: string | null = null;
 		let usage: RunUsage = { costUsd: null, turns: null, durationMs: null };
 		let lineBuffer = "";
+		// Token-delta accumulators for adapters (grok) whose stream carries no
+		// full-text result event: deltas append here and flush as one transcript
+		// section. Stay empty for claude/codex (they never set the deltas), so
+		// those paths are byte-identical to a run without accumulation.
+		let textAcc = "";
+		let thinkingAcc = "";
+		let transcriptFlushed = false;
 		let killTimer: ReturnType<typeof setTimeout> | null = null;
 
 		// Two independent reapers, both landing the same `timedOut` outcome (the
@@ -184,6 +178,33 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 			idleTimer = null;
 			clearTimeout(ceiling);
 			if (killTimer) clearTimeout(killTimer);
+			if (promptFilePath) {
+				try {
+					unlinkSync(promptFilePath);
+				} catch {
+					// Best-effort: the run's outcome doesn't depend on cleanup succeeding.
+				}
+			}
+		};
+
+		// Flush accumulated token deltas as ONE transcript section, mirroring
+		// formatEventToMarkdown's shape ("### Thinking" then the text). Guarded so
+		// it writes at most once; a no-op when nothing accumulated (claude/codex).
+		const flushAccumulated = () => {
+			if (transcriptFlushed) return;
+			if (!textAcc && !thinkingAcc) return;
+			transcriptFlushed = true;
+			const parts: string[] = [];
+			if (thinkingAcc) {
+				parts.push("### Thinking");
+				parts.push(thinkingAcc);
+				parts.push("");
+			}
+			if (textAcc) {
+				parts.push(textAcc);
+				parts.push("");
+			}
+			appendFileSync(opts.transcriptPath, `${opts.redact(parts.join("\n"))}\n`);
 		};
 
 		const handleLine = (line: string) => {
@@ -203,23 +224,30 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 			}
 			appendFileSync(opts.eventsPath, `${opts.redact(line)}\n`);
 
-			if (!sessionId && event.session_id) {
-				sessionId = event.session_id as string;
+			const parsed = adapter.parseEvent(event);
+			if (!sessionId && parsed.sessionId) {
+				sessionId = parsed.sessionId;
 			}
-			if ((event.type as string) === "result") {
-				resultText = (event.result as string) ?? "";
+			if (parsed.thinkingDelta) thinkingAcc += parsed.thinkingDelta;
+			if (parsed.textDelta) textAcc += parsed.textDelta;
+			if (parsed.result) {
+				// Delta-stream adapters (grok) carry no full-text result event, so
+				// fall back to the accumulated text; direct adapters set a non-empty
+				// text and the `||` never flips.
+				resultText = parsed.result.text || textAcc;
 				usage = {
-					costUsd:
-						typeof event.total_cost_usd === "number"
-							? event.total_cost_usd
-							: null,
-					turns: typeof event.num_turns === "number" ? event.num_turns : null,
-					durationMs:
-						typeof event.duration_ms === "number" ? event.duration_ms : null,
+					costUsd: parsed.result.costUsd,
+					turns: parsed.result.turns,
+					durationMs: parsed.result.durationMs,
 				};
+				flushAccumulated();
 			}
-			const md = formatEventToMarkdown(event);
-			if (md) appendFileSync(opts.transcriptPath, `${opts.redact(md)}\n`);
+			if (parsed.transcriptMd) {
+				appendFileSync(
+					opts.transcriptPath,
+					`${opts.redact(parsed.transcriptMd)}\n`,
+				);
+			}
 		};
 
 		child.stdout?.on("data", (chunk: Buffer) => {
@@ -236,6 +264,9 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 		child.on("close", (code, signal) => {
 			clearTimers();
 			if (lineBuffer) handleLine(lineBuffer);
+			// Stream ended without a result event (crash/timeout): still land any
+			// accumulated deltas. No-op if the result event already flushed.
+			flushAccumulated();
 			resolve({
 				exitCode: code ?? 1,
 				timedOut,
@@ -260,6 +291,10 @@ export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
 			});
 		});
 	});
+}
+
+export function executeClaude(opts: ExecuteClaudeOptions): Promise<RunResult> {
+	return executeRun(claudeAdapter, opts);
 }
 
 /** Trailing-output cap (chars) retained from a verify command's combined

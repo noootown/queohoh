@@ -105,7 +105,10 @@ describe("runTask", () => {
 		expect(result.error).toBeNull();
 		const meta = runStore.readRunMeta(t.id);
 		expect(meta?.outcome).toBe("done");
-		expect(meta?.model).toBe("sonnet");
+		// "sonnet" resolves through the built-in provider tier table now (chain
+		// resolution replaces the old bare `resolveModel` pass-through — see
+		// DEFAULT_PROVIDERS in config.ts), not just an explicit modelTable.
+		expect(meta?.model).toBe("claude-sonnet-5");
 		expect(runStore.readWorkerPid(t.id)).toBe(process.pid);
 	});
 
@@ -336,9 +339,11 @@ describe("runTask", () => {
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("done");
-		expect(claudeModel).toBe("opus");
+		// "opus" resolves through DEFAULT_PROVIDERS' claude tier table (chain
+		// resolution), same as the "sonnet" case above.
+		expect(claudeModel).toBe("claude-opus-4-8");
 		expect(hookCalls).toEqual(["mise run setup", "echo done"]);
-		expect(runStore.readRunMeta(t.id)?.model).toBe("opus");
+		expect(runStore.readRunMeta(t.id)?.model).toBe("claude-opus-4-8");
 	});
 
 	it("renders pre_run hooks with global/repo/item vars (item wins)", async () => {
@@ -799,7 +804,8 @@ describe("runTask pinned resume model resolution", () => {
 		});
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
-		expect(seenModel).toBe("opus");
+		// "opus" resolves through DEFAULT_PROVIDERS' claude tier table.
+		expect(seenModel).toBe("claude-opus-4-8");
 	});
 });
 
@@ -1083,8 +1089,9 @@ describe("startRun / finalizeRun split", () => {
 		withWorktree(store, t.id);
 		await startRun(t.id, deps); // stamps running + snapshot
 		const settled = await finalizeRun(t.id, { ...okResult, exitCode: 3 }, deps);
-		expect(settled.status).toBe("failed");
-		expect(settled.error).toBe("exit code 3");
+		expect(settled.retry).toBe(false);
+		expect(settled.task.status).toBe("failed");
+		expect(settled.task.error).toBe("exit code 3");
 		expect(runStore.readRunMeta(t.id)?.outcome).toBe("failed");
 	});
 
