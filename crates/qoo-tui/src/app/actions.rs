@@ -612,8 +612,9 @@ impl App {
             Some(qi) => {
                 let mut cmds = Vec::new();
                 // Focus + select the queue row (last_list_pane → Queue drives the
-                // detail to Run). `set_cursor` itself picks the Run sub-tab
-                // default (transcript while running, report otherwise).
+                // detail to Run). `set_cursor` preserves the current Run sub-tab,
+                // only swapping report → transcript when the target is still
+                // running (its report is empty).
                 self.set_focus(PaneId::Queue);
                 self.set_cursor(ListPane::Queue, qi, &mut cmds);
                 self.schedule_run_read(&mut cmds, 120);

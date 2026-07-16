@@ -447,6 +447,42 @@ fn selecting_a_running_queue_task_defaults_to_transcript() {
 }
 
 #[test]
+fn moving_rows_preserves_prompt_sub_tab() {
+    // A row change never re-defaults away from a manually chosen tab: the
+    // report→transcript fallback only fires from the report tab, so prompt
+    // (RUN_TABS index 2) survives landing on both finished and running rows.
+    const RUN_TAB_PROMPT: usize = 2;
+    let mut app = crate::test_fixtures::fixture_app();
+    app.ui().sub_tab[DetailKind::Run as usize] = RUN_TAB_PROMPT;
+    let c = crate::view::compute(&app);
+    let finished = c.queue.iter().position(|r| !r.running).expect("fixture has a finished row");
+    let running = c.queue.iter().position(|r| r.running).expect("fixture has a running row");
+    let mut cmds = Vec::new();
+    app.set_cursor(ListPane::Queue, finished, &mut cmds);
+    assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], RUN_TAB_PROMPT);
+    cmds.clear();
+    app.set_cursor(ListPane::Queue, running, &mut cmds);
+    assert_eq!(app.ui().sub_tab[DetailKind::Run as usize], RUN_TAB_PROMPT);
+}
+
+#[test]
+fn transcript_sub_tab_survives_landing_on_finished_row() {
+    // The behavior change from the old re-default: a finished row has a real
+    // report, but the transcript tab is a deliberate choice — moving onto that
+    // row must NOT flip back to report.
+    let mut app = crate::test_fixtures::fixture_app();
+    app.ui().sub_tab[DetailKind::Run as usize] = crate::detail::RUN_TAB_TRANSCRIPT;
+    let c = crate::view::compute(&app);
+    let finished = c.queue.iter().position(|r| !r.running).expect("fixture has a finished row");
+    let mut cmds = Vec::new();
+    app.set_cursor(ListPane::Queue, finished, &mut cmds);
+    assert_eq!(
+        app.ui().sub_tab[DetailKind::Run as usize],
+        crate::detail::RUN_TAB_TRANSCRIPT
+    );
+}
+
+#[test]
 fn queue_nav_crosses_divider_onto_a_real_finished_row() {
     // Real render so app.hit carries the true divider geometry.
     let mut app = app_rendered(80, 24);
