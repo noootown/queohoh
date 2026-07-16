@@ -9,6 +9,7 @@ export {
 	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectProtectedWorktrees,
+	loadProjectTaskRetentionDays,
 	loadProjectVars,
 	projectWorkspaceDir,
 	resolveDefinition,

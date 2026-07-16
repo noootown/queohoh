@@ -11,6 +11,7 @@ import {
 	loadProjectGithubId,
 	loadProjectModels,
 	loadProjectProtectedWorktrees,
+	loadProjectTaskRetentionDays,
 	loadProjectVars,
 	projectWorkspaceDir,
 	resolveDefinition,
@@ -206,6 +207,59 @@ describe("loadProjectVars", () => {
 			"ticket: JUS-1\ndefault_model: opus\n",
 		);
 		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+	});
+
+	it("skips the reserved task_retention_days key instead of exposing it as a var", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"ticket: JUS-1\ntask_retention_days: 15\n",
+		);
+		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+	});
+});
+
+describe("loadProjectTaskRetentionDays", () => {
+	it("reads a positive-integer task_retention_days from vars.yaml", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"task_retention_days: 15\ngithub_id: noootown\n",
+		);
+		expect(loadProjectTaskRetentionDays(dir, 7)).toBe(15);
+	});
+
+	it("falls back to the default for absent file or absent key", () => {
+		const absent = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
+		expect(loadProjectTaskRetentionDays(absent, 7)).toBe(7);
+
+		const noKey = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		expect(loadProjectTaskRetentionDays(noKey, 7)).toBe(7);
+	});
+
+	it("falls back to the default for zero, negative, non-integer, or non-numeric values", () => {
+		const zero = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
+		writeFileSync(join(zero, "vars.yaml"), "task_retention_days: 0\n");
+		expect(loadProjectTaskRetentionDays(zero, 7)).toBe(7);
+
+		const negative = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
+		writeFileSync(join(negative, "vars.yaml"), "task_retention_days: -3\n");
+		expect(loadProjectTaskRetentionDays(negative, 7)).toBe(7);
+
+		const fractional = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
+		writeFileSync(join(fractional, "vars.yaml"), "task_retention_days: 7.5\n");
+		expect(loadProjectTaskRetentionDays(fractional, 7)).toBe(7);
+
+		const str = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
+		writeFileSync(join(str, "vars.yaml"), "task_retention_days: '15'\n");
+		expect(loadProjectTaskRetentionDays(str, 7)).toBe(7);
+	});
+
+	it("returns the given fallback verbatim, not a hardcoded 7", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
+		writeFileSync(join(dir, "vars.yaml"), "ticket: JUS-1\n");
+		expect(loadProjectTaskRetentionDays(dir, 30)).toBe(30);
 	});
 });
 

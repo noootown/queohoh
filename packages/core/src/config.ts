@@ -141,6 +141,7 @@ export function loadProjectVars(projectDir: string): Record<string, string> {
 		if (key === "default_model") continue; // reserved: read by loadProjectDefaultModel
 		if (key === "protected_worktrees") continue; // reserved: read by loadProjectProtectedWorktrees
 		if (key === "default_branch") continue; // reserved: read by loadProjectDefaultBranch
+		if (key === "task_retention_days") continue; // reserved: read by loadProjectTaskRetentionDays
 		if (value !== null && typeof value === "object") {
 			throw new Error(`non-scalar var: ${key}`);
 		}
@@ -221,6 +222,42 @@ export function loadProjectDefaultBranch(projectDir: string): string {
 		return "main";
 	const value = (raw as Record<string, unknown>).default_branch;
 	return typeof value === "string" && value.length > 0 ? value : "main";
+}
+
+/** vars.yaml paths whose `task_retention_days` we've already warned about, so the
+ * per-tick engine sweep logs a bad value once rather than every pass. Keyed by
+ * `${path}:${rawValue}` so a corrected value re-arms the warning. */
+const warnedRetentionValues = new Set<string>();
+
+/** The project's optional `task_retention_days` from vars.yaml — how many days a
+ * finished (`done`/`cancelled`) task stays visible in the queue before the engine
+ * auto-archives it. Returns `fallback` (the workspace-level `archive_after_days`)
+ * when the file/key is absent, or when the value is not a positive integer (a
+ * non-numeric, zero, negative, or fractional value logs once, then falls back).
+ * Tolerant like the other loaders: a bad value only reverts to the default, never
+ * wedges config loading or the archive sweep. */
+export function loadProjectTaskRetentionDays(
+	projectDir: string,
+	fallback: number,
+): number {
+	const path = join(projectDir, "vars.yaml");
+	if (!existsSync(path)) return fallback;
+	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+		return fallback;
+	const value = (raw as Record<string, unknown>).task_retention_days;
+	if (value === undefined) return fallback;
+	if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+		const warnKey = `${path}:${String(value)}`;
+		if (!warnedRetentionValues.has(warnKey)) {
+			warnedRetentionValues.add(warnKey);
+			console.warn(
+				`vars.yaml task_retention_days: not a positive integer (${String(value)}), using ${fallback}`,
+			);
+		}
+		return fallback;
+	}
+	return value;
 }
 
 export function loadProjectProtectedWorktrees(projectDir: string): string[] {

@@ -29,6 +29,7 @@ import {
 	loadProjectDefaultModel,
 	loadProjectModels,
 	loadProjectProtectedWorktrees,
+	loadProjectTaskRetentionDays,
 	loadProjectVars,
 	parseCron,
 	projectWorkspaceDir,
@@ -472,11 +473,27 @@ export class Engine {
 		// Auto-archive old terminal tasks. `cancelled` is archived like `done`
 		// because it's a deliberate, resolved outcome; `failed`/`skipped` are left
 		// visible (they usually want attention or explain a stalled chain).
-		const cutoff = Date.now() - deps.config.archiveAfterDays * 86_400_000;
+		// Retention is per-project: the project's `task_retention_days` (vars.yaml)
+		// overrides the workspace `archive_after_days` default. Projects the store
+		// knows but config/vars don't (removed projects, bad values) fall back to
+		// that default. Cutoffs are memoized per repo for this sweep.
+		const now = this.deps.now?.() ?? Date.now();
+		const cutoffByRepo = new Map<string, number>();
+		const cutoffFor = (repo: string): number => {
+			const cached = cutoffByRepo.get(repo);
+			if (cached !== undefined) return cached;
+			const days = loadProjectTaskRetentionDays(
+				projectWorkspaceDir(deps.config, repo),
+				deps.config.archiveAfterDays,
+			);
+			const cutoff = now - days * 86_400_000;
+			cutoffByRepo.set(repo, cutoff);
+			return cutoff;
+		};
 		for (const t of deps.store.list()) {
 			if (
 				(t.status === "done" || t.status === "cancelled") &&
-				Date.parse(t.created) < cutoff
+				Date.parse(t.created) < cutoffFor(t.target.repo)
 			) {
 				deps.store.archive(t.id);
 			}

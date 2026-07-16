@@ -397,6 +397,99 @@ describe("Engine.tick", () => {
 		expect(store.list()).toEqual([]);
 		expect(store.listArchived().map((a) => a.id)).toEqual([t.id]);
 	});
+
+	it("applies per-project task_retention_days over the archive_after_days default", async () => {
+		const base = mkdtempSync(join(tmpdir(), "qo-engine-trd-"));
+		const repoPath = join(base, "repo");
+		mkdirSync(repoPath, { recursive: true });
+		// platform keeps tasks 15 days; knowledgebase only 3; other has no
+		// vars.yaml so it falls back to the archive_after_days default (7).
+		for (const [name, days] of [
+			["platform", 15],
+			["knowledgebase", 3],
+		] as const) {
+			const wsProject = join(base, "ws", name);
+			mkdirSync(wsProject, { recursive: true });
+			writeFileSync(
+				join(wsProject, "vars.yaml"),
+				`task_retention_days: ${days}\n`,
+			);
+		}
+		const store = new QueueStore(join(base, "state"));
+		const runStore = new RunStore(join(base, "runs"));
+		const registry = new SessionRegistry(join(base, "sessions.json"));
+		const config: GlobalConfig = {
+			workspace: join(base, "ws"),
+			projects: [
+				{ name: "platform", path: repoPath },
+				{ name: "knowledgebase", path: repoPath },
+				{ name: "other", path: repoPath },
+			],
+			maxConcurrentTasks: 3,
+			archiveAfterDays: 7,
+			vars: {},
+			models: {},
+		};
+		const lineage = new SessionLineageStore(join(base, "session-lineage.json"));
+		const engine = new Engine({
+			store,
+			runStore,
+			registry,
+			config,
+			resolverIO: {
+				listWorktrees: async () => [],
+				prBranch: async () => null,
+				spawnWorktree: async (_r, name) => ({
+					name,
+					path: join(base, `wt-${name}`),
+					branch: name,
+				}),
+				removeWorktree: async () => {},
+			},
+			exec: async () => ({ stdout: "", exitCode: 0 }),
+			executeClaude: async () => okResult,
+			executeVerify: async () => ({
+				exitCode: 0,
+				timedOut: false,
+				signal: null,
+				output: "",
+			}),
+			redact: makeRedactor(new Map()),
+			lineage,
+		});
+
+		const day = 86_400_000;
+		const ageDays = (n: number) => new Date(Date.now() - n * day).toISOString();
+		// One done task per project at 10 days and one at 2 days.
+		const made: { id: string; repo: string; age: number }[] = [];
+		for (const repo of ["platform", "knowledgebase", "other"]) {
+			for (const age of [10, 2]) {
+				const t = store.create({
+					prompt: "p",
+					repo,
+					ref: "temp",
+					source: "tui",
+				});
+				store.update(t.id, { status: "done", created: ageDays(age) });
+				made.push({ id: t.id, repo, age });
+			}
+		}
+
+		await engine.tick();
+
+		const survived = new Set(store.list().map((t) => t.id));
+		// At 10 days: platform (15) survives; knowledgebase (3) and other (7) pruned.
+		// At 2 days: everyone survives.
+		for (const { id, repo, age } of made) {
+			const shouldSurvive =
+				age === 2 ||
+				(repo === "platform" && age === 10); // 10 < 15 only for platform
+			expect(
+				survived.has(id),
+				`${repo} @ ${age}d should ${shouldSurvive ? "survive" : "be archived"}`,
+			).toBe(shouldSurvive);
+		}
+	});
 });
 
 describe("adoptionDecision", () => {
