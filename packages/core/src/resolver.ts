@@ -38,6 +38,19 @@ export interface WorktreeInfo {
 	 * unknown / no open PR / gh unavailable. Paired with prNumber so the TUI can
 	 * open the PR in a browser on a click. */
 	prUrl?: string | null;
+	/** Display name of the PR's author (its `author.name`, falling back to
+	 * `author.login`) — the person who OPENED the PR, which for a squash-merged
+	 * branch differs from the local HEAD author (an automation merge commit).
+	 * null/absent = unknown / no PR / gh unavailable. The TUI shows this in the
+	 * Author column in preference to lastCommitAuthor. Covers both the open and
+	 * the recently-merged PR lists (see engine ghPrMap). */
+	prAuthor?: string | null;
+	/** The PR's state from `gh` — `"OPEN"` or `"MERGED"` (queohoh fetches both
+	 * lists). null/absent = unknown / no PR / gh unavailable. Folded into
+	 * `merged` on the daemon (a `"MERGED"` state marks the branch merged even
+	 * when local ancestry says otherwise, e.g. a squash merge), so the TUI reads
+	 * it only as supplementary detail. */
+	prState?: string | null;
 	/** True when queohoh must never delete this worktree — the project's main
 	 * checkout (path-equality) or a name in the project's `protected_worktrees`.
 	 * Computed by the daemon and carried to the TUI. Absent/undefined = not

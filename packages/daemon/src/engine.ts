@@ -60,6 +60,28 @@ export function adoptionDecision(
 	return "orphan";
 }
 
+/**
+ * Combine the local merged-back verdict with a PR's state into the `merged`
+ * fact the TUI's `↣` marker reads. Pure so it can be unit-tested away from the
+ * git/gh machinery.
+ * - `localMerged` — HEAD-is-ancestor-of-default result (`true`/`false`/`null`
+ *   unknown). A squash-merged branch reads `false` here (its commits never land
+ *   on the default branch verbatim).
+ * - `prState` — the matched PR's state (`"MERGED"`/`"OPEN"`/`null` no PR).
+ *
+ * `true` when EITHER signal says merged (this is what covers squash merges).
+ * `null` only when BOTH are unknown; any other concrete signal reads `false`
+ * (local `false`, or an `"OPEN"` PR — definitively not merged).
+ */
+export function foldMerged(
+	localMerged: boolean | null,
+	prState: string | null,
+): boolean | null {
+	if (localMerged === true || prState === "MERGED") return true;
+	if (localMerged === null && prState === null) return null;
+	return false;
+}
+
 /** Default liveness probe: `kill(pid, 0)` throws iff the pid is dead/unowned. */
 function defaultPidAlive(pid: number): boolean {
 	try {
@@ -103,12 +125,39 @@ interface GitEnrichment {
 	 * unknown / no open PR / gh unavailable / gh omitted the field. Paired with
 	 * prNumber so the TUI can open the PR on a click. */
 	prUrl: string | null;
+	/** Display name of the PR's author — its `author.name`, falling back to
+	 * `author.login`, null when both are empty / there is no PR. This is who
+	 * OPENED the PR; for a squash-merged branch the local HEAD author is instead
+	 * an automation merge commit, so the TUI prefers this in the Author column.
+	 * Sourced from whichever of the two PR lists (open / merged) matched. */
+	prAuthor: string | null;
+	/** The matched PR's state: `"OPEN"` or `"MERGED"` (gh's `state` field). null
+	 * when there is no PR / gh unavailable. Folded into `merged` below (a
+	 * `"MERGED"` state supplements local ancestry, covering squash merges); kept
+	 * on the wire as explicit supplementary detail. */
+	prState: string | null;
 }
 
 /** The git-commit subset of GitEnrichment — everything computeGitEnrichment
- * derives from a single worktree path. prNumber/prUrl are layered on separately
- * (they're per-repo facts, fetched once per sweep, not per worktree). */
-type GitCommitFacts = Omit<GitEnrichment, "prNumber" | "prUrl">;
+ * derives from a single worktree path. The PR facts (prNumber/prUrl/prAuthor/
+ * prState) are layered on separately: they're per-repo facts, fetched once per
+ * sweep from `gh`, not per worktree. */
+type GitCommitFacts = Omit<
+	GitEnrichment,
+	"prNumber" | "prUrl" | "prAuthor" | "prState"
+>;
+
+/** One repo's PR facts, keyed by head branch: the number/url/state plus the
+ * author's name and login (either may be empty on the wire → treated as null
+ * when composing `prAuthor`). Populated from both the open and the recently
+ * merged `gh pr list` calls (see ghPrMap). */
+interface PrFacts {
+	number: number;
+	url: string | null;
+	state: string | null;
+	authorName: string | null;
+	authorLogin: string | null;
+}
 
 /** Serve last-known enrichment for a worktree this long before re-shelling git.
  * 10s keeps the dirty marker near-live (user request; was 60s) — the sweep is
@@ -621,15 +670,12 @@ export class Engine {
 		let changed = false;
 		const live = new Set<string>();
 		for (const [repo, list] of this.worktreeCache) {
-			// Branch→PR-{number,url} map for this repo, fetched at most ONCE per
-			// sweep and only when at least one worktree here is actually being
-			// refreshed (all within TTL → no gh call at all). Lazy so a repo served
-			// entirely from cache costs nothing. `undefined` = not yet fetched this
-			// sweep.
-			let prMap:
-				| Map<string, { number: number; url: string | null }>
-				| null
-				| undefined;
+			// Branch→PR-facts map for this repo, fetched at most ONCE per sweep
+			// (two gh calls — open + merged) and only when at least one worktree
+			// here is actually being refreshed (all within TTL → no gh call at
+			// all). Lazy so a repo served entirely from cache costs nothing.
+			// `undefined` = not yet fetched this sweep.
+			let prMap: Map<string, PrFacts> | null | undefined;
 			const repoPath = this.repoPath(repo);
 			// The branch the merged-back marker compares against — one vars.yaml
 			// read per repo per sweep (same cadence as the protected-names read
@@ -655,7 +701,24 @@ export class Engine {
 				const pr = prMap?.get(wt.branch) ?? null;
 				const prNumber = pr?.number ?? null;
 				const prUrl = pr?.url ?? null;
-				const e: GitEnrichment = { ...facts, prNumber, prUrl };
+				const prState = pr?.state ?? null;
+				// PR author display: name preferred, else login, else null.
+				const prAuthor = pr ? (pr.authorName ?? pr.authorLogin ?? null) : null;
+				// Fold the PR state into the local ancestry verdict: a squash-merged
+				// branch reads NOT an ancestor of the default branch (its commits
+				// aren't on it), so local `merged` is false there — but a `"MERGED"`
+				// PR state proves it landed. `merged` stays null only when BOTH
+				// signals are unknown; any concrete signal that isn't "merged"
+				// (local false, or an OPEN PR) reads as not merged.
+				const merged = foldMerged(facts.merged, prState);
+				const e: GitEnrichment = {
+					...facts,
+					merged,
+					prNumber,
+					prUrl,
+					prAuthor,
+					prState,
+				};
 				this.gitEnrichFetchedAt.set(wt.path, Date.now());
 				const prev = this.gitEnrichCache.get(wt.path);
 				if (
@@ -667,7 +730,9 @@ export class Engine {
 					prev.lastCommitAuthorEmail !== e.lastCommitAuthorEmail ||
 					prev.lastCommitHash !== e.lastCommitHash ||
 					prev.prNumber !== e.prNumber ||
-					prev.prUrl !== e.prUrl
+					prev.prUrl !== e.prUrl ||
+					prev.prAuthor !== e.prAuthor ||
+					prev.prState !== e.prState
 				) {
 					changed = true;
 				}
@@ -711,8 +776,11 @@ export class Engine {
 	 * branch — i.e. its committed work has been merged back. null on the
 	 * default-branch checkout itself (trivially its own ancestor — the marker
 	 * would be permanent noise there), on a missing default branch, or on any
-	 * git failure. NOTE: an ancestry check — a squash-merged branch reads as
-	 * NOT merged, because its commits genuinely aren't on the default branch. */
+	 * git failure. NOTE: this is only an ancestry check — a squash-merged branch
+	 * reads as NOT merged here, because its commits genuinely aren't on the
+	 * default branch. `runGitEnrichment` supplements this verdict with the PR's
+	 * state (a `"MERGED"` PR folds `merged` true; see `foldMerged`), which is
+	 * what covers the squash-merge case. */
 	private async gitMerged(
 		path: string,
 		branch: string,
@@ -790,16 +858,49 @@ export class Engine {
 	}
 
 	/**
-	 * Open PRs for a repo as a branch→{number,url} map, via ONE `gh pr list` call
-	 * at the repo root. Any failure — gh missing, unauthenticated, non-zero exit,
-	 * unparseable JSON — is treated as "no data" and returns null (never throws).
-	 * A row with a non-string `url` keeps its number but stamps url null (gh
-	 * always sends it, so this only guards a malformed/forward-compat payload).
-	 * Logged at most once per call at debug so a gh-less machine doesn't spam.
+	 * PRs for a repo as a branch→facts map, via TWO `gh pr list` calls at the
+	 * repo root: the OPEN PRs, and the recently MERGED ones (limit 100). Two
+	 * calls rather than one `--state all` so an old open PR beyond a merged
+	 * window is never lost, and — because merges keep the daemon's PR knowledge
+	 * alive after a PR drops out of the open list — a squash-merged branch still
+	 * carries its true state + author (the fix for the wrong-author / no-`↣`
+	 * bug). On a branch-name collision (a reused branch with a fresh open PR) the
+	 * OPEN PR wins: it is overlaid onto the merged base LAST.
+	 *
+	 * Each call fails independently — one call's failure (gh missing,
+	 * unauthenticated, non-zero exit, unparseable JSON) never discards the
+	 * other's rows; only when BOTH yield no data does the whole map return null.
 	 */
 	private async ghPrMap(
 		repoPath: string,
-	): Promise<Map<string, { number: number; url: string | null }> | null> {
+	): Promise<Map<string, PrFacts> | null> {
+		const [open, merged] = await Promise.all([
+			this.ghPrList(repoPath, "open", 200),
+			this.ghPrList(repoPath, "merged", 100),
+		]);
+		if (open === null && merged === null) return null;
+		const map = new Map<string, PrFacts>();
+		// Merged first as the base, then open overlaid so the OPEN PR wins a
+		// branch-name collision (an entry present in both lists).
+		for (const [branch, fact] of merged ?? []) map.set(branch, fact);
+		for (const [branch, fact] of open ?? []) map.set(branch, fact);
+		return map;
+	}
+
+	/**
+	 * One `gh pr list --state <state>` call as a branch→facts map, or null on any
+	 * failure (gh missing, unauthenticated, non-zero exit, unparseable JSON) —
+	 * never throws. A row with a non-string `url` keeps its number but stamps url
+	 * null (gh always sends it; this only guards a malformed/forward-compat
+	 * payload). `author` is `{name, login}` — either may be empty; both are
+	 * carried so the caller composes `prAuthor` as name-else-login. Logged at
+	 * most once per call at debug so a gh-less machine doesn't spam.
+	 */
+	private async ghPrList(
+		repoPath: string,
+		state: "open" | "merged",
+		limit: number,
+	): Promise<Map<string, PrFacts> | null> {
 		try {
 			const { stdout, exitCode } = await this.deps.exec(
 				"gh",
@@ -807,38 +908,61 @@ export class Engine {
 					"pr",
 					"list",
 					"--state",
-					"open",
+					state,
 					"--json",
-					"number,headRefName,url",
+					"number,headRefName,url,state,author",
 					"--limit",
-					"200",
+					String(limit),
 				],
 				{ cwd: repoPath },
 			);
 			if (exitCode !== 0) {
-				console.debug?.("gh pr list: non-zero exit; skipping PR enrichment");
+				console.debug?.(
+					`gh pr list --state ${state}: non-zero exit; skipping PR enrichment`,
+				);
 				return null;
 			}
 			const rows: unknown = JSON.parse(stdout);
 			if (!Array.isArray(rows)) return null;
-			const map = new Map<string, { number: number; url: string | null }>();
+			const map = new Map<string, PrFacts>();
 			for (const row of rows) {
 				if (row === null || typeof row !== "object") continue;
-				const { headRefName, number, url } = row as {
+				const {
+					headRefName,
+					number,
+					url,
+					state: prState,
+					author,
+				} = row as {
 					headRefName?: unknown;
 					number?: unknown;
 					url?: unknown;
+					state?: unknown;
+					author?: unknown;
 				};
-				if (typeof headRefName === "string" && typeof number === "number") {
-					map.set(headRefName, {
-						number,
-						url: typeof url === "string" ? url : null,
-					});
+				if (typeof headRefName !== "string" || typeof number !== "number") {
+					continue;
 				}
+				// author is `{name, login}`; an empty string reads as null so the
+				// caller can fall back name → login → null.
+				const a = (author ?? {}) as { name?: unknown; login?: unknown };
+				const authorName =
+					typeof a.name === "string" && a.name.length > 0 ? a.name : null;
+				const authorLogin =
+					typeof a.login === "string" && a.login.length > 0 ? a.login : null;
+				map.set(headRefName, {
+					number,
+					url: typeof url === "string" ? url : null,
+					state: typeof prState === "string" ? prState : null,
+					authorName,
+					authorLogin,
+				});
 			}
 			return map;
 		} catch {
-			console.debug?.("gh pr list: unavailable; skipping PR enrichment");
+			console.debug?.(
+				`gh pr list --state ${state}: unavailable; skipping PR enrichment`,
+			);
 			return null;
 		}
 	}

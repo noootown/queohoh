@@ -170,6 +170,13 @@ pub struct WorktreeInfo {
     /// `pr_number` so the `#<n>` chip in the detail info tab and the WORKTREES
     /// PR column open the PR in a browser on a click.
     pub pr_url: Option<String>,
+    /// PR author display name (the daemon's `prAuthor`: the PR's `author.name`,
+    /// falling back to `author.login`). This is who OPENED the PR — for a
+    /// squash-merged branch the local `last_commit_author` is instead an
+    /// automation merge commit, so the Author column prefers this field (see
+    /// `wt_author_text`). `None`/null when there is no PR, `gh` is unavailable,
+    /// or on an old daemon that predates the field (via the container `default`).
+    pub pr_author: Option<String>,
     /// True when queohoh must never delete this worktree (the project's main
     /// checkout or a name in the project's `protected_worktrees`). Absent on an
     /// old daemon → `false` via the container `default` (removable affordance;
@@ -505,6 +512,27 @@ mod tests {
         assert_eq!(wt.dirty, None);
         assert_eq!(wt.last_commit_epoch, None);
         assert_eq!(wt.last_commit_author, None);
+    }
+
+    #[test]
+    fn worktree_pr_author_present_parses_and_absent_defaults_none() {
+        // A modern daemon sends camelCase `prAuthor` (the PR author display name,
+        // which for a squash-merged branch differs from lastCommitAuthor)...
+        let with: WorktreeInfo = serde_json::from_str(
+            r#"{"name":"a","path":"/a","branch":"a","lastCommitAuthor":"Ian Chiu",
+                "prAuthor":"Tim Kuminecz"}"#,
+        )
+        .unwrap();
+        assert_eq!(with.pr_author.as_deref(), Some("Tim Kuminecz"));
+        assert_eq!(with.last_commit_author.as_deref(), Some("Ian Chiu"));
+        // ...and an old daemon that omits it defaults to None (container `default`),
+        // leaving lastCommitAuthor intact.
+        let without: WorktreeInfo = serde_json::from_str(
+            r#"{"name":"a","path":"/a","branch":"a","lastCommitAuthor":"Ian Chiu"}"#,
+        )
+        .unwrap();
+        assert_eq!(without.pr_author, None);
+        assert_eq!(without.last_commit_author.as_deref(), Some("Ian Chiu"));
     }
 
     #[test]

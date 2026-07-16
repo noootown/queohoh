@@ -80,6 +80,11 @@ pub struct WorktreeRow {
     pub last_commit_epoch: Option<u64>,
     pub last_commit_author: Option<String>,
     pub last_commit_author_email: Option<String>,
+    /// PR author display name from the daemon (its `prAuthor`) — who OPENED the
+    /// PR. Wins over `last_commit_author` in the Author column (`wt_author_text`)
+    /// because a squash-merged branch's local HEAD author is an automation merge
+    /// commit, not the PR author. `None` on an old daemon or when there is no PR.
+    pub pr_author: Option<String>,
     /// short hash + open PR number passthrough from the daemon (all `None` on an
     /// old daemon); surfaced in the worktree detail info tab.
     pub last_commit_hash: Option<String>,
@@ -596,6 +601,7 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 last_commit_hash: wt.last_commit_hash.clone(),
                 pr_number: wt.pr_number,
                 pr_url: wt.pr_url.clone(),
+                pr_author: wt.pr_author.clone(),
                 protected: wt.protected,
             }
         })
@@ -1417,11 +1423,14 @@ pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout 
     DefColLayout { name_w, desc_w, model_w, sched_w, marker_w }
 }
 
-/// The last-commit author cell text, or None when the daemon didn't supply it
-/// (an old daemon, or a worktree whose `git log` failed) — the whole column is
-/// then omitted pane-wide.
+/// The Author cell text: the PR author (`pr_author`) when known, else the
+/// last-commit author. `pr_author` wins because a squash-merged branch's local
+/// HEAD is often an automation merge commit whose author isn't the PR author —
+/// the PR author is the meaningful attribution. None when neither is supplied
+/// (an old daemon, no PR, or a worktree whose `git log` failed) — the whole
+/// column is then omitted pane-wide.
 pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
-    row.last_commit_author.clone()
+    row.pr_author.clone().or_else(|| row.last_commit_author.clone())
 }
 
 /// Resolved per-frame column widths for the WORKTREES pane. A width of `0` means
@@ -3282,6 +3291,31 @@ mod tests {
         assert!(cw(&wt_author_text(&author_row).unwrap()) <= AUTHOR_W);
         // Absolute timestamp.
         assert!(cw(&absolute_local_label(now(), 0)) <= TIMESTAMP_W);
+    }
+
+    #[test]
+    fn wt_author_text_prefers_pr_author_over_last_commit_author() {
+        // The PR author is the person who opened the PR; the local last-commit
+        // author on a squash-merged branch is an automation merge commit
+        // ("Ian Chiu"), so `pr_author` must win the Author column.
+        let both = WorktreeRow {
+            last_commit_author: Some("Ian Chiu".into()),
+            pr_author: Some("Tim Kuminecz".into()),
+            ..Default::default()
+        };
+        assert_eq!(wt_author_text(&both).as_deref(), Some("Tim Kuminecz"));
+
+        // No PR author (old daemon / no PR) → fall back to the last-commit author.
+        let only_commit = WorktreeRow {
+            last_commit_author: Some("Ian Chiu".into()),
+            pr_author: None,
+            ..Default::default()
+        };
+        assert_eq!(wt_author_text(&only_commit).as_deref(), Some("Ian Chiu"));
+
+        // Neither present → None (the whole Author column is omitted pane-wide).
+        let neither = WorktreeRow::default();
+        assert_eq!(wt_author_text(&neither), None);
     }
 
     #[test]

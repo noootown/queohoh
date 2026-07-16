@@ -553,6 +553,8 @@ describe("Engine.worktreesByRepo", () => {
 					lastCommitHash: null,
 					prNumber: null,
 					prUrl: null,
+					prAuthor: null,
+					prState: null,
 					protected: false,
 				},
 			],
@@ -651,8 +653,18 @@ describe("Engine git enrichment", () => {
 		onCall?: (sub: string) => void,
 	): Exec {
 		return async (command, args) => {
-			// git: args = ["-C", path, <subcommand>, ...rest]; gh: command === "gh".
-			const key = command === "gh" ? "gh" : (args[2] ?? "");
+			// git: args = ["-C", path, <subcommand>, ...rest]. gh is routed by its
+			// `--state <state>` flag so the OPEN and MERGED `gh pr list` calls can be
+			// stubbed independently ("gh:open" / "gh:merged"); a plain "gh" handler
+			// still catches both (the existing single-call tests keep working).
+			let key: string;
+			if (command === "gh") {
+				const stateIdx = args.indexOf("--state");
+				const state = stateIdx >= 0 ? (args[stateIdx + 1] ?? "") : "";
+				key = handlers[`gh:${state}`] ? `gh:${state}` : "gh";
+			} else {
+				key = args[2] ?? "";
+			}
 			onCall?.(key);
 			const h = handlers[key];
 			return h ? h() : { stdout: "", exitCode: 0 };
@@ -853,6 +865,135 @@ describe("Engine git enrichment", () => {
 		});
 	});
 
+	it("folds merged=true and stamps prAuthor/prState from a squash-merged PR the open list omits", async () => {
+		// The core bug: a squash-merged branch reads NOT merged by local ancestry
+		// (merge-base exit 1), and its local HEAD author is an automation merge
+		// commit — but the merged-PR list still carries the true state + author.
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }), // local: NOT an ancestor
+			"gh:open": () => ({ stdout: "[]", exitCode: 0 }),
+			"gh:merged": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 55,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/55",
+						state: "MERGED",
+						author: { name: "Tim Kuminecz", login: "tkuminecz" },
+					},
+				]),
+				exitCode: 0,
+			}),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			// Local ancestry said false, but the PR state supplements it → true.
+			merged: true,
+			prNumber: 55,
+			prUrl: "https://github.com/o/r/pull/55",
+			prState: "MERGED",
+			// prAuthor is the PR author (Tim), NOT the local merge-commit author (Ian).
+			prAuthor: "Tim Kuminecz",
+		});
+	});
+
+	it("prefers the OPEN PR on a branch-name collision (open wins over merged)", async () => {
+		// A reused branch name can appear in BOTH lists; the currently-open PR is
+		// the live one, so it wins the number/url/author/state.
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }),
+			"gh:open": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 10,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/10",
+						state: "OPEN",
+						author: { name: "Ian Chiu", login: "noootown" },
+					},
+				]),
+				exitCode: 0,
+			}),
+			"gh:merged": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 9,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/9",
+						state: "MERGED",
+						author: { name: "Tim Kuminecz", login: "tkuminecz" },
+					},
+				]),
+				exitCode: 0,
+			}),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			prNumber: 10,
+			prUrl: "https://github.com/o/r/pull/10",
+			prState: "OPEN",
+			prAuthor: "Ian Chiu",
+			// Open PR + local-not-ancestor → not merged (the OPEN state does not fold true).
+			merged: false,
+		});
+	});
+
+	it("falls back to the PR author login when the author name is empty", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }),
+			"gh:merged": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 7,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/7",
+						state: "MERGED",
+						author: { name: "", login: "octocat" },
+					},
+				]),
+				exitCode: 0,
+			}),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			prAuthor: "octocat",
+			prState: "MERGED",
+		});
+	});
+
+	it("leaves prAuthor/prState null when no PR (open or merged) matches the branch", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }),
+			"gh:open": () => ({ stdout: "[]", exitCode: 0 }),
+			"gh:merged": () => ({
+				stdout: JSON.stringify([
+					{ number: 3, headRefName: "some-other", state: "MERGED" },
+				]),
+				exitCode: 0,
+			}),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			prAuthor: null,
+			prState: null,
+			prNumber: null,
+			// No PR data for this branch; the merged marker is the local verdict (false).
+			merged: false,
+		});
+	});
+
 	it("treats a missing gh binary as no data (prNumber null, no throw)", async () => {
 		const exec = gitExec({
 			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
@@ -883,7 +1024,7 @@ describe("Engine git enrichment", () => {
 		});
 	});
 
-	it("shells gh at most once per repo per sweep, not once per worktree", async () => {
+	it("shells gh at most twice (open + merged) per repo per sweep, not once per worktree", async () => {
 		const counts: Record<string, number> = {};
 		const exec = gitExec(
 			{
@@ -914,8 +1055,9 @@ describe("Engine git enrichment", () => {
 		});
 		await engine.tick();
 		await engine.refreshGitEnrichment();
-		// Two worktrees, one repo → exactly one gh call; git log ran per worktree.
-		expect(counts.gh).toBe(1);
+		// Two worktrees, one repo → exactly two gh calls (one open list + one
+		// merged list per repo, NOT per worktree); git log ran per worktree.
+		expect(counts.gh).toBe(2);
 		expect(counts.log).toBe(2);
 		// The matching branch got the PR; the other stayed null.
 		const list = engine.worktreesByRepo().platform ?? [];
