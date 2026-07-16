@@ -91,6 +91,9 @@ const TaskMetaSchema = z
 		// → []). Fallback-chain machinery appends to this as it walks provider
 		// candidates so a re-run doesn't retry a provider that already failed.
 		attempted_providers: z.array(z.string()).default([]),
+		// Scheduler-lane override stamped from the definition's `lane:` at create
+		// time (additive; absent on legacy files → null). See laneKey below.
+		lane: z.string().nullable().default(null),
 	})
 	.strict();
 
@@ -142,6 +145,10 @@ export interface TaskInstance {
 	 * fallback-chain machinery appends to this as it walks provider candidates
 	 * so a re-run doesn't retry a provider that already failed. */
 	attemptedProviders: string[];
+	/** Scheduler-lane override stamped from the definition; null = default
+	 * per-worktree lane. Optional so pre-lane callers and test literals need
+	 * not set it. */
+	lane?: string | null;
 }
 
 export function parseTaskFile(content: string): TaskInstance {
@@ -173,6 +180,7 @@ export function parseTaskFile(content: string): TaskInstance {
 		verifyExitCode: m.verify_exit_code,
 		verifyOutput: m.verify_output,
 		attemptedProviders: m.attempted_providers,
+		lane: m.lane,
 	};
 }
 
@@ -202,11 +210,18 @@ export function serializeTaskFile(task: TaskInstance): string {
 		verify_exit_code: task.verifyExitCode ?? null,
 		verify_output: task.verifyOutput ?? null,
 		attempted_providers: task.attemptedProviders ?? [],
+		lane: task.lane ?? null,
 	};
 	return stringifyFrontmatter(meta, task.prompt);
 }
 
 export function laneKey(task: TaskInstance): string | null {
+	// Unresolved worktree → null lane, ALWAYS: the scheduler routes null-lane
+	// tasks to worktree resolution, and a lane override must not skip that.
 	if (task.target.worktree === null) return null;
+	// Definition-level override: every instance of the definition shares one
+	// lane, serializing runs across different worktrees (e.g. autotest, whose
+	// stack always binds testing1's ports).
+	if (task.lane) return `${task.target.repo}:${task.lane}`;
 	return `${task.target.repo}:${task.target.worktree}`;
 }

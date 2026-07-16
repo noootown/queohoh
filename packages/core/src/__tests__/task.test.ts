@@ -28,6 +28,7 @@ const sample: TaskInstance = {
 	verifyExitCode: null,
 	verifyOutput: null,
 	attemptedProviders: [],
+	lane: null,
 };
 
 describe("task file", () => {
@@ -263,5 +264,39 @@ describe("laneKey", () => {
 				target: { ...sample.target, worktree: "JUS-1423" },
 			}),
 		).toBe("platform:JUS-1423");
+	});
+});
+
+// Fresh TaskInstance literal for tests below that mutate `.target` in place;
+// mirrors the `sample` fixture above (and the `task()` helper at the top of
+// scheduler.test.ts) so callers get an independent object per invocation.
+function baseTask(): TaskInstance {
+	return { ...sample };
+}
+
+describe("lane override", () => {
+	it("round-trips lane through serialize/parse, defaulting null", () => {
+		const t = parseTaskFile(
+			serializeTaskFile({
+				...parseTaskFile(serializeTaskFile(baseTask())),
+				lane: "testing1-stack",
+			}),
+		);
+		expect(t.lane).toBe("testing1-stack");
+		expect(parseTaskFile(serializeTaskFile(baseTask())).lane).toBeNull();
+	});
+
+	it("laneKey uses the override only after the worktree resolves", () => {
+		const unresolved = { ...baseTask(), lane: "testing1-stack" };
+		unresolved.target = { ...unresolved.target, worktree: null };
+		expect(laneKey(unresolved)).toBeNull();
+
+		const resolved = { ...baseTask(), lane: "testing1-stack" };
+		resolved.target = { ...resolved.target, worktree: "pr-101" };
+		expect(laneKey(resolved)).toBe("platform:testing1-stack");
+
+		const plain = baseTask();
+		plain.target = { ...plain.target, worktree: "pr-101" };
+		expect(laneKey(plain)).toBe("platform:pr-101");
 	});
 });

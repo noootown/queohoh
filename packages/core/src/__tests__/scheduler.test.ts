@@ -12,6 +12,7 @@ function task(overrides: {
 	id?: string;
 	chainId?: string | null;
 	chainSeq?: number | null;
+	lane?: string | null;
 }): TaskInstance {
 	seq += 1;
 	return {
@@ -38,6 +39,7 @@ function task(overrides: {
 		prompt: "p",
 		chainId: overrides.chainId ?? null,
 		chainSeq: overrides.chainSeq ?? null,
+		lane: overrides.lane ?? null,
 		attemptedProviders: [],
 	};
 }
@@ -179,6 +181,20 @@ describe("schedule", () => {
 		const w2 = task({ repo: "alpha", worktree: "wt-2" });
 		const { start } = schedule([w1, w2], idle, { perProjectMax: 5 });
 		expect(start.map((t) => t.id).sort()).toEqual([w1.id, w2.id].sort());
+	});
+
+	it("serializes lane-override tasks across different worktrees", () => {
+		const a = task({ worktree: "pr-101", lane: "testing1-stack" });
+		const b = task({ worktree: "pr-202", lane: "testing1-stack" });
+		const d = schedule([a, b], idle, { perProjectMax: 5 });
+		expect(d.start).toEqual([a]); // b waits: same lane
+	});
+
+	it("lane-override task does not block unrelated worktree lanes", () => {
+		const a = task({ worktree: "pr-101", lane: "testing1-stack" });
+		const c = task({ worktree: "pr-101" }); // same worktree, default lane
+		const d = schedule([a, c], idle, { perProjectMax: 5 });
+		expect(d.start).toEqual([a, c]); // different lane keys → both start
 	});
 });
 

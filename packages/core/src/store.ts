@@ -112,6 +112,7 @@ export class QueueStore {
 			verifyExitCode: null,
 			verifyOutput: null,
 			attemptedProviders: [],
+			lane: null,
 		};
 		this.write(task);
 		return task;
@@ -159,6 +160,7 @@ export class QueueStore {
 				verifyExitCode: null,
 				verifyOutput: null,
 				attemptedProviders: [],
+				lane: null,
 			};
 			this.write(task);
 			return task;
