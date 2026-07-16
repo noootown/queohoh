@@ -657,15 +657,23 @@ export class ApiServer {
 				throw new Error(`cannot skip task in status ${task.status}`);
 			}
 			case "archive": {
-				// The TUI's `[a]rchive` toggle, archive half: dismiss a TERMINAL
-				// task out of the live queue (same eligibility as `skip`'s dismiss
-				// role — hiding a queued/running/needs-input task would bury live
-				// work). Recoverable via `unarchive`.
+				// The TUI's `[a]rchive` toggle, archive half: dismiss a task out of
+				// the live queue. Only `queued`/`running` stay blocked — hiding
+				// those would bury live work. A `needs-input` task is PARKED (never
+				// started, waiting on a user action), so archiving it hides nothing
+				// live and keeps its status intact, so `unarchive` restores it as
+				// needs-input — exactly like terminal rows round-trip. Recoverable
+				// via `unarchive`.
 				const task = this.mustGet(String(params.id));
 				if (
-					!["failed", "verify-failed", "done", "skipped", "cancelled"].includes(
-						task.status,
-					)
+					![
+						"failed",
+						"verify-failed",
+						"done",
+						"skipped",
+						"cancelled",
+						"needs-input",
+					].includes(task.status)
 				) {
 					throw new Error(`cannot archive task in status ${task.status}`);
 				}

@@ -133,13 +133,32 @@ fn queue_a_on_an_archived_row_unarchives_it() {
 
 #[test]
 fn queue_a_refuses_active_rows_with_a_status_line() {
-    // Archiving live work (queued/running/needs-input) is refused locally.
+    // Archiving live work (only queued/running) is refused locally; `needs-input`
+    // is parked and archivable (see `queue_a_archives_a_needs_input_task`).
     let mut snap = failed_task_snapshot();
     snap.tasks[0].status = TaskStatus::Running;
     let mut a = app_with(snap);
     let u = a.update(key('a'));
     assert!(u.cmds.is_empty(), "no RPC for an active row");
     assert_eq!(a.status_line.as_deref(), Some("cannot archive a running task"));
+}
+
+#[test]
+fn queue_a_archives_a_needs_input_task() {
+    // A parked needs-input row is archivable: `a` fires the archive RPC directly
+    // (no status-line refusal, no confirm) — its status stays needs-input, the
+    // daemon just hides it, and `unarchive` restores it.
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].status = TaskStatus::NeedsInput;
+    let mut a = app_with(snap);
+    let u = a.update(key('a'));
+    assert!(a.status_line.is_none(), "no refusal status line: {:?}", a.status_line);
+    assert!(
+        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+            if call.method == "archive" && call.params == serde_json::json!({ "id": "t1" }))),
+        "expected an archive dispatch, got {:?}",
+        u.cmds,
+    );
 }
 
 // --- bulk archive helpers -------------------------------------------------
@@ -150,7 +169,7 @@ fn terminal_task(id: &str, status: TaskStatus) -> TaskInstance {
     t.target.repo = "platform".into();
     t
 }
-fn rpcseq_methods<'a>(cmds: &'a [Cmd], want_verb: &str) -> Vec<(String, String)> {
+fn rpcseq_methods(cmds: &[Cmd], want_verb: &str) -> Vec<(String, String)> {
     // (method, id) pairs for the single RpcSeq matching `want_verb`.
     cmds.iter()
         .find_map(|c| match c {
@@ -222,6 +241,27 @@ fn queue_a_bulk_archive_skips_active_rows() {
     let u = a.update(key('a'));
     let calls = rpcseq_methods(&u.cmds, "archived");
     assert_eq!(calls, vec![("archive".into(), "done".into())], "only the terminal row: {calls:?}");
+}
+
+#[test]
+fn queue_a_bulk_archive_includes_needs_input_rows() {
+    // Archive direction over a terminal row + a parked needs-input row: both are
+    // archivable (needs-input is not active work), so both get an archive RPC.
+    let snap = StateSnapshot {
+        tasks: vec![
+            terminal_task("done", TaskStatus::Failed),
+            terminal_task("parked", TaskStatus::NeedsInput),
+        ],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.update(shift_down()); // failed (topmost, archive direction) + needs-input
+    let u = a.update(key('a'));
+    let calls = rpcseq_methods(&u.cmds, "archived");
+    assert!(calls.iter().all(|(m, _)| m == "archive"), "all archive: {calls:?}");
+    let ids: std::collections::HashSet<&str> = calls.iter().map(|(_, id)| id.as_str()).collect();
+    assert_eq!(ids, ["done", "parked"].into_iter().collect(), "both rows archived: {calls:?}");
 }
 
 #[test]

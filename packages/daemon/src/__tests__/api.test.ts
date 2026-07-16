@@ -36,6 +36,10 @@ async function setup(opts?: {
 	worktrees?: { name: string; path: string; branch: string }[];
 	execCalls?: { command: string; args: string[] }[];
 	execExitCode?: number;
+	/** Full exec override (wins over execCalls/execExitCode). A test injects one
+	 * to route git/gh subcommands and drive worktree enrichment through the
+	 * engine into the snapshot. */
+	exec?: Exec;
 	executeClaude?: () => Promise<RunResult>;
 	vars?: Record<string, string>;
 	models?: Record<string, string>;
@@ -75,10 +79,12 @@ async function setup(opts?: {
 		stderr: "",
 		usage: { costUsd: 0, turns: 1, durationMs: 1 },
 	};
-	const exec: Exec = async (command, args) => {
-		opts?.execCalls?.push({ command, args });
-		return { stdout: "", exitCode: opts?.execExitCode ?? 0 };
-	};
+	const exec: Exec =
+		opts?.exec ??
+		(async (command, args) => {
+			opts?.execCalls?.push({ command, args });
+			return { stdout: "", exitCode: opts?.execExitCode ?? 0 };
+		});
 	const resolverIO: ResolverIO = {
 		listWorktrees: async () => opts?.worktrees ?? [],
 		prBranch: async () => null,
@@ -157,6 +163,49 @@ describe("ApiServer", () => {
 		expect(state.projects).toEqual([{ name: "platform" }]);
 		expect(state.worktrees).toEqual(engine.worktreesByRepo());
 		expect(state.maxConcurrent).toBe(3);
+	});
+
+	it("carries prAuthor/prState (camelCase) for a merged PR through the snapshot", async () => {
+		// Route the merged-PR list so the engine's enrichment stamps prAuthor —
+		// then assert it survives JSON serialization to the wire as camelCase.
+		const exec: Exec = async (command, args) => {
+			if (command === "git" && args[2] === "log") {
+				return { stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 };
+			}
+			if (command === "gh") {
+				const stateIdx = args.indexOf("--state");
+				const state = stateIdx >= 0 ? args[stateIdx + 1] : "";
+				if (state === "merged") {
+					return {
+						stdout: JSON.stringify([
+							{
+								number: 55,
+								headRefName: "wt-a",
+								url: "https://github.com/o/r/pull/55",
+								state: "MERGED",
+								author: { name: "Tim Kuminecz", login: "tkuminecz" },
+							},
+						]),
+						exitCode: 0,
+					};
+				}
+				return { stdout: "[]", exitCode: 0 };
+			}
+			return { stdout: "", exitCode: 0 };
+		};
+		const { client, engine } = await setup({
+			exec,
+			worktrees: [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }],
+		});
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		const state = (await client.call("state")) as {
+			worktrees: Record<string, { prAuthor?: string; prState?: string }[]>;
+		};
+		expect(state.worktrees.platform?.[0]).toMatchObject({
+			prAuthor: "Tim Kuminecz",
+			prState: "MERGED",
+		});
 	});
 
 	it("surfaces gotoCommand from config in the state snapshot", async () => {
@@ -912,9 +961,29 @@ describe("ApiServer", () => {
 		expect(store.get(t.id)?.status).toBe("failed");
 	});
 
-	it("archive refuses a non-terminal task (queued/running/needs-input)", async () => {
+	it("archive dismisses a needs-input task; unarchive restores it still needs-input", async () => {
+		// A needs-input task is parked (never started), so archiving it hides no
+		// live work and keeps its status intact — it round-trips exactly like a
+		// terminal row (no cancellation).
 		const { client, store } = await setup();
-		for (const status of ["queued", "running", "needs-input"] as const) {
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "needs-input", error: "not found" });
+		await client.call("archive", { id: t.id });
+		expect(store.list()).toEqual([]);
+		expect(store.listArchived().map((a) => a.id)).toEqual([t.id]);
+		await client.call("unarchive", { id: t.id });
+		expect(store.listArchived()).toEqual([]);
+		expect(store.get(t.id)?.status).toBe("needs-input");
+	});
+
+	it("archive refuses a live task (queued/running)", async () => {
+		const { client, store } = await setup();
+		for (const status of ["queued", "running"] as const) {
 			const t = store.create({
 				prompt: "p",
 				repo: "platform",

@@ -477,9 +477,10 @@ impl App {
 
     /// `a` on QUEUE (and the `[a]rchive`/`[a]unarchive` chip): archive/unarchive
     /// TOGGLE on the selected row(s). An archived row restores to the live list
-    /// (`unarchive`); a terminal live row archives out of it. Active rows
-    /// (queued/running/needs-input) refuse locally with a status line — hiding
-    /// live work is never right — while any other status goes to the daemon,
+    /// (`unarchive`); a terminal live row archives out of it. Only the ACTIVE
+    /// rows (queued/running) refuse locally with a status line — hiding live
+    /// work is never right — while any other status (including `needs-input`,
+    /// which is parked, never started, so it buries nothing) goes to the daemon,
     /// which owns the real eligibility rule (forward-compat: a status this TUI
     /// doesn't know gets the daemon's verdict, not a stale local one). No confirm
     /// dialog: the toggle is its own undo.
@@ -489,9 +490,10 @@ impl App {
     /// title-bar chip's `[a]rchive`/`[a]unarchive` label reflects: an archived
     /// first row means `unarchive` (restore every archived row in the range,
     /// skipping live ones); a live first row means `archive` (archive every
-    /// terminal row, skipping active work and already-archived rows). Rows the
-    /// direction doesn't apply to are silently dropped, matching the stop/rerun
-    /// verbs; a selection with nothing eligible sets a status line instead.
+    /// archivable row — terminal and parked `needs-input` — skipping only active
+    /// queued/running work and already-archived rows). Rows the direction
+    /// doesn't apply to are silently dropped, matching the stop/rerun verbs; a
+    /// selection with nothing eligible sets a status line instead.
     pub(super) fn archive_selected(&mut self) -> Update {
         let Some((rows, is_bulk)) = self.queue_selection_rows() else {
             return Update::default();
@@ -505,8 +507,7 @@ impl App {
         let method = if archived {
             "unarchive"
         } else {
-            if matches!(status, TaskStatus::Queued | TaskStatus::Running | TaskStatus::NeedsInput)
-            {
+            if matches!(status, TaskStatus::Queued | TaskStatus::Running) {
                 self.status_line =
                     Some(format!("cannot archive a {} task", status_kebab(status)));
                 return Update { dirty: true, cmds: vec![] };
@@ -537,8 +538,9 @@ impl App {
         let Some(&(_, _, first_archived)) = rows.first() else {
             return Update::default();
         };
-        let active =
-            |s: TaskStatus| matches!(s, TaskStatus::Queued | TaskStatus::Running | TaskStatus::NeedsInput);
+        // Only queued/running are un-hideable live work; `needs-input` is parked
+        // and archivable, so it is NOT counted active here.
+        let active = |s: TaskStatus| matches!(s, TaskStatus::Queued | TaskStatus::Running);
         let (method, verb): (&str, &str) =
             if first_archived { ("unarchive", "unarchived") } else { ("archive", "archived") };
         let ids: Vec<String> = rows
@@ -548,8 +550,9 @@ impl App {
                     // Unarchive direction: only the already-archived rows.
                     *archived
                 } else {
-                    // Archive direction: live terminal rows — skip active work
-                    // (can't hide it) and already-archived rows (opposite half).
+                    // Archive direction: archivable rows (terminal + parked
+                    // needs-input) — skip active queued/running work (can't hide
+                    // it) and already-archived rows (opposite half).
                     !*archived && !active(*status)
                 }
             })

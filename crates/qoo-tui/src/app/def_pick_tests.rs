@@ -807,6 +807,28 @@ fn def_args_combobox_submits_pr_ref() {
 }
 
 #[test]
+fn def_args_combobox_submits_already_canonical_pr_ref() {
+    use crossterm::event::KeyCode::*;
+    // Typing the canonical `pr:1925` (or picking the combobox's own synthetic
+    // "use PR" row, whose value IS `pr:1925`) must submit `ref == "pr:1925"`, not
+    // the double-wrapped `worktree:pr:1925` the daemon can't resolve — the submit
+    // path classifies a second time and must be idempotent on canonical refs.
+    let mut app = def_args_worktree_submit_app(vec!["acme".into()], vec![]);
+    for c in "pr:1925".chars() { app.update(key(Char(c))); }
+    app.update(key(Tab)); // combobox → Run (closes the list)
+    let update = app.update(key(Enter));
+    match &update.cmds[0] {
+        Cmd::Rpc { call, .. } => {
+            assert_eq!(call.method, "runDefinition");
+            assert_eq!(call.params["ref"], "pr:1925");
+            assert!(call.params.get("worktree").is_none(), "a ref replaces the worktree param");
+        }
+        other => panic!("expected runDefinition, got {other:?}"),
+    }
+    assert!(matches!(app.mode, Mode::List));
+}
+
+#[test]
 fn def_args_worktree_combobox_empty_blocks_submit() {
     use crossterm::event::KeyCode::*;
     // Built through `form_from_args` (the real task-pane launch path, no

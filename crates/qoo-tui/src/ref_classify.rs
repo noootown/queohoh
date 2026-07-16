@@ -2,8 +2,10 @@
 //! the input is a literal worktree name. Mirrors `packages/core/src/ref.ts`'s
 //! `parseRef` for the cases a person types into the combobox: a bare number or
 //! `#N` or a GitHub PR URL → `pr:N`; a full ticket id or a Linear issue URL →
-//! `ticket:ID`; anything else → `None` (the caller treats it as a worktree name).
-//! Hand-rolled scans (no regex dep, matching `worktree_context`'s style).
+//! `ticket:ID`; an already-canonical `pr:N` / `ticket:ID` / `worktree:NAME` →
+//! itself (normalized); anything else → `None` (the caller treats it as a
+//! worktree name). Hand-rolled scans (no regex dep, matching
+//! `worktree_context`'s style).
 
 /// Canonical ref for a human-typed target, else `None` (treat as a worktree
 /// name). See the module doc for the recognized shapes.
@@ -11,6 +13,31 @@ pub fn classify_ref(raw: &str) -> Option<String> {
     let t = raw.trim();
     if t.is_empty() {
         return None;
+    }
+    // Already-canonical prefixed refs pass through — this is what the combobox's
+    // own synthetic popup row emits (`pr:N`/`ticket:ID`), so picking it and then
+    // submitting (which classifies a SECOND time in `resolve_target_ref`) must be
+    // idempotent. Without this the colon matches no pattern below → `None` → the
+    // caller wraps it as `worktree:pr:N`, which the daemon can't resolve and the
+    // task parks needs-input. `parseRef` already accepts these prefixes, so the
+    // daemon side handles `pr:N` fine; only this classifier was missing them.
+    // A malformed suffix (`pr:abc`, `ticket:foo`, empty `worktree:`) is NOT a
+    // ref — let it fall through to `None` / worktree-name semantics.
+    if let Some(n) = t.strip_prefix("pr:")
+        && !n.is_empty()
+        && n.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Some(format!("pr:{n}"));
+    }
+    if let Some(id) = t.strip_prefix("ticket:")
+        && is_full_ticket(id)
+    {
+        return Some(format!("ticket:{}", id.to_ascii_uppercase()));
+    }
+    if let Some(name) = t.strip_prefix("worktree:")
+        && !name.is_empty()
+    {
+        return Some(format!("worktree:{name}"));
     }
     // `#N` or bare `N` → PR.
     let digits = t.strip_prefix('#').unwrap_or(t);
@@ -81,5 +108,19 @@ mod tests {
         assert_eq!(classify_ref("JUS-1756").as_deref(), Some("ticket:JUS-1756"));
         assert_eq!(classify_ref("feature-x").as_deref(), None); // literal worktree name
         assert_eq!(classify_ref("").as_deref(), None);
+    }
+
+    #[test]
+    fn classify_ref_passes_through_canonical_refs() {
+        // Already-canonical forms (what the combobox popup emits) round-trip so a
+        // second classify pass on submit is idempotent, not `worktree:pr:N`.
+        assert_eq!(classify_ref("pr:1925").as_deref(), Some("pr:1925"));
+        assert_eq!(classify_ref("ticket:jus-1756").as_deref(), Some("ticket:JUS-1756"));
+        assert_eq!(classify_ref("ticket:JUS-1756").as_deref(), Some("ticket:JUS-1756"));
+        assert_eq!(classify_ref("worktree:my-branch").as_deref(), Some("worktree:my-branch"));
+        // Malformed suffixes are NOT refs — fall through to worktree-name (None).
+        assert_eq!(classify_ref("pr:abc").as_deref(), None);
+        assert_eq!(classify_ref("ticket:foo").as_deref(), None);
+        assert_eq!(classify_ref("worktree:").as_deref(), None);
     }
 }

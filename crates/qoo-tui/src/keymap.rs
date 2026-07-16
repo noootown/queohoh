@@ -64,8 +64,8 @@ pub enum AppAction {
     CancelSelected,
     /// Archive TOGGLE on the QUEUE pane's selected row (`a`, and the queue's
     /// `[a]rchive` chip): an archived row restores to the live list, a terminal
-    /// live row archives out of it; active rows (queued/running/needs-input)
-    /// refuse with a status line. Routes to `App::archive_selected`.
+    /// or parked `needs-input` row archives out of it; only active queued/running
+    /// rows refuse with a status line. Routes to `App::archive_selected`.
     ArchiveSelected,
     /// New adhoc task on the selected WORKTREES row (`r`, and the worktrees
     /// `[r]un` chip): opens the session picker (`Mode::SessionPick`) for the
