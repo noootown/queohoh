@@ -117,6 +117,7 @@ export async function instantiateDefinition(
 			item,
 			itemKey,
 			resumeSessionId: deps.resumeSessionId,
+			lane: def.lane ?? undefined,
 		}),
 	);
 }

@@ -394,6 +394,20 @@ describe("instantiateDefinition — args", () => {
 		);
 		expect(created[0]?.resumeSessionId).toBeNull();
 	});
+
+	it("stamps the definition lane onto created instances", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({
+				lane: "testing1-stack",
+				discovery: null,
+				args: [{ name: "number" }],
+			}),
+			{ mode: "args", values: ["7"] },
+			{ ...deps(store, ""), source: "mcp" as const },
+		);
+		expect(created[0]?.lane).toBe("testing1-stack");
+	});
 });
 
 describe("instantiateDefinition — cron dedup coercion", () => {

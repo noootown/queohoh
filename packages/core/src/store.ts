@@ -34,6 +34,8 @@ export interface NewTaskInput {
 	/** Done-condition command run after the worker claims success; a definition
 	 * task leaves this unset and uses the definition's own `verify` at run time. */
 	verify?: string;
+	/** Scheduler-lane override from the definition's `lane:`; see task.ts. */
+	lane?: string;
 }
 
 /** One step of a task chain. `definition` steps carry a rendered prompt plus the
@@ -53,6 +55,8 @@ export interface ChainStepInput {
 	/** Per-step done-condition command (a definition step's own `verify` still
 	 * wins at run time, mirroring `model`). */
 	verify?: string;
+	/** Scheduler-lane override from the definition's `lane:`; see task.ts. */
+	lane?: string;
 }
 
 /** Target + provenance shared by every member of a chain. `resumeSessionId`
@@ -112,7 +116,7 @@ export class QueueStore {
 			verifyExitCode: null,
 			verifyOutput: null,
 			attemptedProviders: [],
-			lane: null,
+			lane: input.lane ?? null,
 		};
 		this.write(task);
 		return task;
@@ -160,7 +164,7 @@ export class QueueStore {
 				verifyExitCode: null,
 				verifyOutput: null,
 				attemptedProviders: [],
-				lane: null,
+				lane: step.lane ?? null,
 			};
 			this.write(task);
 			return task;

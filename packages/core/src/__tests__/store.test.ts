@@ -277,6 +277,26 @@ describe("QueueStore", () => {
 		expect(t.chainSeq).toBeNull();
 	});
 
+	it("persists a lane override through create and reload", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			lane: "testing1-stack",
+		});
+		expect(t.lane).toBe("testing1-stack");
+		expect(store.get(t.id)?.lane).toBe("testing1-stack");
+		const plain = store.create({
+			prompt: "y",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+		});
+		expect(plain.lane).toBeNull();
+	});
+
 	it("skips unparseable files and reports them", () => {
 		const store = freshStore();
 		store.create({ prompt: "good", repo: "r", ref: "temp", source: "tui" });

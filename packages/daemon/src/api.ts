@@ -399,6 +399,7 @@ export class ApiServer {
 							model,
 							timeoutMs,
 							verify,
+							lane: def.lane ?? undefined,
 						};
 					}
 					if (typeof s.prompt === "string" && s.prompt.length > 0) {
