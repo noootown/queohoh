@@ -139,6 +139,13 @@ interface GitEnrichment {
 	 * `"MERGED"` state supplements local ancestry, covering squash merges); kept
 	 * on the wire as explicit supplementary detail. */
 	prState: string | null;
+	/** Whether the matched PR's review decision is APPROVED (gh's `reviewDecision`
+	 * field === `"APPROVED"`). null when there is no PR / gh unavailable; false
+	 * when a PR exists but is not approved (review required, changes requested, no
+	 * reviewers). Drives the TUI's green approved marker, which shares the merged
+	 * marker's front slot but yields to it (merged wins; see the TUI's
+	 * `wt_merge_marker`). */
+	approved: boolean | null;
 }
 
 /** The git-commit subset of GitEnrichment — everything computeGitEnrichment
@@ -147,7 +154,7 @@ interface GitEnrichment {
  * sweep from `gh`, not per worktree. */
 type GitCommitFacts = Omit<
 	GitEnrichment,
-	"prNumber" | "prUrl" | "prAuthor" | "prState"
+	"prNumber" | "prUrl" | "prAuthor" | "prState" | "approved"
 >;
 
 /** One repo's PR facts, keyed by head branch: the number/url/state plus the
@@ -160,6 +167,10 @@ interface PrFacts {
 	state: string | null;
 	authorName: string | null;
 	authorLogin: string | null;
+	/** gh's `reviewDecision` — `"APPROVED"`, `"CHANGES_REQUESTED"`,
+	 * `"REVIEW_REQUIRED"`, or empty (no reviewers) → null. The caller reduces it
+	 * to the `approved` boolean carried on the wire. */
+	reviewDecision: string | null;
 }
 
 /** Serve last-known enrichment for a worktree this long before re-shelling git.
@@ -730,6 +741,10 @@ export class Engine {
 				// signals are unknown; any concrete signal that isn't "merged"
 				// (local false, or an OPEN PR) reads as not merged.
 				const merged = foldMerged(facts.merged, prState);
+				// Approved is a per-PR fact (gh's reviewDecision). null when there is
+				// no PR (unknown); a PR that isn't approved reads false. It shares the
+				// merged marker's slot in the TUI but yields to merged.
+				const approved = pr ? pr.reviewDecision === "APPROVED" : null;
 				const e: GitEnrichment = {
 					...facts,
 					merged,
@@ -737,6 +752,7 @@ export class Engine {
 					prUrl,
 					prAuthor,
 					prState,
+					approved,
 				};
 				this.gitEnrichFetchedAt.set(wt.path, Date.now());
 				const prev = this.gitEnrichCache.get(wt.path);
@@ -751,7 +767,8 @@ export class Engine {
 					prev.prNumber !== e.prNumber ||
 					prev.prUrl !== e.prUrl ||
 					prev.prAuthor !== e.prAuthor ||
-					prev.prState !== e.prState
+					prev.prState !== e.prState ||
+					prev.approved !== e.approved
 				) {
 					changed = true;
 				}
@@ -929,7 +946,7 @@ export class Engine {
 					"--state",
 					state,
 					"--json",
-					"number,headRefName,url,state,author",
+					"number,headRefName,url,state,author,reviewDecision",
 					"--limit",
 					String(limit),
 				],
@@ -952,12 +969,14 @@ export class Engine {
 					url,
 					state: prState,
 					author,
+					reviewDecision,
 				} = row as {
 					headRefName?: unknown;
 					number?: unknown;
 					url?: unknown;
 					state?: unknown;
 					author?: unknown;
+					reviewDecision?: unknown;
 				};
 				if (typeof headRefName !== "string" || typeof number !== "number") {
 					continue;
@@ -975,6 +994,12 @@ export class Engine {
 					state: typeof prState === "string" ? prState : null,
 					authorName,
 					authorLogin,
+					// gh sends "" for a PR with no reviewers; treat that (and any
+					// non-string) as null so the caller's `=== "APPROVED"` reads false.
+					reviewDecision:
+						typeof reviewDecision === "string" && reviewDecision.length > 0
+							? reviewDecision
+							: null,
 				});
 			}
 			return map;

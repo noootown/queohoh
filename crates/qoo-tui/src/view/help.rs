@@ -41,7 +41,7 @@ const LEGEND_ROWS: [(&str, &str); 7] = [
     ("● / N", "worktree: green dot idle · yellow N = running + queued tasks"),
     ("⏱", "elapsed time of the running task on that lane"),
     ("±", "worktree has uncommitted changes"),
-    ("↣", "worktree merged into the default branch"),
+    ("↣ / ✓", "PR merged into the default branch / PR approved (not yet merged)"),
     ("ian · 3d ago", "last commit author · last commit age"),
 ];
 

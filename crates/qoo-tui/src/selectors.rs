@@ -77,6 +77,11 @@ pub struct WorktreeRow {
     /// work merged back (`None` = unknown / old daemon / the default-branch
     /// checkout itself). Drives the `↣` front-column marker.
     pub merged: Option<bool>,
+    /// Worktree's PR is APPROVED (daemon `approved`, from gh's reviewDecision).
+    /// `Some(true)` = approved, `Some(false)` = a PR exists but isn't approved,
+    /// `None` = unknown / no PR / old daemon. Drives the green approved marker,
+    /// which shares the `↣` merged slot but yields to it (see `wt_merge_marker`).
+    pub approved: Option<bool>,
     pub last_commit_epoch: Option<u64>,
     pub last_commit_author: Option<String>,
     pub last_commit_author_email: Option<String>,
@@ -604,6 +609,7 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 last: last_finished_on_lane(snapshot, &lane),
                 dirty: wt.dirty,
                 merged: wt.merged,
+                approved: wt.approved,
                 last_commit_epoch: wt.last_commit_epoch,
                 last_commit_author: wt.last_commit_author.clone(),
                 last_commit_author_email: wt.last_commit_author_email.clone(),
@@ -1440,6 +1446,32 @@ pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout 
 /// column is then omitted pane-wide.
 pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
     row.pr_author.clone().or_else(|| row.last_commit_author.clone())
+}
+
+/// The front-column status marker a worktree row shows in the shared `↣` slot,
+/// or `None` for a blank slot. Merged and approved are mutually exclusive for
+/// display and merged WINS: a merged PR shows `Merged` even when it was also
+/// approved (the merged fact subsumes the approval). Pure so the precedence is
+/// unit-testable away from the view, which only maps the variant to a glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WtMergeMarker {
+    /// Committed work is on the default branch (or the PR merged) — `↣`, green.
+    Merged,
+    /// The PR's review decision is APPROVED but it isn't merged yet — `✓`, green.
+    Approved,
+}
+
+/// Resolve a row's front merge/approval marker: `Merged` when `merged` is true,
+/// else `Approved` when `approved` is true, else `None`. Merged takes precedence
+/// so an approved-then-merged PR keeps showing the merged glyph.
+pub fn wt_merge_marker(row: &WorktreeRow) -> Option<WtMergeMarker> {
+    if row.merged == Some(true) {
+        Some(WtMergeMarker::Merged)
+    } else if row.approved == Some(true) {
+        Some(WtMergeMarker::Approved)
+    } else {
+        None
+    }
 }
 
 /// Resolved per-frame column widths for the WORKTREES pane. A width of `0` means
@@ -3337,6 +3369,52 @@ mod tests {
         // Neither present → None (the whole Author column is omitted pane-wide).
         let neither = WorktreeRow::default();
         assert_eq!(wt_author_text(&neither), None);
+    }
+
+    #[test]
+    fn wt_merge_marker_merged_wins_over_approved() {
+        // Merged takes precedence: an approved-then-merged PR shows the merged
+        // glyph, not the approved one — the merged fact subsumes the approval.
+        let both = WorktreeRow {
+            merged: Some(true),
+            approved: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(wt_merge_marker(&both), Some(WtMergeMarker::Merged));
+
+        // Merged with no/unknown approval still shows merged.
+        let merged_only = WorktreeRow { merged: Some(true), ..Default::default() };
+        assert_eq!(wt_merge_marker(&merged_only), Some(WtMergeMarker::Merged));
+    }
+
+    #[test]
+    fn wt_merge_marker_approved_alone_shows_approved() {
+        // Approved but not merged → the green approved marker.
+        let approved = WorktreeRow {
+            merged: Some(false),
+            approved: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(wt_merge_marker(&approved), Some(WtMergeMarker::Approved));
+
+        // Approved with merged unknown (old-daemon-style) still shows approved.
+        let approved_merge_unknown = WorktreeRow { approved: Some(true), ..Default::default() };
+        assert_eq!(wt_merge_marker(&approved_merge_unknown), Some(WtMergeMarker::Approved));
+    }
+
+    #[test]
+    fn wt_merge_marker_neither_shows_nothing() {
+        // A PR that exists but isn't approved and isn't merged → blank slot.
+        let not_approved = WorktreeRow {
+            merged: Some(false),
+            approved: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(wt_merge_marker(&not_approved), None);
+
+        // Everything unknown (old daemon / no PR) → blank slot.
+        let unknown = WorktreeRow::default();
+        assert_eq!(wt_merge_marker(&unknown), None);
     }
 
     #[test]

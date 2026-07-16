@@ -51,6 +51,13 @@ export interface WorktreeInfo {
 	 * when local ancestry says otherwise, e.g. a squash merge), so the TUI reads
 	 * it only as supplementary detail. */
 	prState?: string | null;
+	/** Whether the worktree's PR is APPROVED — the daemon reduces `gh`'s
+	 * `reviewDecision` to `reviewDecision === "APPROVED"`. true = approved,
+	 * false = a PR exists but isn't approved, null/absent = unknown / no PR / gh
+	 * unavailable / old daemon. Drives the TUI's green approved marker, which
+	 * shares the `↣` merged marker's front slot but yields to it (a merged PR
+	 * shows the merged marker even when it was also approved). */
+	approved?: boolean | null;
 	/** True when queohoh must never delete this worktree — the project's main
 	 * checkout (path-equality) or a name in the project's `protected_worktrees`.
 	 * Computed by the daemon and carried to the TUI. Absent/undefined = not

@@ -652,6 +652,7 @@ describe("Engine.worktreesByRepo", () => {
 					prUrl: null,
 					prAuthor: null,
 					prState: null,
+					approved: null,
 					protected: false,
 				},
 			],
@@ -994,6 +995,8 @@ describe("Engine git enrichment", () => {
 			prState: "MERGED",
 			// prAuthor is the PR author (Tim), NOT the local merge-commit author (Ian).
 			prAuthor: "Tim Kuminecz",
+			// The row carries no reviewDecision → a PR exists but isn't approved.
+			approved: false,
 		});
 	});
 
@@ -1088,6 +1091,68 @@ describe("Engine git enrichment", () => {
 			prNumber: null,
 			// No PR data for this branch; the merged marker is the local verdict (false).
 			merged: false,
+			// No PR → approved is unknown (null), not false.
+			approved: null,
+		});
+	});
+
+	it("stamps approved=true from an OPEN PR whose reviewDecision is APPROVED (green marker, not merged)", async () => {
+		// The approved-but-not-yet-merged case the green marker exists for.
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }), // not merged locally
+			"gh:open": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 42,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/42",
+						state: "OPEN",
+						author: { name: "Ian Chiu", login: "noootown" },
+						reviewDecision: "APPROVED",
+					},
+				]),
+				exitCode: 0,
+			}),
+			"gh:merged": () => ({ stdout: "[]", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			approved: true,
+			prState: "OPEN",
+			// Approved does NOT imply merged — the TUI's merged marker yields to the
+			// approved marker here.
+			merged: false,
+		});
+	});
+
+	it("stamps approved=false when the PR's reviewDecision is CHANGES_REQUESTED", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }),
+			"gh:open": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 43,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/43",
+						state: "OPEN",
+						author: { name: "Ian Chiu", login: "noootown" },
+						reviewDecision: "CHANGES_REQUESTED",
+					},
+				]),
+				exitCode: 0,
+			}),
+			"gh:merged": () => ({ stdout: "[]", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			approved: false,
+			prState: "OPEN",
 		});
 	});
 

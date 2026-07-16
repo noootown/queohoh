@@ -187,6 +187,13 @@ pub struct WorktreeInfo {
     /// back. `None`/null = unknown, an old daemon, or the default-branch
     /// checkout itself. Drives the `↣` front-column marker.
     pub merged: Option<bool>,
+    /// Whether this worktree's PR is APPROVED (the daemon's `approved`, reduced
+    /// from `gh`'s `reviewDecision === "APPROVED"`). `Some(true)` = approved,
+    /// `Some(false)` = a PR exists but isn't approved, `None`/null = unknown / no
+    /// PR / `gh` unavailable / an old daemon that predates the field (via the
+    /// container `default`). Drives the green approved marker, which shares the
+    /// `↣` merged marker's front slot but yields to it (see `wt_merge_marker`).
+    pub approved: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -553,6 +560,26 @@ mod tests {
         .unwrap();
         assert_eq!(without.pr_author, None);
         assert_eq!(without.last_commit_author.as_deref(), Some("Ian Chiu"));
+    }
+
+    #[test]
+    fn worktree_approved_present_parses_and_absent_defaults_none() {
+        // A modern daemon sends camelCase `approved` (reduced from gh's
+        // reviewDecision); true and false both parse...
+        let approved: WorktreeInfo = serde_json::from_str(
+            r#"{"name":"a","path":"/a","branch":"a","approved":true}"#,
+        )
+        .unwrap();
+        assert_eq!(approved.approved, Some(true));
+        let not_approved: WorktreeInfo = serde_json::from_str(
+            r#"{"name":"a","path":"/a","branch":"a","approved":false}"#,
+        )
+        .unwrap();
+        assert_eq!(not_approved.approved, Some(false));
+        // ...and an old daemon that omits it defaults to None (container `default`).
+        let old: WorktreeInfo =
+            serde_json::from_str(r#"{"name":"a","path":"/a","branch":"a"}"#).unwrap();
+        assert_eq!(old.approved, None);
     }
 
     #[test]

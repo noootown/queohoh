@@ -68,6 +68,13 @@ pub const GLYPH_DISCOVER: char = '⌕';
 /// the branch flowed into the default branch. User-picked over `✓` (too
 /// status-like) and `⎇`/`⋔` (read as "branch exists", not "merged").
 pub const GLYPH_MERGED: char = '↣';
+/// Worktree's PR is APPROVED (gh `reviewDecision === "APPROVED"`) but not yet
+/// merged — shares `GLYPH_MERGED`'s front marker slot, also in ok green, but
+/// yields to it (a merged PR shows `↣` even when it was also approved; see
+/// `wt_merge_marker`). `✓` (check mark, single-width): the review passed. Here a
+/// check reads as exactly the intended "approved" status, unlike on the merged
+/// marker where it was rejected as too status-like for "flowed into the branch".
+pub const GLYPH_APPROVED: char = '✓';
 /// Filled dot — colored by context (connection indicator, worktree state).
 pub const GLYPH_DOT: char = '●';
 /// Magnifier prefixing the inline search-hint/input row. Double-width, but it is

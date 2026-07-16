@@ -15,13 +15,13 @@ use crate::selectors::{
     COLLAPSED_H, DefColLayout, QueueColLayout, QueueRow, WorktreeRow, WtColLayout,
     absolute_local_label, def_col_layout, elapsed_label, pad_clip,
     pane_layout, pane_title, queue_col_layout, queue_divider_after, relative_age_label,
-    wt_author_text, wt_col_layout,
+    wt_author_text, wt_col_layout, wt_merge_marker, WtMergeMarker,
 };
 use crate::view::theme::{
     BTN_LABEL_ARCHIVE, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_DISCOVER, BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     BTN_LABEL_UNARCHIVE,
-    FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_CURSOR,
+    FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_APPROVED, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_PROTECTED, GLYPH_SEARCH, Palette,
     RULE_CHAR,
     SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
@@ -589,13 +589,19 @@ fn worktree_line(
         }
         spans.push(Span::raw(" "));
     }
-    // `↣` merged-back marker (ok green — "committed work is in the default
-    // branch, safe to clean up"); blank for unmerged/unknown/old daemons.
+    // Shared front marker slot: `↣` merged-back (ok green — "committed work is in
+    // the default branch, safe to clean up") OR, when not merged, `✓` approved (ok
+    // green — the PR passed review). Merged wins; blank for neither/unknown/old
+    // daemons. The precedence lives in the pure `wt_merge_marker` selector.
     if layout.merged_w > 0 {
-        if row.merged == Some(true) {
-            spans.push(Span::styled(GLYPH_MERGED.to_string(), Style::default().fg(p.ok)));
-        } else {
-            spans.push(Span::raw(" "));
+        match wt_merge_marker(row) {
+            Some(WtMergeMarker::Merged) => {
+                spans.push(Span::styled(GLYPH_MERGED.to_string(), Style::default().fg(p.ok)));
+            }
+            Some(WtMergeMarker::Approved) => {
+                spans.push(Span::styled(GLYPH_APPROVED.to_string(), Style::default().fg(p.ok)));
+            }
+            None => spans.push(Span::raw(" ")),
         }
         spans.push(Span::raw(" "));
     }
@@ -1399,6 +1405,47 @@ mod tests {
             prot_text.chars().position(|c| c == 'l').unwrap(),
             plain_text.chars().position(|c| c == 'J').unwrap()
         );
+    }
+
+    #[test]
+    fn worktree_line_renders_approved_marker_in_the_merged_slot_and_merged_wins() {
+        use crate::selectors::{wt_col_layout, WorktreeRow};
+        let p = Palette::default();
+        // Approved but not merged → the ✓ marker shows (and no ↣).
+        let approved = WorktreeRow {
+            name: "JUS-2".into(),
+            raw_name: "JUS-2".into(),
+            path: "/a".into(),
+            branch: "JUS-2".into(),
+            merged: Some(false),
+            approved: Some(true),
+            ..Default::default()
+        };
+        // Merged AND approved → merged wins; ↣ shows, ✓ does not.
+        let merged = WorktreeRow {
+            name: "JUS-3".into(),
+            raw_name: "JUS-3".into(),
+            path: "/m".into(),
+            branch: "JUS-3".into(),
+            merged: Some(true),
+            approved: Some(true),
+            ..Default::default()
+        };
+        let rows = vec![approved.clone(), merged.clone()];
+        let layout = wt_col_layout(&rows, 120);
+        let text = |r: &WorktreeRow| {
+            worktree_line(r, &layout, &p, 0)
+                .spans
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<String>()
+        };
+        let approved_text = text(&approved);
+        assert!(approved_text.contains(GLYPH_APPROVED));
+        assert!(!approved_text.contains(GLYPH_MERGED));
+        let merged_text = text(&merged);
+        assert!(merged_text.contains(GLYPH_MERGED));
+        assert!(!merged_text.contains(GLYPH_APPROVED));
     }
 
     #[test]
