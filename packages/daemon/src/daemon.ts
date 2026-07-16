@@ -16,6 +16,7 @@ import {
 import { ApiServer } from "./api.js";
 import { Engine } from "./engine.js";
 import { acquireLock, releaseLock } from "./lock.js";
+import { normalizeDaemonPath, probeGh } from "./path-env.js";
 import {
 	configPath,
 	pidPath,
@@ -46,6 +47,15 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		console.log(`created starter config at ${cfgPath}`);
 	}
 	const config = loadGlobalConfig(cfgPath);
+
+	// Widen PATH BEFORE anything shells out. A minimal-PATH launch (launchd, a
+	// bare execFile, a stripped test shell) leaves `gh` invisible to the daemon's
+	// direct `execFile` calls; borrowing the login shell's PATH restores it. Then
+	// probe `gh` once so a still-missing binary fails loudly instead of dribbling
+	// one debug line per enrichment sweep. Both run before the first engine tick.
+	// See path-env.ts for the path_helper rescue asymmetry this compensates for.
+	await normalizeDaemonPath(defaultExec);
+	await probeGh(defaultExec);
 
 	const pid = pidPath(state);
 	if (!acquireLock(pid)) {

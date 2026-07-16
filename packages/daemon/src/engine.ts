@@ -918,7 +918,7 @@ export class Engine {
 			);
 			if (exitCode !== 0) {
 				console.debug?.(
-					`gh pr list --state ${state}: non-zero exit; skipping PR enrichment`,
+					`gh pr list --state ${state}: non-zero exit ${exitCode}; skipping PR enrichment`,
 				);
 				return null;
 			}
