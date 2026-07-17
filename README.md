@@ -71,7 +71,11 @@ Integrations:
 mise run mcp:register    # register the queohoh MCP server with Claude Code (user scope)
 mise run launchd:up      # install the launchd plist and keep the daemon alive (macOS)
 mise run launchd:down    # stop the launchd daemon and remove the plist
+mise run systemd:up      # install the systemd user unit and keep the daemon alive (Linux)
+mise run systemd:down    # stop the systemd user unit and remove it
 ```
+
+Without a supervisor, `mise run daemon:ensure` starts a detached one-shot daemon (survives the shell, not a reboot). Prefer launchd or systemd for keep-alive across logouts and crashes.
 
 ## More
 

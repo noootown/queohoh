@@ -105,7 +105,7 @@ description = "Register the queohoh MCP server with Claude Code (user scope)"
 run = 'claude mcp add --scope user queohoh -- "$(command -v node)" {{config_root}}/packages/daemon/dist/cli.js mcp'
 
 [tasks."launchd:up"]
-description = "Install the launchd plist and bootstrap the daemon (rebuilds first)"
+description = "Install the launchd plist and bootstrap the daemon (macOS; rebuilds first)"
 depends = ["build"]
 run = [
 	"node packages/daemon/dist/cli.js launchd:install",
@@ -113,10 +113,27 @@ run = [
 ]
 
 [tasks."launchd:down"]
-description = "Stop the launchd daemon and remove the plist"
+description = "Stop the launchd daemon and remove the plist (macOS)"
 run = [
 	"launchctl bootout gui/$(id -u)/com.queohoh.daemon || true",
 	"node packages/daemon/dist/cli.js launchd:uninstall",
+]
+
+[tasks."systemd:up"]
+description = "Install the systemd user unit and enable the daemon (Linux; rebuilds first)"
+depends = ["build"]
+run = [
+	"node packages/daemon/dist/cli.js systemd:install",
+	"systemctl --user daemon-reload",
+	"systemctl --user enable --now queohoh.daemon.service",
+]
+
+[tasks."systemd:down"]
+description = "Stop the systemd user unit and remove it (Linux)"
+run = [
+	"systemctl --user disable --now queohoh.daemon.service || true",
+	"node packages/daemon/dist/cli.js systemd:uninstall",
+	"systemctl --user daemon-reload || true",
 ]
 
 # --- rust tui ---
