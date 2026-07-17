@@ -90,7 +90,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     let mut right_spans = vec![conn, Span::styled(run_label, Style::default().fg(p.fg))];
     let mut prov_w = 0u16;
     if let Some(name) = app.active_provider() {
-        let span = Span::styled(format!("  ⚡ {name}"), provider_style(&name, p));
+        // U+FE0E forces the narrow text-presentation glyph: bare ⚡ is
+        // emoji-presentation (buffer width 2) while most terminal fonts draw it
+        // one cell wide, leaving a phantom blank cell between icon and name.
+        let span = Span::styled(format!("  ⚡\u{FE0E} {name}"), provider_style(&name, p));
         prov_w = span.width() as u16;
         right_spans.push(span);
     }
