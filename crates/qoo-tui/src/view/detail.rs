@@ -396,14 +396,16 @@ pub(crate) fn content_for(
                 (lines, ctxs, "(no transcript yet)")
             }
             2 => fenced(task.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
-            3 => match run_files.and_then(|f| f.meta.as_ref()) {
-                Some(meta) => {
-                    let (lines, ctxs) =
-                        run_info_lines(task, meta, catalog, now_epoch_s, tz_offset_s);
-                    (lines, ctxs, "")
-                }
-                None => (Vec::new(), Vec::new(), "(no run recorded yet)"),
-            },
+            // Always render from the live task — even before a run dir/`data.json`
+            // exists (queued / just-started). Missing meta fields dash out; the
+            // Config section only appears once a def snapshot is recorded.
+            3 => {
+                let empty = RunMeta::default();
+                let meta = run_files.and_then(|f| f.meta.as_ref()).unwrap_or(&empty);
+                let (lines, ctxs) =
+                    run_info_lines(task, meta, catalog, now_epoch_s, tz_offset_s);
+                (lines, ctxs, "")
+            }
             _ => {
                 let report = run_files.map(|f| f.report.clone()).unwrap_or_default();
                 let meta = run_files.and_then(|f| f.meta.as_ref());
@@ -1685,11 +1687,52 @@ mod tests {
     fn out_of_range_sub_tab_clamps_into_range() {
         // sub_tab 9 on a Run context clamps to the last valid index (3 = info),
         // NOT the report the `_` fall-through would hit with an unclamped index.
-        // The fixture has no run meta, so info shows its own placeholder — text
-        // distinct from the report placeholder proves the clamp landed on info.
+        // Info always renders live-task sections (no meta needed), so the
+        // section headers prove the clamp landed on info — distinct from the
+        // report placeholder the unclamped `_` fall-through would show.
         let (terminal, _hits) = render_at(&detail_app(9), 80, 24);
         let body = terminal.backend().to_string();
-        assert!(body.contains("(no run recorded yet)"), "clamped to the info sub-tab");
+        assert!(body.contains("Run"), "clamped to the info sub-tab (Run section)");
+        assert!(body.contains("Timing"), "info Timing section present");
         assert!(!body.contains("(no report yet)"), "clamped index is not the report fall-through");
+    }
+
+    /// Queued task with no run dir yet: the info tab still shows identity/
+    /// status/created from the live task (not an empty placeholder).
+    #[test]
+    fn snapshot_detail_run_info_queued_no_meta() {
+        use crate::ipc::types::TaskStatus;
+        let mut app = fixture_app();
+        app.now_epoch_s = crate::selectors::parse_iso_epoch_s("2026-07-09T12:05:03.000Z");
+        if let Some(snap) = app.snapshot.as_mut() {
+            let mut t = snap.tasks[0].clone();
+            t.status = TaskStatus::Queued;
+            t.definition = Some("pr-fix-ci-conflicts".to_string());
+            t.created = "2026-07-09T12:00:00.000Z".to_string();
+            t.model = Some("claude-opus-4-8".to_string());
+            t.finished_at = None;
+            t.started_at = None;
+            snap.tasks = vec![t];
+            snap.archived_recent = vec![];
+            snap.running = vec![];
+        }
+        // No run_files at all — the scheduling/queued case.
+        app.run_files = None;
+        let mut ui = TabUiState::default();
+        ui.focus = PaneId::Detail;
+        ui.last_list_pane = ListPane::Queue;
+        ui.sub_tab[DetailKind::Run as usize] = 3; // info
+        app.ui_by_tab.insert("acme".to_string(), ui);
+
+        let (terminal, _hits) = render_at(&app, 80, 28);
+        let body = terminal.backend().to_string();
+        for header in ["Run", "Timing", "Details"] {
+            assert!(body.contains(header), "{header} section present while scheduling");
+        }
+        assert!(body.contains("pr-fix-ci-conflicts"), "definition from live task");
+        assert!(body.contains("queued"), "status from live task");
+        assert!(!body.contains("(no run recorded yet)"), "no empty placeholder");
+        assert!(!body.contains("Config"), "no Config without a def snapshot");
+        insta::assert_snapshot!("detail_run_info_queued_no_meta", terminal.backend());
     }
 }
