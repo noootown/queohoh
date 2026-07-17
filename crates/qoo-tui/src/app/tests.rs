@@ -712,17 +712,30 @@ fn switched_provider(cmds: &[Cmd]) -> Option<String> {
     })
 }
 
+/// Confirm the open provider-switch dialog by pressing Enter (Confirm focus is
+/// the default on open), returning the resulting `Update` so callers can inspect
+/// the fired RPC.
+fn confirm_dialog(app: &mut App) -> Update {
+    app.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
+}
+
 #[test]
 fn p_cycles_active_provider_to_next_enabled_and_optimistically_updates() {
     let mut app = crate::test_fixtures::fixture_app(); // snapshot active = "grok"
     // Precedence order [claude, grok, codex]; codex disabled → enabled [claude, grok].
     app.settings = settings_with_providers("grok", &[("claude", true), ("grok", true), ("codex", false)]);
+    // `p` now opens a confirm dialog first — no switch, no RPC yet.
     let up = press(&mut app, KeyCode::Char('p'));
-    // grok is the last enabled → wraps to claude.
+    assert!(switched_provider(&up.cmds).is_none(), "no RPC until confirmed");
+    assert!(matches!(app.mode, Mode::Confirm { .. }), "p opens the switch dialog");
+    assert_eq!(app.active_provider().as_deref(), Some("grok"), "unchanged until confirm");
+    // Confirming applies the switch: grok is the last enabled → wraps to claude.
+    let up = confirm_dialog(&mut app);
     assert_eq!(switched_provider(&up.cmds).as_deref(), Some("claude"));
     // Optimistic update flips BOTH the snapshot (indicator source) and settings.
     assert_eq!(app.snapshot.as_ref().unwrap().active_provider.as_deref(), Some("claude"));
     assert_eq!(app.active_provider().as_deref(), Some("claude"));
+    assert!(matches!(app.mode, Mode::List), "confirm returns to List");
 }
 
 #[test]
@@ -731,7 +744,8 @@ fn p_skips_disabled_providers_when_cycling() {
     app.snapshot.as_mut().unwrap().active_provider = Some("claude".into());
     // codex sits between claude and grok but is disabled → cycle skips it.
     app.settings = settings_with_providers("claude", &[("claude", true), ("codex", false), ("grok", true)]);
-    let up = press(&mut app, KeyCode::Char('p'));
+    press(&mut app, KeyCode::Char('p'));
+    let up = confirm_dialog(&mut app);
     assert_eq!(switched_provider(&up.cmds).as_deref(), Some("grok"));
 }
 
@@ -742,7 +756,8 @@ fn p_single_enabled_provider_is_a_noop_without_rpc() {
     app.settings = settings_with_providers("claude", &[("claude", true), ("grok", false)]);
     let up = press(&mut app, KeyCode::Char('p'));
     assert_eq!(switched_provider(&up.cmds), None, "single enabled provider sends no RPC");
-    // The active provider is untouched.
+    // Strict no-op: no dialog opens either, and the active provider is untouched.
+    assert!(matches!(app.mode, Mode::List), "single enabled provider opens no dialog");
     assert_eq!(app.active_provider().as_deref(), Some("claude"));
 }
 
@@ -752,6 +767,7 @@ fn p_is_a_noop_when_settings_not_yet_fetched() {
     let before = app.active_provider();
     let up = press(&mut app, KeyCode::Char('p'));
     assert_eq!(switched_provider(&up.cmds), None, "no providers list → no RPC");
+    assert!(matches!(app.mode, Mode::List), "no providers → no dialog");
     assert_eq!(app.active_provider(), before, "active provider unchanged");
 }
 
@@ -764,9 +780,70 @@ fn clicking_the_provider_indicator_cycles_like_p() {
     let mut hit = HitMap::default();
     hit.push(Rect { x: 100, y: 0, width: 12, height: 1 }, HitTarget::ProviderIndicator);
     app.hit = hit;
-    let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 104, 0));
+    // Clicking the indicator opens the same confirm dialog as `p`.
+    app.update(mouse(MouseEventKind::Down(MouseButton::Left), 104, 0));
+    assert!(matches!(app.mode, Mode::Confirm { .. }), "indicator click opens the switch dialog");
+    let up = confirm_dialog(&mut app);
     assert_eq!(switched_provider(&up.cmds).as_deref(), Some("grok"));
     assert_eq!(app.active_provider().as_deref(), Some("grok"));
+}
+
+#[test]
+fn provider_switch_dialog_shows_current_and_next() {
+    let mut app = crate::test_fixtures::fixture_app();
+    app.snapshot.as_mut().unwrap().active_provider = Some("claude".into());
+    app.settings = settings_with_providers("claude", &[("claude", true), ("grok", true)]);
+    press(&mut app, KeyCode::Char('p'));
+    let Mode::Confirm { title, body, action, .. } = &app.mode else {
+        panic!("expected the switch-provider confirm dialog");
+    };
+    assert_eq!(title, "Switch provider");
+    assert_eq!(body, &vec!["claude → grok".to_string()], "body names current → next");
+    // The target is frozen into the action, matching exactly what the body shows.
+    assert!(matches!(action, ConfirmAction::SwitchProvider { target } if target == "grok"));
+}
+
+#[test]
+fn esc_cancels_provider_switch_without_rpc_or_change() {
+    let mut app = crate::test_fixtures::fixture_app();
+    app.snapshot.as_mut().unwrap().active_provider = Some("claude".into());
+    app.settings = settings_with_providers("claude", &[("claude", true), ("grok", true)]);
+    press(&mut app, KeyCode::Char('p'));
+    let up = app.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert!(switched_provider(&up.cmds).is_none(), "Esc sends no RPC");
+    assert!(matches!(app.mode, Mode::List), "Esc dismisses the dialog");
+    assert_eq!(app.active_provider().as_deref(), Some("claude"), "provider unchanged");
+}
+
+#[test]
+fn confirm_applies_the_provider_named_in_the_dialog() {
+    // The RPC payload switches to exactly the frozen target the body showed —
+    // even if settings change while the dialog is open (target is carried, not
+    // re-derived), so the applied provider is the one the user saw.
+    let mut app = crate::test_fixtures::fixture_app();
+    app.snapshot.as_mut().unwrap().active_provider = Some("claude".into());
+    app.settings = settings_with_providers("claude", &[("claude", true), ("grok", true)]);
+    press(&mut app, KeyCode::Char('p')); // dialog: claude → grok
+    // Settings churn under the open dialog must not change what confirm applies.
+    app.settings = settings_with_providers("claude", &[("claude", true), ("codex", true)]);
+    let up = confirm_dialog(&mut app);
+    assert_eq!(switched_provider(&up.cmds).as_deref(), Some("grok"), "applies the shown target");
+    assert_eq!(app.active_provider().as_deref(), Some("grok"));
+}
+
+#[test]
+fn p_while_switch_dialog_open_does_not_stack_dialogs() {
+    let mut app = crate::test_fixtures::fixture_app();
+    app.snapshot.as_mut().unwrap().active_provider = Some("claude".into());
+    app.settings = settings_with_providers("claude", &[("claude", true), ("grok", true)]);
+    press(&mut app, KeyCode::Char('p'));
+    assert!(matches!(app.mode, Mode::Confirm { .. }));
+    // A second `p` is consumed by the open dialog (an unbound accelerator → inert
+    // no-op), not routed to CycleProvider — so no second dialog stacks and the
+    // one dialog is unchanged.
+    let up = press(&mut app, KeyCode::Char('p'));
+    assert!(switched_provider(&up.cmds).is_none(), "no RPC from a second p");
+    assert!(matches!(&app.mode, Mode::Confirm { action: ConfirmAction::SwitchProvider { .. }, .. }));
 }
 
 #[test]

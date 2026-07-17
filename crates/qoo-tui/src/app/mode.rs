@@ -364,6 +364,12 @@ pub enum ConfirmAction {
     /// clears the QUEUE range first. Mirror of [`Self::CancelTasks`] for the
     /// QUEUE re-queue (`r`) verb.
     RequeueTasks { calls: Vec<crate::event::RpcCall> },
+    /// Switch the active provider to `target` (the `p` key / provider-indicator
+    /// click). `target` is the next-enabled provider computed and frozen when
+    /// the dialog opened, so confirm applies exactly what the body showed even
+    /// if settings changed in between. On confirm: optimistic update (snapshot +
+    /// cached settings) + one `set_active_provider` `Cmd::Rpc`.
+    SwitchProvider { target: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

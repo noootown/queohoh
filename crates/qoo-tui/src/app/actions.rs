@@ -153,28 +153,26 @@ impl App {
             }
             A::CycleProvider => {
                 // Compute the next enabled provider (settings-payload order,
-                // skipping disabled, cyclic from the current). `None` = no-op:
-                // settings not fetched, fewer than two enabled providers, or the
-                // current is already the only enabled one — so no RPC is sent.
+                // skipping disabled, cyclic from the current). `None` = strict
+                // no-op (NO dialog, NO RPC): settings not fetched, fewer than two
+                // enabled providers, or the current is already the only enabled
+                // one — there is nothing to switch to.
                 match self.next_enabled_provider() {
                     Some(next) => {
-                        // Optimistic: write the new value into BOTH the live
-                        // snapshot (the indicator's reconcile source, so it flips
-                        // instantly) and the cached settings payload (so the `s`
-                        // overlay agrees). The daemon's next state broadcast
-                        // overwrites the snapshot field authoritatively.
-                        if let Some(snap) = self.snapshot.as_mut() {
-                            snap.active_provider = Some(next.clone());
-                        }
-                        if let Some(Some(p)) = self.settings.as_mut() {
-                            p.active_provider = next.clone();
-                        }
-                        cmds.push(self.dispatch_rpc(
-                            "switch provider",
-                            "set_active_provider",
-                            serde_json::json!({ "provider": next }),
-                            RpcOpts::default(),
-                        ));
+                        // Open a confirm dialog instead of switching immediately.
+                        // The target is FROZEN into the action here so confirm
+                        // applies exactly what the body shows, even if settings
+                        // change while the dialog is open. The optimistic update +
+                        // RPC live in `run_confirm_action` (fired on confirm).
+                        let current =
+                            self.active_provider().unwrap_or_else(|| "none".into());
+                        self.mode = Mode::Confirm {
+                            title: "Switch provider".into(),
+                            body: vec![format!("{current} → {next}")],
+                            confirm_label: "Switch".into(),
+                            action: ConfirmAction::SwitchProvider { target: next },
+                            focus: crate::hit::ButtonKind::Confirm,
+                        };
                         true
                     }
                     None => false,
