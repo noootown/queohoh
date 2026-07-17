@@ -494,7 +494,7 @@ fn queue_g_noop_outside_tmux_sets_status() {
     let mut a = app_with(failed_task_snapshot());
     a.inside_tmux = false;
     let up = a.update(key('g'));
-    assert!(up.cmds.is_empty(), "no tmux → no TmuxResume");
+    assert!(up.cmds.is_empty(), "no tmux → no Goto");
     assert!(a.status_line.as_deref().unwrap_or("").contains("tmux"), "status: {:?}", a.status_line);
 }
 
@@ -531,7 +531,8 @@ fn queue_g_no_worktree_sets_status_when_session_exists_but_no_worktree() {
 #[test]
 fn queue_g_resumes_the_selected_tasks_session() {
     // Happy path: a run record with both a session id and a worktree path
-    // (keyed to the selected task) resumes it via `Cmd::TmuxResume`.
+    // (keyed to the selected task) resumes it via `Cmd::Goto` with the legacy
+    // default provider (`claude`) when the model is untagged.
     let mut a = app_with(failed_task_snapshot());
     a.inside_tmux = true;
     a.run_files = Some((
@@ -543,34 +544,89 @@ fn queue_g_resumes_the_selected_tasks_session() {
         }),
     ));
     let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id, .. }]
-        if path == "/repos/acme-flaky" && session_id == "sess-flaky"));
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+        if path == "/repos/acme-flaky" && cmd == "claude --resume sess-flaky"));
 }
 
 #[test]
-fn queue_g_threads_goto_command_into_tmux_resume() {
-    // Sibling of g_on_worktree_threads_goto_command_into_open_tmux (worktree
-    // path): identical happy-path setup to
-    // queue_g_resumes_the_selected_tasks_session above, but with a workspace
-    // goto_command override configured on the snapshot — the emitted
-    // TmuxResume must carry it through, same as OpenTmux does for worktrees.
-    let snap = StateSnapshot { goto_command: Some("init-tab {cmd}".into()), ..failed_task_snapshot() };
+fn queue_g_uses_provider_from_task_model_and_bin_default() {
+    // Task model `grok/…` (no run meta) → provider grok; bin defaults to the
+    // provider name when settings has no override → `grok --resume …`.
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].model = Some("grok/grok-4.5".into());
     let mut a = app_with(snap);
     a.inside_tmux = true;
     a.run_files = Some((
         "t1".to_string(),
         Box::new(RunFiles {
-            session_id: Some("sess-flaky".into()),
+            session_id: Some("sess-g".into()),
             worktree_path: Some("/repos/acme-flaky".into()),
             ..Default::default()
         }),
     ));
     let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..],
-        [Cmd::TmuxResume { path, session_id, goto_command }]
-        if path == "/repos/acme-flaky"
-        && session_id == "sess-flaky"
-        && goto_command.as_deref() == Some("init-tab {cmd}")));
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+        if path == "/repos/acme-flaky" && cmd == "grok --resume sess-g"),
+        "cmds: {:?}", up.cmds);
+}
+
+#[test]
+fn queue_g_prefers_run_meta_provider_over_bare_model_id() {
+    // Daemon writes concrete CLI model ids without a slash (`grok-4.5`) plus a
+    // separate `provider` field. Prefer that field so resume doesn't fall
+    // through to `claude` when the task model is null / a different provider.
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].model = Some("claude/opus".into());
+    let mut a = app_with(snap);
+    a.inside_tmux = true;
+    a.run_files = Some((
+        "t1".to_string(),
+        Box::new(RunFiles {
+            session_id: Some("sess-g".into()),
+            worktree_path: Some("/repos/acme-flaky".into()),
+            meta: Some(crate::runfiles::RunMeta {
+                model: Some("grok-4.5".into()),
+                provider: Some("grok".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    ));
+    let up = a.update(key('g'));
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+        if path == "/repos/acme-flaky" && cmd == "grok --resume sess-g"),
+        "cmds: {:?}", up.cmds);
+}
+
+#[test]
+fn queue_g_uses_settings_bin_override_for_provider() {
+    // Settings pins grok's bin → resume cmd uses that path, not bare `grok`.
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].model = Some("grok/grok-4.5".into());
+    let mut a = app_with(snap);
+    a.inside_tmux = true;
+    a.settings = Some(Some(crate::ipc::types::SettingsPayload {
+        providers: vec![
+            crate::ipc::types::SettingsProvider {
+                name: "grok".into(),
+                enabled: true,
+                bin: Some("/opt/grok".into()),
+            },
+        ],
+        ..Default::default()
+    }));
+    a.run_files = Some((
+        "t1".to_string(),
+        Box::new(RunFiles {
+            session_id: Some("sess-g".into()),
+            worktree_path: Some("/repos/acme-flaky".into()),
+            ..Default::default()
+        }),
+    ));
+    let up = a.update(key('g'));
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { cmd, .. }]
+        if cmd == "/opt/grok --resume sess-g"),
+        "cmds: {:?}", up.cmds);
 }
 
 #[test]
@@ -608,8 +664,8 @@ fn loaded(worktree: &str) -> Event {
     Event::SessionsLoaded {
         worktree: worktree.into(),
         result: Ok(vec![
-            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000, model: Some("claude/sonnet".into()) },
-            SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 1_000, model: None },
+            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000, model: Some("claude/sonnet".into()), provider: None },
+            SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 1_000, model: None, provider: None },
         ]),
     }
 }
@@ -772,28 +828,80 @@ fn x_on_worktree_row_opens_confirm_remove_and_y_dispatches_rpc() {
         && call.params == serde_json::json!({"repo": "platform", "name": "platform.wt-a"})));
 }
 
-#[test]
-fn g_on_worktree_row_opens_tmux_when_inside_tmux() {
-    let mut a = app_with(worktree_snapshot());
-    a.inside_tmux = true;
-    focus_worktrees(&mut a);
-    let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::OpenTmux { path, .. }] if path == "/wt/wt-a"));
+/// Seed enabled providers (and optional bins) so worktree `g` can open the
+/// provider picker instead of the "settings not loaded" status line.
+fn with_providers(a: &mut App, providers: Vec<crate::ipc::types::SettingsProvider>) {
+    a.settings = Some(Some(crate::ipc::types::SettingsPayload {
+        providers,
+        ..Default::default()
+    }));
 }
 
 #[test]
-fn g_on_worktree_threads_goto_command_into_open_tmux() {
-    let snap = StateSnapshot {
-        goto_command: Some("init-tab {cmd}".into()),
-        ..worktree_snapshot()
-    };
-    let mut a = app_with(snap);
+fn g_on_worktree_row_opens_provider_pick_when_inside_tmux() {
+    let mut a = app_with(worktree_snapshot());
     a.inside_tmux = true;
+    with_providers(
+        &mut a,
+        vec![
+            crate::ipc::types::SettingsProvider {
+                name: "claude".into(),
+                enabled: true,
+                bin: None,
+            },
+            crate::ipc::types::SettingsProvider {
+                name: "grok".into(),
+                enabled: true,
+                bin: Some("/opt/grok".into()),
+            },
+        ],
+    );
     focus_worktrees(&mut a);
     let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..],
-        [Cmd::OpenTmux { path, goto_command }]
-        if path == "/wt/wt-a" && goto_command.as_deref() == Some("init-tab {cmd}")));
+    assert!(up.cmds.is_empty(), "picker opens, no Goto yet: {:?}", up.cmds);
+    match &a.mode {
+        Mode::ProviderPick { path, choices, index } => {
+            assert_eq!(path, "/wt/wt-a");
+            assert_eq!(*index, 0);
+            assert_eq!(
+                choices,
+                &vec![
+                    ("claude".into(), "claude".into()),
+                    ("grok".into(), "/opt/grok".into()),
+                ]
+            );
+        }
+        other => panic!("expected ProviderPick, got {other:?}"),
+    }
+}
+
+#[test]
+fn g_on_worktree_provider_pick_enter_emits_goto_with_bin() {
+    let mut a = app_with(worktree_snapshot());
+    a.inside_tmux = true;
+    with_providers(
+        &mut a,
+        vec![
+            crate::ipc::types::SettingsProvider {
+                name: "claude".into(),
+                enabled: true,
+                bin: None,
+            },
+            crate::ipc::types::SettingsProvider {
+                name: "grok".into(),
+                enabled: true,
+                bin: Some("/opt/grok".into()),
+            },
+        ],
+    );
+    focus_worktrees(&mut a);
+    a.update(key('g'));
+    a.update(down()); // highlight grok
+    let up = a.update(enter());
+    assert!(matches!(a.mode, Mode::List));
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+        if path == "/wt/wt-a" && cmd == "/opt/grok"),
+        "cmds: {:?}", up.cmds);
 }
 
 #[test]
@@ -802,7 +910,7 @@ fn g_on_worktree_row_noop_outside_tmux_sets_status() {
     a.inside_tmux = false;
     focus_worktrees(&mut a);
     let up = a.update(key('g'));
-    assert!(up.cmds.is_empty(), "no tmux → no OpenTmux");
+    assert!(up.cmds.is_empty(), "no tmux → no provider pick / Goto");
     assert!(a.status_line.as_deref().unwrap_or("").contains("tmux"), "status: {:?}", a.status_line);
 }
 
@@ -848,9 +956,18 @@ fn r_and_x_are_noops_on_session_rows_but_g_works() {
     assert!(xu.cmds.is_empty());
     assert!(a.status_line.is_some(), "x sets a status line on a session row");
 
-    // `g`: opens the session's cwd in tmux (works for session rows too).
+    // `g`: opens the provider picker at the session's cwd (works for session rows too).
+    with_providers(
+        &mut a,
+        vec![crate::ipc::types::SettingsProvider {
+            name: "claude".into(),
+            enabled: true,
+            bin: None,
+        }],
+    );
     let gu = a.update(key('g'));
-    assert!(matches!(&gu.cmds[..], [Cmd::OpenTmux { path, .. }] if path == "/wt/wt-a/nested"));
+    assert!(gu.cmds.is_empty());
+    assert!(matches!(&a.mode, Mode::ProviderPick { path, .. } if path == "/wt/wt-a/nested"));
 }
 
 #[test]
@@ -871,9 +988,10 @@ fn a_no_longer_opens_a_menu_on_queue() {
 }
 
 #[test]
-fn tasks_pane_run_zero_arg_def_dispatches_and_closes() {
-    // tasks-pane Enter runs the highlighted def directly (no menu hop). A
-    // zero-arg def dispatches runDefinition immediately.
+fn tasks_pane_run_zero_arg_def_opens_run_form() {
+    // tasks-pane `r` runs the highlighted def directly (no menu hop). A
+    // zero-arg def opens the run form with the model picker (no immediate
+    // runDefinition hop — confirm/override the effective-chain head first).
     let snap = StateSnapshot {
         projects: vec![Project { name: "platform".into(), github_id: None }],
         ..Default::default()
@@ -886,21 +1004,25 @@ fn tasks_pane_run_zero_arg_def_dispatches_and_closes() {
         d
     }]);
     focus_tasks(&mut a);
-    let u = a.update(key('r')); // single `r` → immediate dispatch (zero-arg)
-    assert!(matches!(a.mode, Mode::List));
+    let u = a.update(key('r')); // single `r` → open run form
+    match &a.mode {
+        Mode::DefArgs { def_name, args, state, .. } => {
+            assert_eq!(def_name, "lint");
+            assert!(args.is_empty());
+            assert_eq!(state.fields[0].label, "model");
+        }
+        other => panic!("expected DefArgs for lint, got {other:?}"),
+    }
     assert!(
-        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, invalidate_defs_for, .. }
-            if call.method == "runDefinition"
-                && call.params["name"] == "lint"
-                && call.params["source"] == "tui"
-                && invalidate_defs_for.as_deref() == Some("platform"))),
-        "expected an immediate runDefinition dispatch, got {:?}",
+        u.cmds.iter().any(|c| matches!(c, Cmd::FetchDefinition { repo, name }
+            if repo == "platform" && name == "lint")),
+        "expected FetchDefinition for lint, got {:?}",
         u.cmds,
     );
 }
 
 #[test]
-fn tasks_pane_d_dispatches_discover_for_a_discovery_def() {
+fn tasks_pane_d_opens_discover_confirm_without_rpc() {
     let snap = StateSnapshot {
         projects: vec![Project { name: "platform".into(), github_id: None }],
         ..Default::default()
@@ -915,6 +1037,54 @@ fn tasks_pane_d_dispatches_discover_for_a_discovery_def() {
     }]);
     focus_tasks(&mut a);
     let u = a.update(key('d'));
+    // `d` opens Confirm only — no RPC and no spinner until the user confirms.
+    assert!(
+        u.cmds.iter().all(|c| !matches!(c, Cmd::Rpc { .. })),
+        "discover must not RPC before confirm, got {:?}",
+        u.cmds,
+    );
+    assert!(a.discovering.is_empty(), "spinner waits for confirm");
+    match &a.mode {
+        Mode::Confirm {
+            title,
+            body,
+            confirm_label,
+            action: ConfirmAction::DiscoverDef { repo, name },
+            ..
+        } => {
+            assert_eq!(title, "Run discovery");
+            assert_eq!(confirm_label, "Discover");
+            assert_eq!(repo, "platform");
+            assert_eq!(name, "pr-review");
+            assert_eq!(
+                body,
+                &vec![
+                    "Run discovery for platform/pr-review?".to_string(),
+                    "Fans out one task per discovered item.".to_string(),
+                ],
+            );
+        }
+        other => panic!("expected DiscoverDef confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn discover_confirm_dispatches_rpc_and_starts_spinner() {
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.defs_by_project.insert("platform".into(), vec![{
+        let mut d = crate::ipc::types::DefinitionSummary::default();
+        d.repo = "platform".into();
+        d.name = "pr-review".into();
+        d.has_discovery = true;
+        d
+    }]);
+    focus_tasks(&mut a);
+    a.update(key('d'));
+    let u = a.update(enter());
     assert!(matches!(a.mode, Mode::List));
     assert!(
         u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, invalidate_defs_for, .. }
@@ -929,6 +1099,28 @@ fn tasks_pane_d_dispatches_discover_for_a_discovery_def() {
     // that animates it) until the repo's def refetch lands.
     assert!(a.discovering.contains("platform/pr-review"));
     assert!(a.wants_tick(), "an in-flight discover must keep the tick alive for the throbber");
+}
+
+#[test]
+fn discover_confirm_cancel_leaves_no_rpc_or_spinner() {
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.defs_by_project.insert("platform".into(), vec![{
+        let mut d = crate::ipc::types::DefinitionSummary::default();
+        d.repo = "platform".into();
+        d.name = "pr-review".into();
+        d.has_discovery = true;
+        d
+    }]);
+    focus_tasks(&mut a);
+    a.update(key('d'));
+    let u = a.update(esc());
+    assert!(matches!(a.mode, Mode::List), "esc dismisses");
+    assert!(u.cmds.is_empty(), "esc dispatches nothing");
+    assert!(a.discovering.is_empty(), "cancel must not start the spinner");
 }
 
 #[test]

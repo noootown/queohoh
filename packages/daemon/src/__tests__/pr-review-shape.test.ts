@@ -118,6 +118,7 @@ async function setup() {
 		registry,
 		config,
 		settings: new SettingsStore(join(base, "state"), config.providers),
+		lineage,
 		onMutation: () => {},
 	});
 	const sock = join(base, "d.sock");

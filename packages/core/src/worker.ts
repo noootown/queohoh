@@ -199,8 +199,12 @@ async function resolveRunContext(
 	// project) tables — the caller's (engine, Task 5) job, not this function's.
 	// A task/definition with no `model:` of its own passes `null`, so the chain
 	// comes from `deps.defaultModels` (headed onto `activeProvider`).
+	//
+	// Precedence is task.model first: a TUI def-run exact pick (or enqueue)
+	// stamps an override on the task and must beat the def's authored list.
+	// Without a stamp, fall through to def.model, then default_models.
 	const providers: ProviderConfig[] = deps.providers ?? DEFAULT_PROVIDERS;
-	const modelSpec = def?.model ?? task.model ?? null;
+	const modelSpec = task.model ?? def?.model ?? null;
 	const chainResult = resolveModelChain(
 		modelSpec,
 		deps.catalog,
@@ -284,8 +288,8 @@ async function resolveRunContext(
 	const providerConfig = providers.find((p) => p.name === head.provider);
 
 	// Precedence: definition's own `timeout:` > per-task override (ad-hoc/chain
-	// step, set via the MCP `timeout` param) > daemon default. Mirrors `model`
-	// immediately above.
+	// step, set via the MCP `timeout` param) > daemon default. Unlike `model`
+	// (task beats def so TUI/enqueue overrides win), timeout keeps def-first.
 	const timeoutMs = def?.timeoutMs ?? task.timeoutMs ?? deps.defaults.timeoutMs;
 
 	return {

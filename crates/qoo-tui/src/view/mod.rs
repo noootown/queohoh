@@ -261,6 +261,9 @@ pub fn render(app: &mut App, frame: &mut ratatui::Frame) -> HitMap {
                     frame, &mut hits, &title, items, *loading, *index, query, now_ms, *focus,
                 );
             }
+            crate::app::Mode::ProviderPick { choices, index, .. } => {
+                modal::render_provider_pick(frame, &mut hits, choices, *index);
+            }
             crate::app::Mode::Form { .. } | crate::app::Mode::DefArgs { .. } => {
                 unreachable!("handled by the `if let` chain above")
             }
@@ -720,7 +723,7 @@ mod tests {
         use crate::ipc::types::{
             CatalogEntry, DefaultModels, DefaultModelsProject, SettingsPayload, SettingsProvider,
         };
-        let prov = |name: &str, enabled: bool| SettingsProvider { name: name.into(), enabled };
+        let prov = |name: &str, enabled: bool| SettingsProvider { name: name.into(), enabled, bin: None };
         let cat = |provider: &str, id: &str, label: &str, hidden: bool| CatalogEntry {
             provider: provider.into(),
             id: id.into(),

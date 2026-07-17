@@ -514,32 +514,52 @@ pub fn render_session_pick(
         height: inner.height.saturating_sub(1 + bottom_block),
     };
 
-    // Display rows: (optional MenuItem view-index, text, style). Rows 0/1 carry an
-    // icon; a dim rule separates them from the sessions; only real rows carry a
-    // `MenuItem` (rule + loading placeholder are inert).
+    // Display rows: (optional MenuItem view-index, styled spans). Rows 0/1 carry
+    // an icon; a dim rule separates them from the sessions; only real rows carry
+    // a `MenuItem` (rule + loading placeholder are inert). Session rows use
+    // multi-span so a dim provider tag can sit just left of the right-floated age.
+    type SpannedLine = (Option<usize>, Vec<(String, Style)>);
     let sel = |vix: usize| if vix == index { p.selection() } else { Style::default().fg(p.fg) };
-    let mut lines: Vec<(Option<usize>, String, Style)> = vec![
-        (Some(0), format!("{GLYPH_NEW_SESSION} {NEW_SESSION}"), sel(0)),
-        (Some(1), format!("{GLYPH_CREATE_WORKTREE} {CREATE_WT}"), sel(1)),
-        (None, RULE_CHAR.to_string().repeat(inner_w), Style::default().fg(p.border)),
+    let line = |text: String, style: Style| -> Vec<(String, Style)> { vec![(text, style)] };
+    let mut lines: Vec<SpannedLine> = vec![
+        (Some(0), line(format!("{GLYPH_NEW_SESSION} {NEW_SESSION}"), sel(0))),
+        (Some(1), line(format!("{GLYPH_CREATE_WORKTREE} {CREATE_WT}"), sel(1))),
+        (None, line(RULE_CHAR.to_string().repeat(inner_w), Style::default().fg(p.border))),
     ];
     if loading {
-        lines.push((None, "loading sessions…".into(), p.dim_style()));
+        lines.push((None, line("loading sessions…".into(), p.dim_style())));
     } else {
         for (n, &i) in filtered.iter().enumerate() {
             let vix = n + 2;
+            let base = sel(vix);
             let age = relative_age(items[i].mtime_ms, now_ms);
-            // Float the age to the right edge as its own column: clip the label to
-            // leave room for the age + a 2-col gap, then pad the gap so the age
-            // ends flush right.
+            // Right column: optional dim `provider` then age, flush right.
+            // Example: `PR Resolve Comments              claude  1h ago`
             let age_w = age.chars().count();
-            let label = clip(&items[i].label, inner_w.saturating_sub(age_w + 2));
-            let gap = inner_w.saturating_sub(label.chars().count() + age_w);
-            let text = format!("{label}{}{age}", " ".repeat(gap));
-            lines.push((Some(vix), text, sel(vix)));
+            let prov = items[i].provider.as_deref();
+            let prov_w = prov.map(|pr| pr.chars().count() + 1 /* trailing space */).unwrap_or(0);
+            let right_w = age_w + prov_w;
+            let label = clip(&items[i].label, inner_w.saturating_sub(right_w + 2));
+            let gap = inner_w.saturating_sub(label.chars().count() + right_w);
+            // Provider stays dim even under the selection bar (dim fg + selection
+            // bg when highlighted) so the tag reads as metadata, not body text.
+            let prov_style = if vix == index {
+                Style::default().fg(p.dim).bg(p.selection_bg)
+            } else {
+                p.dim_style()
+            };
+            let mut spans = vec![
+                (label, base),
+                (" ".repeat(gap), base),
+            ];
+            if let Some(pr) = prov {
+                spans.push((format!("{pr} "), prov_style));
+            }
+            spans.push((age, base));
+            lines.push((Some(vix), spans));
         }
     }
-    for (row, (menu_ix, text, style)) in lines.iter().enumerate() {
+    for (row, (menu_ix, spans)) in lines.iter().enumerate() {
         if row as u16 >= rows_area.height {
             break;
         }
@@ -548,13 +568,25 @@ pub fn render_session_pick(
         if let Some(vix) = menu_ix {
             hit.push(row_rect, HitTarget::MenuItem(*vix));
         }
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                pad_clip(text, rows_area.width as usize),
-                *style,
-            ))),
-            row_rect,
-        );
+        // Pad the last span (or a trailing space of its style) so selection bars
+        // and single-style rows still fill the full row width.
+        let row_w = rows_area.width as usize;
+        let used: usize = spans.iter().map(|(t, _)| t.chars().count()).sum();
+        let mut out: Vec<Span> = spans
+            .iter()
+            .map(|(t, style)| Span::styled(t.clone(), *style))
+            .collect();
+        if used < row_w {
+            let pad_style = spans.last().map(|(_, s)| *s).unwrap_or_default();
+            out.push(Span::styled(" ".repeat(row_w - used), pad_style));
+        } else if used > row_w {
+            // Defensive: collapse to a single pad_clip when spans overshoot
+            // (shouldn't happen — clip budget is computed against inner_w).
+            let flat: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+            let style = spans.first().map(|(_, s)| *s).unwrap_or_default();
+            out = vec![Span::styled(pad_clip(&flat, row_w), style)];
+        }
+        frame.render_widget(Paragraph::new(Line::from(out)), row_rect);
     }
 }
 
@@ -698,8 +730,8 @@ mod menu_view_tests {
         query: &str,
     ) -> (String, HitMap) {
         let items = vec![
-            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 0, model: None },
-            SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 0, model: None },
+            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 0, model: None, provider: None },
+            SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 0, model: None, provider: None },
         ];
         let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
         let mut hit = HitMap::default();
@@ -838,6 +870,7 @@ mod menu_view_tests {
             label: "x".repeat(200),
             mtime_ms: 0,
             model: None,
+            provider: None,
         }];
         let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hit = HitMap::default();
@@ -855,6 +888,62 @@ mod menu_view_tests {
         }
         assert!(s.contains("ago"), "age suffix must always render");
         assert!(s.contains('…'), "long label is clipped with an ellipsis");
+    }
+
+    #[test]
+    fn session_row_shows_dim_provider_before_age() {
+        // Row layout: label left; dim provider (when Some) then age right-floated.
+        // Example: `# PR Resolve Comments              claude  1h ago`
+        let items = vec![
+            SessionChoice {
+                session_id: "s1".into(),
+                label: "PR Resolve Comments".into(),
+                mtime_ms: 0,
+                model: None,
+                provider: Some("claude".into()),
+            },
+            SessionChoice {
+                session_id: "s2".into(),
+                label: "No provider session".into(),
+                mtime_ms: 0,
+                model: None,
+                provider: None,
+            },
+        ];
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let mut hit = HitMap::default();
+        term.draw(|f| {
+            render_session_pick(
+                f,
+                &mut hit,
+                "wt",
+                &items,
+                false,
+                2,
+                "",
+                3_600_000,
+                ButtonKind::Confirm,
+            );
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut s = String::new();
+        for y in 0..20 {
+            for x in 0..80 {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        let with = s.lines().find(|l| l.contains("PR Resolve Comments")).expect("provider row");
+        let without = s.lines().find(|l| l.contains("No provider session")).expect("no-provider row");
+        assert!(with.contains("claude"), "provider tag renders: {with:?}");
+        assert!(with.contains("ago"), "age still renders: {with:?}");
+        let prov_i = with.find("claude").unwrap();
+        let age_i = with.rfind("ago").unwrap();
+        assert!(prov_i < age_i, "provider sits before age: {with:?}");
+        // No stray provider token when None — only the known label/age tokens.
+        assert!(!without.contains("claude"), "None provider leaves no tag: {without:?}");
+        assert!(without.contains("ago"), "age still renders without provider: {without:?}");
     }
 
     #[test]

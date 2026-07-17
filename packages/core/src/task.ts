@@ -65,12 +65,12 @@ const TaskMetaSchema = z
 		error: z.string().nullable().default(null),
 		session: SessionModeSchema.default("fresh"),
 		resume_session_id: z.string().nullable().default(null),
-		// A single `provider/label` ref, an ordered fallback list, or null (falls
-		// back to the definition's model, then `default_models`) — model catalog
-		// design spec Section 2. Bare tier aliases are no longer accepted; a
-		// legacy value is validated (and rejected) at resolution time by
-		// `resolveModelChain`/`findModel`, not here (this schema only shapes the
-		// field, it doesn't know the catalog).
+		// A single `provider/label` ref, an ordered fallback list, or null.
+		// Worker resolves `task.model ?? def?.model ?? default_models` so a
+		// stamped override (TUI def-run pick / enqueue) beats the def list —
+		// model catalog design spec Section 2. Bare tier aliases are no longer
+		// accepted; a legacy value is validated (and rejected) at resolution
+		// time by `resolveModelChain`/`findModel`, not here.
 		model: z
 			.union([z.string(), z.array(z.string())])
 			.nullable()
@@ -78,7 +78,7 @@ const TaskMetaSchema = z
 		// Per-task hard wall-clock ceiling override, in ms (additive; absent on
 		// legacy files → null). Set from the MCP `timeout` param (enqueue_task /
 		// enqueue_chain); resolution precedence at run time is definition >
-		// per-task > daemon default (mirrors `model` immediately above).
+		// per-task > daemon default (unlike model, which is task-first).
 		timeout_ms: z.number().nullable().default(null),
 		// Task-chain linkage (additive; absent on legacy files → null). Members of
 		// one chain share `chain_id`; `chain_seq` is the 0-based position (head =
@@ -136,8 +136,9 @@ export interface TaskInstance {
 	resumeSessionId: string | null;
 	/** Requested model(s): a single `provider/label` (or `provider/id`) ref, an
 	 * ordered fallback list (top→bottom priority — a single-entry list, and a
-	 * bare string, never rotate), or null (falls back to the definition's
-	 * model, then `default_models`). See `models.ts`'s `resolveModelChain`. */
+	 * bare string, never rotate), or null. Worker resolves
+	 * `task.model ?? def?.model ?? default_models` so a stamped override beats
+	 * the def list. See `models.ts`'s `resolveModelChain`. */
 	model: string | string[] | null;
 	/** Per-task hard wall-clock ceiling override, in ms; null = fall back to the
 	 * definition's `timeout:` (if any) or the daemon default. See

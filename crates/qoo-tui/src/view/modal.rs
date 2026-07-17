@@ -183,6 +183,71 @@ pub fn render_confirm(
     );
 }
 
+/// Small provider-pick list for worktree `g`: accent-bordered modal titled
+/// "Goto — provider", one row per enabled provider name (highlighted row
+/// reversed+bold), no buttons (Enter/Esc are the established picker
+/// convention). Registers the body as `Modal` and each row as `MenuItem(i)`.
+pub fn render_provider_pick(
+    frame: &mut ratatui::Frame,
+    hit: &mut HitMap,
+    choices: &[(String, String)],
+    index: usize,
+) {
+    let p = Palette::default();
+    let title = "Goto — provider";
+    let names: Vec<&str> = choices.iter().map(|(n, _)| n.as_str()).collect();
+    let inner_w = names
+        .iter()
+        .map(|n| n.chars().count())
+        .chain([title.chars().count() + 2])
+        .max()
+        .unwrap_or(12)
+        .max(12);
+    let area = frame.area();
+    // border ring (2) + horizontal padding (4).
+    let width = (inner_w as u16 + 6).clamp(20, 48).min(area.width);
+    // one row per choice, plus border ring (2) and vertical padding (2).
+    let height = ((names.len() as u16).max(1) + 4).min(area.height);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let rect = Rect { x, y, width, height };
+
+    frame.render_widget(Clear, rect);
+    hit.push(rect, HitTarget::Modal);
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.accent))
+        .padding(MODAL_PADDING);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let selected = Style::default().fg(p.accent).add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let plain = Style::default().fg(p.fg);
+    for (i, name) in names.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let row = Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        };
+        let style = if i == index { selected } else { plain };
+        // Leading space matches list-picker row padding so the highlight reads
+        // as a full-width selection bar.
+        let label = format!(" {name}");
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), row);
+        hit.push(row, HitTarget::MenuItem(i));
+    }
+}
+
 #[cfg(test)]
 mod modal_view_tests {
     use super::*;

@@ -100,6 +100,58 @@ impl App {
         }
     }
 
+    /// `Mode::ProviderPick` key handling (worktree `g`): j/k/arrows move the
+    /// highlight (clamped, non-circular), Enter confirms the selected provider
+    /// into a `Cmd::Goto`, Esc dismisses. No type-to-filter — the enabled list
+    /// is short (typically 1–3 providers).
+    pub(super) fn provider_pick_key(&mut self, ev: &crossterm::event::KeyEvent) -> Update {
+        use crossterm::event::{KeyCode::*, KeyModifiers};
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let Mode::ProviderPick { choices, index, .. } = &self.mode else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        let len = choices.len();
+        if len == 0 {
+            self.mode = Mode::List;
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let cur = *index;
+        match ev.code {
+            Esc | Char('q') => {
+                self.mode = Mode::List;
+                Update { dirty: true, cmds: vec![] }
+            }
+            Enter => self.provider_pick_confirm(),
+            Up => self.provider_pick_move(cur, len, -1),
+            Down => self.provider_pick_move(cur, len, 1),
+            Char('k') | Char('p') if ctrl => self.provider_pick_move(cur, len, -1),
+            Char('j') | Char('n') if ctrl => self.provider_pick_move(cur, len, 1),
+            // Bare j/k (no modifiers) also move — list-pane muscle memory.
+            Char('k') if !ctrl => self.provider_pick_move(cur, len, -1),
+            Char('j') if !ctrl => self.provider_pick_move(cur, len, 1),
+            _ => Update { dirty: false, cmds: vec![] },
+        }
+    }
+
+    /// Move the provider-pick highlight by `dir` (±1), clamped (non-circular).
+    fn provider_pick_move(&mut self, cur: usize, len: usize, dir: i32) -> Update {
+        if len == 0 {
+            return Update { dirty: false, cmds: vec![] };
+        }
+        let next = if dir < 0 {
+            cur.saturating_sub(1)
+        } else {
+            (cur + 1).min(len - 1)
+        };
+        if next == cur {
+            return Update { dirty: false, cmds: vec![] };
+        }
+        if let Mode::ProviderPick { index, .. } = &mut self.mode {
+            *index = next;
+        }
+        Update { dirty: true, cmds: vec![] }
+    }
+
     /// Current picker preview scroll (0 outside DefPick/DefArgs). Both the run
     /// form (DefArgs) and the DefPick picker carry their scroll on the mode.
     fn menu_preview_scroll_value(&self) -> usize {

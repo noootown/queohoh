@@ -5,6 +5,7 @@
 //! change).
 
 use super::*;
+use crate::ipc::types::ModelRef;
 use crate::view::form::{Field, FieldKind, FocusKind, FormState};
 
 /// Initial value for one arg when building its form field: `fixed` wins, then
@@ -110,9 +111,11 @@ impl App {
 
     /// Open the run form. `fixed`/`initial` and `worktree` are caller-decided;
     /// `worktrees` seeds a worktree-typed arg's combobox (the repo's worktree
-    /// names, from the call site's `active_worktree_names()`). Returns the
-    /// prompt-fetch command(s) for the def's right panel (empty when the full
-    /// definition is already cached / in flight).
+    /// names, from the call site's `active_worktree_names()`). `def_model` is the
+    /// def's authored `model:` (drives the trailing effective-chain model
+    /// picker — see [`Self::def_model_field`]). Returns the prompt-fetch
+    /// command(s) for the def's right panel (empty when the full definition is
+    /// already cached / in flight).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn open_def_args(
         &mut self,
@@ -124,17 +127,26 @@ impl App {
         worktree: Option<String>,
         worktrees: Vec<String>,
         branches: Vec<String>,
+        def_model: Option<ModelRef>,
     ) -> Vec<Cmd> {
         let cmds = self.ensure_full_def(&repo, &name);
-        let state = self.form_from_args(
-            &name,
-            &args,
-            &fixed,
-            &initial,
-            &worktrees,
-            &branches,
-            worktree.as_deref(),
-        );
+        // Arg fields first (declaration order = positional `args` on submit),
+        // then the effective-chain model picker. Building the list before
+        // `FormState::new` keeps focus on the first non-readonly field (which
+        // may be the model when every arg is fixed / the def is zero-arg).
+        let mut fields = self
+            .form_from_args(
+                &name,
+                &args,
+                &fixed,
+                &initial,
+                &worktrees,
+                &branches,
+                worktree.as_deref(),
+            )
+            .fields;
+        fields.push(self.def_model_field(&repo, def_model.as_ref()));
+        let state = FormState::new(&name, "Run", fields);
         self.mode = Mode::DefArgs {
             state,
             repo,
@@ -221,10 +233,11 @@ impl App {
         Update { dirty: true, cmds }
     }
 
-    /// Activate the def at `index` in the open picker: zero-arg defs dispatch
-    /// `runDefinition` against the targeted worktree immediately; otherwise open
-    /// the args form with the worktree branch driving source/branch/ticket as
-    /// FIXED.
+    /// Activate the def at `index` in the open picker: open the run form with
+    /// the worktree branch driving source/branch/ticket as FIXED, plus the
+    /// effective-chain model picker (preselected to chain\[0\]). Zero-arg defs
+    /// still open the form so the operator can confirm/override the model —
+    /// there is no immediate `runDefinition` hop.
     fn def_pick_activate(&mut self, index: usize) -> Update {
         let Mode::DefPick { defs, worktree, branch, .. } = &self.mode else {
             return Update { dirty: false, cmds: vec![] };
@@ -234,21 +247,23 @@ impl App {
         };
         let worktree = worktree.clone();
         let branch = branch.clone();
-        if def.args.is_empty() {
-            self.mode = Mode::List;
-            return Update {
-                dirty: true,
-                cmds: vec![Self::run_definition_cmd(&def.repo, &def.name, &[], worktree.as_deref(), None)],
-            };
-        }
         let fixed = branch
             .as_deref()
             .map(crate::worktree_context::context_arg_values)
             .unwrap_or_default();
         let worktrees = self.active_worktree_names();
         let branches = self.active_worktree_branches();
-        let cmds = self
-            .open_def_args(def.repo, def.name, def.args, fixed, HashMap::new(), worktree, worktrees, branches);
+        let cmds = self.open_def_args(
+            def.repo,
+            def.name,
+            def.args,
+            fixed,
+            HashMap::new(),
+            worktree,
+            worktrees,
+            branches,
+            def.model,
+        );
         Update { dirty: true, cmds }
     }
 
@@ -404,7 +419,9 @@ impl App {
     /// missing field (the row is flagged via `error`, focus moved to it). When
     /// the def has a worktree-typed arg, its field value is resolved to a
     /// canonical ref (`resolve_target_ref`) and sent as `params.ref` (the
-    /// worktree param is then suppressed — see `run_definition_cmd`).
+    /// worktree param is then suppressed — see `run_definition_cmd`). The
+    /// trailing model field (appended by [`Self::open_def_args`]) is peeled off
+    /// and sent as a 1-entry exact `params.model` when non-empty.
     fn submit_def_args(&mut self) -> Update {
         // The repo's worktree names for the exact-match branch of the ref
         // resolution — read before the `self.mode` mutable borrow.
@@ -414,19 +431,25 @@ impl App {
         };
         match state.validate() {
             Ok(values) => {
+                // Positional args are the first `args.len()` fields; the trailing
+                // model picker (when present) sits at index `args.len()`.
+                let n_args = args.len();
+                let arg_values: Vec<String> = values.iter().take(n_args).cloned().collect();
+                let model = values.get(n_args).cloned().filter(|m| !m.is_empty());
                 // A worktree-typed arg's value → canonical ref; no such arg keeps
                 // the old positional-only behavior (target_ref None).
                 let target_ref = args
                     .iter()
                     .position(ArgSpec::is_worktree)
-                    .and_then(|i| values.get(i))
+                    .and_then(|i| arg_values.get(i))
                     .map(|value| resolve_target_ref(value, &worktree_names));
                 let cmd = Self::run_definition_cmd(
                     repo,
                     def_name,
-                    &values,
+                    &arg_values,
                     initial_worktree.as_deref(),
                     target_ref.as_deref(),
+                    model.as_deref(),
                 );
                 self.mode = Mode::List;
                 Update { dirty: true, cmds: vec![cmd] }

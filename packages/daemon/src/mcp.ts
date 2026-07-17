@@ -149,7 +149,7 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.union([z.string(), z.array(z.string())])
 				.optional()
 				.describe(
-					"Model for prompt steps, as a provider/label ref (e.g. claude/opus) or an ordered fallback list of them (definition steps use their own model). Every ref is validated against the catalog — an unknown ref fails the enqueue.",
+					"Model stamped onto EVERY step (prompt and definition) as a provider/label ref (e.g. claude/opus) or an ordered fallback list; overrides a definition step's authored model (worker: task.model beats def.model). Omit to leave task.model null so definition steps use their own list / default_models. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
 				),
 			timeout: z
 				.string()

@@ -53,6 +53,12 @@ pub struct RunMeta {
     pub timed_out: bool,
     pub session_id: Option<String>,
     pub model: Option<String>,
+    /// Adapter name that executed this run (`data.json` → `provider`, e.g.
+    /// `grok`). Distinct from `model`, which the daemon writes as the concrete
+    /// CLI id without a slash (`grok-4.5`). Queue resume prefers this over
+    /// parsing a provider segment from `model` / the task's `provider/label`
+    /// ref so a non-claude run doesn't fall through to `claude`.
+    pub provider: Option<String>,
     pub resolved_worktree: Option<String>,
     /// Absolute checkout path the run executed in (`data.json` →
     /// `resolved_worktree_path`). Distinct from `resolved_worktree` (the bare
@@ -122,6 +128,7 @@ async fn read_run_meta(path: &Path) -> Option<RunMeta> {
         timed_out: json.get("timed_out").and_then(|v| v.as_bool()).unwrap_or(false),
         session_id: s("session_id"),
         model: s("model"),
+        provider: s("provider"),
         resolved_worktree: s("resolved_worktree"),
         resolved_worktree_path: s("resolved_worktree_path"),
         cost_usd: usage("costUsd").and_then(|v| v.as_f64()),
@@ -307,6 +314,7 @@ mod tests {
         assert_eq!(m.exit_code, Some(0));
         assert!(!m.timed_out);
         assert_eq!(m.model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(m.provider, None); // absent key → None
         assert_eq!(m.cost_usd, Some(0.42));
         assert_eq!(m.turns, Some(37));
         assert_eq!(m.duration_ms, Some(195_000));
@@ -315,6 +323,21 @@ mod tests {
         assert_eq!(def.timeout_ms, 1_800_000);
         assert_eq!(def.cron.as_deref(), Some("30 13 * * *"));
         assert_eq!(def.description.as_deref(), Some("Squash-merge the branch."));
+    }
+
+    #[tokio::test]
+    async fn parses_provider_alongside_bare_model_id() {
+        // Daemon writes concrete CLI ids without slash + a separate provider
+        // adapter name — both must surface so queue resume can prefer provider.
+        let runs = setup("01PROV", Some("hi"), None);
+        std::fs::write(
+            runs.join("01PROV").join("data.json"),
+            r#"{"model":"grok-4.5","provider":"grok","session_id":"sess-g"}"#,
+        )
+        .unwrap();
+        let m = read_run_files(&runs, "01PROV", 25).await.meta.unwrap();
+        assert_eq!(m.model.as_deref(), Some("grok-4.5"));
+        assert_eq!(m.provider.as_deref(), Some("grok"));
     }
 
     #[tokio::test]

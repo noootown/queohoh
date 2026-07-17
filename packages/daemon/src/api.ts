@@ -10,6 +10,7 @@ import type {
 	QueueStore,
 	RunStore,
 	SessionEntry,
+	SessionLineageStore,
 	SessionRegistry,
 	TaskInstance,
 	WorktreeInfo,
@@ -59,13 +60,6 @@ export interface StateSnapshot {
 	 */
 	buildId?: string;
 	/**
-	 * Workspace-level override for the command `goto` opens in the new tmux
-	 * window (see GlobalConfig.gotoCommand). Optional/additive — absent config
-	 * omits the field, old TUIs ignore it, and the TUI falls back to its
-	 * built-in `tmux new-window` behavior.
-	 */
-	gotoCommand?: string;
-	/**
 	 * The provider the operator has currently switched to (design spec §4). On
 	 * the live broadcast so a `set_active_provider` from one client re-renders
 	 * every subscriber. Optional/additive — pre-feature daemons omit it and old
@@ -83,6 +77,8 @@ interface ApiDeps {
 	/** Persisted operator settings (active provider). Read by the `settings`
 	 * RPC + the state snapshot; mutated by `set_active_provider`. */
 	settings: SettingsStore;
+	/** Session fork + provider tags (providerOf used by listSessions). */
+	lineage: SessionLineageStore;
 	/**
 	 * Root of Claude Code's per-project session dirs. Optional — defaults to
 	 * `~/.claude/projects` (resolved once in the constructor). Tests inject a
@@ -140,7 +136,6 @@ export class ApiServer {
 			})),
 			worktrees: this.deps.engine.worktreesByRepo(),
 			buildId: this.buildId,
-			gotoCommand: this.deps.config.gotoCommand,
 			activeProvider: this.deps.settings.activeProvider(),
 		};
 	}
@@ -259,12 +254,14 @@ export class ApiServer {
 						projects,
 					},
 					// deps.config.providers is already the global-effective set
-					// (loadGlobalConfig runs it through effectiveProviders), so this
-					// forwards it as-is — name/enabled only (per-provider model tiers
-					// are gone; models live in the flat catalog above).
+					// (loadGlobalConfig runs it through effectiveProviders). name +
+					// enabled always; optional `bin` when configured (interactive
+					// goto uses it for the provider's CLI path, e.g. pinned grok).
+					// Per-provider model tiers are gone; models live in the catalog.
 					providers: deps.config.providers.map((p) => ({
 						name: p.name,
 						enabled: p.enabled,
+						...(p.bin ? { bin: p.bin } : {}),
 					})),
 				};
 			}
@@ -379,9 +376,11 @@ export class ApiServer {
 				}
 				const priority =
 					(params.priority as "low" | "normal" | "high") ?? "normal";
-				// Chain-level model applies to prompt steps; a definition step's own
-				// model still wins at spawn. Accept a single ref or a fallback list;
-				// every ref is validated against the merged catalog.
+				// Chain-level model is stamped onto every step (prompt and
+				// definition). Worker resolves `task.model ?? def?.model`, so a
+				// chain-level stamp overrides a definition's authored list — same
+				// override semantics as enqueue / runDefinition. Accept a single
+				// ref or a fallback list; every ref is validated against the catalog.
 				const model = this.coerceModel(deps.config.catalog, params.model);
 				const timeoutMs =
 					typeof params.timeout_ms === "number" ? params.timeout_ms : undefined;
@@ -432,8 +431,9 @@ export class ApiServer {
 						prompt?: unknown;
 						verify?: unknown;
 					};
-					// Per-step done-condition; a definition step's own `verify` still
-					// wins at spawn (worker precedence), matching how `model` behaves.
+					// Per-step done-condition. Unlike model (task-first), verify is
+					// still def-first at spawn: a definition step's own `verify`
+					// beats this chain-step stamp when the def declares one.
 					const verify =
 						typeof s.verify === "string" && s.verify.length > 0
 							? s.verify
@@ -446,11 +446,10 @@ export class ApiServer {
 							prompt: render(def.prompt, globalVars, repoVars, item),
 							definition: `${repo}/${def.name}`,
 							item,
-							// Chain-level model/timeout apply to prompt steps; a definition
-							// step's own model/timeout still win at spawn (worker
-							// precedence), matching run_task_definition. Priority is the
-							// chain's (shared), applied uniformly by createChain so members
-							// schedule together.
+							// Chain-level model stamps task.model (worker: task beats
+							// def). Timeout still uses def-first precedence in the
+							// worker. Priority is the chain's (shared), applied
+							// uniformly by createChain so members schedule together.
 							model,
 							timeoutMs,
 							verify,
@@ -579,6 +578,10 @@ export class ApiServer {
 					params.resume_session_id.length > 0
 						? params.resume_session_id
 						: undefined;
+				// TUI def-run picker sends a 1-entry exact `provider/label`; same
+				// coerce/validate path as enqueue. Stamped onto the task so worker
+				// prefers it over the def's authored list.
+				const model = this.coerceModel(deps.config.catalog, params.model);
 				let refOverride = worktree ? `worktree:${worktree}` : undefined;
 				// `ref` pins the run's target when no worktree param is given. It beats
 				// the definition's own `worktree:` setting — notably a `worktree: auto`
@@ -632,6 +635,7 @@ export class ApiServer {
 						repoVars: loadProjectVars(projectDir),
 						refOverride,
 						resumeSessionId,
+						model,
 					},
 				);
 				deps.onMutation();
@@ -837,16 +841,26 @@ export class ApiServer {
 					return byRef !== undefined ? modelRef(byRef) : undefined;
 				};
 				return {
-					sessions: infos.map((s) => ({
-						session_id: s.sessionId,
-						mtime_ms: Math.round(s.mtimeMs),
-						label:
-							promptBySession.get(s.sessionId) ??
-							s.aiTitle ??
-							s.firstPrompt ??
-							s.sessionId.slice(0, 8),
-						model: aliasForModel(modelBySession.get(s.sessionId)),
-					})),
+					sessions: infos.map((s) => {
+						const model = aliasForModel(modelBySession.get(s.sessionId));
+						// Provider for the session picker tag: prefer the model ref's
+						// provider segment; else lineage (spawn-time tag) when known.
+						const provider =
+							model?.split("/")[0] ??
+							deps.lineage.providerOf(s.sessionId) ??
+							undefined;
+						return {
+							session_id: s.sessionId,
+							mtime_ms: Math.round(s.mtimeMs),
+							label:
+								promptBySession.get(s.sessionId) ??
+								s.aiTitle ??
+								s.firstPrompt ??
+								s.sessionId.slice(0, 8),
+							model,
+							...(provider !== undefined ? { provider } : {}),
+						};
+					}),
 				};
 			}
 			case "shutdown": {

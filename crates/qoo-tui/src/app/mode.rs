@@ -236,10 +236,12 @@ pub enum Mode {
     /// drawn in the two-panel picker shell (fields left, the def's `prompt.md`
     /// preview right; see `view::def_args::render_def_args`). `state` holds the
     /// fields/focus/caret/dropdown; `repo`/`def_name`/`args` are the frozen
-    /// launch context (`args` is in the same declaration order as `state.fields`
-    /// so a submit maps field values back to positional args); `initial_worktree`
-    /// is the launch worktree (if any); `preview_scroll` is the right panel's
-    /// first visible wrapped line. Key/click handling lives in `app/def_args.rs`.
+    /// launch context (`args` is in the same declaration order as the leading
+    /// `state.fields` so a submit maps those values back to positional args;
+    /// a trailing `model` field holds the effective-chain picker and is peeled
+    /// off on submit); `initial_worktree` is the launch worktree (if any);
+    /// `preview_scroll` is the right panel's first visible wrapped line.
+    /// Key/click handling lives in `app/def_args.rs`.
     DefArgs {
         state: crate::view::form::FormState,
         repo: String,
@@ -281,6 +283,17 @@ pub enum Mode {
     Form {
         state: crate::view::form::FormState,
         action: FormAction,
+    },
+    /// Worktree `g` provider picker: pick which interactive agent bin to launch
+    /// in the right pane of a first-class tmux split. `path` is the frozen
+    /// worktree cwd; `choices` are `(name, resolved_bin)` pairs for ENABLED
+    /// providers only, frozen at open so a settings push mid-dialog cannot
+    /// retarget the launch; `index` is the highlighted row. Enter/click picks;
+    /// Esc dismisses. Lightest list pattern (no preview/search/buttons).
+    ProviderPick {
+        path: String,
+        choices: Vec<(String, String)>,
+        index: usize,
     },
 }
 
@@ -370,6 +383,11 @@ pub enum ConfirmAction {
     /// if settings changed in between. On confirm: optimistic update (snapshot +
     /// cached settings) + one `set_active_provider` `Cmd::Rpc`.
     SwitchProvider { target: String },
+    /// Run discovery for def `name` in `repo` (TASKS `d` / `[d]iscover` chip).
+    /// Repo + name are frozen when the dialog opens so confirm fires exactly
+    /// the def the body named. On confirm: optimistic `App::discovering` insert
+    /// + one `discoverDefinition` `Cmd::Rpc` (same as the former immediate path).
+    DiscoverDef { repo: String, name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

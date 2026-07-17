@@ -182,7 +182,7 @@ mod tests {
     };
 
     fn provider(name: &str, enabled: bool) -> SettingsProvider {
-        SettingsProvider { name: name.into(), enabled }
+        SettingsProvider { name: name.into(), enabled, bin: None }
     }
 
     fn entry(provider: &str, id: &str, label: &str, hidden: bool) -> CatalogEntry {

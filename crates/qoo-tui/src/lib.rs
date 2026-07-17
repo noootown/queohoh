@@ -8,6 +8,7 @@ pub mod ipc;
 pub mod event;
 pub mod heal;
 pub mod app;
+pub mod chain;
 pub mod detail;
 pub mod keymap;
 pub mod layout;

@@ -57,6 +57,11 @@ pub struct SessionChoice {
     /// the project/global default. Absent on the wire → `None`.
     #[serde(default)]
     pub model: Option<String>,
+    /// Provider that last owned this session (model ref's first segment, or
+    /// lineage when the model is unknown). Used by interactive goto to pick the
+    /// right CLI/`bin`. `None` when unknown or on an old daemon that omits it.
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,13 +117,12 @@ pub enum Cmd {
     /// worktree — resolving its name from the reply `path` basename — and skips
     /// the auto-open (the task owns the worktree).
     CreateWorktree { repo: String, name: String, enqueue: Option<EnqueueAfter> },
-    OpenTmux { path: String, goto_command: Option<String> },
-    /// Resume a task's Claude session in a NEW tmux tab (window) rooted at its
-    /// worktree. With no `goto_command`, runs `tmux new-window -c <path>
-    /// 'claude --resume <session_id>'`; with one, opens a plain window and types
-    /// the (substituted) command into it. Fired by the queue "Resume"/goto
-    /// action; gated on being inside tmux + a known session/path.
-    TmuxResume { path: String, session_id: String, goto_command: Option<String> },
+    /// Open a worktree (or resume a session) in a first-class tmux layout: new
+    /// window at `path`, left|right split, left = bare shell, right runs `cmd`
+    /// (empty `cmd` leaves both panes as bare shells). Fired by worktree/queue
+    /// `g` after provider resolution; replaces the retired OpenTmux/TmuxResume
+    /// + init-tab path.
+    Goto { path: String, cmd: String },
     /// Write-through of the per-project pane layout. Fire-and-forget off the UI
     /// thread; a failed write is silently tolerated (layout is a convenience).
     SaveLayout { path: PathBuf, json: String },
@@ -303,99 +307,100 @@ async fn open_tmux_window(path: &str) -> Option<String> {
     }
 }
 
-/// The tmux invocation shape for a `goto`, derived purely from the target and
-/// the optional workspace `goto_command` override. `event.rs` executes it; the
-/// split keeps the (untested) tmux side effects thin and this derivation unit-
-/// tested.
+/// The tmux layout shape for a `goto`. Always a new window + left|right split
+/// (left bare shell; right runs `cmd` when non-empty). Derived purely from the
+/// path and the provider-resolved command so unit tests cover the plan without
+/// shelling out to tmux.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum GotoPlan {
-    /// No override: a single, fully-formed `tmux new-window …` invocation —
-    /// byte-for-byte today's behavior.
-    Simple { args: Vec<String> },
-    /// Override present: create a window capturing `#{window_id}`, then type
-    /// `send_line` into it so the operator's interactive-shell functions/aliases
-    /// resolve. `event.rs` substitutes the real window id (from the first
-    /// invocation's stdout) into the follow-up `send-keys -t <id>` calls.
-    CreateAndSend { new_window_args: Vec<String>, send_line: String },
+    /// `new-window -P -F #{window_id} -c path` then `split-window -h -t id -c path`;
+    /// when `cmd` is non-empty, select the right pane and `send-keys` the command
+    /// + Enter. Empty `cmd` leaves both panes as bare interactive shells.
+    Split { path: String, cmd: String },
+}
+
+/// Build the first-class split goto plan. `cmd` is the right-pane command
+/// (fresh interactive bin, or `{bin} --resume {session_id}`); empty means both
+/// panes stay bare shells.
+pub(crate) fn goto_split_plan(path: &str, cmd: &str) -> GotoPlan {
+    GotoPlan::Split { path: path.to_string(), cmd: cmd.to_string() }
+}
+
+/// Whether the plan will type a command into the right pane (false for an empty
+/// `cmd` → both panes bare shells). Pure helper so tests pin the send-keys gate
+/// without running tmux.
+#[cfg(test)]
+pub(crate) fn goto_sends_keys(plan: &GotoPlan) -> bool {
+    matches!(plan, GotoPlan::Split { cmd, .. } if !cmd.is_empty())
 }
 
 /// Execute a [`GotoPlan`] off the UI thread. On any tmux failure, reports the
 /// stderr as a status line (mirrors `open_tmux_window`); success is silent.
+///
+/// Sequence (targets the NEW window's panes carefully via captured ids so a
+/// failed capture never injects keys into the operator's own TUI pane):
+/// 1. `new-window -P -F #{window_id} -c path` → window id
+/// 2. `split-window -h -t <win> -c path -P -F #{pane_id}` → right pane id
+/// 3. if `cmd` non-empty: `send-keys -t <pane> -l -- cmd` + `Enter`
 async fn run_goto(plan: GotoPlan, tx: UnboundedSender<Event>) {
     async fn tmux(args: &[&str]) -> Result<std::process::Output, std::io::Error> {
         tokio::process::Command::new("tmux").args(args).output().await
     }
-    let status = match plan {
-        GotoPlan::Simple { args } => {
-            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-            match tmux(&argv).await {
-                Ok(out) if out.status.success() => None,
-                Ok(out) => Some(format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim())),
-                Err(e) => Some(format!("tmux: {e}")),
-            }
-        }
-        GotoPlan::CreateAndSend { new_window_args, send_line } => {
-            let argv: Vec<&str> = new_window_args.iter().map(String::as_str).collect();
-            match tmux(&argv).await {
-                Ok(out) if out.status.success() => {
-                    let win = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if win.is_empty() {
-                        // An empty captured window id means `send-keys -t ""`
-                        // would retarget the CURRENT pane instead of the new
-                        // window — silently injecting the command (and Enter)
-                        // into the operator's own TUI pane. Bail out instead of
-                        // sending anything.
-                        Some("tmux: new-window returned no window id".to_string())
-                    } else {
-                        // `-l` = literal keys (no key-name lookup on the text);
-                        // `--` guards a leading '-'. Enter is a separate
-                        // key-name call.
-                        let _ = tmux(&["send-keys", "-t", &win, "-l", "--", &send_line]).await;
-                        let _ = tmux(&["send-keys", "-t", &win, "Enter"]).await;
-                        None
+    let GotoPlan::Split { path, cmd } = plan;
+    let status = match tmux(&[
+        "new-window",
+        "-P",
+        "-F",
+        "#{window_id}",
+        "-c",
+        &path,
+    ])
+    .await
+    {
+        Ok(out) if out.status.success() => {
+            let win = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if win.is_empty() {
+                // Empty window id → any `-t ""` retargets the CURRENT pane and
+                // would inject into the operator's TUI. Bail instead.
+                Some("tmux: new-window returned no window id".to_string())
+            } else {
+                // Horizontal split on the new window. Capture the new (right)
+                // pane id so send-keys never targets the left bare shell or the
+                // operator's TUI by accident. After `-h`, the new pane is the
+                // right half of the window.
+                match tmux(&["split-window", "-h", "-t", &win, "-c", &path, "-P", "-F", "#{pane_id}"])
+                    .await
+                {
+                    Ok(sout) if sout.status.success() => {
+                        if cmd.is_empty() {
+                            // Both panes bare shells — nothing to type.
+                            None
+                        } else {
+                            let pane = String::from_utf8_lossy(&sout.stdout).trim().to_string();
+                            if pane.is_empty() {
+                                Some("tmux: split-window returned no pane id".to_string())
+                            } else {
+                                // `-l` = literal keys (no key-name lookup); `--`
+                                // guards a leading '-'. Enter is a separate
+                                // key-name call.
+                                let _ = tmux(&["send-keys", "-t", &pane, "-l", "--", &cmd]).await;
+                                let _ = tmux(&["send-keys", "-t", &pane, "Enter"]).await;
+                                None
+                            }
+                        }
                     }
+                    Ok(sout) => {
+                        Some(format!("tmux: {}", String::from_utf8_lossy(&sout.stderr).trim()))
+                    }
+                    Err(e) => Some(format!("tmux: {e}")),
                 }
-                Ok(out) => Some(format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim())),
-                Err(e) => Some(format!("tmux: {e}")),
             }
         }
+        Ok(out) => Some(format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim())),
+        Err(e) => Some(format!("tmux: {e}")),
     };
     if let Some(status) = status {
         let _ = tx.send(Event::ActionResult { status: Some(status), invalidate_defs_for: None });
-    }
-}
-
-/// Build the goto plan. `session_id` = `Some` for a queue goto (resume Claude),
-/// `None` for a worktree goto. The template's `{cmd}` placeholder becomes the
-/// resume command (queue) or the empty string (worktree).
-pub(crate) fn goto_tmux_plan(
-    path: &str,
-    session_id: Option<&str>,
-    goto_command: Option<&str>,
-) -> GotoPlan {
-    let cmd = match session_id {
-        Some(id) => format!("claude --resume {id}"),
-        None => String::new(),
-    };
-    match goto_command {
-        Some(template) => GotoPlan::CreateAndSend {
-            new_window_args: vec![
-                "new-window".into(),
-                "-P".into(),
-                "-F".into(),
-                "#{window_id}".into(),
-                "-c".into(),
-                path.into(),
-            ],
-            send_line: template.replace("{cmd}", &cmd),
-        },
-        None => {
-            let mut args = vec!["new-window".into(), "-c".into(), path.into()];
-            if !cmd.is_empty() {
-                args.push(cmd);
-            }
-            GotoPlan::Simple { args }
-        }
     }
 }
 
@@ -565,17 +570,8 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 }
             });
         }
-        Cmd::OpenTmux { path, goto_command } => {
-            tokio::spawn(run_goto(
-                goto_tmux_plan(&path, None, goto_command.as_deref()),
-                tx,
-            ));
-        }
-        Cmd::TmuxResume { path, session_id, goto_command } => {
-            tokio::spawn(run_goto(
-                goto_tmux_plan(&path, Some(&session_id), goto_command.as_deref()),
-                tx,
-            ));
+        Cmd::Goto { path, cmd } => {
+            tokio::spawn(run_goto(goto_split_plan(&path, &cmd), tx));
         }
         Cmd::SaveLayout { path, json } => {
             tokio::spawn(async move {
@@ -692,53 +688,65 @@ mod tests {
 
 #[cfg(test)]
 mod goto_plan_tests {
-    use super::{goto_tmux_plan, GotoPlan};
-
-    fn v(xs: &[&str]) -> Vec<String> {
-        xs.iter().map(|s| s.to_string()).collect()
-    }
+    use super::{goto_sends_keys, goto_split_plan, GotoPlan, SessionChoice};
 
     #[test]
-    fn worktree_no_override_is_plain_new_window() {
+    fn non_empty_cmd_is_split_that_sends_keys() {
+        // Fresh interactive (worktree) or resume (queue): right pane gets the
+        // command. Plan is first-class Split — never CreateAndSend / init-tab.
+        let plan = goto_split_plan("/wt/a", "claude");
         assert_eq!(
-            goto_tmux_plan("/wt/a", None, None),
-            GotoPlan::Simple { args: v(&["new-window", "-c", "/wt/a"]) }
+            plan,
+            GotoPlan::Split { path: "/wt/a".into(), cmd: "claude".into() }
         );
+        assert!(goto_sends_keys(&plan));
+        let debug = format!("{plan:?}");
+        assert!(!debug.contains("init-tab"), "plan must not mention init-tab: {debug}");
+        assert!(!debug.contains("CreateAndSend"), "CreateAndSend retired: {debug}");
     }
 
     #[test]
-    fn queue_no_override_appends_resume_command() {
+    fn empty_cmd_is_split_with_no_send_keys() {
+        // Empty cmd → both panes bare shells (new-window + split only).
+        let plan = goto_split_plan("/wt/a", "");
         assert_eq!(
-            goto_tmux_plan("/wt/a", Some("sess1"), None),
-            GotoPlan::Simple {
-                args: v(&["new-window", "-c", "/wt/a", "claude --resume sess1"])
+            plan,
+            GotoPlan::Split { path: "/wt/a".into(), cmd: String::new() }
+        );
+        assert!(!goto_sends_keys(&plan));
+    }
+
+    #[test]
+    fn resume_cmd_carries_provider_bin_and_session() {
+        // Queue goto builds `{bin} --resume {session_id}` before the plan —
+        // the plan itself is path+cmd only (provider resolution lives in actions).
+        let plan = goto_split_plan("/wt/a", "grok --resume sess1");
+        assert_eq!(
+            plan,
+            GotoPlan::Split {
+                path: "/wt/a".into(),
+                cmd: "grok --resume sess1".into(),
             }
         );
+        assert!(goto_sends_keys(&plan));
     }
 
     #[test]
-    fn worktree_override_substitutes_empty_cmd() {
-        assert_eq!(
-            goto_tmux_plan("/wt/a", None, Some("init-tab {cmd}")),
-            GotoPlan::CreateAndSend {
-                new_window_args: v(&[
-                    "new-window", "-P", "-F", "#{window_id}", "-c", "/wt/a"
-                ]),
-                send_line: "init-tab ".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn queue_override_substitutes_resume_command() {
-        assert_eq!(
-            goto_tmux_plan("/wt/a", Some("sess1"), Some("init-tab {cmd}")),
-            GotoPlan::CreateAndSend {
-                new_window_args: v(&[
-                    "new-window", "-P", "-F", "#{window_id}", "-c", "/wt/a"
-                ]),
-                send_line: "init-tab claude --resume sess1".to_string(),
-            }
-        );
+    fn session_choice_provider_present_and_absent() {
+        // listSessions may include optional `provider` (Task 1). Present when
+        // known from model ref / lineage; omitted → None via field default.
+        let with: SessionChoice = serde_json::from_str(
+            r#"{"session_id":"s1","label":"fix login","mtime_ms":1000,
+                "model":"claude/opus","provider":"claude"}"#,
+        )
+        .unwrap();
+        assert_eq!(with.provider.as_deref(), Some("claude"));
+        assert_eq!(with.model.as_deref(), Some("claude/opus"));
+        let without: SessionChoice = serde_json::from_str(
+            r#"{"session_id":"s2","label":"old sess","mtime_ms":0}"#,
+        )
+        .unwrap();
+        assert_eq!(without.provider, None);
+        assert_eq!(without.model, None);
     }
 }

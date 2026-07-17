@@ -9,7 +9,9 @@
 //! flows land in Phase 5).
 
 use super::*;
-use crate::ipc::types::CatalogEntry;
+use crate::chain::{find_model, resolve_model_chain};
+use crate::ipc::types::{CatalogEntry, DefaultModels, ModelRef};
+use crate::selectors::ModelResolveOwned;
 use crate::view::form::{DropdownOption, Field, FieldKind, FocusKind, FormState};
 
 /// Hardcoded mirror of `BUILTIN_CATALOG` in packages/core/src/catalog.ts — the
@@ -35,15 +37,15 @@ pub(super) fn builtin_catalog() -> Vec<CatalogEntry> {
 }
 
 /// The dropdown's head-option display label: `default (<refs joined with " → ">)`,
-/// or the bare `default` when there are no refs to show. When launching a
-/// specific definition the refs come from the def's own `model:` list and carry
-/// a `def: ` marker (`default (def: claude/opus → grok/grok-4.5)`); for an
-/// ad-hoc / new-session run they come from the repo's `default_models` and carry
-/// no marker (`default (claude/opus)`). The head option's stored VALUE is always
-/// the empty string (= leave `model` unset → the daemon resolves the chain).
+/// or the bare `default` when there are no refs to show. Used by the ad-hoc /
+/// new-session catalog picker ([`App::model_field`]); refs come from the repo's
+/// `default_models` and carry no marker (`default (claude/opus)`). The head
+/// option's stored VALUE is always the empty string (= leave `model` unset →
+/// the daemon resolves the chain).
 ///
-/// `from_def` is exercised by Task 8's def-launch picker; the model forms here
-/// pass `false` (the repo-default case).
+/// Def-run launch uses [`App::def_model_field`] instead (effective chain, no
+/// empty head). `from_def = true` remains available for a `def: ` marker in the
+/// label if a future surface wants the old "default (def: …)" wording.
 pub(super) fn default_head_label(refs: &[String], from_def: bool) -> String {
     if refs.is_empty() {
         return "default".into();
@@ -107,6 +109,50 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Owned model-chain resolution inputs for the TASKS Model column (catalog,
+    /// enabled providers, default_models, active_provider). Settings absent or
+    /// an empty `providers` list → every catalog provider treated as enabled
+    /// (picker parity: empty providers means nothing is disabled, so the model
+    /// column must not blank while the dropdown still lists the catalog).
+    /// `pub(crate)` so the TASKS pane layout/render share one source.
+    pub(crate) fn model_resolve_owned(&self) -> ModelResolveOwned {
+        let catalog = self.model_catalog();
+        let catalog_providers = || {
+            let mut seen = std::collections::HashSet::new();
+            let mut enabled = Vec::new();
+            for e in &catalog {
+                if seen.insert(e.provider.clone()) {
+                    enabled.push(e.provider.clone());
+                }
+            }
+            enabled
+        };
+        let (enabled_providers, default_models) =
+            match self.settings.as_ref().and_then(|s| s.as_ref()) {
+                Some(p) if !p.providers.is_empty() => {
+                    let enabled = p
+                        .providers
+                        .iter()
+                        .filter(|pr| pr.enabled)
+                        .map(|pr| pr.name.clone())
+                        .collect();
+                    (enabled, p.default_models.clone())
+                }
+                Some(p) => {
+                    // Payload present but providers empty (old daemon / wire
+                    // default) — same as settings-absent for enabled set.
+                    (catalog_providers(), p.default_models.clone())
+                }
+                None => (catalog_providers(), DefaultModels::default()),
+            };
+        ModelResolveOwned {
+            catalog,
+            enabled_providers,
+            default_models,
+            active_provider: self.active_provider().unwrap_or_default(),
+        }
+    }
+
     /// The full labeled option list for the model dropdown: the `default (…)`
     /// head (value `""`, label from `repo`'s `default_models`) followed by one
     /// `label (provider)` option per visible catalog entry (value `provider/label`).
@@ -140,6 +186,53 @@ impl App {
             .filter(|m| options.iter().any(|o| o.value == *m))
             .unwrap_or("");
         Field::dropdown_labeled("model", options, default)
+    }
+
+    /// Def-run model picker: options are the **effective chain** for this def
+    /// under the operator's `active_provider` (stable re-head + group-head
+    /// prepend — see [`resolve_model_chain`]), not the full catalog. Labels are
+    /// `label (provider)`; values are `provider/label`. Preselects chain\[0\];
+    /// there is **no** empty `""` "default (…)" head — submitting a concrete
+    /// model is always a 1-entry exact pick (same wire contract as today's
+    /// non-default catalog pick on ad-hoc forms). Ad-hoc create keeps
+    /// [`Self::model_field`] (full catalog + default head).
+    ///
+    /// On resolve failure (unknown model / nothing runnable) the dropdown is
+    /// empty and the value is `""` so submit omits `model` and the daemon falls
+    /// back to the def's authored chain.
+    pub(super) fn def_model_field(&self, repo: &str, def_model: Option<&ModelRef>) -> Field {
+        let owned = self.model_resolve_owned();
+        let defaults = owned.default_models.refs_for(repo);
+        let enabled: Vec<&str> = owned.enabled_providers.iter().map(String::as_str).collect();
+        let options = match resolve_model_chain(
+            def_model,
+            &owned.catalog,
+            &enabled,
+            &defaults,
+            &owned.active_provider,
+        ) {
+            Ok(chain) => chain
+                .into_iter()
+                .map(|e| {
+                    // Prefer catalog display (`label (provider)`); fall back to the
+                    // canonical ref if the entry somehow isn't look-up-able (should
+                    // not happen — resolve only keeps catalog hits).
+                    let label = find_model(&owned.catalog, &e.model_ref)
+                        .map(|c| c.model_display())
+                        .unwrap_or_else(|| e.model_ref.clone());
+                    DropdownOption {
+                        value: e.model_ref,
+                        label,
+                    }
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        };
+        let default = options
+            .first()
+            .map(|o| o.value.clone())
+            .unwrap_or_default();
+        Field::dropdown_labeled("model", options, &default)
     }
 
     /// The adhoc-create session field's display label: `New session` when no

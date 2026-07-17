@@ -160,6 +160,30 @@ describe("instantiateDefinition — args", () => {
 		expect(created[0]?.target.ref).toBe("worktree:wt-plan-a");
 	});
 
+	// TUI def-run / operator override: stamp task.model so worker prefers it
+	// over the def's authored list (see worker modelSpec resolution).
+	it("stamps deps.model onto each created task when provided", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({ discovery: null, model: "claude/opus" }),
+			{ mode: "args", values: ["257"] },
+			{ ...deps(store, "[]"), model: "claude/fable" },
+		);
+		expect(created).toHaveLength(1);
+		expect(created[0]?.model).toBe("claude/fable");
+	});
+
+	it("leaves task.model null when deps.model is absent (def applies at spawn)", async () => {
+		const store = freshStore();
+		const created = await instantiateDefinition(
+			def({ discovery: null, model: "claude/opus" }),
+			{ mode: "args", values: ["257"] },
+			deps(store, "[]"),
+		);
+		expect(created).toHaveLength(1);
+		expect(created[0]?.model).toBeNull();
+	});
+
 	it("canonicalizes a pasted URL ref rendered from the worktree template", async () => {
 		const store = freshStore();
 		const created = await instantiateDefinition(

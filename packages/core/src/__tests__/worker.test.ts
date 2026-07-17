@@ -770,7 +770,7 @@ describe("runTask pinned resume model resolution", () => {
 			model,
 		});
 
-	it("task.model overrides defaults; definition model still wins", async () => {
+	it("task.model overrides defaults when no definition is attached", async () => {
 		let seenModel = "";
 		const { deps, store } = makeDeps({
 			executeClaude: async (opts) => {
@@ -784,7 +784,10 @@ describe("runTask pinned resume model resolution", () => {
 		expect(seenModel).toBe("claude-fable-5");
 	});
 
-	it("def.model beats task.model", async () => {
+	// Operator/TUI override on the task wins over the def's authored list
+	// (TUI def-run exact pick; enqueue can also set task.model). Without a
+	// task.model stamp the def list still applies.
+	it("task.model beats def.model when both are set", async () => {
 		const def: TaskDefinition = {
 			name: "d",
 			repo: "platform",
@@ -823,8 +826,8 @@ describe("runTask pinned resume model resolution", () => {
 		});
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
-		// def.model "claude/opus" wins over the task's own "claude/fable".
-		expect(seenModel).toBe("claude-opus-4-8");
+		// task.model "claude/fable" wins over def.model "claude/opus".
+		expect(seenModel).toBe("claude-fable-5");
 	});
 });
 

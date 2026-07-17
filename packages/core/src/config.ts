@@ -120,19 +120,16 @@ const GlobalConfigSchema = z
 		max_concurrent_tasks: z.number().int().positive().default(5),
 		archive_after_days: z.number().int().positive().default(7),
 		vars: z.record(z.string(), z.string()).default({}),
-		// A line of shell typed into the tmux window that `goto` opens (worktree-
-		// goto and queue-goto). The `{cmd}` placeholder is substituted downstream:
-		// the `claude --resume <session>` command for queue-goto, empty for
-		// worktree-goto. Absent → the TUI keeps its built-in `tmux new-window`
-		// behavior. NOTE: a template without `{cmd}` means queue-goto will not
-		// resume Claude (nothing to substitute the resume command into).
-		goto_command: z.string().optional(),
 		// Declares which agent CLIs (claude/grok/codex/...) are enabled, in
 		// fallback order. Absent ⇒ DEFAULT_PROVIDERS. Left as `unknown` here
 		// (validated separately in loadGlobalConfig via ProviderConfigSchema.
 		// safeParse) so a malformed block warns and falls back rather than
 		// failing the whole-config `.parse()` and wedging boot — mirrors the
 		// `catalog:` tolerance below.
+		//
+		// NOTE: `goto_command` was removed — first-class TUI goto (new tmux
+		// window + left|right split) replaced the workspace init-tab override.
+		// A legacy yaml key is ignored by zod strip rather than reintroduced.
 		providers: z.unknown().optional(),
 		// Model catalog overlay (catalog.ts): add/hide/reorder entries on top of
 		// BUILTIN_CATALOG. Left as `unknown` for the same reason as `providers:`
@@ -166,8 +163,6 @@ export interface GlobalConfig {
 	maxConcurrentTasks: number;
 	archiveAfterDays: number;
 	vars: Record<string, string>;
-	/** Workspace-level override for the command `goto` runs — see the schema. */
-	gotoCommand?: string;
 	/** Effective provider table (built-in ⊕ config.yaml `providers:`), fallback
 	 * order. */
 	providers: ProviderConfig[];
@@ -256,7 +251,6 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 		maxConcurrentTasks: config.max_concurrent_tasks,
 		archiveAfterDays: config.archive_after_days,
 		vars: config.vars,
-		gotoCommand: config.goto_command,
 		providers,
 		catalog,
 		defaultModels: config.default_models,

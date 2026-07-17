@@ -261,6 +261,7 @@ fn session_pick_resume_returns_pinned_and_preserves_prompt() {
             label: "Fix parser".into(),
             mtime_ms: 2_000,
             model: Some("sonnet".into()),
+            provider: None,
         }]),
     });
     // View rows: New(0), Create Worktree(1), session(2).

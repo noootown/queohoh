@@ -154,6 +154,12 @@ impl App {
             {
                 self.form_key(&k)
             }
+            // Worktree-goto provider picker owns keys while open.
+            Event::Key(k)
+                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ProviderPick { .. }) =>
+            {
+                self.provider_pick_key(&k)
+            }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     return Update { dirty: false, cmds: vec![] };
@@ -441,6 +447,14 @@ impl App {
                     serde_json::json!({ "provider": target }),
                     RpcOpts::default(),
                 )]
+            }
+            ConfirmAction::DiscoverDef { repo, name } => {
+                // Optimistic in-flight marker: the def row's `⌕` animates
+                // (throbber) until the repo's def summaries refetch lands
+                // (`Event::Definitions`). Insert only on confirm so cancel
+                // leaves no spinner and no RPC.
+                self.discovering.insert(format!("{repo}/{name}"));
+                vec![Self::discover_definition_cmd(&repo, &name)]
             }
         }
     }

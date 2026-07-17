@@ -33,12 +33,38 @@ const BULK_NOT_APPLICABLE: &str = "not applicable to bulk selection";
 /// Resolution outcome for [`App::goto_queue`]'s target lookup — mirrors the
 /// retired queue action-menu's disabled-reason precedence (row existence,
 /// then the two data gaps; the tmux check happens before this is even
-/// consulted).
+/// consulted). `Ready` carries the resolved provider name so the resume cmd
+/// can pick the right bin (no provider menu on queue).
 enum QueueGotoTarget {
     NothingSelected,
     NoSession,
     NoWorktree,
-    Ready(String, String),
+    /// `(session_id, path, provider)` — provider is the name used to look up
+    /// `settings.providers[].bin` (falls back to the name itself when unset).
+    Ready(String, String, String),
+}
+
+/// First segment of a `provider/label` model ref, or `None` when the ref has no
+/// `/` (legacy bare alias) or is empty. Used by queue goto to resolve which
+/// interactive bin to resume with.
+fn model_provider_segment(model: Option<&str>) -> Option<String> {
+    let m = model?.trim();
+    let slash = m.find('/')?;
+    let p = &m[..slash];
+    (!p.is_empty()).then(|| p.to_string())
+}
+
+/// Resolve the interactive CLI binary for `provider`: `settings.providers[]`
+/// entry's `bin` when set and non-empty, else the provider name itself
+/// (`claude`, `grok`, …).
+fn provider_bin(settings: Option<&SettingsPayload>, provider: &str) -> String {
+    settings
+        .and_then(|s| s.providers.iter().find(|p| p.name == provider))
+        .and_then(|p| p.bin.as_ref())
+        .map(|b| b.trim())
+        .filter(|b| !b.is_empty())
+        .map(|b| b.to_string())
+        .unwrap_or_else(|| provider.to_string())
 }
 
 impl App {
@@ -712,14 +738,14 @@ impl App {
 
     /// Double-click over a list row (Enter is unbound in list mode). A
     /// single-row selection on the TASKS pane runs the highlighted definition
-    /// directly (no menu hop — zero-arg defs dispatch immediately, defs with
-    /// args open the run form); a single row on QUEUE resumes that task's
-    /// Claude session directly (mirrors the `g`/`[g]oto` verb); a single row on
-    /// WORKTREES has no direct verb here (its `r`/`g`/`x` hotkeys act on the
-    /// row instead). A bulk range refuses on QUEUE (goto isn't bulk-doable)
-    /// and on TASKS (no bulk-doable verb there either, mirroring `r`'s own
-    /// guard); on WORKTREES it falls through to [`Self::open_bulk_menu`],
-    /// which fires the confirm dialog directly.
+    /// directly (no menu hop — opens the run form with args + effective-chain
+    /// model picker); a single row on QUEUE resumes that task's Claude session
+    /// directly (mirrors the `g`/`[g]oto` verb); a single row on WORKTREES has
+    /// no direct verb here (its `r`/`g`/`x` hotkeys act on the row instead). A
+    /// bulk range refuses on QUEUE (goto isn't bulk-doable) and on TASKS (no
+    /// bulk-doable verb there either, mirroring `r`'s own guard); on WORKTREES
+    /// it falls through to [`Self::open_bulk_menu`], which fires the confirm
+    /// dialog directly.
     pub(super) fn open_actions_or_run(&mut self) -> Update {
         let ui = self.active_ui();
         let pane = ui.last_list_pane;
@@ -773,11 +799,12 @@ impl App {
     /// Run the TASKS pane's highlighted definition directly (single-row Enter /
     /// double-click, and the single-row branch of [`Self::run_or_bulk_selected_task_def`];
     /// a multi-row range goes to the bulk menu there instead). Resolves the def
-    /// from the current filtered selection: a zero-arg def dispatches
-    /// `runDefinition`; a def with args opens the run form with an ambient
-    /// worktree overlay (initial values from the selected worktree row) and
-    /// fetches its prompt for the right panel. Mirrors the def-picker `Enter`
-    /// path minus the explicit worktree target.
+    /// from the current filtered selection and opens the run form (args + the
+    /// effective-chain model picker) with an ambient worktree overlay (initial
+    /// values from the selected worktree row), fetching its prompt for the right
+    /// panel. Zero-arg defs open the form too (model picker only) — no immediate
+    /// `runDefinition` hop. Mirrors the def-picker `Enter` path minus the
+    /// explicit worktree target.
     fn run_selected_task_def(&mut self) -> Update {
         let Some(repo) = self.active_repo() else {
             return Update { dirty: false, cmds: vec![] };
@@ -790,28 +817,33 @@ impl App {
             self.status_line = Some("nothing selected".into());
             return Update { dirty: true, cmds: vec![] };
         };
-        if def.args.is_empty() {
-            return Update {
-                dirty: true,
-                cmds: vec![Self::run_definition_cmd(&def.repo, &def.name, &[], None, None)],
-            };
-        }
         let rows = self.active_worktree_rows();
         let selected = self.selected_worktree_row();
         let worktrees = Self::worktree_names(&rows);
         let (args, initial) =
             crate::worktree_context::ambient_run_args(&def.args, &rows, selected.as_ref());
         let branches = self.active_worktree_branches();
-        let cmds = self
-            .open_def_args(def.repo, def.name, args, HashMap::new(), initial, None, worktrees, branches);
+        let cmds = self.open_def_args(
+            def.repo,
+            def.name,
+            args,
+            HashMap::new(),
+            initial,
+            None,
+            worktrees,
+            branches,
+            def.model,
+        );
         Update { dirty: true, cmds }
     }
 
-    /// `d` on TASKS (and the `[d]iscover` chip): run the highlighted def's
-    /// discovery command daemon-side and fan out one task per item. Mirrors
+    /// `d` on TASKS (and the `[d]iscover` chip): open a confirm dialog before
+    /// running the highlighted def's discovery command. Mirrors
     /// [`Self::run_selected_task_def`]'s selection resolution; a def without a
-    /// discovery block refuses with a status line (no RPC), and a bulk range
-    /// refuses like every non-bulk verb.
+    /// discovery block refuses with a status line (no dialog/RPC), and a bulk
+    /// range refuses like every non-bulk verb. Confirm (via
+    /// [`ConfirmAction::DiscoverDef`]) inserts the optimistic spinner and fires
+    /// `discoverDefinition`; cancel leaves nothing pending.
     pub(super) fn discover_selected_def(&mut self) -> Update {
         let ui = self.active_ui();
         let sel = ui.selections[ListPane::Tasks.idx()];
@@ -835,11 +867,22 @@ impl App {
             self.status_line = Some(format!("{} has no discovery", def.name));
             return Update { dirty: true, cmds: vec![] };
         }
-        // Optimistic in-flight marker: the def row's `⌕` animates (throbber)
-        // until the repo's def summaries refetch lands (`Event::Definitions`),
-        // so the user sees the search running before the fan-out appears.
-        self.discovering.insert(format!("{}/{}", def.repo, def.name));
-        Update { dirty: true, cmds: vec![Self::discover_definition_cmd(&def.repo, &def.name)] }
+        // Freeze repo/name into the action so confirm runs exactly the def the
+        // body names (same SwitchProvider freeze pattern). Spinner + RPC wait
+        // until confirm — cancel must leave no in-flight marker.
+        let repo = def.repo.clone();
+        let name = def.name.clone();
+        self.mode = Mode::Confirm {
+            title: "Run discovery".into(),
+            body: vec![
+                format!("Run discovery for {repo}/{name}?"),
+                "Fans out one task per discovered item.".into(),
+            ],
+            confirm_label: "Discover".into(),
+            action: ConfirmAction::DiscoverDef { repo, name },
+            focus: crate::hit::ButtonKind::Confirm,
+        };
+        Update { dirty: true, cmds: vec![] }
     }
 
     /// Build the fire-and-forget `discoverDefinition` command. Same client
@@ -931,12 +974,15 @@ impl App {
     /// sends `params.ref` and does NOT also send `params.worktree`, so the
     /// daemon honors the ref (create-or-reuse) instead of the legacy worktree
     /// hint. `worktree` (the launch context) is sent only when there is no ref.
+    /// `model` is the operator's 1-entry exact pick from the def-run effective
+    /// chain (omit / empty → daemon keeps the def's authored chain).
     pub(super) fn run_definition_cmd(
         repo: &str,
         name: &str,
         values: &[String],
         worktree: Option<&str>,
         target_ref: Option<&str>,
+        model: Option<&str>,
     ) -> Cmd {
         let mut params = serde_json::json!({
             "repo": repo, "name": name, "args": values, "source": "tui",
@@ -945,6 +991,9 @@ impl App {
             params["ref"] = serde_json::Value::String(r.to_string());
         } else if let Some(wt) = worktree {
             params["worktree"] = serde_json::Value::String(wt.to_string());
+        }
+        if let Some(m) = model.filter(|m| !m.is_empty()) {
+            params["model"] = serde_json::Value::String(m.to_string());
         }
         Cmd::Rpc {
             label: "run".into(),
@@ -1080,9 +1129,10 @@ impl App {
         Update { dirty: true, cmds: vec![Cmd::FetchSessions { repo, worktree }] }
     }
 
-    /// `g` on WORKTREES (and the `[g]oto` chip): open the selected worktree (or
-    /// session) in a new tmux window. The daemon drives tmux, so it is inert with
-    /// a status line outside tmux. Session rows resolve to their cwd path.
+    /// `g` on WORKTREES (and the `[g]oto` chip): open a provider picker, then
+    /// launch a first-class tmux split (left bare shell | right = provider bin)
+    /// at the selected worktree (or session) cwd. Inert with a status line
+    /// outside tmux. Session rows resolve to their cwd path.
     pub(super) fn goto_worktree(&mut self) -> Update {
         // A bulk range isn't in the doable set (only `Remove` is) — refuse
         // rather than silently targeting just the cursor row's worktree.
@@ -1098,16 +1148,64 @@ impl App {
             return Update { dirty: true, cmds: vec![] };
         };
         let path = row.path.clone();
-        let goto_command = self.snapshot.as_ref().and_then(|s| s.goto_command.clone());
-        Update { dirty: true, cmds: vec![Cmd::OpenTmux { path, goto_command }] }
+        // Enabled providers + resolved bins, frozen into the picker so a
+        // settings push mid-dialog cannot retarget the launch.
+        let Some(payload) = self.settings.as_ref().and_then(|s| s.as_ref()) else {
+            // Settings not cached yet (or a failed fetch). Kick a fetch so the
+            // next `g` can open the picker; don't invent a default provider.
+            let mut cmds = Vec::new();
+            if self.settings.is_none() {
+                cmds.push(Cmd::FetchSettings);
+            }
+            self.status_line = Some("settings not loaded — press g again".into());
+            return Update { dirty: true, cmds };
+        };
+        let choices: Vec<(String, String)> = payload
+            .providers
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| {
+                let bin = p
+                    .bin
+                    .as_ref()
+                    .map(|b| b.trim())
+                    .filter(|b| !b.is_empty())
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| p.name.clone());
+                (p.name.clone(), bin)
+            })
+            .collect();
+        if choices.is_empty() {
+            self.status_line = Some("no enabled providers".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        self.mode = Mode::ProviderPick { path, choices, index: 0 };
+        Update { dirty: true, cmds: vec![] }
     }
 
-    /// `g` on QUEUE (and the `[g]oto` chip): resume the selected task's Claude
-    /// session in a new tmux window rooted at its worktree — the queue's
-    /// former single-row Resume menu action, now a direct verb. The daemon
-    /// drives tmux, so it is inert with a status line outside tmux, when the
-    /// run has recorded no Claude session id yet, or when no worktree path
-    /// resolves.
+    /// Confirm a [`Mode::ProviderPick`] selection: fire `Cmd::Goto` with the
+    /// frozen path and the chosen provider's resolved bin (fresh interactive —
+    /// no resume). Shared by Enter and a MenuItem click.
+    pub(super) fn provider_pick_confirm(&mut self) -> Update {
+        let (path, cmd) = match &self.mode {
+            Mode::ProviderPick { path, choices, index } => {
+                let Some((_, bin)) = choices.get(*index) else {
+                    self.mode = Mode::List;
+                    return Update { dirty: true, cmds: vec![] };
+                };
+                (path.clone(), bin.clone())
+            }
+            _ => return Update::default(),
+        };
+        self.mode = Mode::List;
+        Update { dirty: true, cmds: vec![Cmd::Goto { path, cmd }] }
+    }
+
+    /// `g` on QUEUE (and the `[g]oto` chip): resume the selected task's session
+    /// in a first-class tmux split rooted at its worktree — no provider menu;
+    /// the provider is resolved from run meta `provider` → run/task model ref
+    /// segment (legacy untagged → `claude`). Inert outside tmux, when no
+    /// session id is recorded yet, or when no worktree path resolves.
     pub(super) fn goto_queue(&mut self) -> Update {
         // A bulk range isn't in the doable set — refuse rather than silently
         // targeting just the cursor row's task.
@@ -1131,18 +1229,20 @@ impl App {
                 self.status_line = Some("no worktree for this task".into());
                 Update { dirty: true, cmds: vec![] }
             }
-            QueueGotoTarget::Ready(session_id, path) => {
-                let goto_command = self.snapshot.as_ref().and_then(|s| s.goto_command.clone());
-                Update { dirty: true, cmds: vec![Cmd::TmuxResume { path, session_id, goto_command }] }
+            QueueGotoTarget::Ready(session_id, path, provider) => {
+                let settings = self.settings.as_ref().and_then(|s| s.as_ref());
+                let bin = provider_bin(settings, &provider);
+                let cmd = format!("{bin} --resume {session_id}");
+                Update { dirty: true, cmds: vec![Cmd::Goto { path, cmd }] }
             }
         }
     }
 
-    /// Resolve the QUEUE cursor row's Claude session id + worktree path for
-    /// [`Self::goto_queue`]: the selected run's recorded Claude session +
-    /// worktree path (read from its run record), falling back to the task's
-    /// `resume_session_id` and the snapshot worktree's path — mirrors the
-    /// retired queue action-menu's own resolution.
+    /// Resolve the QUEUE cursor row's session id + worktree path + provider for
+    /// [`Self::goto_queue`]: the selected run's recorded session + worktree path
+    /// (from its run record), falling back to the task's `resume_session_id` and
+    /// the snapshot worktree's path. Provider: run meta `provider` → run meta
+    /// model segment → task model segment → `"claude"` for legacy untagged.
     fn queue_goto_target(&self) -> QueueGotoTarget {
         let Some(snap) = self.snapshot.as_ref() else { return QueueGotoTarget::NothingSelected };
         let Some(repo) = self.active_repo() else { return QueueGotoTarget::NothingSelected };
@@ -1169,10 +1269,23 @@ impl App {
                     .map(|i| i.path.clone())
             })
         });
+        // Provider: run meta.provider (daemon adapter name) → slash-form model
+        // segment on the run → task model segment → legacy "claude". Bare model
+        // ids like `grok-4.5` have no `/`, so without meta.provider they would
+        // otherwise fall through incorrectly.
+        let meta = run.and_then(|f| f.meta.as_ref());
+        let provider = meta
+            .and_then(|m| m.provider.as_deref())
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string())
+            .or_else(|| meta.and_then(|m| model_provider_segment(m.model.as_deref())))
+            .or_else(|| model_provider_segment(task.model.as_deref()))
+            .unwrap_or_else(|| "claude".into());
         match (session_id, worktree_path) {
             (None, _) => QueueGotoTarget::NoSession,
             (Some(_), None) => QueueGotoTarget::NoWorktree,
-            (Some(session_id), Some(path)) => QueueGotoTarget::Ready(session_id, path),
+            (Some(session_id), Some(path)) => QueueGotoTarget::Ready(session_id, path, provider),
         }
     }
 

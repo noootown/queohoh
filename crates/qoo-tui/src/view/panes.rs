@@ -727,6 +727,7 @@ fn def_line(
     layout: &DefColLayout,
     p: &Palette,
     discovering: bool,
+    model_ctx: &crate::selectors::ModelResolveCtx<'_>,
 ) -> Line<'static> {
     let gap = " ".repeat(crate::selectors::COL_GAP);
     // Front marker slot — the `⌕` discovery marker (single-cell glyph +
@@ -749,15 +750,14 @@ fn def_line(
     // Task/definition names read in mauve — the single semantic color for a def
     // name across QUEUE, TASKS, and the WORKTREES next/last cells.
     spans.push(Span::styled(pad_clip(&def.name, layout.name_w), Style::default().fg(p.mauve)));
-    // Model column: the def's model (`claude-` prefix stripped), right after the
-    // name (user request — the model matters more than anything else on the
-    // row). Padded to the reserved width so a def without a model leaves it
-    // blank and the columns never slide; omitted entirely when no visible def
-    // carries a model.
+    // Model column: the effective head under the active provider (re-head +
+    // group-head prepend — not the authored yaml list). Padded to the reserved
+    // width so a def without a runnable model leaves it blank and the columns
+    // never slide; omitted entirely when every visible def resolves blank.
     if layout.model_w > 0 {
         spans.push(Span::raw(gap.clone()));
         spans.push(Span::styled(
-            pad_clip(&crate::selectors::def_model_text(def), layout.model_w),
+            pad_clip(&crate::selectors::def_model_text(def, model_ctx), layout.model_w),
             Style::default().fg(p.meta),
         ));
     }
@@ -1267,6 +1267,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             bulk,
         );
     } else {
+        // Shared effective-head resolution for layout + render (same head →
+        // same column width as the painted cell under active_provider).
+        let model_owned = app.model_resolve_owned();
+        let model_ctx = model_owned.ctx();
         render_list_pane(
             frame,
             regions[1],
@@ -1287,9 +1291,15 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             pane_buttons(PaneId::Tasks),
             TASKS_ROW_SCOPED,
             &mut btn_hits,
-            def_col_layout,
+            |rows, avail| def_col_layout(rows, avail, &model_ctx),
             |d, layout, p| {
-                def_line(d, layout, p, app.discovering.contains(&format!("{}/{}", d.repo, d.name)))
+                def_line(
+                    d,
+                    layout,
+                    p,
+                    app.discovering.contains(&format!("{}/{}", d.repo, d.name)),
+                    &model_ctx,
+                )
             },
             def_header,
             |_| false,

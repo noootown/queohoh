@@ -1072,6 +1072,7 @@ mod tests {
                     timed_out: false,
                     session_id: Some("sess-abc123".to_string()),
                     model: Some("claude-opus-4-8".to_string()),
+                    provider: None,
                     resolved_worktree: Some("/repos/acme.feature".to_string()),
                     resolved_worktree_path: Some("/repos/acme.feature".to_string()),
                     cost_usd: Some(0.42),

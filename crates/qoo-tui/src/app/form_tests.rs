@@ -327,8 +327,8 @@ fn launcher_app() -> App {
         repo: "platform".into(),
         worktree: "platform.wt-a".into(),
         items: vec![
-            SessionChoice { session_id: "s1".into(), label: "fix login".into(), mtime_ms: 0, model: None },
-            SessionChoice { session_id: "s2".into(), label: "add tests".into(), mtime_ms: 0, model: None },
+            SessionChoice { session_id: "s1".into(), label: "fix login".into(), mtime_ms: 0, model: None, provider: None },
+            SessionChoice { session_id: "s2".into(), label: "add tests".into(), mtime_ms: 0, model: None, provider: None },
         ],
         loading: false,
         index: 0,
@@ -571,9 +571,9 @@ fn catalog_settings() -> SettingsPayload {
             }],
         },
         providers: vec![
-            SettingsProvider { name: "claude".into(), enabled: true },
-            SettingsProvider { name: "grok".into(), enabled: true },
-            SettingsProvider { name: "codex".into(), enabled: false },
+            SettingsProvider { name: "claude".into(), enabled: true, bin: None },
+            SettingsProvider { name: "grok".into(), enabled: true, bin: None },
+            SettingsProvider { name: "codex".into(), enabled: false, bin: None },
         ],
         ..Default::default()
     }
@@ -687,4 +687,90 @@ fn model_field_defaulting_selects_preferred_ref_or_falls_back_to_head() {
     // A stale/foreign ref → head, never a phantom selection.
     let stale = app.model_field_defaulting("platform", Some("nonexistent/tier"));
     assert_eq!(stale.value, "");
+}
+
+// --- Task 4: def-run model picker = effective chain -------------------------
+
+/// Settings + snapshot with active_provider = grok (snapshot wins over settings
+/// for `App::active_provider`). Shares the catalog_settings catalog/providers.
+fn app_with_active_grok() -> App {
+    let mut app = launcher_app();
+    let mut settings = catalog_settings();
+    settings.active_provider = "grok".into();
+    app.settings = Some(Some(settings));
+    if let Some(snap) = app.snapshot.as_mut() {
+        snap.active_provider = Some("grok".into());
+    }
+    app
+}
+
+/// Option VALUES of a def-run model field (no empty head).
+fn def_model_option_values(field: &Field) -> Vec<String> {
+    match &field.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            options.iter().map(|o| o.value.clone()).collect()
+        }
+        other => panic!("expected a Dropdown, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_model_field_list_spec_reheads_under_active_provider() {
+    // Def `model: [claude/opus, grok/grok-4.5]`, active=grok → effective order
+    // is grok first; preselect chain[0]; NO empty "" head.
+    let app = app_with_active_grok();
+    let spec = crate::ipc::types::ModelRef::Many(vec![
+        "claude/opus".into(),
+        "grok/grok-4.5".into(),
+    ]);
+    let field = app.def_model_field("platform", Some(&spec));
+    assert_eq!(
+        def_model_option_values(&field),
+        vec!["grok/grok-4.5", "claude/opus"]
+    );
+    assert_eq!(field.value, "grok/grok-4.5", "preselect chain[0]");
+    assert!(
+        !def_model_option_values(&field).iter().any(|v| v.is_empty()),
+        "no empty default head on def-run picker"
+    );
+    match &field.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert_eq!(options[0].label, "grok-4.5 (grok)");
+            assert_eq!(options[1].label, "opus (claude)");
+        }
+        other => panic!("expected labeled Dropdown, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_model_field_single_spec_prepends_active_group_head() {
+    // Def `model: claude/opus` only, active=grok → group-head prepend mirrors
+    // resolve_model_chain (grok/grok-4.5 then claude/opus).
+    let app = app_with_active_grok();
+    let spec = crate::ipc::types::ModelRef::One("claude/opus".into());
+    let field = app.def_model_field("platform", Some(&spec));
+    assert_eq!(
+        def_model_option_values(&field),
+        vec!["grok/grok-4.5", "claude/opus"]
+    );
+    assert_eq!(field.value, "grok/grok-4.5");
+}
+
+#[test]
+fn adhoc_model_field_still_has_default_head_and_catalog() {
+    // Ad-hoc create is UNCHANGED: empty "" head + full visible catalog.
+    let mut app = launcher_app();
+    app.settings = Some(Some(catalog_settings()));
+    let field = app.model_field("platform");
+    assert_eq!(field.value, "");
+    let values = model_option_values(&app, "platform");
+    assert_eq!(values[0], "");
+    assert!(values.contains(&"claude/opus".into()));
+    assert!(values.contains(&"grok/grok-4.5".into()));
+    match &field.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert_eq!(options[0].label, "default (grok/grok-4.5)");
+        }
+        other => panic!("expected labeled Dropdown, got {other:?}"),
+    }
 }

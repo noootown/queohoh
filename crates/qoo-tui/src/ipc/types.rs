@@ -39,13 +39,6 @@ pub struct StateSnapshot {
     #[serde(deserialize_with = "nullable_default")]
     pub worktrees: HashMap<String, Vec<WorktreeInfo>>,
     pub build_id: Option<String>,
-    /// Workspace-level override for the command `goto` runs (its `gotoCommand`
-    /// on the wire — see api.ts). `None` on an old daemon that omits it (via the
-    /// container `default`) or when no override is configured; then the TUI
-    /// keeps its built-in `tmux new-window` behavior. `{cmd}` inside is
-    /// substituted to `claude --resume <session>` (queue-goto) or empty
-    /// (worktree-goto) when the window is driven in `event.rs`.
-    pub goto_command: Option<String>,
     /// The operator's currently-active provider (`SettingsStore`), echoed on
     /// EVERY state broadcast so a `set_active_provider` from any client
     /// re-renders the top-bar `↯ <provider>` indicator live — this is the
@@ -54,6 +47,10 @@ pub struct StateSnapshot {
     /// container `default`); the indicator then falls back to the `settings`
     /// payload's `active_provider`, or shows nothing.
     pub active_provider: Option<String>,
+    // `gotoCommand` was removed from the state snapshot (Task 1 / general-provider):
+    // workspace init-tab overrides are gone; interactive goto uses provider `bin`
+    // instead. A stale daemon that still sends the key is silently ignored (no
+    // `deny_unknown_fields`).
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -268,10 +265,12 @@ pub struct DefinitionSummary {
     pub description: Option<String>,
     /// The def's authored `model:` — a single `provider/label` ref, an ordered
     /// fallback list of them, or `None` (no `model:` → resolves against
-    /// `default_models` at run time; also the old-daemon default). Shown in the
-    /// TASKS def rows. Was a resolved model id before Task 5; the flat catalog
+    /// `default_models` at run time; also the old-daemon default). The TASKS
+    /// Model column shows the **effective head** of
+    /// [`crate::chain::resolve_model_chain`] under the active provider, not this
+    /// list verbatim. Was a resolved model id before Task 5; the flat catalog
     /// replaced the per-provider alias table, so the daemon now forwards the
-    /// authored ref(s) verbatim (`string | string[] | null` on the wire).
+    /// authored ref(s) (`string | string[] | null` on the wire).
     pub model: Option<ModelRef>,
     /// The def's `worktree:` setting (`"repo"`, `"temp"`, `"auto"`, or a
     /// `pr:{{…}}`-style template; schema default `"temp"`). `None` on an old
@@ -450,11 +449,11 @@ pub struct SettingsPayload {
     /// the dropdown's `default (…)` head-option label.
     #[serde(default)]
     pub default_models: DefaultModels,
-    /// Configured providers, `name` + `enabled` only. The per-provider tier
-    /// (alias→id) map was REMOVED in Task 5 — models now live in the flat
-    /// `catalog`. `#[serde(default)]` so an old daemon that omits the field (or a
-    /// stale one that still sends the retired `models` key per provider — serde
-    /// ignores unknown fields) deserializes cleanly.
+    /// Configured providers: `name` + `enabled` + optional `bin`. The
+    /// per-provider tier (alias→id) map was REMOVED in Task 5 — models now live
+    /// in the flat `catalog`. `#[serde(default)]` so an old daemon that omits
+    /// the field (or a stale one that still sends the retired `models` key per
+    /// provider — serde ignores unknown fields) deserializes cleanly.
     #[serde(default)]
     pub providers: Vec<SettingsProvider>,
     // The pre-Task-5 top-level `models` block (alias→id defaults + global/
@@ -471,6 +470,12 @@ pub struct SettingsProvider {
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
+    /// Optional CLI binary path for this provider (e.g. a pinned `grok` binary).
+    /// Omitted on the wire when unset; `None` for old daemons that never send
+    /// it. Interactive goto uses this as the right-pane command (fallback: the
+    /// provider name).
+    #[serde(default)]
+    pub bin: Option<String>,
 }
 
 #[cfg(test)]
@@ -592,16 +597,35 @@ mod tests {
     }
 
     #[test]
-    fn goto_command_present_deserializes_to_some() {
-        let s: StateSnapshot =
+    fn snapshot_without_goto_command_deserializes() {
+        // Task 1 dropped `gotoCommand` from the daemon snapshot. A modern
+        // payload (and an empty one) must still parse; a stale daemon that
+        // still sends the key is silently ignored (no deny_unknown_fields).
+        let s: StateSnapshot = serde_json::from_str(
+            r#"{"buildId":"1","activeProvider":"grok"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.build_id.as_deref(), Some("1"));
+        assert_eq!(s.active_provider.as_deref(), Some("grok"));
+        let stale: StateSnapshot =
             serde_json::from_str(r#"{"gotoCommand":"init-tab {cmd}"}"#).unwrap();
-        assert_eq!(s.goto_command.as_deref(), Some("init-tab {cmd}"));
+        assert_eq!(stale.build_id, None);
     }
 
     #[test]
-    fn goto_command_absent_deserializes_to_none() {
-        let s: StateSnapshot = serde_json::from_str("{}").unwrap();
-        assert_eq!(s.goto_command, None);
+    fn settings_provider_bin_present_and_absent() {
+        // Optional `bin` on settings.providers[] (Task 1): present when the
+        // operator pinned a CLI path; omitted → None via field-level default.
+        let with: SettingsProvider = serde_json::from_str(
+            r#"{"name":"grok","enabled":true,"bin":"/tmp/grok-bin"}"#,
+        )
+        .unwrap();
+        assert_eq!(with.name, "grok");
+        assert!(with.enabled);
+        assert_eq!(with.bin.as_deref(), Some("/tmp/grok-bin"));
+        let without: SettingsProvider =
+            serde_json::from_str(r#"{"name":"claude","enabled":true}"#).unwrap();
+        assert_eq!(without.bin, None);
     }
 
     #[test]
@@ -879,6 +903,7 @@ mod tests {
         assert_eq!(s.providers.len(), 3);
         assert_eq!(s.providers[0].name, "claude");
         assert!(s.providers[0].enabled);
+        assert_eq!(s.providers[0].bin, None);
         assert_eq!(s.providers[2].name, "codex");
         assert!(!s.providers[2].enabled);
     }

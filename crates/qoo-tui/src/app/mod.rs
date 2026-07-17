@@ -60,11 +60,12 @@ pub struct App {
     pub defs_inflight: HashSet<String>,
     /// `"repo/name"` keys with a `d`-discover RPC in flight — TUI-local
     /// optimistic state so the def row's `⌕` marker animates (throbber) while
-    /// the daemon runs the discovery command. Set by `discover_selected_def`;
-    /// cleared by `Event::Definitions` for the repo, which ALWAYS follows the
-    /// discover RPC (success, error, or client timeout all send `ActionResult`
-    /// with `invalidate_defs_for`, and `FetchDefinitions` emits `Definitions`
-    /// even on fetch failure) — so a spinner can never stick.
+    /// the daemon runs the discovery command. Inserted on confirm of
+    /// `ConfirmAction::DiscoverDef` (not when the dialog opens — cancel must
+    /// leave no spinner); cleared by `Event::Definitions` for the repo, which
+    /// ALWAYS follows the discover RPC (success, error, or client timeout all
+    /// send `ActionResult` with `invalidate_defs_for`, and `FetchDefinitions`
+    /// emits `Definitions` even on fetch failure) — so a spinner can never stick.
     pub discovering: HashSet<String>,
     pub full_defs: HashMap<String, TaskDefinition>, // keyed "repo/name"
     /// `"repo/name"` keys with a `FetchDefinition` in flight — the lazy detail

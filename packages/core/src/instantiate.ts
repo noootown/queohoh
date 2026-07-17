@@ -55,6 +55,11 @@ export interface InstantiateDeps {
 	repoVars?: Record<string, string>;
 	refOverride?: string;
 	resumeSessionId?: string;
+	/** Optional model override stamped onto each created task. Worker resolves
+	 * `task.model ?? def?.model`, so a TUI def-run exact pick (or enqueue-style
+	 * override) beats the definition's authored list when set. Absent → task
+	 * keeps `model: null` and the def's list (or `default_models`) applies. */
+	model?: string | string[];
 }
 
 export async function instantiateDefinition(
@@ -117,6 +122,9 @@ export async function instantiateDefinition(
 			item,
 			itemKey,
 			resumeSessionId: deps.resumeSessionId,
+			// Operator/TUI override only — do not copy def.model here; leaving
+			// task.model null lets worker fall through to the def's authored list.
+			model: deps.model,
 			lane: def.lane ?? undefined,
 		}),
 	);

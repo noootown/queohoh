@@ -30,8 +30,8 @@ export interface NewTaskInput {
 	 * list (see `TaskInstance.model` / `resolveModelChain`). */
 	model?: string | string[];
 	/** Per-task hard wall-clock ceiling override, in ms (from the MCP `timeout`
-	 * param); a definition task's own `timeout:` still wins at run time,
-	 * mirroring `model`. */
+	 * param); a definition task's own `timeout:` still wins at run time
+	 * (unlike `model`, which is task-first so operator overrides win). */
 	timeoutMs?: number;
 	/** Done-condition command run after the worker claims success; a definition
 	 * task leaves this unset and uses the definition's own `verify` at run time. */
@@ -42,8 +42,8 @@ export interface NewTaskInput {
 
 /** One step of a task chain. `definition` steps carry a rendered prompt plus the
  * `repo/name` and item for display; `prompt` steps carry only the prompt. Model
- * is stored as the raw alias/id (the worker resolves it; a definition step's own
- * model still wins at spawn time). */
+ * is stored as the raw `provider/label` ref(s); worker resolves
+ * `task.model ?? def?.model` so a stamped override beats the def's list. */
 export interface ChainStepInput {
 	prompt: string;
 	definition?: string;
@@ -51,11 +51,11 @@ export interface ChainStepInput {
 	itemKey?: string;
 	model?: string | string[];
 	/** Chain-wide hard wall-clock ceiling override, in ms (a definition step's
-	 * own `timeout:` still wins at run time, mirroring `model`). */
+	 * own `timeout:` still wins at run time — def-first, unlike `model`). */
 	timeoutMs?: number;
 	priority?: Priority;
 	/** Per-step done-condition command (a definition step's own `verify` still
-	 * wins at run time, mirroring `model`). */
+	 * wins at run time — def-first, unlike `model`). */
 	verify?: string;
 	/** Scheduler-lane override from the definition's `lane:`; see task.ts. */
 	lane?: string;

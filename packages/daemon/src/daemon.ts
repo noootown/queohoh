@@ -113,6 +113,7 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		registry,
 		config,
 		settings,
+		lineage,
 		onMutation: () => {
 			void engine.tick().then(() => server.broadcast());
 		},

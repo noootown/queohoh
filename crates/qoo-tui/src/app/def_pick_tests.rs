@@ -162,23 +162,28 @@ fn action_result_invalidation_marks_inflight_so_reconcile_dedups() {
 
 // --- tasks-pane `r` runs the highlighted def (dispatch shapes) ---
 #[test]
-fn tasks_pane_r_zero_arg_dispatches_immediately() {
+fn tasks_pane_r_zero_arg_opens_run_form_with_model_picker() {
+    // Zero-arg defs open the run form (model picker only) so the operator can
+    // confirm/override the effective-chain head — no immediate runDefinition hop.
     let mut app = fixture_app_with_defs("platform", vec![dsum("platform", "noargs", "project", vec![])]);
     app.set_focus(PaneId::Tasks);
     let update = app.update(key(KeyCode::Char('r')));
+    match &app.mode {
+        Mode::DefArgs { state, def_name, args, initial_worktree, .. } => {
+            assert_eq!(def_name, "noargs");
+            assert!(args.is_empty());
+            assert_eq!(*initial_worktree, None);
+            assert_eq!(state.fields.len(), 1, "model picker only");
+            assert_eq!(state.fields[0].label, "model");
+            assert!(matches!(state.fields[0].kind, crate::view::form::FieldKind::Dropdown { .. }));
+        }
+        other => panic!("expected DefArgs with model picker, got {other:?}"),
+    }
     assert!(
-        update.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, invalidate_defs_for, timeout_is_ok, .. }
-            if call.method == "runDefinition"
-                && call.params["repo"] == "platform"
-                && call.params["name"] == "noargs"
-                && call.params["args"] == serde_json::json!([])
-                && call.params["source"] == "tui"
-                && call.params.get("worktree").is_none()
-                && invalidate_defs_for.as_deref() == Some("platform")
-                && *timeout_is_ok)),
-        "expected an immediate runDefinition Rpc, got {:?}", update.cmds,
+        update.cmds.iter().any(|c| matches!(c, Cmd::FetchDefinition { repo, name }
+            if repo == "platform" && name == "noargs")),
+        "expected a FetchDefinition for the prompt panel, got {:?}", update.cmds,
     );
-    assert!(matches!(app.mode, Mode::List));
 }
 
 #[test]
@@ -405,40 +410,48 @@ fn def_pick_q_types_into_filter_instead_of_closing() {
 
 #[test]
 fn def_pick_typing_filters_and_enter_activates_match() {
-    // Filter to "beta" then Enter dispatches its zero-arg run.
+    // Filter to "beta" then Enter opens its run form (zero-arg → model picker).
     let mut app = fixture_def_pick_defs(
         vec![dsum("platform", "alpha", "project", vec![]), dsum("platform", "beta", "project", vec![])],
         None,
         None,
     );
     app.update(key(KeyCode::Char('b'))); // query "b" → only "beta"
-    let u = app.update(key(KeyCode::Enter));
-    assert!(matches!(app.mode, Mode::List));
-    assert!(
-        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
-            if call.method == "runDefinition" && call.params["name"] == "beta")),
-        "expected runDefinition for beta, got {:?}", u.cmds,
-    );
+    let _u = app.update(key(KeyCode::Enter));
+    match &app.mode {
+        Mode::DefArgs { def_name, args, state, .. } => {
+            assert_eq!(def_name, "beta");
+            assert!(args.is_empty());
+            assert_eq!(state.fields[0].label, "model");
+        }
+        other => panic!("expected DefArgs for beta, got {other:?}"),
+    }
 }
 
 #[test]
-fn def_pick_enter_zero_arg_dispatches_with_worktree() {
+fn def_pick_enter_zero_arg_opens_run_form_with_worktree() {
+    // Zero-arg with an explicit worktree target still opens the form; the
+    // worktree is frozen as `initial_worktree` and sent on submit.
     let mut app = fixture_def_pick_defs(
         vec![dsum("platform", "autotest", "project", vec![])],
         Some("platform.wt-a".into()),
         Some("jus-1-x".into()),
     );
     let update = app.update(key(KeyCode::Enter));
-    match &update.cmds[0] {
-        Cmd::Rpc { call, invalidate_defs_for, .. } => {
-            assert_eq!(call.method, "runDefinition");
-            assert_eq!(call.params["worktree"], "platform.wt-a");
-            assert_eq!(call.params["args"], serde_json::json!([]));
-            assert_eq!(invalidate_defs_for.as_deref(), Some("platform"));
+    match &app.mode {
+        Mode::DefArgs { state, def_name, args, initial_worktree, .. } => {
+            assert_eq!(def_name, "autotest");
+            assert!(args.is_empty());
+            assert_eq!(initial_worktree.as_deref(), Some("platform.wt-a"));
+            assert_eq!(state.fields.len(), 1);
+            assert_eq!(state.fields[0].label, "model");
         }
-        other => panic!("expected runDefinition, got {other:?}"),
+        other => panic!("expected DefArgs with worktree context, got {other:?}"),
     }
-    assert!(matches!(app.mode, Mode::List));
+    assert!(
+        update.cmds.iter().any(|c| matches!(c, Cmd::FetchDefinition { name, .. } if name == "autotest")),
+        "expected FetchDefinition, got {:?}", update.cmds,
+    );
 }
 
 #[test]
@@ -483,6 +496,7 @@ fn open_def_args_builds_formstate_fields() {
         None,
         Vec::new(),
         Vec::new(),
+        None,
     );
     match &app.mode {
         Mode::DefArgs { state, .. } => {

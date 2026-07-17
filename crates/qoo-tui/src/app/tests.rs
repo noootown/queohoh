@@ -502,8 +502,8 @@ fn queue_nav_crosses_divider_onto_a_real_finished_row() {
     // `g` (goto) targets that real finished task — the cursor index maps 1:1
     // to a real row, so the divider never shifts the row lookup. Prove it by
     // planting a run record keyed to the expected task id ("01FAIL", the
-    // "flaky migration" row) and checking the resulting TmuxResume carries
-    // ITS session/path, not some other row's.
+    // "flaky migration" row) and checking the resulting Goto carries ITS
+    // path + resume cmd, not some other row's.
     app.inside_tmux = true;
     app.run_files = Some((
         "01FAIL".to_string(),
@@ -514,8 +514,8 @@ fn queue_nav_crosses_divider_onto_a_real_finished_row() {
         }),
     ));
     let up = press(&mut app, KeyCode::Char('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id, .. }]
-        if path == "/repos/acme-flaky" && session_id == "sess-flaky"));
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+        if path == "/repos/acme-flaky" && cmd == "claude --resume sess-flaky"));
 }
 
 #[test]
@@ -695,7 +695,7 @@ fn settings_with_providers(active: &str, providers: &[(&str, bool)]) -> Option<O
         active_provider: active.into(),
         providers: providers
             .iter()
-            .map(|(n, e)| SettingsProvider { name: (*n).into(), enabled: *e })
+            .map(|(n, e)| SettingsProvider { name: (*n).into(), enabled: *e, bin: None })
             .collect(),
         ..Default::default()
     }))
@@ -947,8 +947,8 @@ fn double_click_same_row_within_window_resumes_its_session() {
     app.status_line = None;
     app.now_ms = 1_200; // 200ms later (< 400ms) → double-click
     let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
-    assert!(matches!(&up.cmds[..], [Cmd::TmuxResume { path, session_id, .. }]
-        if path == "/repos/acme-docs" && session_id == "sess-docs"));
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+        if path == "/repos/acme-docs" && cmd == "claude --resume sess-docs"));
 }
 
 #[test]

@@ -65,18 +65,28 @@ describe("loadGlobalConfig", () => {
 		);
 	});
 
-	it("parses goto_command when present and omits it when absent", () => {
+	it("does not surface gotoCommand", () => {
+		// Legacy yaml may still carry goto_command; the schema no longer reads it
+		// (first-class TUI goto replaces init-tab), so the field is never on
+		// GlobalConfig whether the key is present or absent.
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-goto-"));
 		const withCmd = join(dir, "with.yaml");
 		writeFileSync(
 			withCmd,
 			["projects: []", 'goto_command: "init-tab {cmd}"'].join("\n"),
 		);
-		expect(loadGlobalConfig(withCmd).gotoCommand).toBe("init-tab {cmd}");
+		const withCfg = loadGlobalConfig(withCmd);
+		expect(
+			(withCfg as { gotoCommand?: string }).gotoCommand,
+		).toBeUndefined();
+		expect("gotoCommand" in withCfg).toBe(false);
 
 		const without = join(dir, "without.yaml");
 		writeFileSync(without, "projects: []\n");
-		expect(loadGlobalConfig(without).gotoCommand).toBeUndefined();
+		const withoutCfg = loadGlobalConfig(without);
+		expect(
+			(withoutCfg as { gotoCommand?: string }).gotoCommand,
+		).toBeUndefined();
 	});
 });
 

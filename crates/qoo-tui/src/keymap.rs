@@ -45,13 +45,15 @@ pub enum AppAction {
     /// carrying the selected worktree row's context when the worktrees pane holds
     /// focus. Routes to `App::open_task_menu`.
     OpenTaskMenu,
-    /// Run the TASKS pane's highlighted definition directly (`r`, and the tasks
-    /// pane's `[r]un` chip): a zero-arg def dispatches immediately, a def with
-    /// args opens the run form. Routes to `App::run_selected_task_def`.
+    /// Open the run form for the TASKS pane's highlighted definition (`r`, and
+    /// the tasks pane's `[r]un` chip): always includes the effective-chain model
+    /// picker (model-only form when the def has no args). Routes to
+    /// `App::run_selected_task_def`.
     RunSelectedDef,
-    /// Run the TASKS pane's highlighted definition's DISCOVERY (`d`, and the
-    /// tasks `[d]iscover` chip): fan out one task per discovered item. Defs
-    /// without a discovery block refuse with a status line. Routes to
+    /// Open a confirm dialog for the TASKS pane's highlighted definition's
+    /// DISCOVERY (`d`, and the tasks `[d]iscover` chip). Confirm fans out one
+    /// task per discovered item; cancel leaves nothing pending. Defs without a
+    /// discovery block refuse with a status line (no dialog). Routes to
     /// `App::discover_selected_def`.
     DiscoverSelectedDef,
     /// Toggle the TASKS pane's highlighted definition's cron on/off (`o`, and the

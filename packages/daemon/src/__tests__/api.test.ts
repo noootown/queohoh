@@ -51,7 +51,8 @@ async function setup(opts?: {
 	executeClaude?: () => Promise<RunResult>;
 	vars?: Record<string, string>;
 	claudeProjectsDir?: string;
-	gotoCommand?: string;
+	/** Override config.providers (e.g. seed a `bin` for settings RPC tests). */
+	providers?: GlobalConfig["providers"];
 	/** Pre-seed `<state>/daemon/settings.json` with this active_provider before
 	 * the SettingsStore is constructed — exercises the config-load snap path. */
 	activeProviderSeed?: string;
@@ -79,8 +80,7 @@ async function setup(opts?: {
 		vars: opts?.vars ?? {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/opus", "grok/grok-4.5"],
-		gotoCommand: opts?.gotoCommand,
-		providers: DEFAULT_PROVIDERS,
+		providers: opts?.providers ?? DEFAULT_PROVIDERS,
 	};
 	const stateDir = join(base, "state");
 	if (opts?.activeProviderSeed !== undefined) {
@@ -145,6 +145,7 @@ async function setup(opts?: {
 		registry,
 		config,
 		settings,
+		lineage,
 		claudeProjectsDir: opts?.claudeProjectsDir,
 		onMutation: () => {
 			mutations += 1;
@@ -233,16 +234,13 @@ describe("ApiServer", () => {
 		});
 	});
 
-	it("surfaces gotoCommand from config in the state snapshot", async () => {
-		const { client } = await setup({ gotoCommand: "init-tab {cmd}" });
-		const state = (await client.call("state")) as { gotoCommand?: string };
-		expect(state.gotoCommand).toBe("init-tab {cmd}");
-	});
-
-	it("omits gotoCommand when config has none", async () => {
+	it("does not surface gotoCommand on the state snapshot", async () => {
+		// First-class TUI goto replaced workspace goto_command / init-tab; the
+		// snapshot must not reintroduce the field.
 		const { client } = await setup();
 		const state = (await client.call("state")) as { gotoCommand?: string };
 		expect(state.gotoCommand).toBeUndefined();
+		expect("gotoCommand" in state).toBe(false);
 	});
 
 	it("omits githubId when the project has no vars.yaml setting", async () => {
@@ -675,10 +673,30 @@ describe("ApiServer", () => {
 				"grok/grok-4.5",
 			]);
 			expect(settings.default_models.projects).toEqual([]);
-			// Providers carry name/enabled ONLY (no per-provider model tiers).
+			// Providers carry name/enabled (and optional bin when configured);
+			// no per-provider model tiers — models live in the flat catalog.
 			expect(settings.providers).toEqual(
 				DEFAULT_PROVIDERS.map((p) => ({ name: p.name, enabled: p.enabled })),
 			);
+		});
+
+		it("settings providers include optional bin", async () => {
+			const { client } = await setup({
+				providers: DEFAULT_PROVIDERS.map((p) =>
+					p.name === "grok" ? { ...p, bin: "/tmp/grok-bin" } : p,
+				),
+			});
+			const s = (await client.call("settings")) as {
+				providers: { name: string; enabled: boolean; bin?: string }[];
+			};
+			const grok = s.providers.find((p) => p.name === "grok");
+			expect(grok).toMatchObject({
+				name: "grok",
+				enabled: true,
+				bin: "/tmp/grok-bin",
+			});
+			const claude = s.providers.find((p) => p.name === "claude");
+			expect(claude?.bin).toBeUndefined();
 		});
 
 		it("lists a project's non-empty default_models override under projects", async () => {
@@ -1019,6 +1037,32 @@ describe("ApiServer", () => {
 		// Discovery would fan out 2 tasks; a plain run creates exactly 1.
 		expect(created).toHaveLength(1);
 		expect(created[0]?.prompt).toBe("Static run.\n");
+	});
+
+	// TUI def-run picker peels the trailing model field and sends a 1-entry
+	// exact `provider/label` as params.model. Without this path the pick was a
+	// no-op: instantiate left task.model null and worker preferred def.model.
+	it("runDefinition with model param stamps task.model (override for def-run picker)", async () => {
+		const { client } = await setup();
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "greet",
+			args: ["world"],
+			model: "claude/opus",
+		})) as { model: string | string[] | null }[];
+		expect(created).toHaveLength(1);
+		expect(created[0]?.model).toBe("claude/opus");
+	});
+
+	it("runDefinition without model leaves task.model null so def.model applies at spawn", async () => {
+		const { client } = await setup();
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "greet",
+			args: ["world"],
+		})) as { model: string | string[] | null }[];
+		expect(created).toHaveLength(1);
+		expect(created[0]?.model).toBeNull();
 	});
 
 	it("discoverDefinition runs discovery and fans out one task per item", async () => {
@@ -1472,12 +1516,47 @@ describe("ApiServer", () => {
 		const res = (await client.call("listSessions", {
 			repo: "platform",
 			worktree: "platform.wt-a",
-		})) as { sessions: { session_id: string; model?: string }[] };
+		})) as {
+			sessions: { session_id: string; model?: string; provider?: string }[];
+		};
 		const byModel = Object.fromEntries(
 			res.sessions.map((s) => [s.session_id, s.model]),
 		);
 		expect(byModel["sess-opus"]).toBe("claude/opus"); // id maps back to its provider/label ref
 		expect(byModel["sess-foreign"]).toBeUndefined(); // no run data -> no model
+		// Provider segment of the mapped model ref (claude/opus → claude).
+		const byProvider = Object.fromEntries(
+			res.sessions.map((s) => [s.session_id, s.provider]),
+		);
+		expect(byProvider["sess-opus"]).toBe("claude");
+		expect(byProvider["sess-foreign"]).toBeUndefined();
+	});
+
+	it("listSessions includes provider from lineage when model is unknown", async () => {
+		// Session has no queohoh run model mapping, but lineage tags the provider
+		// (e.g. a grok interactive session recorded at spawn).
+		const projects = mkdtempSync(join(tmpdir(), "claude-projects-"));
+		const wtPath = "/wt/platform.wt-a";
+		const dir = join(projects, wtPath.replace(/[/.]/g, "-"));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "sess-grok.jsonl"),
+			`${JSON.stringify({ type: "ai-title", aiTitle: "grok chat", sessionId: "sess-grok" })}\n`,
+		);
+		const { client, lineage } = await setup({
+			claudeProjectsDir: projects,
+			worktrees: [{ name: "platform.wt-a", path: wtPath, branch: "wt-a" }],
+		});
+		lineage.recordProvider("sess-grok", "grok");
+		const res = (await client.call("listSessions", {
+			repo: "platform",
+			worktree: "platform.wt-a",
+		})) as {
+			sessions: { session_id: string; model?: string; provider?: string }[];
+		};
+		expect(res.sessions).toHaveLength(1);
+		expect(res.sessions[0]?.model).toBeUndefined();
+		expect(res.sessions[0]?.provider).toBe("grok");
 	});
 
 	it("listSessions errors on an unknown worktree", async () => {

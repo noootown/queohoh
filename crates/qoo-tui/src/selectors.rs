@@ -1,7 +1,54 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::ipc::types::{ArgSpec, DefinitionSummary, StateSnapshot, TaskInstance, TaskStatus};
+use crate::chain::effective_model_head;
+use crate::ipc::types::{
+    ArgSpec, CatalogEntry, DefaultModels, DefinitionSummary, StateSnapshot, TaskInstance,
+    TaskStatus,
+};
+
+/// Resolution context for the TASKS Model column: catalog + enabled providers +
+/// default_models + active_provider. Layout and render share the same ctx so
+/// the column width tracks the **effective head** (re-headed under the active
+/// provider), not the authored yaml list. Built once per frame from
+/// `App` settings/snapshot (see [`ModelResolveOwned`] / `App::model_resolve_owned`).
+#[derive(Debug, Clone, Copy)]
+pub struct ModelResolveCtx<'a> {
+    pub catalog: &'a [CatalogEntry],
+    /// Names of providers currently enabled (absent / disabled → dropped from
+    /// the chain; an empty slice treats every provider as disabled).
+    pub enabled_providers: &'a [String],
+    pub default_models: &'a DefaultModels,
+    pub active_provider: &'a str,
+}
+
+impl ModelResolveCtx<'_> {
+    fn enabled_refs(&self) -> Vec<&str> {
+        self.enabled_providers.iter().map(String::as_str).collect()
+    }
+}
+
+/// Owned bundle of the pieces [`ModelResolveCtx`] borrows — built once per
+/// frame so layout + line closures share one resolution source without
+/// lifetime entanglement with `App`.
+#[derive(Debug, Clone, Default)]
+pub struct ModelResolveOwned {
+    pub catalog: Vec<CatalogEntry>,
+    pub enabled_providers: Vec<String>,
+    pub default_models: DefaultModels,
+    pub active_provider: String,
+}
+
+impl ModelResolveOwned {
+    pub fn ctx(&self) -> ModelResolveCtx<'_> {
+        ModelResolveCtx {
+            catalog: &self.catalog,
+            enabled_providers: &self.enabled_providers,
+            default_models: &self.default_models,
+            active_provider: &self.active_provider,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabInfo {
@@ -1367,13 +1414,25 @@ pub fn def_desc_text(def: &DefinitionSummary) -> String {
     def.description.clone().unwrap_or_default()
 }
 
-/// The model cell text for a def: its authored `model:` ref(s) joined with
-/// ` → ` (`claude/opus`, or `claude/opus → grok/grok-4.5` for a fallback list),
-/// or "" when the def has no `model:` (or an old daemon omitted it). Was a
-/// `claude-`-stripped resolved id before Task 5; the flat catalog replaced the
-/// alias table, so the authored `provider/label` ref(s) are shown verbatim.
-pub fn def_model_text(def: &DefinitionSummary) -> String {
-    def.model.as_ref().map(|m| m.display()).unwrap_or_default()
+/// The model cell text for a def: the **effective head** of its resolved
+/// fallback chain under `ctx.active_provider` (stable re-head + group-head
+/// prepend — see [`crate::chain::resolve_model_chain`]), not the authored yaml
+/// list. `None` model uses the repo's `default_models`. Empty string when
+/// resolution fails (unknown model / nothing runnable) so the pane-gate can
+/// drop the column when every visible def is blank. Layout
+/// ([`def_col_layout`]) and render ([`crate::view::panes`]) share this so
+/// widths track the displayed head.
+pub fn def_model_text(def: &DefinitionSummary, ctx: &ModelResolveCtx<'_>) -> String {
+    let defaults = ctx.default_models.refs_for(&def.repo);
+    let enabled = ctx.enabled_refs();
+    effective_model_head(
+        def.model.as_ref(),
+        ctx.catalog,
+        &enabled,
+        &defaults,
+        ctx.active_provider,
+    )
+    .unwrap_or_default()
 }
 
 /// Trailing schedule-cell text for a def row: the humanized cron schedule, or
@@ -1385,7 +1444,11 @@ pub fn def_sched_text(def: &DefinitionSummary) -> String {
     def.cron.as_deref().and_then(cron_human).unwrap_or_default()
 }
 
-pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout {
+pub fn def_col_layout(
+    rows: &[DefinitionSummary],
+    avail: usize,
+    ctx: &ModelResolveCtx<'_>,
+) -> DefColLayout {
     let name_w0 = capped_max(rows.iter().map(|d| d.name.as_str()), NAME_CAP);
     let sched_w = rows.iter().map(|d| cw(&def_sched_text(d))).max().unwrap_or(0).min(SCHED_CAP);
     // Trailing schedule column footprint (right-pinned by the desc fill): the
@@ -1401,9 +1464,14 @@ pub fn def_col_layout(rows: &[DefinitionSummary], avail: usize) -> DefColLayout 
     // The desc FILL is present only when some visible def actually has a
     // description (else the schedule keeps its today-position, no layout shift).
     let has_desc = rows.iter().any(|d| d.description.as_deref().is_some_and(|s| !s.is_empty()));
-    // Model column: fixed, pane-gated on whole-pane data (widest model cell, 0
-    // pane-wide when no visible def carries a model — e.g. an old daemon).
-    let model_w0 = rows.iter().map(|d| cw(&def_model_text(d))).max().unwrap_or(0).min(MODEL_CAP);
+    // Model column: fixed, pane-gated on whole-pane data (widest *effective*
+    // head cell, 0 pane-wide when every visible def resolves to blank).
+    let model_w0 = rows
+        .iter()
+        .map(|d| cw(&def_model_text(d, ctx)))
+        .max()
+        .unwrap_or(0)
+        .min(MODEL_CAP);
 
     // Cells used by the fixed (non-fill) columns for a given name/model width.
     let used_wo_desc = |name_w: usize, model_w: usize| -> usize {
@@ -1689,9 +1757,41 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::types::{Project, SessionEntry, TaskTarget, WorktreeInfo};
+    use crate::ipc::types::{
+        CatalogEntry, DefaultModels, ModelRef, Project, SessionEntry, TaskTarget, WorktreeInfo,
+    };
 
     // ---- fixtures (mirror __tests__/helpers.ts makeTask/makeSnapshot/makeSession) ----
+
+    /// Empty resolve ctx — model column blanks (used by layout tests that don't
+    /// care about the Model column).
+    fn empty_model_owned() -> ModelResolveOwned {
+        ModelResolveOwned::default()
+    }
+
+    /// Catalog + enabled providers matching the core BUILTIN_CATALOG subset the
+    /// form picker ships (claude + grok). `active` drives re-head / group-head.
+    fn resolve_owned(active: &str) -> ModelResolveOwned {
+        let e = |provider: &str, id: &str, label: &str| CatalogEntry {
+            provider: provider.into(),
+            id: id.into(),
+            label: label.into(),
+            hidden: false,
+        };
+        ModelResolveOwned {
+            catalog: vec![
+                e("claude", "claude-fable-5", "fable"),
+                e("claude", "claude-opus-4-8", "opus"),
+                e("claude", "claude-sonnet-5", "sonnet"),
+                e("claude", "claude-haiku-4-5", "haiku"),
+                e("grok", "grok-4.5", "grok-4.5"),
+                e("grok", "grok-composer-2.5-fast", "composer"),
+            ],
+            enabled_providers: vec!["claude".into(), "grok".into()],
+            default_models: DefaultModels::default(),
+            active_provider: active.into(),
+        }
+    }
 
     fn make_task(status: TaskStatus) -> TaskInstance {
         TaskInstance {
@@ -3037,7 +3137,8 @@ mod tests {
             DefinitionSummary { name: "squash-merge".into(), ..Default::default() },
             DefinitionSummary { name: "pr".into(), ..Default::default() },
         ];
-        let l = def_col_layout(&defs, 80);
+        let m = empty_model_owned();
+        let l = def_col_layout(&defs, 80, &m.ctx());
         assert_eq!(l.name_w, 12); // "squash-merge"
         assert_eq!(l.sched_w, 0); // no def carries a cron
         assert_eq!(l.desc_w, 0); // no def carries a description
@@ -3559,15 +3660,17 @@ mod tests {
         let mut disc = crate::ipc::types::DefinitionSummary::default();
         disc.name = "bb".into();
         disc.has_discovery = true;
+        let m = empty_model_owned();
         // No discovery anywhere → no slot.
-        assert_eq!(def_col_layout(&[plain.clone()], 80).marker_w, 0);
+        assert_eq!(def_col_layout(&[plain.clone()], 80, &m.ctx()).marker_w, 0);
         // Any discovery def visible → 2-cell slot (glyph + separator), pane-wide.
-        let l = def_col_layout(&[plain, disc], 80).marker_w;
+        let l = def_col_layout(&[plain, disc], 80, &m.ctx()).marker_w;
         assert_eq!(l, 2);
     }
 
     #[test]
     fn def_col_layout_sizes_and_caps_schedule_column() {
+        let m = empty_model_owned();
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
@@ -3582,7 +3685,7 @@ mod tests {
             },
             DefinitionSummary { name: "deploy".into(), ..Default::default() }, // no cron
         ];
-        let l = def_col_layout(&defs, 120);
+        let l = def_col_layout(&defs, 120, &m.ctx());
         assert_eq!(l.sched_w, 15); // "Everyday 1:30pm" (cron-only; marker lives in the front slot)
         assert_eq!(l.marker_w, 2, "pr-review has_discovery reserves the pane-wide front slot");
 
@@ -3592,13 +3695,13 @@ mod tests {
             cron: Some("15 10 5 6 2".into()), // unphrased → 11-char raw... still ≤ cap
             ..Default::default()
         }];
-        assert_eq!(def_col_layout(&long, 120).sched_w, 11);
+        assert_eq!(def_col_layout(&long, 120, &m.ctx()).sched_w, 11);
         let huge = vec![DefinitionSummary {
             name: "x".into(),
             cron: Some("1,2,3,4,5,6,7,8 10 5 6 2".into()), // long raw fallback
             ..Default::default()
         }];
-        assert_eq!(def_col_layout(&huge, 120).sched_w, SCHED_CAP);
+        assert_eq!(def_col_layout(&huge, 120, &m.ctx()).sched_w, SCHED_CAP);
     }
 
     #[test]
@@ -3609,6 +3712,7 @@ mod tests {
         // COL_GAP of its own — it embeds its own separator space), so the total
         // fixed-column budget is unchanged from when the marker lived inside
         // `sched_w`.
+        let m = empty_model_owned();
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
@@ -3620,16 +3724,16 @@ mod tests {
             DefinitionSummary { name: "lint".into(), ..Default::default() },
         ];
         // Wide: marker(2) + name(9) + (2+15 sched) = 28; desc = 120 - 28 - 2 = 90.
-        let wide = def_col_layout(&defs, 120);
+        let wide = def_col_layout(&defs, 120, &m.ctx());
         assert_eq!((wide.name_w, wide.sched_w, wide.marker_w), (9, 15, 2));
         assert_eq!(wide.desc_w, 90, "description is the fill remainder");
         // Tighter: the desc fill shrinks toward 0 first (name/schedule/marker kept).
-        let mid = def_col_layout(&defs, 40);
+        let mid = def_col_layout(&defs, 40, &m.ctx());
         assert_eq!((mid.name_w, mid.sched_w, mid.marker_w), (9, 15, 2));
         assert_eq!(mid.desc_w, 10, "fill absorbs only what's left: 40 - 28 - 2");
         // Very narrow: name shrinks next (28 > 20 → shrink by 8 → name_w 1), but
         // schedule and marker stay. 9 - (28 - 20) = 1.
-        let tiny = def_col_layout(&defs, 20);
+        let tiny = def_col_layout(&defs, 20, &m.ctx());
         assert_eq!(tiny.desc_w, 0);
         assert_eq!(tiny.name_w, 1, "name shrinks before schedule/marker, which are kept");
         assert_eq!(tiny.sched_w, 15, "schedule is the trailing kept column");
@@ -3640,32 +3744,53 @@ mod tests {
             cron: Some("0 9 * * *".into()),
             ..Default::default()
         }];
-        assert_eq!(def_col_layout(&no_desc, 120).desc_w, 0);
+        assert_eq!(def_col_layout(&no_desc, 120, &m.ctx()).desc_w, 0);
     }
 
     #[test]
-    fn def_model_text_renders_ref_or_list_and_handles_absence() {
-        use crate::ipc::types::ModelRef;
-        // A single `provider/label` ref renders verbatim.
-        let one = DefinitionSummary { model: Some(ModelRef::One("claude/opus".into())), ..Default::default() };
-        assert_eq!(def_model_text(&one), "claude/opus");
-        // A fallback list joins with the ` → ` arrow.
+    fn def_model_text_shows_effective_head_under_active_provider() {
+        // Def authored `claude/opus`, active grok, catalog with both groups →
+        // displays the group-head prepend `grok/grok-4.5`, not the authored ref.
+        let m = resolve_owned("grok");
+        let one = DefinitionSummary {
+            model: Some(ModelRef::One("claude/opus".into())),
+            ..Default::default()
+        };
+        assert_eq!(def_model_text(&one, &m.ctx()), "grok/grok-4.5");
+
+        // List that already includes the active provider: stable-partition puts
+        // the grok entry first → head is still grok/grok-4.5 (not the full arrow
+        // chain — the column shows the effective head only).
         let list = DefinitionSummary {
             model: Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()])),
             ..Default::default()
         };
-        assert_eq!(def_model_text(&list), "claude/opus → grok/grok-4.5");
-        // Absent (no `model:` / an old daemon) renders blank.
-        assert_eq!(def_model_text(&DefinitionSummary::default()), "");
+        assert_eq!(def_model_text(&list, &m.ctx()), "grok/grok-4.5");
+
+        // Same authored ref under active claude → no re-head; shows claude/opus.
+        let m_claude = resolve_owned("claude");
+        assert_eq!(def_model_text(&one, &m_claude.ctx()), "claude/opus");
+
+        // Absent model + empty defaults + no active → blank (pane-gate).
+        let empty = empty_model_owned();
+        assert_eq!(def_model_text(&DefinitionSummary::default(), &empty.ctx()), "");
+
+        // Absent model + empty defaults + active grok enabled → group-head prepend.
+        assert_eq!(
+            def_model_text(&DefinitionSummary::default(), &m.ctx()),
+            "grok/grok-4.5"
+        );
     }
 
     #[test]
     fn def_col_layout_model_sizes_and_degrades_before_name() {
-        // name="pr-review"(9), model "grok/grok-4.5"(13, the widest cell),
+        // active=grok so both defs resolve to effective head "grok/grok-4.5"(13):
+        // pr-review's authored claude/opus is re-headed via group-head prepend;
+        // lint already authors grok/grok-4.5. Widest cell stays 13.
         // cron→"Everyday 1:30pm"(15 cells), plus a 2-cell front discovery-marker
         // slot (pr-review has_discovery), description present. Schedule
         // footprint = 15; marker footprint = 2.
-        use crate::ipc::types::ModelRef;
+        let m = resolve_owned("grok");
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
@@ -3683,25 +3808,26 @@ mod tests {
         ];
         // Wide: model sized to the widest cell (13), desc is the fill remainder.
         // used_wo_desc = marker(2) + name(9) + (2+13) + (2+15) = 43; desc = 120 - 43 - 2 = 75.
-        let wide = def_col_layout(&defs, 120);
+        let wide = def_col_layout(&defs, 120, &m.ctx());
         assert_eq!((wide.name_w, wide.model_w, wide.sched_w, wide.marker_w), (9, 13, 15, 2));
         assert_eq!(wide.desc_w, 75, "description is the fill remainder after the model column");
         // Kept: name+model+schedule+marker (43) still fit in 50; the fill takes the rest.
-        let kept = def_col_layout(&defs, 50);
+        let kept = def_col_layout(&defs, 50, &m.ctx());
         assert_eq!(kept.model_w, 13, "model kept while the fixed columns fit");
         assert_eq!(kept.desc_w, 5, "fill absorbs only what's left: 50 - 43 - 2");
         // Tighter (40): the model column drops (before the name shrinks).
         // used_wo_desc without model = marker(2) + name(9) + (2+15) = 28.
-        let narrow = def_col_layout(&defs, 40);
+        let narrow = def_col_layout(&defs, 40, &m.ctx());
         assert_eq!(narrow.model_w, 0);
         assert_eq!(narrow.name_w, 9, "name still fits; schedule/marker kept");
         assert_eq!(narrow.desc_w, 10, "fill absorbs the rest: 40 - 28 - 2");
         assert_eq!(narrow.marker_w, 2, "marker slot survives model drop");
         // Narrowest (25): model gone AND the name shrinks (28 - 25 = 3 → 9-3=6).
-        let tightest = def_col_layout(&defs, 25);
+        let tightest = def_col_layout(&defs, 25, &m.ctx());
         assert_eq!((tightest.model_w, tightest.name_w), (0, 6));
-        // No model anywhere → the model column is omitted pane-wide even when wide.
+        // No model anywhere AND empty defaults under active="" → model column omitted.
+        let empty = empty_model_owned();
         let no_model = vec![DefinitionSummary { name: "lint".into(), ..Default::default() }];
-        assert_eq!(def_col_layout(&no_model, 120).model_w, 0);
+        assert_eq!(def_col_layout(&no_model, 120, &empty.ctx()).model_w, 0);
     }
 }
