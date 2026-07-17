@@ -1188,8 +1188,11 @@ fn pane_button_rect(app: &App, pane: PaneId, btn: crate::hit::PaneButton) -> Rec
 #[test]
 fn real_render_tasks_collapse_chip_click_toggles_over_divider() {
     // Tasks' top border is the lower row of divider band 0; the collapse chip
-    // must win over the divider and leave focus unchanged.
-    let mut app = app_rendered(80, 24);
+    // must win over the divider and leave focus unchanged. Rendered wide enough
+    // that the TASKS strip keeps its collapse chip — at 80 the `[o]cron` chip
+    // pushes the compact strip past the fit and collapse degrades off the right
+    // (its `z` KEY still works, but there's no chip rect to click).
+    let mut app = app_rendered(120, 24);
     app.set_focus(PaneId::Queue);
     let before = app.collapsed[ListPane::Tasks.idx()];
     let r = pane_button_rect(&app, PaneId::Tasks, crate::hit::PaneButton::Collapse);

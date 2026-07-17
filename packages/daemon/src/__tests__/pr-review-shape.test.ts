@@ -139,6 +139,7 @@ describe("agent247 pr-review port shape", () => {
 			args: unknown[];
 			hasDiscovery: boolean;
 			cron: string | null;
+			cronEnabled: boolean;
 			description: string | null;
 			model: string;
 		}[];
@@ -150,6 +151,9 @@ describe("agent247 pr-review port shape", () => {
 				args: [],
 				hasDiscovery: true,
 				cron: null,
+				// No cron on this def, and never toggled → the summary still reports
+				// armed (the field is meaningful only when `cron` is set).
+				cronEnabled: true,
 				description: null,
 				// summary forwards the authored `provider/label` ref as-is (there is
 				// no alias table to resolve against anymore).

@@ -56,11 +56,47 @@ describe("filterNewItems", () => {
 		expect(out.map((o) => o.itemKey)).toEqual(["2", "3"]);
 	});
 
+	it("retry_errored retries cancelled-only keys", () => {
+		const out = filterNewItems(items, {
+			...base,
+			mode: "retry_errored",
+			existing: [existing("done", "1"), existing("cancelled", "2")],
+		});
+		expect(out.map((o) => o.itemKey)).toEqual(["2", "3"]);
+	});
+
+	it("retry_errored retries keys that are a mix of failed and cancelled", () => {
+		const out = filterNewItems([{ number: "1" }], {
+			...base,
+			mode: "retry_errored",
+			existing: [existing("failed", "1"), existing("cancelled", "1")],
+		});
+		expect(out.map((o) => o.itemKey)).toEqual(["1"]);
+	});
+
 	it("retry_errored does not retry a key that also has a live instance", () => {
 		const out = filterNewItems([{ number: "1" }], {
 			...base,
 			mode: "retry_errored",
 			existing: [existing("failed", "1"), existing("queued", "1")],
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("retry_errored does not retry a cancelled key that also has a done instance", () => {
+		const out = filterNewItems([{ number: "1" }], {
+			...base,
+			mode: "retry_errored",
+			existing: [existing("cancelled", "1"), existing("done", "1")],
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("retry_errored still blocks verify-failed keys (deliberate scope)", () => {
+		const out = filterNewItems([{ number: "1" }], {
+			...base,
+			mode: "retry_errored",
+			existing: [existing("verify-failed", "1")],
 		});
 		expect(out).toEqual([]);
 	});

@@ -309,6 +309,14 @@ impl App {
                 cmds.extend(u.cmds);
                 u.dirty
             }
+            A::ToggleCron => {
+                // `o` is a TASKS chip (keymap-gated there): pause/resume the
+                // highlighted def's cron. Single-row only; a def with no cron
+                // refuses with a status line.
+                let u = self.toggle_cron();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
             A::Create => {
                 // `Create` (`c`, and the `[c]reate` chip) opens the unified adhoc
                 // create form from any list pane, prefilling the target combobox
@@ -851,6 +859,65 @@ impl App {
             },
             timeout_ms: 120_000,
             timeout_is_ok: true,
+            invalidate_defs_for: Some(repo.to_string()),
+        }
+    }
+
+    /// `o` on TASKS (and the `[o]cron` chip): pause/resume the highlighted def's
+    /// cron schedule. Mirrors [`Self::discover_selected_def`]'s selection
+    /// resolution. A def with no `cron:` refuses with a status line (no RPC — you
+    /// can't toggle a schedule that doesn't exist); a bulk range refuses like
+    /// every non-bulk verb. The RPC sends the OPPOSITE of the def's current
+    /// `cron_enabled`, and `invalidate_defs_for` refetches the repo's summaries so
+    /// the Cron column re-renders dim/bright.
+    pub(super) fn toggle_cron(&mut self) -> Update {
+        let ui = self.active_ui();
+        let sel = ui.selections[ListPane::Tasks.idx()];
+        let marks = &ui.marks[ListPane::Tasks.idx()];
+        if crate::view::is_bulk_selection(&sel, marks) {
+            self.status_line = Some(BULK_NOT_APPLICABLE.into());
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let Some(repo) = self.active_repo() else {
+            return Update { dirty: false, cmds: vec![] };
+        };
+        let ui = self.active_ui();
+        let defs = self.defs_by_project.get(&repo).cloned().unwrap_or_default();
+        let vis = crate::selectors::filter_rows(&defs, &ui.search[ListPane::Tasks.idx()], |d| d.name.clone());
+        let cursor = ui.selections[ListPane::Tasks.idx()].cursor.min(vis.len().saturating_sub(1));
+        let Some(def) = vis.get(cursor).and_then(|&i| defs.get(i)).cloned() else {
+            self.status_line = Some("nothing selected".into());
+            return Update { dirty: true, cmds: vec![] };
+        };
+        if def.cron.is_none() {
+            self.status_line = Some(format!("{} has no cron schedule", def.name));
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let enable = !def.cron_enabled;
+        self.status_line = Some(format!(
+            "cron {} for {}",
+            if enable { "resumed" } else { "paused" },
+            def.name
+        ));
+        Update {
+            dirty: true,
+            cmds: vec![Self::set_cron_enabled_cmd(&def.repo, &def.name, enable)],
+        }
+    }
+
+    /// Build the fire-and-forget `set_cron_enabled` command: pause (`enabled =
+    /// false`) or resume (`true`) the def's cron. A successful call invalidates
+    /// the repo's def summaries so the refetched `cron_enabled` re-renders the
+    /// Cron column. Short client timeout — it is a cheap SettingsStore write.
+    pub(super) fn set_cron_enabled_cmd(repo: &str, name: &str, enabled: bool) -> Cmd {
+        Cmd::Rpc {
+            label: "cron".into(),
+            call: RpcCall {
+                method: "set_cron_enabled".into(),
+                params: serde_json::json!({ "repo": repo, "name": name, "enabled": enabled }),
+            },
+            timeout_ms: 5000,
+            timeout_is_ok: false,
             invalidate_defs_for: Some(repo.to_string()),
         }
     }

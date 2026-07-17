@@ -288,6 +288,26 @@ export class ApiServer {
 				this.broadcast();
 				return value;
 			}
+			case "set_cron_enabled": {
+				// Pause/resume a definition's cron from the TUI (the `[o]cron` toggle).
+				// Keyed `<repo>/<name>` to match the engine's cron dedup key and the
+				// `definitions` summary's `cronEnabled`. The def's `cron:` expression
+				// on disk is untouched — only the SettingsStore pause-set changes, so
+				// this never writes the version-controlled config repo. Broadcasting
+				// re-renders every subscriber's TASKS Cron column (dim ⇄ bright).
+				const repo = String(params.repo ?? "");
+				const name = String(params.name ?? "");
+				if (repo.length === 0 || name.length === 0) {
+					throw new Error("set_cron_enabled: repo and name are required");
+				}
+				const enabled = params.enabled === true;
+				const value = deps.settings.setCronDisabled(
+					`${repo}/${name}`,
+					!enabled,
+				);
+				this.broadcast();
+				return value;
+			}
 			case "enqueue": {
 				const worktree =
 					typeof params.worktree === "string" && params.worktree.length > 0
@@ -462,6 +482,12 @@ export class ApiServer {
 					args: ArgSpec[];
 					hasDiscovery: boolean;
 					cron: string | null;
+					/** Whether this def's cron is currently ARMED. Meaningful only when
+					 * `cron !== null`; the operator pauses/resumes it via
+					 * `set_cron_enabled` (persisted in SettingsStore, not the config
+					 * repo). A never-toggled def reads `true`. The TUI dims the Cron
+					 * column when this is `false`. */
+					cronEnabled: boolean;
 					description: string | null;
 					/** The def's authored `model:` — a `provider/label` ref, an ordered
 					 * fallback list of them, or `null` (no `model:` → resolves against
@@ -491,6 +517,9 @@ export class ApiServer {
 								args: def.args,
 								hasDiscovery: def.discovery !== null,
 								cron: def.cron,
+								cronEnabled: !deps.settings.isCronDisabled(
+									`${project.name}/${def.name}`,
+								),
 								description: def.description,
 								model: def.model,
 								worktree: def.worktree,
@@ -507,6 +536,9 @@ export class ApiServer {
 								args: def.args,
 								hasDiscovery: def.discovery !== null,
 								cron: def.cron,
+								cronEnabled: !deps.settings.isCronDisabled(
+									`${project.name}/${def.name}`,
+								),
 								description: def.description,
 								model: def.model,
 								worktree: def.worktree,

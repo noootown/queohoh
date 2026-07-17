@@ -21,24 +21,38 @@ export function firstEnabledProvider(providers: ProviderConfig[]): string {
 }
 
 /**
- * Persisted operator setting: which provider is currently active (design spec
- * §4 chain resolution's `activeProvider`). Lives at
- * `<state>/daemon/settings.json` as `{ "active_provider": "claude" }`.
+ * Persisted operator settings, at `<state>/daemon/settings.json`:
  *
- * On construction (daemon (re)start = a config load) the persisted value is
- * validated against the effective provider table: a missing/corrupt file, or a
- * value that names a disabled/unknown provider, SNAPS to the precedence-first
- * enabled provider (logged once) and is NOT written back until the next
- * explicit `setActiveProvider` — so a temporarily-disabled provider re-enabled
- * later is honored again rather than being permanently overwritten.
+ *   { "active_provider": "claude", "disabled_crons": ["platform/pr-review"] }
+ *
+ * - `active_provider` (design spec §4 chain resolution's `activeProvider`): the
+ *   provider the operator is currently switched to.
+ * - `disabled_crons`: the set of definition keys (`<repo>/<name>`) whose cron
+ *   schedule the operator has PAUSED from the TUI. The def keeps its `cron:`
+ *   expression on disk (untouched — the config repo is version-controlled); this
+ *   runtime set is the only thing that gates whether the engine fires it. A key
+ *   absent from the set means enabled (the default), so an old settings.json
+ *   with no `disabled_crons` reads as "everything enabled".
+ *
+ * On construction (daemon (re)start = a config load) the persisted
+ * `active_provider` is validated against the effective provider table: a
+ * missing/corrupt file, or a value that names a disabled/unknown provider,
+ * SNAPS to the precedence-first enabled provider (logged once) and is NOT
+ * written back until the next explicit `setActiveProvider` — so a temporarily-
+ * disabled provider re-enabled later is honored again rather than being
+ * permanently overwritten. `disabled_crons` is a free-form key set with no such
+ * validation: a key naming a def that no longer exists is simply inert.
  */
 export class SettingsStore {
 	private readonly path: string;
 	private active: string;
+	private disabledCrons: Set<string>;
 
 	constructor(stateDir: string, providers: ProviderConfig[]) {
 		this.path = settingsPath(stateDir);
-		this.active = this.loadAndSnap(providers);
+		const persisted = this.read();
+		this.active = this.snapProvider(persisted?.active ?? null, providers);
+		this.disabledCrons = new Set(persisted?.disabledCrons ?? []);
 	}
 
 	activeProvider(): string {
@@ -59,8 +73,29 @@ export class SettingsStore {
 		return this.active;
 	}
 
-	private loadAndSnap(providers: ProviderConfig[]): string {
-		const persisted = this.read();
+	/** True iff the definition keyed `<repo>/<name>` has its cron PAUSED. A key
+	 * never toggled reads as enabled (not in the set). */
+	isCronDisabled(key: string): boolean {
+		return this.disabledCrons.has(key);
+	}
+
+	/**
+	 * Pause (`disabled = true`) or resume (`disabled = false`) the cron for the
+	 * definition keyed `<repo>/<name>` (write-through). Idempotent — toggling to
+	 * the state it is already in still persists the same file. Returns the new
+	 * ENABLED state (`!disabled`) so the caller can echo it back to the client.
+	 */
+	setCronDisabled(key: string, disabled: boolean): boolean {
+		if (disabled) this.disabledCrons.add(key);
+		else this.disabledCrons.delete(key);
+		this.write();
+		return !disabled;
+	}
+
+	private snapProvider(
+		persisted: string | null,
+		providers: ProviderConfig[],
+	): string {
 		if (persisted === null) return firstEnabledProvider(providers);
 		if (providers.find((p) => p.name === persisted)?.enabled) return persisted;
 		const snapped = firstEnabledProvider(providers);
@@ -70,13 +105,26 @@ export class SettingsStore {
 		return snapped;
 	}
 
-	private read(): string | null {
+	private read(): { active: string | null; disabledCrons: string[] } | null {
 		try {
 			if (!existsSync(this.path)) return null;
 			const raw: unknown = JSON.parse(readFileSync(this.path, "utf-8"));
 			if (raw === null || typeof raw !== "object") return null;
-			const v = (raw as { active_provider?: unknown }).active_provider;
-			return typeof v === "string" && v.length > 0 ? v : null;
+			const obj = raw as {
+				active_provider?: unknown;
+				disabled_crons?: unknown;
+			};
+			const active =
+				typeof obj.active_provider === "string" &&
+				obj.active_provider.length > 0
+					? obj.active_provider
+					: null;
+			const disabledCrons = Array.isArray(obj.disabled_crons)
+				? obj.disabled_crons.filter(
+						(k): k is string => typeof k === "string" && k.length > 0,
+					)
+				: [];
+			return { active, disabledCrons };
 		} catch {
 			return null; // corrupt file → treat as unset
 		}
@@ -86,7 +134,15 @@ export class SettingsStore {
 		mkdirSync(dirname(this.path), { recursive: true });
 		writeFileSync(
 			this.path,
-			`${JSON.stringify({ active_provider: this.active }, null, 2)}\n`,
+			`${JSON.stringify(
+				{
+					active_provider: this.active,
+					// Sorted for a stable on-disk order (deterministic diffs / tests).
+					disabled_crons: [...this.disabledCrons].sort(),
+				},
+				null,
+				2,
+			)}\n`,
 		);
 	}
 }

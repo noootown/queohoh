@@ -1,5 +1,4 @@
 ---
-assertion_line: 874
 source: crates/qoo-tui/src/view/detail.rs
 expression: terminal.backend()
 ---
@@ -16,7 +15,7 @@ expression: terminal.backend()
 "│                         ││  line 28                                       ║  │"
 "│                         ││  line 29                                       ║  │"
 "╰─────────────────────────╯│  line 30                                       ║  │"
-"╭⚡TASKS [r] [d] · [c] [z]╮│  line 31                                       ║  │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] [o] · [c]╮│  line 31                                       ║  │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││  line 32                                       █  │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││  line 33                                       █  │"
 "│                         ││  line 34                                       █  │"

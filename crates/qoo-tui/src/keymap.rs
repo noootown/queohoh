@@ -54,6 +54,11 @@ pub enum AppAction {
     /// without a discovery block refuse with a status line. Routes to
     /// `App::discover_selected_def`.
     DiscoverSelectedDef,
+    /// Toggle the TASKS pane's highlighted definition's cron on/off (`o`, and the
+    /// tasks `[o]cron` chip): pause a running schedule or resume a paused one via
+    /// the `set_cron_enabled` RPC. A def with no `cron:` refuses with a status
+    /// line (no RPC). Routes to `App::toggle_cron`.
+    ToggleCron,
     /// Re-queue the QUEUE pane's selected task(s) (`r`, and the queue's `[r]un`
     /// chip): terminal / needs-input tasks re-run; queued/running are a no-op. A
     /// range re-queues every eligible member. Routes to `App::requeue_selected`.
@@ -158,6 +163,8 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         },
         // `d` is a TASKS-only chip: run the highlighted def's discovery fan-out.
         KeyCode::Char('d') => gated(PaneButton::Discover, AppAction::DiscoverSelectedDef),
+        // `o` is a TASKS-only chip: toggle the highlighted def's cron on/off.
+        KeyCode::Char('o') => gated(PaneButton::Cron, AppAction::ToggleCron),
         // `g` is a Goto chip on QUEUE and WORKTREES, but means different things:
         // QUEUE resumes the selected task's Claude session, WORKTREES opens the
         // worktree in a fresh tmux window. Inert on TASKS (no Goto chip there).
@@ -434,6 +441,17 @@ mod tests {
         // No Discover chip on QUEUE / WORKTREES → the gate leaves `d` inert there.
         assert_eq!(list_mode_action(&k(KeyCode::Char('d')), PaneId::Queue), AppAction::None);
         assert_eq!(list_mode_action(&k(KeyCode::Char('d')), PaneId::Worktrees), AppAction::None);
+    }
+
+    #[test]
+    fn o_toggles_cron_on_tasks_only() {
+        assert_eq!(
+            list_mode_action(&k(KeyCode::Char('o')), PaneId::Tasks),
+            AppAction::ToggleCron
+        );
+        // No Cron chip on QUEUE / WORKTREES → the gate leaves `o` inert there.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('o')), PaneId::Queue), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('o')), PaneId::Worktrees), AppAction::None);
     }
 
     #[test]

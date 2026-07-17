@@ -128,6 +128,10 @@ pub const BTN_LABEL_STOP: &str = "stop";
 /// the selection into the chip renderer (see `view::panes::render_list_pane`).
 pub const BTN_LABEL_ARCHIVE: &str = "archive";
 pub const BTN_LABEL_UNARCHIVE: &str = "unarchive";
+/// TASKS cron toggle. Rendered `[o]cron` — the key `o` is NOT the label's first
+/// letter, so `button_chip` takes the `[z]collapse`-style branch (whole label
+/// after the bracket) rather than stripping a leading key char.
+pub const BTN_LABEL_CRON: &str = "cron";
 pub const BTN_LABEL_REMOVE: &str = "remove";
 pub const BTN_LABEL_COLLAPSE: &str = "collapse";
 pub const BTN_LABEL_EXPAND: &str = "expand";

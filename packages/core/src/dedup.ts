@@ -1,7 +1,19 @@
-import type { TaskInstance } from "./task.js";
+import type { TaskInstance, TaskStatus } from "./task.js";
 import { render } from "./template.js";
 
 export type DedupMode = "skip_seen" | "retry_errored" | "none";
+
+// Terminal statuses that make a `retry_errored` key eligible to re-enqueue. A
+// `failed` run errored; a `cancelled` run was deliberately stopped by the user —
+// both mean "no active task owns this and it was never handled", so a fresh
+// discovery should pick the key up again ("not now" ≠ "never"). `done` (handled)
+// and `verify-failed` (worker claimed success) stay blocking; any non-terminal
+// task (queued/running/needs-input) also blocks, since a key is only retryable
+// when EVERY task under it is in this set.
+const RETRYABLE_STATUSES: ReadonlySet<TaskStatus> = new Set([
+	"failed",
+	"cancelled",
+]);
 
 export interface KeyedItem {
 	item: Record<string, string>;
@@ -34,7 +46,8 @@ export function filterNewItems(
 	if (opts.mode === "retry_errored") {
 		for (const key of seen) {
 			const forKey = sameDef.filter((t) => t.itemKey === key);
-			if (forKey.every((t) => t.status === "failed")) retryable.add(key);
+			if (forKey.every((t) => RETRYABLE_STATUSES.has(t.status)))
+				retryable.add(key);
 		}
 	}
 	return keyed.filter(

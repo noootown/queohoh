@@ -220,6 +220,11 @@ export interface EngineDeps {
 	 * precedence-first enabled provider from `config.providers` (used by tests
 	 * that don't exercise the provider switch). */
 	activeProvider?: () => string;
+	/** Whether the operator has PAUSED the cron for the definition keyed
+	 * `<repo>/<name>` (persisted in the daemon's SettingsStore). Read fresh each
+	 * tick so a `set_cron_enabled` toggle takes effect on the next evaluation.
+	 * Absent ⇒ nothing is paused (used by tests that don't exercise the toggle). */
+	isCronDisabled?: (key: string) => boolean;
 }
 
 export class Engine {
@@ -605,6 +610,14 @@ export class Engine {
 			const cursor = this.cronCursor.get(key);
 			if (cursor === undefined) {
 				this.cronCursor.set(key, now); // first sight: seed, never fire on boot
+				continue;
+			}
+			// Operator-paused cron: advance the cursor to `now` and skip firing, so
+			// resuming it later never replays the slots missed while paused (same
+			// catch-up-once guard as a parse error or first sight — a paused def is
+			// "seen but silent", not "unseen and owed a backlog").
+			if (this.deps.isCronDisabled?.(key)) {
+				this.cronCursor.set(key, now);
 				continue;
 			}
 			if (this.cronInFlight.has(key)) continue;

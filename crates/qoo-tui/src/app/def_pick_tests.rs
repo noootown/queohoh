@@ -12,7 +12,7 @@ fn arg(name: &str) -> ArgSpec {
 }
 
 fn dsum(repo: &str, name: &str, scope: &str, args: Vec<ArgSpec>) -> DefinitionSummary {
-    DefinitionSummary { repo: repo.into(), name: name.into(), scope: scope.into(), args, has_discovery: false, cron: None, description: None, model: None, worktree: None }
+    DefinitionSummary { repo: repo.into(), name: name.into(), scope: scope.into(), args, has_discovery: false, cron: None, cron_enabled: true, description: None, model: None, worktree: None }
 }
 
 fn fixture_app_one_project(name: &str) -> App {

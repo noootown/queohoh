@@ -1,5 +1,4 @@
 ---
-assertion_line: 1117
 source: crates/qoo-tui/src/view/detail.rs
 expression: terminal.backend()
 ---
@@ -20,7 +19,7 @@ expression: terminal.backend()
 "│                         ││                                                   │"
 "│                         ││  Details                                          │"
 "╰─────────────────────────╯│    worktree     /repos/acme.feature               │"
-"╭⚡TASKS [r] [d] · [c] [z]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] [o] · [c]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││    model        opus (claude) · claude-opus-4-8   │"
 "│ 🔍 [/]filter            ││    exit code    0                                 │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││    cost         $0.42                             │"

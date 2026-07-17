@@ -28,6 +28,10 @@ pub enum PaneButton {
     /// QUEUE `[a]rchive` — a TOGGLE: archives the selected terminal row, or
     /// restores it when the row is already archived (dimmed FINISHED tail).
     Archive,
+    /// TASKS `[o]cron` — a TOGGLE: pauses the selected def's cron schedule, or
+    /// resumes it. The def's Cron column dims while paused. Inert (status line,
+    /// no RPC) when the selected def has no `cron:` at all.
+    Cron,
     Remove,
     Collapse,
 }
@@ -43,7 +47,7 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     use PaneButton::*;
     match pane {
         PaneId::Queue => &[Run, Cancel, Goto, Archive, Create, Collapse],
-        PaneId::Tasks => &[Run, Discover, Create, Collapse],
+        PaneId::Tasks => &[Run, Discover, Cron, Create, Collapse],
         PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Create, Collapse],
         PaneId::Detail => &[],
     }

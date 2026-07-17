@@ -638,6 +638,7 @@ mod tests {
                     args: vec![crate::ipc::types::ArgSpec { name: "pr".into(), ..Default::default() }],
                     has_discovery: true,
                     cron: Some("30 13 * * *".into()),
+                    cron_enabled: true,
                     description: Some("Review an open PR end to end.".into()),
                     model: Some("claude/opus".into()),
                     worktree: None,
@@ -647,6 +648,10 @@ mod tests {
                     name: "nightly-tidy".into(),
                     scope: "project".into(),
                     cron: Some("0 2 * * *".into()),
+                    // Paused: exercises the DIMMED schedule-column path (`[o]cron`
+                    // toggled off). Not visible in the text-only snapshot — see the
+                    // `sched_cell_style` unit test for the styling assertion.
+                    cron_enabled: false,
                     description: Some("Nightly repo tidy sweep.".into()),
                     model: Some("claude/sonnet".into()),
                     ..Default::default()

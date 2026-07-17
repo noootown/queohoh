@@ -15,6 +15,13 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
+/// Field-level serde default for a `bool` that should read `true` when absent
+/// (the container `default` would give `false`). Used by `DefinitionSummary::
+/// cron_enabled` so an old daemon that omits the field is treated as enabled.
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct StateSnapshot {
@@ -247,6 +254,15 @@ pub struct DefinitionSummary {
     /// Human-editable cron expression, or `None` when the def has no schedule.
     /// `default` on the container covers old daemons that omit the field.
     pub cron: Option<String>,
+    /// Whether this def's cron is currently ARMED. Meaningful only when
+    /// `cron.is_some()`; the operator pauses/resumes it with the `[o]cron` toggle
+    /// (`set_cron_enabled` RPC, persisted daemon-side). The Cron column renders
+    /// DIMMED when this is `false`. Field-level `default = true` (not the
+    /// container `default`, which would give `false`) so an old daemon that omits
+    /// the field reads as enabled — matching pre-toggle behavior where every cron
+    /// always fired.
+    #[serde(default = "default_true")]
+    pub cron_enabled: bool,
     /// One-line human description of the def, or `None` when unset. `default` on
     /// the container covers old daemons that omit the field.
     pub description: Option<String>,
@@ -715,6 +731,8 @@ mod tests {
         assert_eq!(with.cron.as_deref(), Some("30 13 * * *"));
         assert_eq!(with.description.as_deref(), Some("Review an open PR."));
         assert_eq!(with.model, Some(ModelRef::One("claude/fable".into())));
+        // No `cronEnabled` in the payload → field-level `default_true` → armed.
+        assert!(with.cron_enabled);
         // ...and an old daemon that omits them defaults to None (container `default`).
         let without: DefinitionSummary = serde_json::from_str(
             r#"{"repo": "platform", "name": "lint", "scope": "global",
@@ -724,6 +742,22 @@ mod tests {
         assert_eq!(without.cron, None);
         assert_eq!(without.description, None);
         assert_eq!(without.model, None);
+        // Old daemon (no field) still reads as enabled, NOT the bool `default`.
+        assert!(without.cron_enabled);
+    }
+
+    #[test]
+    fn definition_summary_cron_enabled_false_is_honored() {
+        // An explicit `cronEnabled: false` (operator paused it) deserializes as
+        // disabled — the signal the TASKS Cron column dims on.
+        let paused: DefinitionSummary = serde_json::from_str(
+            r#"{"repo": "platform", "name": "pr-review", "scope": "project",
+                "args": [], "hasDiscovery": true, "cron": "30 13 * * *",
+                "cronEnabled": false}"#,
+        )
+        .unwrap();
+        assert_eq!(paused.cron.as_deref(), Some("30 13 * * *"));
+        assert!(!paused.cron_enabled);
     }
 
     #[test]

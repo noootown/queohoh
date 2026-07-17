@@ -48,7 +48,11 @@ function workspaceWith(cronExpr: string) {
 	return { workspace, config };
 }
 
-function engineWith(config: GlobalConfig, now: () => number) {
+function engineWith(
+	config: GlobalConfig,
+	now: () => number,
+	isCronDisabled?: (key: string) => boolean,
+) {
 	const stateDir = mkdtempSync(join(tmpdir(), "qoo-state-"));
 	const store = new QueueStore(join(stateDir, "queue"));
 	const engine = new Engine({
@@ -58,6 +62,7 @@ function engineWith(config: GlobalConfig, now: () => number) {
 		config,
 		resolverIO: noopResolverIO,
 		exec: noopExec,
+		isCronDisabled,
 		executeClaude: async () => ({
 			exitCode: 0,
 			timedOut: false,
@@ -105,6 +110,35 @@ describe("Engine cron firing", () => {
 		const cronTasks = store.list().filter((t) => t.source === "cron");
 		expect(cronTasks).toHaveLength(1);
 		expect(cronTasks[0]?.definition).toBe("demo/ping");
+	});
+
+	it("does not fire a due slot while the def is cron-disabled (paused)", async () => {
+		const { config } = workspaceWith("30 15 * * *");
+		let clock = at(2026, 7, 14, 15, 29);
+		const { engine, store } = engineWith(config, () => clock, () => true);
+		await engine.tick(); // seed at 15:29
+		clock = at(2026, 7, 14, 15, 30); // slot crosses — but the def is paused
+		await engine.tick();
+		await settle();
+		expect(store.list().filter((t) => t.source === "cron")).toHaveLength(0);
+	});
+
+	it("resuming a paused cron does not replay the slots missed while paused", async () => {
+		const { config } = workspaceWith("30 15 * * *");
+		let clock = at(2026, 7, 14, 15, 29);
+		let paused = true;
+		const { engine, store } = engineWith(config, () => clock, () => paused);
+		await engine.tick(); // seed at 15:29
+		clock = at(2026, 7, 14, 15, 30); // due slot passes while paused → cursor advances
+		await engine.tick();
+		await settle();
+		expect(store.list().filter((t) => t.source === "cron")).toHaveLength(0);
+		// Resume AFTER the 15:30 slot already elapsed: no catch-up backlog fires.
+		paused = false;
+		clock = at(2026, 7, 14, 15, 31);
+		await engine.tick();
+		await settle();
+		expect(store.list().filter((t) => t.source === "cron")).toHaveLength(0);
 	});
 
 	it("does not double-fire the same slot on a later tick", async () => {

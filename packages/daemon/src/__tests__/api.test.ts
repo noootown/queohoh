@@ -574,6 +574,7 @@ describe("ApiServer", () => {
 			args: { name: string }[];
 			hasDiscovery: boolean;
 			cron: string | null;
+			cronEnabled: boolean;
 			description: string | null;
 			model: string | string[] | null;
 		}[];
@@ -585,6 +586,8 @@ describe("ApiServer", () => {
 				args: [{ name: "name" }],
 				hasDiscovery: false,
 				cron: "*/15 * * * *",
+				// Never toggled → armed (the TUI renders the Cron column bright).
+				cronEnabled: true,
 				description: "Greet someone by name.",
 				// The greet fixture omits `model:`, so it resolves against
 				// `default_models` at run time — the summary forwards the authored
@@ -611,6 +614,44 @@ describe("ApiServer", () => {
 			model: string | string[] | null;
 		}[];
 		expect(defs.find((d) => d.name === "grokdef")?.model).toBe("grok/grok-4.5");
+	});
+
+	it("set_cron_enabled pauses/resumes a def's cron, reflected in definitions", async () => {
+		const { client } = await setup();
+		const cronEnabled = async () =>
+			(
+				(await client.call("definitions")) as {
+					name: string;
+					cronEnabled: boolean;
+				}[]
+			).find((d) => d.name === "greet")?.cronEnabled;
+
+		expect(await cronEnabled()).toBe(true);
+
+		// Pause → returns the new ENABLED state (false) and dims in `definitions`.
+		const paused = await client.call("set_cron_enabled", {
+			repo: "platform",
+			name: "greet",
+			enabled: false,
+		});
+		expect(paused).toBe(false);
+		expect(await cronEnabled()).toBe(false);
+
+		// Resume → back to armed.
+		const resumed = await client.call("set_cron_enabled", {
+			repo: "platform",
+			name: "greet",
+			enabled: true,
+		});
+		expect(resumed).toBe(true);
+		expect(await cronEnabled()).toBe(true);
+	});
+
+	it("set_cron_enabled rejects a missing repo/name", async () => {
+		const { client } = await setup();
+		await expect(
+			client.call("set_cron_enabled", { name: "greet", enabled: false }),
+		).rejects.toThrow(/repo and name are required/);
 	});
 
 	describe("settings", () => {

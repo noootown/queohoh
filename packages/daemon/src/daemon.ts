@@ -97,6 +97,9 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		// Read the active provider fresh at each run so a `set_active_provider`
 		// re-heads the NEXT run's fallback chain.
 		activeProvider: () => settings.activeProvider(),
+		// Read the paused-cron set fresh each tick so a `set_cron_enabled` toggle
+		// gates the very next cron evaluation.
+		isCronDisabled: (key) => settings.isCronDisabled(key),
 		// Detached per-run shim: a daemon reload/crash never kills a live run, and
 		// the adoption sweep re-adopts it on return. executeClaude stays wired as
 		// the in-process fallback the Engine builds when no spawnShim is present.
