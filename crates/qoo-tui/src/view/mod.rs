@@ -28,6 +28,13 @@ use crate::selectors::{
 };
 use theme::Palette;
 
+/// Setup hint when the daemon has a snapshot but zero project tabs — the
+/// starter `~/.config/queohoh/config.yaml` leaves `projects:` commented out, so
+/// create/run/goto have no repo to target. Shared by the tab bar, pane empties,
+/// footer, and the status line set when a project-scoped key fires with none.
+pub const NO_PROJECTS_HINT: &str =
+    "no projects configured · edit ~/.config/queohoh/config.yaml · restart the daemon";
+
 /// Everything a frame needs, computed once so hit-testing and drawing use the
 /// same geometry and the same filtered/selected view-model.
 pub struct Computed<'a> {
@@ -35,6 +42,10 @@ pub struct Computed<'a> {
     pub active_name: Option<String>,
     pub tab_names: Vec<String>,
     pub active_index: usize,
+    /// True when we have a live snapshot and `tab_names` is empty (starter
+    /// config, or every project removed). Distinct from "disconnected" and
+    /// from "project exists but this pane is empty".
+    pub no_projects: bool,
     pub ui: TabUiState,
     pub queue: Vec<QueueRow>,
     pub defs: Vec<DefinitionSummary>,
@@ -103,11 +114,18 @@ pub fn compute(app: &App) -> Computed<'_> {
         searching[*pane as usize] = true;
     }
 
+    let tab_names: Vec<String> = tabs.iter().map(|t| t.name.clone()).collect();
+    // Snapshot present + no tabs ⇒ the operator has not registered any project
+    // yet (or removed them all). Pre-connect (`snapshot == None`) is not this
+    // state — the tab bar / footer stay quiet until the daemon answers.
+    let no_projects = app.snapshot.is_some() && tab_names.is_empty();
+
     Computed {
         palette,
         active_name,
-        tab_names: tabs.iter().map(|t| t.name.clone()).collect(),
+        tab_names,
         active_index,
+        no_projects,
         ui,
         queue,
         defs,
@@ -988,6 +1006,76 @@ mod tests {
         app.connected = false;
         let (terminal, _hits) = render_at(&app, 80, 24);
         insta::assert_snapshot!("view_disconnected", terminal.backend());
+    }
+
+    #[test]
+    fn snapshot_no_projects() {
+        // Starter config: daemon is up, snapshot present, projects: []. The tab
+        // bar, every list-pane empty body, and the footer must all advertise the
+        // setup path — not "queue empty — [c]reate a task".
+        use crate::ipc::types::StateSnapshot;
+        let buffer_text = |t: &Terminal<TestBackend>| {
+            let buf = t.backend().buffer();
+            let area = *buf.area();
+            let mut s = String::new();
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    s.push_str(buf[(x, y)].symbol());
+                }
+            }
+            s
+        };
+        let mut app = App::new("/tmp/qoo-runs".into(), "/tmp/qoo.sock".into());
+        app.snapshot = Some(StateSnapshot {
+            projects: vec![],
+            max_concurrent: Some(5),
+            ..Default::default()
+        });
+        app.connected = true;
+        app.now_epoch_s = 1_752_062_703;
+        app.size = (80, 24);
+        let (terminal, hits) = render_at(&app, 80, 24);
+        insta::assert_snapshot!("view_no_projects", terminal.backend());
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("no projects"),
+            "tab bar / empty panes / footer must mention no projects: {text}"
+        );
+        assert!(
+            text.contains("config.yaml"),
+            "setup path must name the config file: {text}"
+        );
+        assert!(
+            !text.contains("[c]reate a task"),
+            "must not advertise create when there is no project: {text}"
+        );
+        assert!(
+            !hits.iter().any(|(_, t)| matches!(t, HitTarget::Tab(_))),
+            "no project tabs → no Tab hit targets"
+        );
+    }
+
+    #[test]
+    fn compute_marks_no_projects_only_when_snapshot_has_empty_tabs() {
+        use crate::ipc::types::StateSnapshot;
+        let mut app = App::new("/tmp/qoo-runs".into(), "/tmp/qoo.sock".into());
+        // Pre-connect: no snapshot → not the "no projects" setup state.
+        assert!(!compute(&app).no_projects);
+        app.snapshot = Some(StateSnapshot {
+            projects: vec![],
+            ..Default::default()
+        });
+        assert!(compute(&app).no_projects);
+        // A configured project clears the flag even with empty panes.
+        app.snapshot = Some(StateSnapshot {
+            projects: vec![crate::ipc::types::Project {
+                name: "acme".into(),
+                github_id: None,
+            }],
+            ..Default::default()
+        });
+        assert!(!compute(&app).no_projects);
+        assert_eq!(compute(&app).tab_names, vec!["acme".to_string()]);
     }
 
     #[test]

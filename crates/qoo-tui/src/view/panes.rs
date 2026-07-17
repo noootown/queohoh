@@ -1227,6 +1227,22 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     let tasks_summary = crate::selectors::tasks_pane_summary(&c.defs);
     let wt_summary = crate::selectors::wt_pane_summary(&c.worktrees);
 
+    // Per-pane empty copy. A project-less snapshot is a setup problem, not an
+    // empty queue — don't advertise `[s]chedule` when schedule has no repo.
+    // Keep the body short: the left column is ~25 cells, so the full footer
+    // path would clip. Tab bar + footer carry the full setup sentence.
+    let (queue_empty, tasks_empty, wt_empty) = if c.no_projects {
+        // ≤24 cells so a default-width left column does not clip mid-word.
+        let m = "add projects first";
+        (m, m, m)
+    } else {
+        (
+            "queue empty — [s]chedule a task",
+            "no task definitions",
+            "no worktrees",
+        )
+    };
+
     if collapsed[ListPane::Queue.idx()] {
         let marks = &c.ui.marks[ListPane::Queue.idx()];
         let n = selected_positions(&c.queue, &c.queue_sel, marks, |r| r.task_id.clone()).len();
@@ -1261,7 +1277,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &c.queue_sel,
             &c.ui.marks[ListPane::Queue.idx()],
             &c.queue,
-            "queue empty — [s]chedule a task",
+            queue_empty,
             app.now_epoch_s,
             pane_buttons(PaneId::Queue),
             QUEUE_ROW_SCOPED,
@@ -1319,7 +1335,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &c.tasks_sel,
             &c.ui.marks[ListPane::Tasks.idx()],
             &c.defs,
-            "no task definitions",
+            tasks_empty,
             app.now_epoch_s,
             pane_buttons(PaneId::Tasks),
             TASKS_ROW_SCOPED,
@@ -1381,7 +1397,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &c.wt_sel,
             &c.ui.marks[ListPane::Worktrees.idx()],
             &c.worktrees,
-            "no worktrees",
+            wt_empty,
             app.now_epoch_s,
             pane_buttons(PaneId::Worktrees),
             WORKTREE_ROW_SCOPED,

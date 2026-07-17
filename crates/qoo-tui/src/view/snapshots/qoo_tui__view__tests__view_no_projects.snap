@@ -1,0 +1,29 @@
+---
+source: crates/qoo-tui/src/view/mod.rs
+assertion_line: 833
+expression: terminal.backend()
+---
+" no projects · edit ~/.config/queohoh/config.yaml                    ● running 0"
+"╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
+"│                         ││                                                   │"
+"│ 🔍 [/]filter            ││  (nothing selected)                               │" Hidden by multi-width symbols: [(3, " ")]
+"│                         ││                                                   │"
+"│ add projects first      ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯│                                                   │"
+"╭⚡TASKS [r] [d] · [c] [z]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ add projects first      ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯│                                                   │"
+"╭🌲 WORKTREES─ [r] [g] [x]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"│ add projects first      ││                                                   │"
+"│                         ││                                                   │"
+"╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
+"no projects configured · edit ~/.config/queohoh/config.yaml · restart the daemon"

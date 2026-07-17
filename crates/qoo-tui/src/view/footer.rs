@@ -57,8 +57,9 @@ const GLOBAL_HINT: &str =
 
 pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
     let p: &Palette = &c.palette;
-    // Priority: armed prefix > searching > status line > selection-count > global.
-    // The armed `ctrl+s` prefix takes the line so its awaiting-n/p state is obvious.
+    // Priority: armed prefix > searching > status line > no-projects setup >
+    // selection-count > global. The armed `ctrl+s` prefix takes the line so its
+    // awaiting-n/p state is obvious.
     if app.prefix_armed {
         frame.render_widget(
             Paragraph::new(hint_line(
@@ -80,6 +81,17 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
     if let Some(status) = &app.status_line {
         frame.render_widget(
             Paragraph::new(Text::from(status.clone())).style(Style::default().fg(p.error)),
+            area,
+        );
+        return;
+    }
+    // Persistent setup banner: empty starter config is a first-run trap (create
+    // and the project tabs do nothing useful). Keep it above the global key
+    // hints so it is the first thing a new operator sees.
+    if c.no_projects {
+        frame.render_widget(
+            Paragraph::new(Text::from(crate::view::NO_PROJECTS_HINT))
+                .style(Style::default().fg(p.warn)),
             area,
         );
         return;
@@ -158,6 +170,7 @@ mod tests {
             active_name: None,
             tab_names: Vec::new(),
             active_index: 0,
+            no_projects: false,
             ui,
             queue: Vec::new(),
             defs: Vec::new(),

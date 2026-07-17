@@ -77,41 +77,52 @@ fn usage_by_provider(app: &App) -> std::collections::HashMap<String, &ProviderUs
 
 pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap) {
     let p = &c.palette;
-    // Left: tab chips. Track x as we lay them out so each chip gets a hit rect.
+    // Left: tab chips (or a setup hint when the daemon has no projects yet).
+    // Track x as we lay them out so each chip gets a hit rect.
     let mut spans: Vec<Span> = Vec::new();
     let mut x = area.x;
-    for (i, name) in c.tab_names.iter().enumerate() {
-        // Scheduled (queued) + running count for the project, e.g.
-        // `1:platform (2)`; a quiet project keeps the bare chip.
-        let active = app
-            .snapshot
-            .as_ref()
-            .map(|s| crate::selectors::active_count_for(s, name))
-            .unwrap_or(0);
-        let label = if active > 0 {
-            format!(" {}:{} ({}) ", i + 1, name, active)
-        } else {
-            format!(" {}:{} ", i + 1, name)
-        };
-        let w = label.chars().count() as u16;
-        let style = if i == c.active_index {
-            Style::default()
-                .fg(p.selection_fg)
-                .bg(p.selection_bg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(p.fg)
-        };
-        // Clamp the hit rect to the header width.
-        if x < area.right() {
-            let clamped_w = w.min(area.right() - x);
-            hits.push(
-                Rect { x, y: area.y, width: clamped_w, height: 1 },
-                HitTarget::Tab(i),
-            );
+    if c.no_projects {
+        // Starter config leaves `projects:` commented out — there is nothing
+        // to tab between. Paint the path in warn so it is not confused with a
+        // quiet-but-configured workspace.
+        spans.push(Span::styled(
+            " no projects · edit ~/.config/queohoh/config.yaml ",
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        for (i, name) in c.tab_names.iter().enumerate() {
+            // Scheduled (queued) + running count for the project, e.g.
+            // `1:platform (2)`; a quiet project keeps the bare chip.
+            let active = app
+                .snapshot
+                .as_ref()
+                .map(|s| crate::selectors::active_count_for(s, name))
+                .unwrap_or(0);
+            let label = if active > 0 {
+                format!(" {}:{} ({}) ", i + 1, name, active)
+            } else {
+                format!(" {}:{} ", i + 1, name)
+            };
+            let w = label.chars().count() as u16;
+            let style = if i == c.active_index {
+                Style::default()
+                    .fg(p.selection_fg)
+                    .bg(p.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.fg)
+            };
+            // Clamp the hit rect to the header width.
+            if x < area.right() {
+                let clamped_w = w.min(area.right() - x);
+                hits.push(
+                    Rect { x, y: area.y, width: clamped_w, height: 1 },
+                    HitTarget::Tab(i),
+                );
+            }
+            spans.push(Span::styled(label, style));
+            x = x.saturating_add(w);
         }
-        spans.push(Span::styled(label, style));
-        x = x.saturating_add(w);
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 
