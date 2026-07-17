@@ -10,6 +10,7 @@ import type {
 	VerifyExecutor,
 } from "@queohoh/core";
 import {
+	BUILTIN_CATALOG,
 	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
@@ -54,7 +55,8 @@ function setup(
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
 		vars: {},
-		models: {},
+		catalog: BUILTIN_CATALOG,
+		defaultModels: ["claude/opus", "grok/grok-4.5"],
 		providers: DEFAULT_PROVIDERS,
 		...overrides.config,
 	};
@@ -253,7 +255,8 @@ describe("Engine.tick", () => {
 			maxConcurrentTasks: 3,
 			archiveAfterDays: 7,
 			vars: {},
-			models: {},
+			catalog: BUILTIN_CATALOG,
+			defaultModels: ["claude/opus", "grok/grok-4.5"],
 			providers: DEFAULT_PROVIDERS,
 		};
 		let claudeRan = false;
@@ -304,19 +307,16 @@ describe("Engine.tick", () => {
 		expect(claudeRan).toBe(false);
 	});
 
-	it("resolves the task model alias through the project vars.yaml models block", async () => {
+	it("resolves a task's provider/label model ref to the catalog id in run meta", async () => {
 		const { engine, store, base } = setup();
-		mkdirSync(join(base, "ws", "platform"), { recursive: true });
-		writeFileSync(
-			join(base, "ws", "platform", "vars.yaml"),
-			"models:\n  sonnet: claude-sonnet-4-6\n",
-		);
 		store.create({
 			prompt: "p",
 			repo: "platform",
 			ref: "worktree:JUS-1",
 			source: "tui",
-			model: "sonnet",
+			// A `provider/label` ref resolves against the catalog to its concrete
+			// provider-specific id (there is no alias table anymore).
+			model: "claude/sonnet",
 		});
 		await engine.tick(); // resolve
 		await engine.tick(); // start
@@ -324,7 +324,7 @@ describe("Engine.tick", () => {
 		const id = store.list()[0]?.id ?? "";
 		expect(store.list()[0]?.status).toBe("done");
 		expect(new RunStore(join(base, "runs")).readRunMeta(id)?.model).toBe(
-			"claude-sonnet-4-6",
+			"claude-sonnet-5",
 		);
 	});
 
@@ -431,7 +431,8 @@ describe("Engine.tick", () => {
 			maxConcurrentTasks: 3,
 			archiveAfterDays: 7,
 			vars: {},
-			models: {},
+			catalog: BUILTIN_CATALOG,
+			defaultModels: ["claude/opus", "grok/grok-4.5"],
 			providers: DEFAULT_PROVIDERS,
 		};
 		const lineage = new SessionLineageStore(join(base, "session-lineage.json"));
@@ -485,9 +486,7 @@ describe("Engine.tick", () => {
 		// At 10 days: platform (15) survives; knowledgebase (3) and other (7) pruned.
 		// At 2 days: everyone survives.
 		for (const { id, repo, age } of made) {
-			const shouldSurvive =
-				age === 2 ||
-				(repo === "platform" && age === 10); // 10 < 15 only for platform
+			const shouldSurvive = age === 2 || (repo === "platform" && age === 10); // 10 < 15 only for platform
 			expect(
 				survived.has(id),
 				`${repo} @ ${age}d should ${shouldSurvive ? "survive" : "be archived"}`,

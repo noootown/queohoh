@@ -125,7 +125,9 @@ fn adhoc_existing_worktree_target_sends_worktree_ref() {
     assert_eq!(p["ref"], "worktree:platform.wt-a");
     assert!(p.get("worktree").is_none());
     assert_eq!(p["prompt"], "do it");
-    assert_eq!(p["model"], "opus");
+    // The model dropdown is left on its head option (value "" = leave unset), so
+    // no `model` param is sent — the daemon resolves the default chain.
+    assert!(p.get("model").is_none());
 }
 
 #[test]

@@ -1,7 +1,13 @@
+import {
+	type CatalogEntry,
+	findModel,
+	groupHead,
+	modelRef,
+} from "./catalog.js";
 import { DEFAULT_PROVIDERS, type ProviderConfig } from "./config.js";
 import type { TaskDefinition } from "./definition.js";
 import { execHook } from "./hooks.js";
-import { type ChainEntry, resolveProviderChain } from "./models.js";
+import { type ChainEntry, resolveModelChain } from "./models.js";
 import { getAdapter } from "./providers/index.js";
 import type { Redactor } from "./redact.js";
 import type { Exec } from "./resolver-io.js";
@@ -33,19 +39,35 @@ export interface WorkerDeps {
 	redact: Redactor;
 	loadDef: (definition: string) => TaskDefinition | null;
 	worktreePath: (repo: string, worktree: string) => Promise<string | null>;
-	defaults: { model: string; timeoutMs: number };
+	/** Daemon default wall-clock ceiling; the default MODEL leg is gone — a
+	 * task with no `model:` of its own resolves against `defaultModels` (below)
+	 * via `resolveModelChain`, not a single default alias. */
+	defaults: { timeoutMs: number };
 	globalVars?: Record<string, string>;
 	repoVars?: Record<string, string>;
-	/** Effective alias→id table for the task's repo; absent = no resolution
-	 * (old callers). Already merged (defaults ⊕ global ⊕ project). Merged onto
-	 * the CLAUDE provider's tier table in `resolveRunContext` — this is the
-	 * back-compat seam for the legacy `models:` alias config (spec §1). */
-	modelTable?: Record<string, string>;
+	/** Effective model catalog for the task's repo (BUILTIN_CATALOG ⊕ config
+	 * `catalog:` overlay), already layered by the caller (the engine, Task 5).
+	 * Every `provider/label` ref a task/definition names resolves against this.
+	 * See `resolveModelChain` / `effectiveCatalog`. */
+	catalog: CatalogEntry[];
+	/** Ordered fallback model-ref list a task/definition with NO `model:` of its
+	 * own resolves against (design spec §2), already project-resolved by the
+	 * caller. Passed to `resolveModelChain` verbatim: an empty list is NOT
+	 * special-cased here — with an enabled `activeProvider`, `resolveModelChain`
+	 * still heads a null-model task onto that provider's group head, so the task
+	 * stays runnable. The empty-array-means-unset → global fallback is the
+	 * engine's decision at wiring time (Task 5), not the worker's. */
+	defaultModels: string[];
 	/** Effective provider table (fallback order), already layered by the
 	 * caller (built-in ⊕ global config.yaml ⊕ project vars.yaml — see
 	 * `effectiveProviders` in config.ts). Absent ⇒ `DEFAULT_PROVIDERS` (old
 	 * callers, or a caller that hasn't wired provider config yet). */
 	providers?: ProviderConfig[];
+	/** Which provider the operator has currently switched to (design spec §4
+	 * chain resolution's `activeProvider`). Required: it re-heads the fallback
+	 * chain onto the switched-to provider for a fresh run and is ignored by a
+	 * resume pin (which follows its session's tagged provider). */
+	activeProvider: string;
 	lineage?: SessionLineageStore;
 	// Reports the spawned claude child's pid so the engine can track it for a
 	// Stop action. Fires once per run, right after spawn.
@@ -95,7 +117,11 @@ interface RunContext {
 	systemPrompt: string | undefined;
 	extraArgs: string[] | undefined;
 	bin: string | undefined;
-	/** Remaining fallback chain (attemptedProviders already filtered out; for
+	/** The head entry's `provider/label` ref — what the hop-trail / terminal
+	 * "attempt N: <ref>" line reports (design spec §4). Distinct from the bare
+	 * `provider` name appended to `attemptedModels` (the group-skip key). */
+	ref: string;
+	/** Remaining fallback chain (attemptedModels already filtered out; for
 	 * a resume task, pinned to the single provider its session lineage is
 	 * tagged with — see the resume-resolution block in `resolveRunContext`).
 	 * `chain[0]` is always the entry that produced `provider`/`model` above;
@@ -168,27 +194,34 @@ async function resolveRunContext(
 			return { fail: `definition not found: ${task.definition}` };
 	}
 
-	// Chain resolution (design spec §4). `deps.providers` is already the
-	// effective (built-in ⊕ global ⊕ project) table — the caller's job, not
-	// this function's. The one merge left to do here is folding the legacy
-	// `models:` alias table onto CLAUDE's tier entries, so `deps.modelTable`
-	// keeps overriding claude model ids exactly like `resolveModel` used to.
-	const modelTable = deps.modelTable ?? {};
-	const providers: ProviderConfig[] = (deps.providers ?? DEFAULT_PROVIDERS).map(
-		(p) =>
-			p.name === "claude"
-				? { ...p, models: { ...p.models, ...modelTable } }
-				: p,
+	// Chain resolution (design spec §4). `deps.providers`/`deps.catalog`/
+	// `deps.defaultModels` are already the effective (built-in ⊕ global ⊕
+	// project) tables — the caller's (engine, Task 5) job, not this function's.
+	// A task/definition with no `model:` of its own passes `null`, so the chain
+	// comes from `deps.defaultModels` (headed onto `activeProvider`).
+	const providers: ProviderConfig[] = deps.providers ?? DEFAULT_PROVIDERS;
+	const modelSpec = def?.model ?? task.model ?? null;
+	const chainResult = resolveModelChain(
+		modelSpec,
+		deps.catalog,
+		providers,
+		deps.defaultModels,
+		deps.activeProvider,
 	);
-	const modelSpec = def?.model ?? task.model ?? deps.defaults.model;
-	const chainResult = resolveProviderChain(modelSpec, providers);
 	if (!chainResult.ok) return { fail: chainResult.error };
 
-	// Drop providers already attempted for this task, so a retry (or an
-	// adopted mid-chain run after a daemon restart) resolves onto the next
-	// candidate rather than repeating the one that just failed.
+	// Drop entries already attempted for this task, so a retry (or an adopted
+	// mid-chain run after a daemon restart) resolves onto the next candidate
+	// rather than repeating the one that just failed. `attemptedModels` holds
+	// bare PROVIDER names (an availability failure marks the whole provider
+	// group attempted — see finalizeRun), so the `e.provider` clause skips
+	// every entry of an attempted provider (provider-group skip); the `e.ref`
+	// clause is future-proofing for a per-ref attempt entry, and both together
+	// also honor a legacy `attempted_providers` file mapped onto attemptedModels.
 	let chain = chainResult.chain.filter(
-		(e) => !task.attemptedProviders.includes(e.provider),
+		(e) =>
+			!task.attemptedModels.includes(e.ref) &&
+			!task.attemptedModels.includes(e.provider),
 	);
 
 	// Resume resolution. A pinned task resumes the TIP of its pin's lineage:
@@ -211,21 +244,35 @@ async function resolveRunContext(
 		if (pinnedEntry !== undefined) {
 			chain = [pinnedEntry];
 		} else {
-			// The pinned provider isn't among the entries resolveProviderChain
-			// produced for this task's model spec (e.g. the spec is a tier only
-			// some OTHER provider has) — build its single entry directly: the
-			// pinned provider's own tier entry for the task's model, or the raw
-			// model spec verbatim when it isn't one of that provider's tiers.
+			// The pinned provider isn't among the entries resolveModelChain
+			// produced for this task's model spec (e.g. the spec names only some
+			// OTHER provider). Resolve its single entry from the catalog directly:
+			// the task's own ref when that ref names the pinned provider, else the
+			// pinned provider's group head (its most powerful model). A disabled
+			// provider — or one with no catalog entry at all — is unavailable.
 			const pinnedConfig = providers.find((p) => p.name === pinnedProvider);
 			if (pinnedConfig === undefined || !pinnedConfig.enabled) {
 				return {
 					fail: `resume provider unavailable: ${pinnedProvider}`,
 				};
 			}
+			const specRef = typeof modelSpec === "string" ? modelSpec : null;
+			const refEntry =
+				specRef !== null ? findModel(deps.catalog, specRef) : undefined;
+			const pinned =
+				refEntry !== undefined && refEntry.provider === pinnedProvider
+					? refEntry
+					: groupHead(deps.catalog, pinnedProvider);
+			if (pinned === undefined) {
+				return {
+					fail: `resume provider unavailable: ${pinnedProvider}`,
+				};
+			}
 			chain = [
 				{
-					provider: pinnedProvider,
-					model: pinnedConfig.models[modelSpec] ?? modelSpec,
+					provider: pinned.provider,
+					model: pinned.id,
+					ref: modelRef(pinned),
 				},
 			];
 		}
@@ -253,6 +300,7 @@ async function resolveRunContext(
 			timeoutMs,
 			resumeSessionId,
 			provider: head.provider,
+			ref: head.ref,
 			systemPrompt: providerConfig?.systemPrompt,
 			extraArgs: providerConfig?.args,
 			bin: providerConfig?.bin,
@@ -397,7 +445,7 @@ export async function startRun(
 /** `finalizeRun`'s outcome: the settled (or re-queued, see `retry`) task, plus
  * whether this was an availability failure with chain remaining. `retry:
  * true` means the run is NOT settled — the task was stamped back to `queued`
- * with the failed provider appended to `attemptedProviders` — and the caller
+ * with the failed provider appended to `attemptedModels` — and the caller
  * must start a fresh attempt (the engine re-drives; `runTask`'s in-process
  * caller just invokes `runTask` again) rather than treat this as terminal. */
 export interface FinalizeOutcome {
@@ -436,7 +484,7 @@ export async function finalizeRun(
 		});
 		return { task, retry: false };
 	}
-	const { task, cwd, renderHook, def, resumeSessionId, provider, chain } =
+	const { task, cwd, renderHook, def, resumeSessionId, provider, ref, chain } =
 		c.ctx;
 
 	let outcome: "done" | "failed" | "cancelled" | "verify-failed" = "done";
@@ -449,7 +497,7 @@ export async function finalizeRun(
 	// (classifyUnavailable's vocabulary, including the spawn-failure fallback
 	// below) rather than a raw `exit code N`. Drives whether a TERMINAL
 	// availability settle (chain exhausted, or a resume pin that can never
-	// retry) still appends `provider` to `attemptedProviders` — `retry` alone
+	// retry) still appends `provider` to `attemptedModels` — `retry` alone
 	// only covers the hop-eligible case (finding 4).
 	let availabilityClassified = false;
 	// Populated only when the verify gate below actually runs; drives both the
@@ -580,7 +628,7 @@ export async function finalizeRun(
 		// attempt's startRun overwrites the rest of the snapshot.
 		deps.runStore.appendAttempt(
 			taskId,
-			`attempt ${task.attemptedProviders.length + 1}: ${provider} — ${reason} → falling back`,
+			`attempt ${task.attemptedModels.length + 1}: ${ref} — ${reason} → falling back`,
 			deps.redact,
 		);
 		deps.runStore.finishRun(
@@ -588,10 +636,14 @@ export async function finalizeRun(
 			{ result, outcome: "failed", reason, verify: null },
 			deps.redact,
 		);
+		// Append the bare PROVIDER name (not the ref): an availability failure
+		// marks the whole provider group attempted, so the next resolve skips
+		// every entry of this provider (the group-skip filter above), not just
+		// this one ref.
 		const task2 = deps.store.update(taskId, {
 			status: "queued",
 			error: reason,
-			attemptedProviders: [...task.attemptedProviders, provider],
+			attemptedModels: [...task.attemptedModels, provider],
 		});
 		return { task: task2, retry: true };
 	}
@@ -623,7 +675,7 @@ export async function finalizeRun(
 	// records the hop-eligible attempts in report.md's "## Attempts" trail, so
 	// without this the trail silently drops the LAST provider tried (finding 4).
 	// This ONLY appends to that report trail — it deliberately does NOT append
-	// `provider` to the task's `attemptedProviders`: that field records the
+	// `provider` to the task's `attemptedModels`: that field records the
 	// providers a manual re-run must skip (task.ts), and the terminal provider
 	// is exactly the one a re-run should resume on (its rate limit may have
 	// reset). Recording it here would filter it out too, so a chain-exhausted
@@ -637,7 +689,7 @@ export async function finalizeRun(
 	if (terminalAvailabilityFailure) {
 		deps.runStore.appendAttempt(
 			taskId,
-			`attempt ${task.attemptedProviders.length + 1}: ${provider} — ${reason}`,
+			`attempt ${task.attemptedModels.length + 1}: ${ref} — ${reason}`,
 			deps.redact,
 		);
 	}
@@ -725,7 +777,7 @@ export async function runTask(
 	deps.runStore.writeWorkerPid(taskId, process.pid);
 	const result = await spawnInProcess(taskId, s.spec, deps);
 	// `retry: true` means finalizeRun already stamped the task back to
-	// `queued` (with the failed provider appended to attemptedProviders)
+	// `queued` (with the failed provider appended to attemptedModels)
 	// rather than settling it failed — return it as-is. The engine (Task 10)
 	// is what actually re-drives a fresh attempt; here in the in-process path
 	// the caller (a test, `qoo run`, ...) simply invokes `runTask` again.

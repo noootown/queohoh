@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type {
 	ArgSpec,
+	CatalogEntry,
 	ChainStepInput,
 	GlobalConfig,
 	QueueStore,
@@ -15,26 +16,25 @@ import type {
 } from "@queohoh/core";
 import {
 	buildItemFromArgs,
-	DEFAULT_MODEL_ALIASES,
 	defaultExec,
-	effectiveModelTable,
+	findModel,
 	globalWorkspaceDir,
 	instantiateDefinition,
 	listClaudeSessions,
 	listDefinitions,
-	loadProjectDefaultModel,
+	loadProjectDefaultModels,
 	loadProjectGithubId,
-	loadProjectModels,
 	loadProjectVars,
+	modelRef,
 	projectWorkspaceDir,
 	render,
 	resolveDefinition,
-	resolveModel,
 	SessionModeSchema,
+	unknownModelError,
 } from "@queohoh/core";
 import { currentBuildId } from "./build-id.js";
 import type { Engine } from "./engine.js";
-import { configPath } from "./paths.js";
+import type { SettingsStore } from "./settings-store.js";
 
 export interface StateSnapshot {
 	tasks: TaskInstance[];
@@ -65,6 +65,13 @@ export interface StateSnapshot {
 	 * built-in `tmux new-window` behavior.
 	 */
 	gotoCommand?: string;
+	/**
+	 * The provider the operator has currently switched to (design spec §4). On
+	 * the live broadcast so a `set_active_provider` from one client re-renders
+	 * every subscriber. Optional/additive — pre-feature daemons omit it and old
+	 * TUIs ignore it.
+	 */
+	activeProvider?: string;
 }
 
 interface ApiDeps {
@@ -73,6 +80,9 @@ interface ApiDeps {
 	runStore: RunStore;
 	registry: SessionRegistry;
 	config: GlobalConfig;
+	/** Persisted operator settings (active provider). Read by the `settings`
+	 * RPC + the state snapshot; mutated by `set_active_provider`. */
+	settings: SettingsStore;
 	/**
 	 * Root of Claude Code's per-project session dirs. Optional — defaults to
 	 * `~/.claude/projects` (resolved once in the constructor). Tests inject a
@@ -131,6 +141,7 @@ export class ApiServer {
 			worktrees: this.deps.engine.worktreesByRepo(),
 			buildId: this.buildId,
 			gotoCommand: this.deps.config.gotoCommand,
+			activeProvider: this.deps.settings.activeProvider(),
 		};
 	}
 
@@ -214,37 +225,46 @@ export class ApiServer {
 			case "ping":
 				return "pong";
 			case "settings": {
-				// Projects are listed when they override the models table OR set a
-				// `default_model`; everyone else is fully described by the built-in
-				// `default_model` ("opus") + defaults + global.
+				// A project appears under `default_models.projects` only when its
+				// vars.yaml sets a NON-EMPTY `default_models:` override (an empty /
+				// all-invalid list reads as unset → global fallback, so it is not an
+				// override worth listing). Everyone else is described by the global list.
 				const projects = deps.config.projects
 					.map((p) => {
 						const dir = projectWorkspaceDir(deps.config, p.name);
 						return {
-							repo: p.name,
-							entries: loadProjectModels(dir),
-							default_model: loadProjectDefaultModel(dir),
+							name: p.name,
+							default_models: loadProjectDefaultModels(dir),
 							source: join(dir, "vars.yaml"),
 						};
 					})
-					.filter((p) => Object.keys(p.entries).length > 0 || p.default_model);
+					.filter(
+						(
+							p,
+						): p is {
+							name: string;
+							default_models: string[];
+							source: string;
+						} => p.default_models !== undefined && p.default_models.length > 0,
+					);
 				return {
-					models: {
-						defaults: DEFAULT_MODEL_ALIASES,
-						// Built-in default model an ad-hoc / enqueue run uses when nothing
-						// sets one; the TUI launcher preselects this (or a project override).
-						default_model: "opus",
-						global: { entries: deps.config.models, source: configPath() },
+					// The merged, provider-precedence-grouped catalog (incl. each
+					// entry's `hidden` flag — the TUI filters hidden from pickers but
+					// still resolves them when referenced explicitly).
+					catalog: deps.config.catalog,
+					// The provider the operator is currently switched to (SettingsStore).
+					active_provider: deps.settings.activeProvider(),
+					default_models: {
+						global: deps.config.defaultModels,
 						projects,
 					},
 					// deps.config.providers is already the global-effective set
 					// (loadGlobalConfig runs it through effectiveProviders), so this
-					// forwards it as-is — project tier overrides are per-repo and don't
-					// belong in a global RPC payload.
+					// forwards it as-is — name/enabled only (per-provider model tiers
+					// are gone; models live in the flat catalog above).
 					providers: deps.config.providers.map((p) => ({
 						name: p.name,
 						enabled: p.enabled,
-						models: p.models,
 					})),
 				};
 			}
@@ -253,6 +273,21 @@ export class ApiServer {
 			case "subscribe":
 				this.subscribers.add(socket);
 				return true;
+			case "set_active_provider": {
+				// Switch the operator's active provider (design spec §4). Validates the
+				// provider exists AND is enabled — SettingsStore throws the message
+				// otherwise, surfaced to the client via the standard error frame — then
+				// persists (write-through) and returns the new value. Broadcasting the
+				// state snapshot (which now carries `activeProvider`) re-renders every
+				// subscriber, including a different client than the one that switched.
+				const provider = String(params.provider ?? "");
+				const value = deps.settings.setActiveProvider(
+					provider,
+					deps.config.providers,
+				);
+				this.broadcast();
+				return value;
+			}
 			case "enqueue": {
 				const worktree =
 					typeof params.worktree === "string" && params.worktree.length > 0
@@ -271,10 +306,10 @@ export class ApiServer {
 					params.resume_session_id.length > 0
 						? params.resume_session_id
 						: undefined;
-				const model =
-					typeof params.model === "string" && params.model.length > 0
-						? params.model
-						: undefined;
+				// Accept a single ref or an ordered fallback list; every ref is
+				// validated against the merged catalog (invalid → the enqueue fails
+				// with an `unknown model` / did-you-mean message).
+				const model = this.coerceModel(deps.config.catalog, params.model);
 				const verify =
 					typeof params.verify === "string" && params.verify.length > 0
 						? params.verify
@@ -324,10 +359,10 @@ export class ApiServer {
 				}
 				const priority =
 					(params.priority as "low" | "normal" | "high") ?? "normal";
-				const model =
-					typeof params.model === "string" && params.model.length > 0
-						? params.model
-						: undefined;
+				// Chain-level model applies to prompt steps; a definition step's own
+				// model still wins at spawn. Accept a single ref or a fallback list;
+				// every ref is validated against the merged catalog.
+				const model = this.coerceModel(deps.config.catalog, params.model);
 				const timeoutMs =
 					typeof params.timeout_ms === "number" ? params.timeout_ms : undefined;
 				const resumeSessionId =
@@ -428,7 +463,12 @@ export class ApiServer {
 					hasDiscovery: boolean;
 					cron: string | null;
 					description: string | null;
-					model: string;
+					/** The def's authored `model:` — a `provider/label` ref, an ordered
+					 * fallback list of them, or `null` (no `model:` → resolves against
+					 * `default_models` at run time). Forwarded as-authored: there is no
+					 * alias table to resolve against anymore (the flat catalog replaced
+					 * it); the TUI renders the ref(s). */
+					model: string | string[] | null;
 					/** The def's `worktree:` setting (schema default "temp"). The TUI's
 					 * worktree-scoped task menu keeps only defs that consume the
 					 * selected worktree — `worktree !== "repo"` (target override
@@ -438,13 +478,6 @@ export class ApiServer {
 				const out: Summary[] = [];
 				for (const project of deps.config.projects) {
 					try {
-						// Resolve model aliases against the effective per-project table
-						// (built-in defaults ← global config.yaml ← project vars.yaml).
-						// Computed once per project so both def loops share it.
-						const table = effectiveModelTable(
-							deps.config.models,
-							loadProjectModels(projectWorkspaceDir(deps.config, project.name)),
-						);
 						// Global defs first, then project-local defs shadow them by name.
 						const byName = new Map<string, Summary>();
 						for (const def of listDefinitions(
@@ -459,7 +492,7 @@ export class ApiServer {
 								hasDiscovery: def.discovery !== null,
 								cron: def.cron,
 								description: def.description,
-								model: resolveModel(def.model, table),
+								model: def.model,
 								worktree: def.worktree,
 							});
 						}
@@ -475,7 +508,7 @@ export class ApiServer {
 								hasDiscovery: def.discovery !== null,
 								cron: def.cron,
 								description: def.description,
-								model: resolveModel(def.model, table),
+								model: def.model,
 								worktree: def.worktree,
 							});
 						}
@@ -578,18 +611,12 @@ export class ApiServer {
 				if (!deps.config.projects.some((p) => p.name === repo)) {
 					throw new Error(`unknown repo: ${repo}`);
 				}
-				const def = resolveDefinition(deps.config, repo, name);
-				// Resolve the authored model alias against the effective per-project
-				// table (built-in defaults ← global config.yaml ← project vars.yaml) —
-				// the exact construction `case "definitions"` uses. The authored
-				// `model` is preserved as-is; `modelResolved` carries the concrete id
-				// so the detail pane can show `alias → id` when they differ. Unknown
-				// names (including full ids) pass through unchanged via resolveModel.
-				const table = effectiveModelTable(
-					deps.config.models,
-					loadProjectModels(projectWorkspaceDir(deps.config, repo)),
-				);
-				return { ...def, modelResolved: resolveModel(def.model, table) };
+				// The full loaded definition, including its authored `model:` — a
+				// `provider/label` ref, an ordered fallback list, or `null` (resolves
+				// against `default_models` at run time). There is no alias table to
+				// resolve against anymore (the flat catalog replaced it), so the
+				// authored ref is forwarded as-is and the TUI renders it.
+				return resolveDefinition(deps.config, repo, name);
 			}
 			case "discoverDefinition": {
 				const repo = String(params.repo ?? "");
@@ -762,24 +789,20 @@ export class ApiServer {
 				const infos = listClaudeSessions(this.claudeProjectsDir, path, 5);
 				const promptBySession = this.runPromptBySession();
 				const modelBySession = this.runModelBySession();
-				// Reverse the repo's effective alias→id table so a resumed session
-				// can default its launch form to the SAME model alias it originally
-				// ran on (consumed by form.rs). Run metadata stores the RESOLVED id
-				// (worker.ts), so map it back to the alias; a value that is already
-				// an alias passes through. Unknown/foreign sessions (no run data, or
-				// an id no alias maps to) omit `model` → the form falls back to the
-				// project/global default.
-				const table = effectiveModelTable(
-					deps.config.models,
-					loadProjectModels(projectWorkspaceDir(deps.config, repo)),
-				);
+				// Map the run's stored model (the RESOLVED provider-specific id, e.g.
+				// `claude-opus-4-8`; see worker.ts) back to its `provider/label` ref so
+				// a resumed session can default its launch form to the SAME model it
+				// originally ran on (consumed by form.rs). A value already in
+				// `provider/label` form passes through; an id/ref the catalog doesn't
+				// know (foreign/old sessions) omits `model` → the form falls back to
+				// the default.
+				const catalog = deps.config.catalog;
 				const aliasForModel = (m: string | undefined): string | undefined => {
 					if (m === undefined || m === "") return undefined;
-					if (m in table) return m; // already an alias
-					for (const [alias, id] of Object.entries(table)) {
-						if (id === m) return alias;
-					}
-					return undefined;
+					const byId = catalog.find((e) => e.id === m);
+					if (byId !== undefined) return modelRef(byId);
+					const byRef = catalog.find((e) => modelRef(e) === m);
+					return byRef !== undefined ? modelRef(byRef) : undefined;
 				};
 				return {
 					sessions: infos.map((s) => ({
@@ -814,6 +837,48 @@ export class ApiServer {
 		const task = this.deps.store.get(id);
 		if (!task) throw new Error(`task not found: ${id}`);
 		return task;
+	}
+
+	/**
+	 * Coerce and VALIDATE an enqueue `model` param: a single `provider/label`
+	 * ref, an ordered fallback list of them, or absent (→ undefined, so the run
+	 * resolves against `default_models`). Every ref is checked against the merged
+	 * catalog via `findModel`; the first miss throws `unknownModelError` (with a
+	 * `did you mean provider/label?` suggestion) so the enqueue fails clearly
+	 * rather than creating a task that can never resolve a model. An empty string
+	 * or empty list reads as absent, but a NON-empty list with a malformed element
+	 * (non-string or empty string, e.g. `[123]` or `[""]`) rejects rather than
+	 * silently filtering it out — consistent with the strict unknown-model path.
+	 */
+	private coerceModel(
+		catalog: CatalogEntry[],
+		raw: unknown,
+	): string | string[] | undefined {
+		const validate = (ref: string): void => {
+			if (findModel(catalog, ref) === undefined) {
+				throw new Error(unknownModelError(catalog, ref));
+			}
+		};
+		if (typeof raw === "string") {
+			if (raw.length === 0) return undefined;
+			validate(raw);
+			return raw;
+		}
+		if (Array.isArray(raw)) {
+			if (raw.length === 0) return undefined;
+			const refs: string[] = [];
+			for (const r of raw) {
+				if (typeof r !== "string" || r.length === 0) {
+					throw new Error(
+						`invalid model list entry: expected a non-empty "provider/label" ref, got ${JSON.stringify(r)}`,
+					);
+				}
+				validate(r);
+				refs.push(r);
+			}
+			return refs;
+		}
+		return undefined;
 	}
 
 	/**

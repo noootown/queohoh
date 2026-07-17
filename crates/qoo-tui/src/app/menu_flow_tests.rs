@@ -608,7 +608,7 @@ fn loaded(worktree: &str) -> Event {
     Event::SessionsLoaded {
         worktree: worktree.into(),
         result: Ok(vec![
-            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000, model: Some("sonnet".into()) },
+            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000, model: Some("claude/sonnet".into()) },
             SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 1_000, model: None },
         ]),
     }
@@ -657,16 +657,17 @@ fn picking_a_session_pins_it() {
         Mode::Form { state, action: FormAction::NewSession { resume_session_id: Some(s), .. } } => {
             assert_eq!(s, "sess-1");
             assert!(state.title.contains("Fix the parser"), "title: {}", state.title);
-            assert_eq!(state.fields[0].value, "sonnet", "model defaults to the resumed session's model");
+            assert_eq!(state.fields[0].value, "claude/sonnet", "model defaults to the resumed session's `provider/label` ref");
         }
         other => panic!("expected NewSession resume form, got {other:?}"),
     }
 }
 
 #[test]
-fn resuming_a_session_without_a_recorded_model_falls_back_to_default() {
+fn resuming_a_session_without_a_recorded_model_falls_back_to_head() {
     // sess-2 has `model: None` (e.g. started outside queohoh); the resume form
-    // then falls back to the resolved default (opus, no settings fetched).
+    // then falls back to the head option (value "" = leave model unset → the
+    // daemon resolves the default chain).
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
     a.update(key('r'));
@@ -679,7 +680,7 @@ fn resuming_a_session_without_a_recorded_model_falls_back_to_default() {
     match &a.mode {
         Mode::Form { state, action: FormAction::NewSession { resume_session_id: Some(s), .. } } => {
             assert_eq!(s, "sess-2");
-            assert_eq!(state.fields[0].value, "opus", "no recorded model → resolved default");
+            assert_eq!(state.fields[0].value, "", "no recorded model → head option (leave unset)");
         }
         other => panic!("expected NewSession resume form, got {other:?}"),
     }

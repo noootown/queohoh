@@ -48,7 +48,7 @@ export function mcpEnqueueTask(
 		ref?: string;
 		priority?: "low" | "normal" | "high";
 		resume_session_id?: string;
-		model?: string;
+		model?: string | string[];
 		timeout?: string;
 		verify?: string;
 	},
@@ -88,7 +88,7 @@ export function mcpEnqueueChain(
 		worktree?: string;
 		priority?: "low" | "normal" | "high";
 		resume_session_id?: string;
-		model?: string;
+		model?: string | string[];
 		timeout?: string;
 	},
 ): Promise<ToolResult> {

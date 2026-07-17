@@ -9,6 +9,7 @@ import type {
 	SpawnSpec,
 } from "@queohoh/core";
 import {
+	BUILTIN_CATALOG,
 	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
@@ -79,7 +80,8 @@ function setup(overrides: {
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
 		vars: {},
-		models: {},
+		catalog: BUILTIN_CATALOG,
+		defaultModels: ["claude/opus", "grok/grok-4.5"],
 		// Default table: claude + grok enabled (codex disabled), fallback order
 		// claude -> grok -> codex — exactly the chain this suite exercises.
 		providers: DEFAULT_PROVIDERS,
@@ -148,14 +150,14 @@ describe("Engine provider fallback", () => {
 		// claude recorded as attempted so the next resolution skips it.
 		const afterFirst = store.list()[0];
 		expect(afterFirst?.status).toBe("queued");
-		expect(afterFirst?.attemptedProviders).toEqual(["claude"]);
+		expect(afterFirst?.attemptedModels).toEqual(["claude"]);
 
 		await engine.tick(); // start pass: attempt 2 (grok) -> success
 		await engine.drain();
 
 		const task = store.list()[0];
 		expect(task?.status).toBe("done");
-		expect(task?.attemptedProviders).toEqual(["claude"]);
+		expect(task?.attemptedModels).toEqual(["claude"]);
 		expect(specs).toHaveLength(2);
 		expect(specs[0]?.provider).toBe("claude");
 		expect(specs[1]?.provider).toBe("grok");
@@ -189,10 +191,10 @@ describe("Engine provider fallback", () => {
 		const task = store.list()[0];
 		expect(task?.status).toBe("failed");
 		// The last attempt's classified reason lands as the terminal error, but
-		// (unlike the retry branch) attemptedProviders is NOT bumped again here —
+		// (unlike the retry branch) attemptedModels is NOT bumped again here —
 		// finalizeRun only appends on the `retry: true` path (see worker.ts).
 		expect(task?.error).toBe("provider unavailable");
-		expect(task?.attemptedProviders).toEqual(["claude"]);
+		expect(task?.attemptedModels).toEqual(["claude"]);
 		expect(call).toBe(2);
 
 		// No infinite loop: a further tick must NOT spawn a third attempt — the

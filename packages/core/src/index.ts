@@ -1,3 +1,14 @@
+export type { CatalogEntry } from "./catalog.js";
+export {
+	BUILTIN_CATALOG,
+	effectiveCatalog,
+	findModel,
+	formatModel,
+	groupHead,
+	modelRef,
+	PROVIDER_PRECEDENCE,
+	unknownModelError,
+} from "./catalog.js";
 export type { ClaudeSessionInfo } from "./claude-sessions.js";
 export { encodeProjectDir, listClaudeSessions } from "./claude-sessions.js";
 export type { GlobalConfig, ProviderConfig } from "./config.js";
@@ -7,11 +18,9 @@ export {
 	globalWorkspaceDir,
 	loadGlobalConfig,
 	loadProjectDefaultBranch,
-	loadProjectDefaultModel,
+	loadProjectDefaultModels,
 	loadProjectGithubId,
-	loadProjectModels,
 	loadProjectProtectedWorktrees,
-	loadProjectProviderModels,
 	loadProjectTaskRetentionDays,
 	loadProjectVars,
 	projectWorkspaceDir,
@@ -38,11 +47,8 @@ export { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
 export { execHook } from "./hooks.js";
 export type { InstantiateDeps, Trigger } from "./instantiate.js";
 export { buildItemFromArgs, instantiateDefinition } from "./instantiate.js";
-export {
-	DEFAULT_MODEL_ALIASES,
-	effectiveModelTable,
-	resolveModel,
-} from "./models.js";
+export type { ChainEntry, ChainResult } from "./models.js";
+export { resolveModelChain } from "./models.js";
 export * from "./providers/index.js";
 export type { Redactor } from "./redact.js";
 export { buildSecretMap, makeRedactor, redact } from "./redact.js";

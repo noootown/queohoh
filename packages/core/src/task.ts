@@ -65,7 +65,16 @@ const TaskMetaSchema = z
 		error: z.string().nullable().default(null),
 		session: SessionModeSchema.default("fresh"),
 		resume_session_id: z.string().nullable().default(null),
-		model: z.string().nullable().default(null),
+		// A single `provider/label` ref, an ordered fallback list, or null (falls
+		// back to the definition's model, then `default_models`) — model catalog
+		// design spec Section 2. Bare tier aliases are no longer accepted; a
+		// legacy value is validated (and rejected) at resolution time by
+		// `resolveModelChain`/`findModel`, not here (this schema only shapes the
+		// field, it doesn't know the catalog).
+		model: z
+			.union([z.string(), z.array(z.string())])
+			.nullable()
+			.default(null),
 		// Per-task hard wall-clock ceiling override, in ms (additive; absent on
 		// legacy files → null). Set from the MCP `timeout` param (enqueue_task /
 		// enqueue_chain); resolution precedence at run time is definition >
@@ -87,10 +96,18 @@ const TaskMetaSchema = z
 		verified: z.boolean().nullable().default(null),
 		verify_exit_code: z.number().int().nullable().default(null),
 		verify_output: z.string().nullable().default(null),
-		// Providers already tried for this task (additive; absent on legacy files
-		// → []). Fallback-chain machinery appends to this as it walks provider
-		// candidates so a re-run doesn't retry a provider that already failed.
-		attempted_providers: z.array(z.string()).default([]),
+		// Providers/models already tried for this task (additive; absent on
+		// legacy files → []). Fallback-chain machinery appends to this as it
+		// walks the model chain so a re-run doesn't retry a provider that
+		// already availability-failed (an availability failure marks the whole
+		// provider group attempted, so entries here are bare provider names —
+		// see the model catalog design spec Section 2).
+		attempted_models: z.array(z.string()).default([]),
+		// Legacy key (pre-catalog-redesign field name). Accepted here so a task
+		// file written before the rename survives the upgrade — never written
+		// (serializeTaskFile emits attempted_models only); parseTaskFile maps it
+		// onto attemptedModels when attempted_models itself is absent/empty.
+		attempted_providers: z.array(z.string()).optional(),
 		// Scheduler-lane override stamped from the definition's `lane:` at create
 		// time (additive; absent on legacy files → null). See laneKey below.
 		lane: z.string().nullable().default(null),
@@ -117,7 +134,11 @@ export interface TaskInstance {
 	error: string | null;
 	session: SessionMode;
 	resumeSessionId: string | null;
-	model: string | null;
+	/** Requested model(s): a single `provider/label` (or `provider/id`) ref, an
+	 * ordered fallback list (top→bottom priority — a single-entry list, and a
+	 * bare string, never rotate), or null (falls back to the definition's
+	 * model, then `default_models`). See `models.ts`'s `resolveModelChain`. */
+	model: string | string[] | null;
 	/** Per-task hard wall-clock ceiling override, in ms; null = fall back to the
 	 * definition's `timeout:` (if any) or the daemon default. See
 	 * `TaskMetaSchema.timeout_ms`. */
@@ -140,11 +161,11 @@ export interface TaskInstance {
 	/** Bounded (~4 KB) tail of the last verify command's combined output; null when
 	 * it never ran. */
 	verifyOutput?: string | null;
-	/** Providers already tried for this task; empty on a task that has never
-	 * attempted a provider (or on a legacy file that predates the field). The
-	 * fallback-chain machinery appends to this as it walks provider candidates
-	 * so a re-run doesn't retry a provider that already failed. */
-	attemptedProviders: string[];
+	/** Providers/models already tried for this task; empty on a task that has
+	 * never attempted one (or on a legacy file that predates the field). The
+	 * fallback-chain machinery appends to this as it walks the model chain so
+	 * a re-run doesn't retry a provider that already availability-failed. */
+	attemptedModels: string[];
 	/** Scheduler-lane override stamped from the definition; null = default
 	 * per-worktree lane. Optional so pre-lane callers and test literals need
 	 * not set it. */
@@ -179,7 +200,14 @@ export function parseTaskFile(content: string): TaskInstance {
 		verified: m.verified,
 		verifyExitCode: m.verify_exit_code,
 		verifyOutput: m.verify_output,
-		attemptedProviders: m.attempted_providers,
+		// attempted_models wins when present; a legacy file (pre-rename) only has
+		// attempted_providers, mapped onto attemptedModels verbatim — its entries
+		// are already bare provider names, the same shape the worker's
+		// group-skip filter expects.
+		attemptedModels:
+			m.attempted_models.length > 0
+				? m.attempted_models
+				: (m.attempted_providers ?? []),
 		lane: m.lane,
 	};
 }
@@ -209,7 +237,7 @@ export function serializeTaskFile(task: TaskInstance): string {
 		verified: task.verified ?? null,
 		verify_exit_code: task.verifyExitCode ?? null,
 		verify_output: task.verifyOutput ?? null,
-		attempted_providers: task.attemptedProviders ?? [],
+		attempted_models: task.attemptedModels ?? [],
 		lane: task.lane ?? null,
 	};
 	return stringifyFrontmatter(meta, task.prompt);

@@ -1,9 +1,17 @@
-//! The `s` overlay: a read-only view of the daemon's model-alias table.
+//! The `s` overlay: a read-only view of the daemon's provider + model settings.
+//!
+//! Post-Task-5 the daemon dropped the per-provider alias table for a flat
+//! `catalog` plus an `active_provider` and `default_models` block, so this
+//! overlay reads THOSE (the legacy `models` block a modern daemon no longer
+//! sends would render empty). It surfaces: the configured providers with their
+//! enabled state (the active one marked — `p` cycles it), the merged model
+//! catalog (`label (provider)` → concrete id, hidden entries marked), and the
+//! effective default-model chains (global + per-project overrides).
 //!
 //! WHY a pure `settings_rows` splits from `render`: the layout — which sections
-//! appear, in what order, and the effective (defaults ⊕ global) merge — is the
-//! interesting logic, and it is worth unit-testing without a terminal. `render`
-//! is then a thin styler over those rows, and the only thing the snapshot pins.
+//! appear and in what order — is the interesting logic, worth unit-testing
+//! without a terminal. `render` is then a thin styler over those rows, and the
+//! only thing the snapshot pins.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -15,28 +23,57 @@ use crate::ipc::types::SettingsPayload;
 use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
-/// Rows for the settings overlay: the effective global table first
-/// (defaults ⊕ global, alias → id), then one section per overriding project
-/// showing only its deltas. Pure, so the layout is unit-testable.
+/// Rows for the settings overlay, in three sections: `providers` (precedence
+/// order, enabled state, the active one marked), `catalog` (`label (provider)` →
+/// concrete id, hidden marked), and `default models` (the global chain, then one
+/// section per project override). Pure, so the layout is unit-testable.
 ///
 /// A "section header" row is any whose left cell does NOT begin with the
-/// two-space indent — its right cell is the layer's `source` path, not an id.
-/// `render` keys off that indent to style headers vs. alias rows.
+/// two-space indent — its right cell is a provenance path (or empty). `render`
+/// keys off that indent to style headers vs. value rows.
 pub(crate) fn settings_rows(p: &SettingsPayload) -> Vec<(String, String)> {
     let mut rows = Vec::new();
-    let mut effective = p.models.defaults.clone();
-    effective.extend(p.models.global.entries.clone());
-    rows.push(("models (global)".into(), p.models.global.source.clone()));
-    for (alias, id) in &effective {
-        rows.push((format!("  {alias}"), id.clone()));
-    }
-    for proj in &p.models.projects {
-        rows.push((format!("{} (overrides)", proj.repo), proj.source.clone()));
-        for (alias, id) in &proj.entries {
-            rows.push((format!("  {alias}"), id.clone()));
+
+    // Providers, in the payload's precedence order, with enabled state; the
+    // active provider (what `p` cycles) is flagged so the overlay names it.
+    rows.push(("providers".into(), String::new()));
+    for pr in &p.providers {
+        let mut state = if pr.enabled { "enabled".to_string() } else { "disabled".to_string() };
+        if pr.name == p.active_provider {
+            state.push_str(" · active");
         }
+        rows.push((format!("  {}", pr.name), state));
     }
+
+    // The merged catalog: reference display `label (provider)` → concrete CLI
+    // model id. Hidden entries (picker-suppressed but still resolvable when named
+    // explicitly) are listed and marked.
+    rows.push(("catalog".into(), String::new()));
+    for e in &p.catalog {
+        let id = if e.hidden { format!("{} · hidden", e.id) } else { e.id.clone() };
+        rows.push((format!("  {}", e.model_display()), id));
+    }
+
+    // Effective default-model chains: the workspace-wide global chain, then one
+    // labeled section per project that overrides it (source path trailing).
+    rows.push(("default models (global)".into(), String::new()));
+    rows.push((format!("  {}", chain_or_none(&p.default_models.global)), String::new()));
+    for proj in &p.default_models.projects {
+        rows.push((format!("{} (default models override)", proj.name), proj.source.clone()));
+        rows.push((format!("  {}", chain_or_none(&proj.default_models)), String::new()));
+    }
+
     rows
+}
+
+/// A ` → `-joined model-ref chain, or a placeholder when the chain is empty
+/// (the daemon then resolves its own built-in default).
+fn chain_or_none(refs: &[String]) -> String {
+    if refs.is_empty() {
+        "(daemon default)".into()
+    } else {
+        refs.join(" → ")
+    }
 }
 
 /// Two-space indent that marks an alias row (vs. a bold section header). Kept as
@@ -121,7 +158,7 @@ pub fn render(
         .border_style(Style::default().fg(p.accent))
         .padding(MODAL_PADDING)
         .title(Span::styled(
-            " settings — model aliases ",
+            " settings — providers & models ",
             Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(popup);
@@ -140,82 +177,84 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::types::{SettingsLayer, SettingsModels, SettingsProjectLayer};
-    use std::collections::BTreeMap;
+    use crate::ipc::types::{
+        CatalogEntry, DefaultModels, DefaultModelsProject, SettingsProvider,
+    };
 
-    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    fn provider(name: &str, enabled: bool) -> SettingsProvider {
+        SettingsProvider { name: name.into(), enabled }
+    }
+
+    fn entry(provider: &str, id: &str, label: &str, hidden: bool) -> CatalogEntry {
+        CatalogEntry { provider: provider.into(), id: id.into(), label: label.into(), hidden }
     }
 
     #[test]
-    fn defaults_only_lists_the_global_section() {
+    fn providers_section_lists_enabled_state_and_marks_the_active_one() {
         let p = SettingsPayload {
-            models: SettingsModels {
-                defaults: map(&[("opus", "claude-opus-4-8"), ("sonnet", "claude-sonnet-4-5")]),
-                default_model: String::new(),
-                global: SettingsLayer { entries: BTreeMap::new(), source: "/cfg.yaml".into() },
-                projects: vec![],
-            },
-            providers: vec![],
-        };
-        assert_eq!(
-            settings_rows(&p),
-            vec![
-                ("models (global)".to_string(), "/cfg.yaml".to_string()),
-                // BTreeMap → alphabetical, deterministic for the snapshot.
-                ("  opus".to_string(), "claude-opus-4-8".to_string()),
-                ("  sonnet".to_string(), "claude-sonnet-4-5".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn global_overrides_a_default_in_the_effective_table() {
-        let p = SettingsPayload {
-            models: SettingsModels {
-                defaults: map(&[("sonnet", "claude-sonnet-4-5")]),
-                default_model: String::new(),
-                // global overlays defaults: sonnet is remapped in-place.
-                global: SettingsLayer {
-                    entries: map(&[("sonnet", "claude-sonnet-4-6")]),
-                    source: "/cfg.yaml".into(),
-                },
-                projects: vec![],
-            },
-            providers: vec![],
+            active_provider: "grok".into(),
+            providers: vec![
+                provider("claude", true),
+                provider("grok", true),
+                provider("codex", false),
+            ],
+            ..Default::default()
         };
         let rows = settings_rows(&p);
-        assert_eq!(rows[0], ("models (global)".to_string(), "/cfg.yaml".to_string()));
-        // The overridden value wins; there is exactly one `sonnet` row.
-        assert_eq!(rows[1], ("  sonnet".to_string(), "claude-sonnet-4-6".to_string()));
-        assert_eq!(rows.len(), 2);
+        // Header + one row per provider, in precedence order; active marked.
+        assert_eq!(rows[0], ("providers".to_string(), String::new()));
+        assert_eq!(rows[1], ("  claude".to_string(), "enabled".to_string()));
+        assert_eq!(rows[2], ("  grok".to_string(), "enabled · active".to_string()));
+        assert_eq!(rows[3], ("  codex".to_string(), "disabled".to_string()));
     }
 
     #[test]
-    fn project_delta_appends_its_own_section() {
+    fn catalog_section_shows_ref_display_and_marks_hidden_entries() {
         let p = SettingsPayload {
-            models: SettingsModels {
-                defaults: map(&[("opus", "claude-opus-4-8")]),
-                default_model: String::new(),
-                global: SettingsLayer { entries: BTreeMap::new(), source: "/cfg.yaml".into() },
-                projects: vec![SettingsProjectLayer {
-                    repo: "acme".into(),
-                    entries: map(&[("opus", "claude-opus-4-9")]),
-                    default_model: String::new(),
+            catalog: vec![
+                entry("claude", "claude-opus-4-8", "opus", false),
+                entry("grok", "grok-legacy", "legacy", true),
+            ],
+            ..Default::default()
+        };
+        let rows = settings_rows(&p);
+        // The catalog header follows the (empty) providers section header.
+        let cat = rows.iter().position(|(l, _)| l == "catalog").unwrap();
+        assert_eq!(rows[cat + 1], ("  opus (claude)".to_string(), "claude-opus-4-8".to_string()));
+        // Hidden entries are listed and flagged.
+        assert_eq!(rows[cat + 2], ("  legacy (grok)".to_string(), "grok-legacy · hidden".to_string()));
+    }
+
+    #[test]
+    fn default_models_shows_global_chain_then_project_overrides() {
+        let p = SettingsPayload {
+            default_models: DefaultModels {
+                global: vec!["claude/opus".into(), "grok/grok-4.5".into()],
+                projects: vec![DefaultModelsProject {
+                    name: "acme".into(),
+                    default_models: vec!["grok/grok-4.5".into()],
                     source: "/repos/acme/vars.yaml".into(),
                 }],
             },
-            providers: vec![],
+            ..Default::default()
         };
+        let rows = settings_rows(&p);
+        let g = rows.iter().position(|(l, _)| l == "default models (global)").unwrap();
+        // Global chain joined with the fallback arrow.
+        assert_eq!(rows[g + 1], ("  claude/opus → grok/grok-4.5".to_string(), String::new()));
+        // Project override: labeled header with source path, then its chain.
         assert_eq!(
-            settings_rows(&p),
-            vec![
-                ("models (global)".to_string(), "/cfg.yaml".to_string()),
-                ("  opus".to_string(), "claude-opus-4-8".to_string()),
-                // The project section shows only its deltas — not the merged view.
-                ("acme (overrides)".to_string(), "/repos/acme/vars.yaml".to_string()),
-                ("  opus".to_string(), "claude-opus-4-9".to_string()),
-            ]
+            rows[g + 2],
+            ("acme (default models override)".to_string(), "/repos/acme/vars.yaml".to_string())
         );
+        assert_eq!(rows[g + 3], ("  grok/grok-4.5".to_string(), String::new()));
+    }
+
+    #[test]
+    fn empty_default_models_chain_renders_the_daemon_default_placeholder() {
+        let p = SettingsPayload::default();
+        let rows = settings_rows(&p);
+        let g = rows.iter().position(|(l, _)| l == "default models (global)").unwrap();
+        assert_eq!(rows[g + 1], ("  (daemon default)".to_string(), String::new()));
     }
 }

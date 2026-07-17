@@ -1,106 +1,108 @@
+import {
+	type CatalogEntry,
+	findModel,
+	groupHead,
+	modelRef,
+	unknownModelError,
+} from "./catalog.js";
 // Type-only import: models.ts must not pull in config.ts's runtime (fs/yaml
 // loading) — only the ProviderConfig shape is needed here.
 import type { ProviderConfig } from "./config.js";
 
 /**
- * Model alias resolution (agent247-style). Definitions and tasks name models
- * by short alias ("sonnet"); the worker resolves the alias against the
- * effective per-project table just before spawning claude. Unknown names —
- * including full model ids — pass through untouched, so nothing breaks when a
- * caller already supplies a concrete id.
+ * Model chain resolution (design spec Section 4) over the flat catalog
+ * (`catalog.ts`). A task/definition names models by `provider/label` ref (or
+ * a list of them, for an explicit fallback order); `resolveModelChain` turns
+ * that spec into a concrete, provider-availability-filtered, active-provider-
+ * first fallback chain the worker walks in order.
  */
 
-/** Built-in defaults; global config.yaml `models:` and a project vars.yaml
- * `models:` block layer on top (later wins, merged per key). */
-export const DEFAULT_MODEL_ALIASES: Record<string, string> = {
-	fable: "claude-fable-5",
-	sonnet: "claude-sonnet-5",
-	opus: "claude-opus-4-8",
-	haiku: "claude-haiku-4-5",
-};
-
-export function resolveModel(
-	name: string,
-	table: Record<string, string>,
-): string {
-	return table[name] ?? name;
-}
-
-export function effectiveModelTable(
-	global: Record<string, string>,
-	project: Record<string, string>,
-): Record<string, string> {
-	return { ...DEFAULT_MODEL_ALIASES, ...global, ...project };
-}
-
-/** One step in a provider fallback chain: which provider to spawn and which
- * provider-specific model id to pass it. */
+/** One step in a model fallback chain: which provider to spawn, which
+ * provider-specific model id to pass it, and the `provider/label` ref that
+ * produced it (for logging/attempted-provider bookkeeping). */
 export interface ChainEntry {
 	provider: string;
 	model: string;
+	ref: string;
 }
 
-/** Result of resolving a model spec into a provider chain. `ok: false` means
- * the spec named a provider that can't be used right now (disabled or
- * unknown) — the caller should fail the task fast rather than silently
- * falling back. */
+/** Result of resolving a model spec into a chain. `ok: false` means nothing
+ * in the spec is runnable right now (unknown model, or every candidate's
+ * provider is disabled) — the caller should fail the task fast. */
 export type ChainResult =
 	| { ok: true; chain: ChainEntry[] }
 	| { ok: false; error: string };
 
+function isEnabled(providers: ProviderConfig[], provider: string): boolean {
+	return providers.find((p) => p.name === provider)?.enabled === true;
+}
+
+function toChainEntry(entry: CatalogEntry): ChainEntry {
+	return { provider: entry.provider, model: entry.id, ref: modelRef(entry) };
+}
+
 /**
- * Resolve a model spec into an ordered `(provider, model)` fallback chain
- * over `providers` (already effective/ordered — see `effectiveProviders` in
- * config.ts — with the claude provider's tiers already merged with the
- * legacy `models:` table by the caller).
+ * Resolve a model spec into an ordered fallback chain over `catalog`.
  *
- * Spec shapes (design spec Section 1):
- * - Bare tier (no `/`) that at least one enabled provider has: chain across
- *   every enabled provider that has that tier, in `providers` order.
- *   Providers lacking the tier are skipped. No enabled provider has it ⇒
- *   `{ ok: true, chain: [] }` (an empty, not an error — callers decide how to
- *   handle nothing being resolvable).
- * - `provider/x`: `provider` must be a known, enabled provider (unknown ⇒
- *   `unknown provider: <name>`, disabled ⇒ `provider disabled: <name>`). If
- *   `x` is one of that provider's tier keys, use its tier entry; otherwise
- *   `x` is an exact model id on that provider. Either way the chain is a
- *   single pinned entry — no fallback past a pinned provider.
- * - Anything else with no `/` (a raw id, or a bare token that isn't a tier
- *   any provider has) passes through unchanged as a claude-pinned entry —
- *   today's `resolveModel` back-compat behavior.
+ * Algorithm (design spec Section 4, implemented verbatim):
+ * 1. `refs = spec === null ? defaultModels : (typeof spec === "string" ? [spec] : spec)`.
+ * 2. Map each ref via `findModel`; any miss ⇒ `unknownModelError`.
+ * 3. Drop entries whose provider is disabled/unknown in `providers`.
+ * 4. Stable-partition: entries with `provider === activeProvider` first
+ *    (keeping order), rest after.
+ * 5. If no entry has `provider === activeProvider` AND that provider is
+ *    enabled: prepend `groupHead(catalog, activeProvider)` (skip prepend if
+ *    the group is empty).
+ * 6. Dedup by `provider/id` keeping first occurrence. Empty final chain ⇒ an
+ *    error.
  */
-export function resolveProviderChain(
-	spec: string,
+export function resolveModelChain(
+	spec: string | string[] | null,
+	catalog: CatalogEntry[],
 	providers: ProviderConfig[],
+	defaultModels: string[],
+	activeProvider: string,
 ): ChainResult {
-	const slashIndex = spec.indexOf("/");
+	const refs =
+		spec === null ? defaultModels : typeof spec === "string" ? [spec] : spec;
 
-	if (slashIndex !== -1) {
-		const providerName = spec.slice(0, slashIndex);
-		const rest = spec.slice(slashIndex + 1);
-		const provider = providers.find((p) => p.name === providerName);
-		if (!provider) {
-			return { ok: false, error: `unknown provider: ${providerName}` };
+	const entries: CatalogEntry[] = [];
+	for (const ref of refs) {
+		const entry = findModel(catalog, ref);
+		if (entry === undefined) {
+			return { ok: false, error: unknownModelError(catalog, ref) };
 		}
-		if (!provider.enabled) {
-			return { ok: false, error: `provider disabled: ${providerName}` };
-		}
-		const model = provider.models[rest] ?? rest;
-		return { ok: true, chain: [{ provider: provider.name, model }] };
+		entries.push(entry);
 	}
 
-	const hasTier = providers.some(
-		(p) => p.enabled && Object.hasOwn(p.models, spec),
-	);
-	if (hasTier) {
-		const chain: ChainEntry[] = [];
-		for (const p of providers) {
-			if (!p.enabled) continue;
-			const model = p.models[spec];
-			if (model !== undefined) chain.push({ provider: p.name, model });
+	const enabled = entries.filter((e) => isEnabled(providers, e.provider));
+	const active = enabled.filter((e) => e.provider === activeProvider);
+	const rest = enabled.filter((e) => e.provider !== activeProvider);
+	let ordered = [...active, ...rest];
+
+	if (active.length === 0 && isEnabled(providers, activeProvider)) {
+		const head = groupHead(catalog, activeProvider);
+		if (head !== undefined) {
+			ordered = [head, ...ordered];
 		}
-		return { ok: true, chain };
 	}
 
-	return { ok: true, chain: [{ provider: "claude", model: spec }] };
+	const seen = new Set<string>();
+	const chain: ChainEntry[] = [];
+	for (const entry of ordered) {
+		const key = `${entry.provider}/${entry.id}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		chain.push(toChainEntry(entry));
+	}
+
+	if (chain.length === 0) {
+		return {
+			ok: false,
+			error:
+				"no runnable model: all configured models are on disabled providers",
+		};
+	}
+
+	return { ok: true, chain };
 }

@@ -93,7 +93,9 @@ describe("loadDefinition", () => {
 		const def = loadDefinition(projectDir, "platform", "tidy");
 		expect(def.dedup).toBe("skip_seen");
 		expect(def.worktree).toBe("temp");
-		expect(def.model).toBe("sonnet");
+		// No `model:` in config → null (resolves against default_models), not a
+		// single hard-coded alias.
+		expect(def.model).toBeNull();
 		expect(def.timeoutMs).toBe(1_800_000);
 		expect(def.priority).toBe("normal");
 		expect(def.discovery).toBeNull();

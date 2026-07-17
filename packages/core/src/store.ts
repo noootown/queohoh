@@ -26,7 +26,9 @@ export interface NewTaskInput {
 	itemKey?: string;
 	session?: SessionMode;
 	resumeSessionId?: string;
-	model?: string;
+	/** Requested model(s): a single `provider/label` ref or an ordered fallback
+	 * list (see `TaskInstance.model` / `resolveModelChain`). */
+	model?: string | string[];
 	/** Per-task hard wall-clock ceiling override, in ms (from the MCP `timeout`
 	 * param); a definition task's own `timeout:` still wins at run time,
 	 * mirroring `model`. */
@@ -47,7 +49,7 @@ export interface ChainStepInput {
 	definition?: string;
 	item?: Record<string, string>;
 	itemKey?: string;
-	model?: string;
+	model?: string | string[];
 	/** Chain-wide hard wall-clock ceiling override, in ms (a definition step's
 	 * own `timeout:` still wins at run time, mirroring `model`). */
 	timeoutMs?: number;
@@ -115,7 +117,7 @@ export class QueueStore {
 			verified: null,
 			verifyExitCode: null,
 			verifyOutput: null,
-			attemptedProviders: [],
+			attemptedModels: [],
 			lane: input.lane ?? null,
 		};
 		this.write(task);
@@ -163,7 +165,7 @@ export class QueueStore {
 				verified: null,
 				verifyExitCode: null,
 				verifyOutput: null,
-				attemptedProviders: [],
+				attemptedModels: [],
 				lane: step.lane ?? null,
 			};
 			this.write(task);

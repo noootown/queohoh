@@ -64,10 +64,10 @@ export function createMcpServer(caller: McpCaller): McpServer {
 					"Claude session id to resume; the run continues that session's context",
 				),
 			model: z
-				.string()
+				.union([z.string(), z.array(z.string())])
 				.optional()
 				.describe(
-					"Model for the run (e.g. claude-fable-5); defaults to the daemon default",
+					"Model for the run, as a provider/label ref (e.g. claude/opus, grok/grok-4.5), or an ordered fallback list of such refs; defaults to the daemon default. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
 				),
 			timeout: z
 				.string()
@@ -146,10 +146,10 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.optional()
 				.describe("Claude session id to resume for the FIRST step only"),
 			model: z
-				.string()
+				.union([z.string(), z.array(z.string())])
 				.optional()
 				.describe(
-					"Model for prompt steps (definition steps use their own model)",
+					"Model for prompt steps, as a provider/label ref (e.g. claude/opus) or an ordered fallback list of them (definition steps use their own model). Every ref is validated against the catalog — an unknown ref fails the enqueue.",
 				),
 			timeout: z
 				.string()

@@ -306,7 +306,9 @@ fn launcher_new_session_opens_form_with_model_and_prompt() {
         Mode::Form { state, action } => {
             assert_eq!(state.fields.len(), 2);
             assert_eq!(state.fields[0].label, "model");
-            assert_eq!(state.fields[0].value, "opus"); // resolved default (fallback)
+            // The ad-hoc preselect is the head option (value "" = leave model
+            // unset → the daemon resolves the chain), not a concrete model.
+            assert_eq!(state.fields[0].value, "");
             assert_eq!(state.fields[1].label, "prompt");
             assert!(state.fields[1].required);
             match action {
@@ -323,9 +325,16 @@ fn launcher_new_session_opens_form_with_model_and_prompt() {
 }
 
 #[test]
-fn launcher_new_session_form_enqueues_with_model_and_prompt() {
+fn launcher_new_session_form_enqueues_picked_model_ref_and_prompt() {
     let mut app = launcher_app();
-    app.update(enter()); // → form (model=opus, prompt empty)
+    app.update(enter()); // → form (focus on model dropdown, head "" preselected)
+    // Pick a concrete catalog model: Down opens the list (highlight = head idx 0),
+    // two more Downs reach `claude/opus` (built-in fallback order: head, fable,
+    // opus, …), Enter commits its VALUE `claude/opus` (display `opus (claude)`).
+    app.update(key(KeyCode::Down)); // open
+    app.update(key(KeyCode::Down)); // → claude/fable
+    app.update(key(KeyCode::Down)); // → claude/opus
+    app.update(enter()); // pick
     app.update(key(KeyCode::Tab)); // → prompt textarea
     for c in "do the thing".chars() {
         app.update(ch(c));
@@ -337,8 +346,25 @@ fn launcher_new_session_form_enqueues_with_model_and_prompt() {
     assert_eq!(params["prompt"], "do the thing");
     assert_eq!(params["repo"], "platform");
     assert_eq!(params["worktree"], "platform.wt-a");
-    assert_eq!(params["model"], "opus");
+    assert_eq!(params["model"], "claude/opus");
     assert!(params.get("resume_session_id").is_none());
+}
+
+#[test]
+fn launcher_new_session_head_option_omits_the_model_param() {
+    // Leaving the model dropdown on its head option (value "") must send NO
+    // `model` param — the daemon then resolves the default chain.
+    let mut app = launcher_app();
+    app.update(enter()); // → form; head "" preselected, untouched
+    app.update(key(KeyCode::Tab)); // → prompt
+    for c in "leave it".chars() {
+        app.update(ch(c));
+    }
+    app.update(key(KeyCode::Tab)); // → Primary
+    let up = app.update(enter());
+    let params = enqueue_params(&up);
+    assert_eq!(params["prompt"], "leave it");
+    assert!(params.get("model").is_none(), "head option leaves model unset");
 }
 
 #[test]
@@ -421,7 +447,7 @@ fn create_worktree_valid_fires_create_then_enqueue() {
     for c in "feat-x".chars() {
         app.update(ch(c)); // valid branch name
     }
-    app.update(key(KeyCode::Tab)); // model (opus default)
+    app.update(key(KeyCode::Tab)); // model (head "" default — left as-is)
     app.update(key(KeyCode::Tab)); // prompt
     for c in "build it".chars() {
         app.update(ch(c));
@@ -434,7 +460,9 @@ fn create_worktree_valid_fires_create_then_enqueue() {
             assert_eq!(repo, "platform");
             assert_eq!(name, "feat-x");
             assert_eq!(prompt, "build it");
-            assert_eq!(model, "opus");
+            // Head option left untouched → empty model (the enqueue-after path
+            // drops it, so the daemon resolves the default chain).
+            assert_eq!(model, "");
         }
         other => panic!("expected CreateWorktree+enqueue, got {other:?}"),
     }
@@ -457,126 +485,154 @@ fn paste_into_textarea_preserves_newlines() {
     assert_eq!(field_value(&app, 1), "line1\nline2");
 }
 
-#[test]
-fn resolve_default_model_prefers_project_override_then_global_then_opus() {
-    use crate::ipc::types::{SettingsModels, SettingsPayload, SettingsProjectLayer};
-    let mut app = launcher_app();
-    // No settings fetched → fallback opus.
-    assert_eq!(app.resolve_default_model("platform"), "opus");
-    // Global default only.
-    app.settings = Some(Some(SettingsPayload {
-        models: SettingsModels { default_model: "sonnet".into(), ..Default::default() },
-        ..Default::default()
-    }));
-    assert_eq!(app.resolve_default_model("platform"), "sonnet");
-    // Project override wins over global.
-    app.settings = Some(Some(SettingsPayload {
-        models: SettingsModels {
-            default_model: "sonnet".into(),
-            projects: vec![SettingsProjectLayer {
-                repo: "platform".into(),
-                default_model: "haiku".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-        ..Default::default()
-    }));
-    assert_eq!(app.resolve_default_model("platform"), "haiku");
-}
+// --- Task 7: catalog-driven model dropdown ---------------------------------
 
-// --- Task 13: settings-driven model dropdown ---
+use crate::ipc::types::{
+    CatalogEntry, DefaultModels, DefaultModelsProject, SettingsPayload, SettingsProvider,
+};
 
-#[test]
-fn model_options_falls_back_to_four_tiers_when_settings_absent() {
-    let app = launcher_app();
-    assert_eq!(app.settings, None);
-    assert_eq!(app.model_options(), vec!["fable", "opus", "sonnet", "haiku"]);
-}
-
-#[test]
-fn model_options_falls_back_to_four_tiers_when_providers_empty() {
-    use crate::ipc::types::SettingsPayload;
-    let mut app = launcher_app();
-    // A modern daemon that has fetched settings but configured zero providers
-    // (or an old daemon whose `providers` field defaulted to empty) still shows
-    // the bare tiers, not an empty dropdown.
-    app.settings = Some(Some(SettingsPayload::default()));
-    assert_eq!(app.model_options(), vec!["fable", "opus", "sonnet", "haiku"]);
-}
-
-#[test]
-fn model_options_includes_qualified_entries_for_enabled_non_claude_providers() {
-    use crate::ipc::types::{SettingsPayload, SettingsProvider};
-    use std::collections::BTreeMap;
-    let tiers = |ids: &[(&str, &str)]| -> BTreeMap<String, String> {
-        ids.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+/// A settings payload with a two-provider catalog (claude + grok), grok's second
+/// entry hidden, codex disabled, and per-repo default_models — the fixture the
+/// catalog-driven dropdown tests share.
+fn catalog_settings() -> SettingsPayload {
+    let e = |provider: &str, id: &str, label: &str, hidden: bool| CatalogEntry {
+        provider: provider.into(),
+        id: id.into(),
+        label: label.into(),
+        hidden,
     };
-    let mut app = launcher_app();
-    app.settings = Some(Some(SettingsPayload {
+    SettingsPayload {
+        catalog: vec![
+            e("claude", "claude-opus-4-8", "opus", false),
+            e("claude", "claude-sonnet-5", "sonnet", false),
+            e("grok", "grok-4.5", "grok-4.5", false),
+            e("grok", "grok-legacy", "legacy", true), // hidden → filtered
+            e("codex", "gpt-5.6-sol", "sol", false), // codex disabled → filtered
+        ],
+        active_provider: "claude".into(),
+        default_models: DefaultModels {
+            global: vec!["claude/opus".into(), "grok/grok-4.5".into()],
+            projects: vec![DefaultModelsProject {
+                name: "platform".into(),
+                default_models: vec!["grok/grok-4.5".into()],
+                source: "/repos/platform/vars.yaml".into(),
+            }],
+        },
         providers: vec![
-            // claude's tiers ARE the bare tier names — no "claude/opus" entry.
-            SettingsProvider {
-                name: "claude".into(),
-                enabled: true,
-                models: tiers(&[
-                    ("fable", "claude-fable-5"),
-                    ("opus", "claude-opus-4-8"),
-                    ("sonnet", "claude-sonnet-5"),
-                    ("haiku", "claude-haiku-4-5"),
-                ]),
-            },
-            SettingsProvider {
-                name: "grok".into(),
-                enabled: true,
-                models: tiers(&[
-                    ("fable", "grok-4"),
-                    ("opus", "grok-code-fast-1"),
-                    ("sonnet", "grok-code-fast-1"),
-                    ("haiku", "grok-4-fast"),
-                ]),
-            },
-            // Disabled provider contributes no entries at all.
-            SettingsProvider {
-                name: "codex".into(),
-                enabled: false,
-                models: tiers(&[("opus", "gpt-5.1-codex")]),
-            },
+            SettingsProvider { name: "claude".into(), enabled: true },
+            SettingsProvider { name: "grok".into(), enabled: true },
+            SettingsProvider { name: "codex".into(), enabled: false },
         ],
         ..Default::default()
-    }));
-    let options = app.model_options();
-    assert_eq!(
-        options,
-        vec![
-            "fable", "opus", "sonnet", "haiku", "grok/fable", "grok/opus", "grok/sonnet",
-            "grok/haiku",
-        ]
-    );
-    assert!(options.contains(&"grok/opus".to_string()));
-    assert!(!options.iter().any(|o| o.starts_with("claude/")));
-    assert!(!options.iter().any(|o| o.starts_with("codex/")));
+    }
+}
+
+/// The model dropdown's option VALUES (head "" first), read straight off the
+/// built `model` field so the test pins the actual dropdown, not a helper.
+fn model_option_values(app: &App, repo: &str) -> Vec<String> {
+    match &app.model_field(repo).kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            options.iter().map(|o| o.value.clone()).collect()
+        }
+        other => panic!("expected a Dropdown, got {other:?}"),
+    }
 }
 
 #[test]
-fn model_field_defaulting_validates_preferred_against_dynamic_options() {
-    use crate::ipc::types::{SettingsPayload, SettingsProvider};
-    use std::collections::BTreeMap;
+fn model_option_values_fall_back_to_builtin_catalog_when_settings_absent() {
+    // Stale/absent settings → the built-in mirror (claude + grok groups; codex is
+    // omitted from the mirror). Head "" first, then one `provider/label` per entry.
+    let app = launcher_app();
+    assert_eq!(app.settings, None);
+    assert_eq!(
+        model_option_values(&app, "platform"),
+        vec![
+            "",
+            "claude/fable",
+            "claude/opus",
+            "claude/sonnet",
+            "claude/haiku",
+            "grok/grok-4.5",
+            "grok/composer",
+        ]
+    );
+}
+
+#[test]
+fn model_option_values_use_payload_catalog_in_order_filtering_hidden_and_disabled() {
     let mut app = launcher_app();
-    app.settings = Some(Some(SettingsPayload {
-        providers: vec![SettingsProvider {
-            name: "grok".into(),
-            enabled: true,
-            models: BTreeMap::from([("opus".to_string(), "grok-code-fast-1".to_string())]),
-        }],
-        ..Default::default()
-    }));
-    // A qualified provider entry is a valid `preferred` value once it appears in
-    // the dynamic list (e.g. a resumed session that last ran on `grok/opus`).
-    let field = app.model_field_defaulting("platform", Some("grok/opus"));
-    assert_eq!(field.value, "grok/opus");
-    // A stale/foreign value not in the dynamic list falls back to the resolved
-    // default instead of selecting a phantom option.
-    let field = app.model_field_defaulting("platform", Some("nonexistent/tier"));
-    assert_eq!(field.value, "opus");
+    app.settings = Some(Some(catalog_settings()));
+    // Head "" + visible entries in catalog order; the hidden grok/legacy and the
+    // disabled-provider codex/sol are both filtered out.
+    let values = model_option_values(&app, "platform");
+    assert_eq!(values, vec!["", "claude/opus", "claude/sonnet", "grok/grok-4.5"]);
+    assert!(!values.iter().any(|v| v == "grok/legacy"), "hidden entry filtered");
+    assert!(!values.iter().any(|v| v == "codex/sol"), "disabled provider filtered");
+}
+
+#[test]
+fn model_display_is_label_paren_provider_and_head_label_shows_refs() {
+    // model_display: `label (provider)`.
+    let opus = CatalogEntry { provider: "claude".into(), id: "claude-opus-4-8".into(), label: "opus".into(), hidden: false };
+    assert_eq!(opus.model_display(), "opus (claude)");
+    // Head label: repo default_models (no marker), a def's list (a `def:` marker),
+    // and the bare `default` when there are no refs.
+    let refs = vec!["claude/opus".to_string(), "grok/grok-4.5".to_string()];
+    assert_eq!(
+        crate::app::form::default_head_label(&refs, false),
+        "default (claude/opus → grok/grok-4.5)"
+    );
+    assert_eq!(
+        crate::app::form::default_head_label(&refs, true),
+        "default (def: claude/opus → grok/grok-4.5)"
+    );
+    assert_eq!(crate::app::form::default_head_label(&[], false), "default");
+}
+
+#[test]
+fn model_field_head_option_labels_from_repo_default_models() {
+    // The ad-hoc model field: head option value "" (leave unset), display from
+    // the repo's default_models (project override wins over global).
+    let mut app = launcher_app();
+    app.settings = Some(Some(catalog_settings()));
+    let field = app.model_field("platform");
+    assert_eq!(field.value, "", "head option preselected");
+    match &field.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            // Head first: value "", display from platform's override (grok/grok-4.5).
+            assert_eq!(options[0].value, "");
+            assert_eq!(options[0].label, "default (grok/grok-4.5)");
+            // Then the visible catalog entries: value `provider/label`, display
+            // `label (provider)`.
+            assert_eq!(options[1].value, "claude/opus");
+            assert_eq!(options[1].label, "opus (claude)");
+            assert_eq!(options[3].value, "grok/grok-4.5");
+            assert_eq!(options[3].label, "grok-4.5 (grok)");
+        }
+        other => panic!("expected a labeled Dropdown, got {other:?}"),
+    }
+    // A repo with no project override falls back to the global chain.
+    let global = app.model_field("other");
+    match &global.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert_eq!(options[0].label, "default (claude/opus → grok/grok-4.5)");
+        }
+        other => panic!("expected a labeled Dropdown, got {other:?}"),
+    }
+}
+
+#[test]
+fn model_field_defaulting_selects_preferred_ref_or_falls_back_to_head() {
+    // The resume path: a session's `provider/label` ref preselects when it names a
+    // real visible option, else the head ("" = leave unset).
+    let mut app = launcher_app();
+    app.settings = Some(Some(catalog_settings()));
+    let picked = app.model_field_defaulting("platform", Some("grok/grok-4.5"));
+    assert_eq!(picked.value, "grok/grok-4.5");
+    // A hidden ref is not a visible option → falls back to the head.
+    let hidden = app.model_field_defaulting("platform", Some("grok/legacy"));
+    assert_eq!(hidden.value, "");
+    // A stale/foreign ref → head, never a phantom selection.
+    let stale = app.model_field_defaulting("platform", Some("nonexistent/tier"));
+    assert_eq!(stale.value, "");
 }

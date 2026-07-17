@@ -3,33 +3,37 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import { type CatalogEntry, effectiveCatalog } from "./catalog.js";
 import {
 	definitionExists,
 	loadDefinition,
 	type TaskDefinition,
 } from "./definition.js";
 
-// A single entry in the `providers:` config block. `models` maps a tier name
-// (fable/opus/sonnet/haiku, or any custom key) to a provider-specific model id.
+// A single entry in the `providers:` config block. `models` is deprecated
+// (model catalog + provider switch design, Section 5): per-provider tier maps
+// are replaced by the `catalog:` overlay (catalog.ts). Kept in the schema
+// (typed `unknown`, not validated) only so a legacy block doesn't fail
+// `.safeParse()` — `loadGlobalConfig` warns when it's present and never
+// carries it into the parsed `ProviderConfig`.
 const ProviderConfigSchema = z.object({
 	name: z.string().min(1),
 	enabled: z.boolean().default(true),
 	bin: z.string().optional(),
 	system_prompt: z.string().optional(),
 	args: z.array(z.string()).optional(),
-	models: z.record(z.string(), z.string()).default({}),
+	models: z.unknown().optional(),
 });
 
-/** One agent CLI's config: enablement, spawn overrides, and its per-tier model
- * table (tier name → provider-specific model id). Fallback order across
- * providers is the array order this appears in. */
+/** One agent CLI's config: enablement and spawn overrides. Fallback order
+ * across providers is the array order this appears in. Per-provider model
+ * tables are gone — models live in the flat `catalog:` (catalog.ts). */
 export interface ProviderConfig {
 	name: string;
 	enabled: boolean;
 	bin?: string;
 	systemPrompt?: string;
 	args?: string[];
-	models: Record<string, string>;
 }
 
 /** Built-in provider table (Section 7 of the design spec): claude and grok
@@ -37,65 +41,29 @@ export interface ProviderConfig {
  * order is claude, grok, codex. This is the base every `effectiveProviders`
  * call layers onto — absent `providers:` in config.yaml yields exactly this. */
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
-	{
-		name: "claude",
-		enabled: true,
-		models: {
-			fable: "claude-fable-5",
-			opus: "claude-opus-4-8",
-			sonnet: "claude-sonnet-5",
-			haiku: "claude-haiku-4-5",
-		},
-	},
-	{
-		name: "grok",
-		enabled: true,
-		models: {
-			fable: "grok-4.5",
-			opus: "grok-4.5",
-			sonnet: "grok-composer-2.5-fast",
-			haiku: "grok-composer-2.5-fast",
-		},
-	},
-	{
-		name: "codex",
-		enabled: false,
-		models: {
-			fable: "gpt-5.6-sol",
-			opus: "gpt-5.6-terra",
-			sonnet: "gpt-5.6-luna",
-			haiku: "gpt-5.6-luna",
-		},
-	},
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
 ];
 
 /**
- * Layer `providers:` config over the built-in defaults, then layer project
- * tier overrides on top. Three inputs, additive (never subtractive):
- *
- * 1. `DEFAULT_PROVIDERS` — always the base; every known provider name starts
- *    here even if `global` doesn't mention it (built-in ⊕ global, not a
- *    replacement).
- * 2. `global` (config.yaml `providers:`, already validated) — per-name merge:
- *    global wins on `enabled`/`bin`/`systemPrompt`/`args`; the tier table is
- *    default tiers ⊕ global tiers (global entries override, unlisted tiers
- *    keep their default). A name global introduces that isn't in the
- *    defaults becomes a new provider entry. Ordering follows `global`'s array
- *    order when `global` is given, with any default-only names appended
- *    after (still present, still fallback-eligible); otherwise the default
- *    order.
- * 3. `projectTierOverrides` (vars.yaml `providers:`, provider → tier → id) —
- *    merges into the matching provider's tier table only. Never touches
- *    `enabled`: a project cannot flip a machine-level enablement decision.
+ * Layer `providers:` config over the built-in defaults. Additive (never
+ * subtractive): `DEFAULT_PROVIDERS` is always the base — every known provider
+ * name starts here even if `global` doesn't mention it (built-in ⊕ global,
+ * not a replacement). `global` (config.yaml `providers:`, already validated)
+ * merges per-name: global wins on `enabled`/`bin`/`systemPrompt`/`args`. A
+ * name global introduces that isn't in the defaults becomes a new provider
+ * entry. Ordering follows `global`'s array order when `global` is given, with
+ * any default-only names appended after (still present, still
+ * fallback-eligible); otherwise the default order.
  */
 export function effectiveProviders(
 	global: ProviderConfig[] | undefined,
-	projectTierOverrides: Record<string, Record<string, string>>,
 ): ProviderConfig[] {
 	const defaultsByName = new Map(DEFAULT_PROVIDERS.map((p) => [p.name, p]));
 	const merged = new Map<string, ProviderConfig>();
 	for (const p of DEFAULT_PROVIDERS) {
-		merged.set(p.name, { ...p, models: { ...p.models } });
+		merged.set(p.name, { ...p });
 	}
 
 	const order: string[] =
@@ -112,7 +80,6 @@ export function effectiveProviders(
 				bin: g.bin ?? base?.bin,
 				systemPrompt: g.systemPrompt ?? base?.systemPrompt,
 				args: g.args ?? base?.args,
-				models: { ...(base?.models ?? {}), ...g.models },
 			});
 		}
 		// Default-only names the global block didn't mention stay present
@@ -122,19 +89,25 @@ export function effectiveProviders(
 		}
 	}
 
-	for (const [name, tiers] of Object.entries(projectTierOverrides)) {
-		const existing = merged.get(name);
-		if (existing) {
-			existing.models = { ...existing.models, ...tiers };
-		}
-		// A project override for a provider name that doesn't exist in the
-		// merged set has nothing to attach to; silently ignored (tolerant).
-	}
-
 	return order
 		.map((name) => merged.get(name))
 		.filter((p): p is ProviderConfig => p !== undefined);
 }
+
+/** One entry in the config `catalog:` overlay — same shape as `CatalogEntry`,
+ * validated here so a malformed overlay (wrong shape, missing field) is
+ * caught by `safeParse` rather than throwing out of `effectiveCatalog`. */
+const CatalogEntrySchema = z.object({
+	provider: z.string().min(1),
+	id: z.string().min(1),
+	label: z.string().min(1),
+	hidden: z.boolean().optional(),
+});
+
+/** Global config's `default_models:` fallback list when unset — the initial
+ * value from the design spec (Section 2): claude's precedence-head model,
+ * then grok's. */
+const DEFAULT_MODELS: string[] = ["claude/opus", "grok/grok-4.5"];
 
 const GlobalConfigSchema = z
 	.object({
@@ -147,7 +120,6 @@ const GlobalConfigSchema = z
 		max_concurrent_tasks: z.number().int().positive().default(5),
 		archive_after_days: z.number().int().positive().default(7),
 		vars: z.record(z.string(), z.string()).default({}),
-		models: z.record(z.string(), z.unknown()).default({}),
 		// A line of shell typed into the tmux window that `goto` opens (worktree-
 		// goto and queue-goto). The `{cmd}` placeholder is substituted downstream:
 		// the `claude --resume <session>` command for queue-goto, empty for
@@ -155,13 +127,23 @@ const GlobalConfigSchema = z
 		// behavior. NOTE: a template without `{cmd}` means queue-goto will not
 		// resume Claude (nothing to substitute the resume command into).
 		goto_command: z.string().optional(),
-		// Declares which agent CLIs (claude/grok/codex/...) are enabled and their
-		// per-tier model tables, in fallback order. Absent ⇒ DEFAULT_PROVIDERS.
-		// Left as `unknown` here (validated separately in loadGlobalConfig via
-		// ProviderConfigSchema.safeParse) so a malformed block warns and falls
-		// back rather than failing the whole-config `.parse()` and wedging boot —
-		// mirrors the `models:` tolerance.
+		// Declares which agent CLIs (claude/grok/codex/...) are enabled, in
+		// fallback order. Absent ⇒ DEFAULT_PROVIDERS. Left as `unknown` here
+		// (validated separately in loadGlobalConfig via ProviderConfigSchema.
+		// safeParse) so a malformed block warns and falls back rather than
+		// failing the whole-config `.parse()` and wedging boot — mirrors the
+		// `catalog:` tolerance below.
 		providers: z.unknown().optional(),
+		// Model catalog overlay (catalog.ts): add/hide/reorder entries on top of
+		// BUILTIN_CATALOG. Left as `unknown` for the same reason as `providers:`
+		// above — a malformed overlay (or one that collides two labels within a
+		// provider) warns and falls back to the built-in catalog unchanged,
+		// rather than crashing config loading.
+		catalog: z.unknown().optional(),
+		// Ordered fallback list a task/definition with no `model:` of its own
+		// resolves against (design spec Section 2); a project's vars.yaml
+		// `default_models:` overrides this per-project (loadProjectDefaultModels).
+		default_models: z.array(z.string()).default(DEFAULT_MODELS),
 	})
 	.superRefine((config, ctx) => {
 		const seen = new Set<string>();
@@ -184,13 +166,17 @@ export interface GlobalConfig {
 	maxConcurrentTasks: number;
 	archiveAfterDays: number;
 	vars: Record<string, string>;
-	models: Record<string, string>;
 	/** Workspace-level override for the command `goto` runs — see the schema. */
 	gotoCommand?: string;
 	/** Effective provider table (built-in ⊕ config.yaml `providers:`), fallback
-	 * order. Project tier overrides (vars.yaml) are layered in separately where
-	 * the per-run model table is built, mirroring `effectiveModelTable`. */
+	 * order. */
 	providers: ProviderConfig[];
+	/** Effective model catalog (BUILTIN_CATALOG ⊕ config.yaml `catalog:`, via
+	 * `effectiveCatalog`), re-grouped by provider precedence. */
+	catalog: CatalogEntry[];
+	/** Ordered fallback model-ref list (config.yaml `default_models:`) for
+	 * tasks/defs with no `model:` of their own — see `resolveModelChain`. */
+	defaultModels: string[];
 }
 
 function expandTilde(path: string): string {
@@ -201,40 +187,66 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 	if (!existsSync(path)) throw new Error(`config not found: ${path}`);
 	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
 	const config = GlobalConfigSchema.parse(raw);
-	// Tolerant models parse: a malformed value (non-string or nested map) is
-	// skipped with a warning rather than crashing config loading — mirrors
-	// loadProjectModels and keeps daemon boot resilient to a bad models block.
-	const models: Record<string, string> = {};
-	for (const [alias, id] of Object.entries(config.models)) {
-		if (typeof id === "string" && id.length > 0) {
-			models[alias] = id;
-		} else {
-			console.warn(`config.yaml models.${alias}: not a string, skipping`);
-		}
-	}
 	// Tolerant providers parse: validated separately from the main schema (see
 	// the `providers: z.unknown()` field above) so a malformed block warns and
 	// falls back to DEFAULT_PROVIDERS instead of throwing out of `.parse()`
-	// and taking the whole config load down with it.
+	// and taking the whole config load down with it. `models` is deprecated
+	// (Section 5 of the catalog design spec): still accepted by the schema so
+	// a legacy block doesn't fail validation, but warned about per-provider and
+	// never carried into the parsed `ProviderConfig`.
 	let globalProviders: ProviderConfig[] | undefined;
 	if (config.providers !== undefined) {
 		const parsed = z.array(ProviderConfigSchema).safeParse(config.providers);
 		if (parsed.success) {
-			globalProviders = parsed.data.map((p) => ({
-				name: p.name,
-				enabled: p.enabled,
-				bin: p.bin,
-				systemPrompt: p.system_prompt,
-				args: p.args,
-				models: p.models,
-			}));
+			globalProviders = parsed.data.map((p) => {
+				if (p.models !== undefined) {
+					console.warn(
+						`config.yaml providers.${p.name}.models is no longer read; use catalog: instead`,
+					);
+				}
+				return {
+					name: p.name,
+					enabled: p.enabled,
+					bin: p.bin,
+					systemPrompt: p.system_prompt,
+					args: p.args,
+				};
+			});
 		} else {
 			console.warn(
 				"config.yaml providers: malformed block, falling back to built-in defaults",
 			);
 		}
 	}
-	const providers = effectiveProviders(globalProviders, {});
+	const providers = effectiveProviders(globalProviders);
+
+	// Tolerant catalog overlay parse: mirrors the providers tolerance above —
+	// a malformed overlay (wrong shape, or one `effectiveCatalog` rejects for
+	// colliding two labels within a provider) warns and falls back to the
+	// built-in catalog, unmodified, instead of crashing config loading.
+	let catalog: CatalogEntry[];
+	if (config.catalog !== undefined) {
+		const parsedCatalog = z.array(CatalogEntrySchema).safeParse(config.catalog);
+		if (parsedCatalog.success) {
+			const merged = effectiveCatalog(parsedCatalog.data);
+			if ("error" in merged) {
+				console.warn(
+					`config.yaml ${merged.error}, falling back to built-in defaults`,
+				);
+				catalog = effectiveCatalog(undefined) as CatalogEntry[];
+			} else {
+				catalog = merged;
+			}
+		} else {
+			console.warn(
+				"config.yaml catalog: malformed block, falling back to built-in defaults",
+			);
+			catalog = effectiveCatalog(undefined) as CatalogEntry[];
+		}
+	} else {
+		catalog = effectiveCatalog(undefined) as CatalogEntry[];
+	}
+
 	return {
 		workspace: expandTilde(config.workspace),
 		projects: config.projects.map((p) => ({
@@ -244,9 +256,10 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 		maxConcurrentTasks: config.max_concurrent_tasks,
 		archiveAfterDays: config.archive_after_days,
 		vars: config.vars,
-		models,
 		gotoCommand: config.goto_command,
 		providers,
+		catalog,
+		defaultModels: config.default_models,
 	};
 }
 
@@ -298,13 +311,14 @@ export function loadProjectVars(projectDir: string): Record<string, string> {
 	}
 	const vars: Record<string, string> = {};
 	for (const [key, value] of Object.entries(raw)) {
-		if (key === "models") continue; // reserved: read by loadProjectModels
+		if (key === "models") continue; // reserved (legacy): pre-catalog tier map
 		if (key === "github_id") continue; // reserved: read by loadProjectGithubId
-		if (key === "default_model") continue; // reserved: read by loadProjectDefaultModel
+		if (key === "default_model") continue; // reserved (legacy): pre-catalog single default
 		if (key === "protected_worktrees") continue; // reserved: read by loadProjectProtectedWorktrees
 		if (key === "default_branch") continue; // reserved: read by loadProjectDefaultBranch
 		if (key === "task_retention_days") continue; // reserved: read by loadProjectTaskRetentionDays
-		if (key === "providers") continue; // reserved: read by loadProjectProviderModels
+		if (key === "providers") continue; // reserved (legacy): pre-catalog tier overrides
+		if (key === "default_models") continue; // reserved: read by loadProjectDefaultModels
 		if (value !== null && typeof value === "object") {
 			throw new Error(`non-scalar var: ${key}`);
 		}
@@ -313,83 +327,33 @@ export function loadProjectVars(projectDir: string): Record<string, string> {
 	return vars;
 }
 
-/** The project's `models:` alias overrides from vars.yaml. Tolerant: absent
- * file, absent key, or a non-map value all yield {} (a bad block must never
- * take down config loading — it only disables the override). Non-string
- * values are skipped. */
-export function loadProjectModels(projectDir: string): Record<string, string> {
-	const path = join(projectDir, "vars.yaml");
-	if (!existsSync(path)) return {};
-	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
-	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
-	const block = (raw as Record<string, unknown>).models;
-	if (block === null || typeof block !== "object" || Array.isArray(block))
-		return {};
-	const out: Record<string, string> = {};
-	for (const [alias, id] of Object.entries(block)) {
-		if (typeof id === "string" && id.length > 0) out[alias] = id;
-	}
-	return out;
-}
-
-/** The project's `providers:` tier overrides from vars.yaml — provider name →
- * tier → model id, layered on top of the effective (built-in ⊕ global)
- * provider table by `effectiveProviders`. `enabled` is not read here: a
- * project cannot flip a machine-level enablement decision. Accepts either
- * shape:
- *   providers: { grok: { models: { opus: grok-proj } } }        # map
- *   providers: [{ name: grok, models: { opus: grok-proj } }]    # list
- * Tolerant like loadProjectModels: absent file, absent key, or a malformed
- * shape all yield {}; individual malformed entries are skipped rather than
- * throwing, so a bad block only disables that entry's override. */
-export function loadProjectProviderModels(
+/** The project's optional `default_models:` list from vars.yaml — overrides
+ * `GlobalConfig.defaultModels` for tasks/defs in this project with no
+ * explicit `model:` of their own. Tolerant like loadProjectGithubId: absent
+ * file, absent key, or a non-list value all yield undefined (callers fall
+ * back to the global list); within a list any non-string or empty entry is
+ * skipped. It never throws, so a bad value only disables the project
+ * override rather than wedging config loading. */
+export function loadProjectDefaultModels(
 	projectDir: string,
-): Record<string, Record<string, string>> {
+): string[] | undefined {
 	const path = join(projectDir, "vars.yaml");
-	if (!existsSync(path)) return {};
+	if (!existsSync(path)) return undefined;
 	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
-	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
-	const block = (raw as Record<string, unknown>).providers;
-	if (block === null || typeof block !== "object") return {};
-
-	const out: Record<string, Record<string, string>> = {};
-	const collect = (name: string, models: unknown): void => {
-		if (models === null || typeof models !== "object" || Array.isArray(models))
-			return;
-		const tiers: Record<string, string> = {};
-		for (const [tier, id] of Object.entries(
-			models as Record<string, unknown>,
-		)) {
-			if (typeof id === "string" && id.length > 0) tiers[tier] = id;
-		}
-		if (Object.keys(tiers).length > 0) out[name] = tiers;
-	};
-
-	if (Array.isArray(block)) {
-		for (const entry of block) {
-			if (entry === null || typeof entry !== "object") continue;
-			const name = (entry as Record<string, unknown>).name;
-			if (typeof name !== "string" || name.length === 0) continue;
-			collect(name, (entry as Record<string, unknown>).models);
-		}
-	} else {
-		for (const [name, value] of Object.entries(
-			block as Record<string, unknown>,
-		)) {
-			if (value === null || typeof value !== "object" || Array.isArray(value))
-				continue;
-			collect(name, (value as Record<string, unknown>).models);
-		}
-	}
-
-	return out;
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+		return undefined;
+	const value = (raw as Record<string, unknown>).default_models;
+	if (!Array.isArray(value)) return undefined;
+	return value.filter(
+		(v): v is string => typeof v === "string" && v.length > 0,
+	);
 }
 
 /** The project's optional `github_id` from vars.yaml — the author identity used
  * by the TUI to sort the operator's own worktrees first. Tolerant like
- * loadProjectModels: absent file, absent key, a non-string, or an empty string
- * all yield undefined and it never throws, so a bad value only disables the
- * "mine-first" sort rather than wedging config loading. */
+ * loadProjectDefaultModels: absent file, absent key, a non-string, or an empty
+ * string all yield undefined and it never throws, so a bad value only disables
+ * the "mine-first" sort rather than wedging config loading. */
 export function loadProjectGithubId(projectDir: string): string | undefined {
 	const path = join(projectDir, "vars.yaml");
 	if (!existsSync(path)) return undefined;
@@ -400,28 +364,9 @@ export function loadProjectGithubId(projectDir: string): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/** The project's optional `default_model` from vars.yaml — the model an ad-hoc /
- * enqueue run uses when neither the task nor a definition sets one, and the value
- * the TUI launcher preselects in its model dropdown. An alias (e.g. `opus`) or a
- * full model id; resolved through the alias table downstream. Tolerant like
- * loadProjectGithubId: absent file, absent key, a non-string, or an empty string
- * all yield undefined (callers fall back to the built-in `opus` default), so a
- * bad value never wedges config loading. */
-export function loadProjectDefaultModel(
-	projectDir: string,
-): string | undefined {
-	const path = join(projectDir, "vars.yaml");
-	if (!existsSync(path)) return undefined;
-	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
-	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
-		return undefined;
-	const value = (raw as Record<string, unknown>).default_model;
-	return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
 /** The project's optional `protected_worktrees` from vars.yaml — worktree names
  * that queohoh must never delete (on top of the always-protected main checkout).
- * Tolerant like loadProjectModels/loadProjectGithubId: absent file, absent key,
+ * Tolerant like loadProjectDefaultModels/loadProjectGithubId: absent file, absent key,
  * or a non-list value all yield [], and within a list any non-string or empty
  * entry is skipped. It never throws, so a malformed value only disables the
  * extra protections (the main checkout stays protected via path-equality) rather

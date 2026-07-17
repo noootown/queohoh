@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { BUILTIN_CATALOG } from "../catalog.js";
 import type { TaskDefinition } from "../definition.js";
 import { makeRedactor } from "../redact.js";
 import type { Exec } from "../resolver-io.js";
@@ -44,7 +45,12 @@ function makeDeps(overrides: Partial<WorkerDeps> = {}) {
 		redact: makeRedactor(new Map()),
 		loadDef: () => null,
 		worktreePath: async () => "/wt/path",
-		defaults: { model: "sonnet", timeoutMs: 60_000 },
+		defaults: { timeoutMs: 60_000 },
+		// A model-less task resolves against `defaultModels`; the built-in catalog
+		// maps `claude/sonnet` → `claude-sonnet-5` (the id these tests assert on).
+		catalog: BUILTIN_CATALOG,
+		defaultModels: ["claude/sonnet"],
+		activeProvider: "claude",
 		...overrides,
 	};
 	return { deps, store, runStore, hookCalls };
@@ -105,9 +111,8 @@ describe("runTask", () => {
 		expect(result.error).toBeNull();
 		const meta = runStore.readRunMeta(t.id);
 		expect(meta?.outcome).toBe("done");
-		// "sonnet" resolves through the built-in provider tier table now (chain
-		// resolution replaces the old bare `resolveModel` pass-through — see
-		// DEFAULT_PROVIDERS in config.ts), not just an explicit modelTable.
+		// A model-less task resolves against `defaultModels` (["claude/sonnet"])
+		// through the built-in catalog → the concrete `claude-sonnet-5` id.
 		expect(meta?.model).toBe("claude-sonnet-5");
 		expect(runStore.readWorkerPid(t.id)).toBe(process.pid);
 	});
@@ -323,7 +328,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "mise run setup",
 			postRun: "echo done",
-			model: "opus",
+			model: "claude/opus",
 			timeoutMs: 120_000,
 			priority: "normal",
 			prompt: "review {{number}}",
@@ -340,8 +345,7 @@ describe("runTask", () => {
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("done");
-		// "opus" resolves through DEFAULT_PROVIDERS' claude tier table (chain
-		// resolution), same as the "sonnet" case above.
+		// def.model "claude/opus" resolves through the catalog → claude-opus-4-8.
 		expect(claudeModel).toBe("claude-opus-4-8");
 		expect(hookCalls).toEqual(["mise run setup", "echo done"]);
 		expect(runStore.readRunMeta(t.id)?.model).toBe("claude-opus-4-8");
@@ -361,7 +365,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "setup.sh {{number}} {{repo_slug}}",
 			postRun: null,
-			model: "opus",
+			model: "claude/opus",
 			timeoutMs: 120_000,
 			priority: "normal",
 			prompt: "review {{number}}",
@@ -399,7 +403,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "bad-setup",
 			postRun: "cleanup",
-			model: "opus",
+			model: "claude/opus",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -522,7 +526,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "run {{ticket}} {{branch}} {{worktree}}",
 			postRun: null,
-			model: "opus",
+			model: "claude/opus",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -565,7 +569,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: null,
 			postRun: "cleanup",
-			model: "opus",
+			model: "claude/opus",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -591,29 +595,13 @@ describe("runTask", () => {
 	});
 });
 
-describe("runTask model-alias resolution", () => {
-	it("resolves the alias against modelTable at spawn (snapshot + spawn)", async () => {
+describe("runTask model-ref resolution", () => {
+	it("resolves a provider/label ref to its concrete id at spawn (snapshot + spawn)", async () => {
+		// The catalog is authoritative now (no per-repo modelTable): a
+		// `provider/label` ref lands as the provider-specific id on both the
+		// spawn options and the run-store snapshot.
 		let seenModel = "";
 		const { deps, store, runStore } = makeDeps({
-			modelTable: { sonnet: "claude-sonnet-4-6" },
-			executeClaude: async (opts) => {
-				seenModel = opts.model;
-				return okResult;
-			},
-		});
-		// default model is "sonnet" (deps.defaults.model)
-		const t = enqueue(store);
-		withWorktree(store, t.id);
-		const result = await runTask(t.id, deps);
-		expect(result.status).toBe("done");
-		expect(seenModel).toBe("claude-sonnet-4-6");
-		expect(runStore.readRunMeta(t.id)?.model).toBe("claude-sonnet-4-6");
-	});
-
-	it("passes an unknown/full model id through untouched", async () => {
-		let seenModel = "";
-		const { deps, store } = makeDeps({
-			modelTable: { sonnet: "claude-sonnet-4-6" },
 			executeClaude: async (opts) => {
 				seenModel = opts.model;
 				return okResult;
@@ -624,7 +612,32 @@ describe("runTask model-alias resolution", () => {
 			repo: "platform",
 			ref: "temp",
 			source: "mcp",
-			model: "claude-fable-5",
+			model: "claude/sonnet",
+		});
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		expect(seenModel).toBe("claude-sonnet-5");
+		expect(runStore.readRunMeta(t.id)?.model).toBe("claude-sonnet-5");
+	});
+
+	it("resolves a provider/id-form ref to its concrete id (id-match fallback)", async () => {
+		// A ref naming the raw model id (not the short label) still resolves —
+		// `findModel` falls back to an id match within the provider group. The
+		// canonical `provider/label` form is exercised in models.test.ts.
+		let seenModel = "";
+		const { deps, store } = makeDeps({
+			executeClaude: async (opts) => {
+				seenModel = opts.model;
+				return okResult;
+			},
+		});
+		const t = store.create({
+			prompt: "p\n",
+			repo: "platform",
+			ref: "temp",
+			source: "mcp",
+			model: "claude/claude-fable-5",
 		});
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
@@ -765,7 +778,7 @@ describe("runTask pinned resume model resolution", () => {
 				return okResult;
 			},
 		});
-		const t = enqueuePinned(store, "claude-fable-5");
+		const t = enqueuePinned(store, "claude/fable");
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
 		expect(seenModel).toBe("claude-fable-5");
@@ -785,7 +798,7 @@ describe("runTask pinned resume model resolution", () => {
 			verify: null,
 			preRun: null,
 			postRun: null,
-			model: "opus",
+			model: "claude/opus",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -806,11 +819,11 @@ describe("runTask pinned resume model resolution", () => {
 			definition: "platform/d",
 			item: {},
 			itemKey: "adhoc",
-			model: "claude-fable-5",
+			model: "claude/fable",
 		});
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
-		// "opus" resolves through DEFAULT_PROVIDERS' claude tier table.
+		// def.model "claude/opus" wins over the task's own "claude/fable".
 		expect(seenModel).toBe("claude-opus-4-8");
 	});
 });
@@ -864,7 +877,7 @@ describe("runTask timeout precedence", () => {
 			verify: null,
 			preRun: null,
 			postRun: null,
-			model: "opus",
+			model: "claude/opus",
 			timeoutMs: 45_000,
 			priority: "normal",
 			prompt: "p",
@@ -1024,7 +1037,7 @@ describe("runTask verify (done-condition)", () => {
 			preRun: null,
 			postRun: null,
 			verify: "check {{ticket}} {{worktree}}",
-			model: "opus",
+			model: "claude/opus",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -1068,15 +1081,14 @@ describe("runTask verify (done-condition)", () => {
 
 describe("startRun / finalizeRun split", () => {
 	it("startRun returns a SpawnSpec carrying the rendered prompt + resolved model", async () => {
-		const { deps, store } = makeDeps({
-			modelTable: { sonnet: "claude-sonnet-4-6" },
-		});
+		const { deps, store } = makeDeps();
 		const t = enqueue(store);
 		withWorktree(store, t.id);
 		const s = await startRun(t.id, deps);
 		expect(s.kind).toBe("spawn");
 		if (s.kind !== "spawn") throw new Error("expected spawn");
-		expect(s.spec.model).toBe("claude-sonnet-4-6");
+		// No model on the task → `defaultModels` (["claude/sonnet"]) heads it.
+		expect(s.spec.model).toBe("claude-sonnet-5");
 		expect(s.spec.prompt).toBe("do it\n");
 		expect(store.get(t.id)?.status).toBe("running");
 	});

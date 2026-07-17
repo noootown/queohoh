@@ -1,98 +1,196 @@
 import { describe, expect, it } from "vitest";
+import { BUILTIN_CATALOG, unknownModelError } from "../catalog.js";
 import type { ProviderConfig } from "../config.js";
-import {
-	DEFAULT_MODEL_ALIASES,
-	effectiveModelTable,
-	resolveModel,
-	resolveProviderChain,
-} from "../models.js";
+import { resolveModelChain } from "../models.js";
 
-describe("resolveModel", () => {
-	it("resolves a known alias", () => {
-		expect(resolveModel("sonnet", { sonnet: "claude-sonnet-5" })).toBe(
-			"claude-sonnet-5",
-		);
-	});
-	it("passes unknown names through untouched (full ids keep working)", () => {
-		expect(resolveModel("claude-fable-5", { sonnet: "x" })).toBe(
-			"claude-fable-5",
-		);
-	});
-	it("passes through on an empty table", () => {
-		expect(resolveModel("opus", {})).toBe("opus");
-	});
-});
+const PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
-describe("effectiveModelTable", () => {
-	it("layers defaults <- global <- project per key", () => {
-		const t = effectiveModelTable(
-			{ sonnet: "claude-sonnet-4-6" },
-			{ opus: "claude-opus-4-7" },
-		);
-		expect(t.sonnet).toBe("claude-sonnet-4-6"); // global override
-		expect(t.opus).toBe("claude-opus-4-7"); // project override wins
-		expect(t.fable).toBe(DEFAULT_MODEL_ALIASES.fable); // default inherited
-		expect(t.haiku).toBe("claude-haiku-4-5");
-	});
-	it("project overrides global for the same key", () => {
-		const t = effectiveModelTable({ sonnet: "a" }, { sonnet: "b" });
-		expect(t.sonnet).toBe("b");
-	});
-});
-
-describe("resolveProviderChain", () => {
-	const PROVIDERS: ProviderConfig[] = [
-		{
-			name: "claude",
-			enabled: true,
-			models: { opus: "claude-opus-4-8", sonnet: "claude-sonnet-5" },
-		},
-		{
-			name: "grok",
-			enabled: true,
-			models: { opus: "grok-4.5", sonnet: "grok-composer-2.5-fast" },
-		},
-		{ name: "codex", enabled: false, models: { opus: "gpt-5.6-terra" } },
-	];
-
-	it("bare tier walks enabled providers in order", () => {
-		expect(resolveProviderChain("opus", PROVIDERS)).toEqual({
+describe("resolveModelChain", () => {
+	it("null spec uses defaultModels", () => {
+		expect(
+			resolveModelChain(
+				null,
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				["claude/sonnet"],
+				"claude",
+			),
+		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8" },
-				{ provider: "grok", model: "grok-4.5" },
+				{ provider: "claude", model: "claude-sonnet-5", ref: "claude/sonnet" },
 			],
 		});
 	});
-	it("provider/tier pins one provider, no fallback", () => {
-		expect(resolveProviderChain("grok/opus", PROVIDERS)).toEqual({
+
+	it("string spec resolves to a 1-entry chain", () => {
+		expect(
+			resolveModelChain(
+				"claude/opus",
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"claude",
+			),
+		).toEqual({
 			ok: true,
-			chain: [{ provider: "grok", model: "grok-4.5" }],
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
 		});
 	});
-	it("provider/exact-id pins an exact model", () => {
-		expect(resolveProviderChain("grok/grok-4.5", PROVIDERS)).toEqual({
+
+	it("list spec keeps its given order (already active provider)", () => {
+		expect(
+			resolveModelChain(
+				["claude/sonnet", "claude/haiku"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"claude",
+			),
+		).toEqual({
 			ok: true,
-			chain: [{ provider: "grok", model: "grok-4.5" }],
+			chain: [
+				{ provider: "claude", model: "claude-sonnet-5", ref: "claude/sonnet" },
+				{ provider: "claude", model: "claude-haiku-4-5", ref: "claude/haiku" },
+			],
 		});
 	});
-	it("raw id with no slash is claude-pinned", () => {
-		expect(resolveProviderChain("claude-opus-4-8", PROVIDERS)).toEqual({
+
+	it("canonicalizes a provider/id-form ref to provider/label in the chain", () => {
+		// A ref naming the raw model id (not the short label) resolves via the
+		// id-match fallback, and the chain entry's `ref` is the canonical
+		// `provider/label` form — never the id the caller happened to type.
+		expect(
+			resolveModelChain(
+				"claude/claude-opus-4-8",
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"claude",
+			),
+		).toEqual({
 			ok: true,
-			chain: [{ provider: "claude", model: "claude-opus-4-8" }],
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
 		});
 	});
-	it("pinning a disabled provider errors", () => {
-		expect(resolveProviderChain("codex/opus", PROVIDERS)).toEqual({
+
+	it("unknown ref produces the catalog's unknown-model error", () => {
+		expect(
+			resolveModelChain(
+				"claude/nonexistent",
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"claude",
+			),
+		).toEqual({
 			ok: false,
-			error: "provider disabled: codex",
+			error: unknownModelError(BUILTIN_CATALOG, "claude/nonexistent"),
 		});
 	});
-	it("unknown provider prefix that is not a known provider passes through as a claude raw id", () => {
-		// 'claude-opus-4-8' has no slash; a slashed unknown like 'foo/bar' → unknown provider
-		expect(resolveProviderChain("foo/bar", PROVIDERS)).toEqual({
+
+	it("drops entries whose provider is disabled", () => {
+		expect(
+			resolveModelChain(
+				["codex/sol", "claude/opus"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"claude",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
+		});
+	});
+
+	it("stable-partitions active-provider entries first", () => {
+		expect(
+			resolveModelChain(
+				["claude/opus", "grok/grok-4.5"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"grok",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
+		});
+	});
+
+	it("switch-miss prepends the active provider's group head when it is enabled", () => {
+		expect(
+			resolveModelChain(
+				["claude/opus"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"grok",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
+		});
+	});
+
+	it("switch-miss does NOT prepend when the active provider is disabled", () => {
+		expect(
+			resolveModelChain(
+				["claude/opus"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"codex",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
+		});
+	});
+
+	it("dedups by provider/id, keeping the first occurrence", () => {
+		expect(
+			resolveModelChain(
+				["claude/opus", "claude/opus"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"claude",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
+		});
+	});
+
+	it("all-disabled (and disabled active provider) yields the no-runnable-model error", () => {
+		expect(
+			resolveModelChain(["codex/sol"], BUILTIN_CATALOG, PROVIDERS, [], "codex"),
+		).toEqual({
 			ok: false,
-			error: "unknown provider: foo",
+			error:
+				"no runnable model: all configured models are on disabled providers",
 		});
 	});
 });

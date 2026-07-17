@@ -687,6 +687,107 @@ fn settings_failed_fetch_caches_none_and_does_not_refetch() {
     );
 }
 
+/// A cached `settings` payload with the given `(name, enabled)` providers (in
+/// precedence order) and active provider, for the provider-switch tests.
+fn settings_with_providers(active: &str, providers: &[(&str, bool)]) -> Option<Option<SettingsPayload>> {
+    use crate::ipc::types::SettingsProvider;
+    Some(Some(SettingsPayload {
+        active_provider: active.into(),
+        providers: providers
+            .iter()
+            .map(|(n, e)| SettingsProvider { name: (*n).into(), enabled: *e })
+            .collect(),
+        ..Default::default()
+    }))
+}
+
+/// The `set_active_provider` provider name from the first matching RPC in `cmds`,
+/// or `None` when no such call was emitted.
+fn switched_provider(cmds: &[Cmd]) -> Option<String> {
+    cmds.iter().find_map(|c| match c {
+        Cmd::Rpc { call, .. } if call.method == "set_active_provider" => {
+            call.params.get("provider").and_then(|v| v.as_str()).map(str::to_string)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn p_cycles_active_provider_to_next_enabled_and_optimistically_updates() {
+    let mut app = crate::test_fixtures::fixture_app(); // snapshot active = "grok"
+    // Precedence order [claude, grok, codex]; codex disabled → enabled [claude, grok].
+    app.settings = settings_with_providers("grok", &[("claude", true), ("grok", true), ("codex", false)]);
+    let up = press(&mut app, KeyCode::Char('p'));
+    // grok is the last enabled → wraps to claude.
+    assert_eq!(switched_provider(&up.cmds).as_deref(), Some("claude"));
+    // Optimistic update flips BOTH the snapshot (indicator source) and settings.
+    assert_eq!(app.snapshot.as_ref().unwrap().active_provider.as_deref(), Some("claude"));
+    assert_eq!(app.active_provider().as_deref(), Some("claude"));
+}
+
+#[test]
+fn p_skips_disabled_providers_when_cycling() {
+    let mut app = crate::test_fixtures::fixture_app();
+    app.snapshot.as_mut().unwrap().active_provider = Some("claude".into());
+    // codex sits between claude and grok but is disabled → cycle skips it.
+    app.settings = settings_with_providers("claude", &[("claude", true), ("codex", false), ("grok", true)]);
+    let up = press(&mut app, KeyCode::Char('p'));
+    assert_eq!(switched_provider(&up.cmds).as_deref(), Some("grok"));
+}
+
+#[test]
+fn p_single_enabled_provider_is_a_noop_without_rpc() {
+    let mut app = crate::test_fixtures::fixture_app();
+    app.snapshot.as_mut().unwrap().active_provider = Some("claude".into());
+    app.settings = settings_with_providers("claude", &[("claude", true), ("grok", false)]);
+    let up = press(&mut app, KeyCode::Char('p'));
+    assert_eq!(switched_provider(&up.cmds), None, "single enabled provider sends no RPC");
+    // The active provider is untouched.
+    assert_eq!(app.active_provider().as_deref(), Some("claude"));
+}
+
+#[test]
+fn p_is_a_noop_when_settings_not_yet_fetched() {
+    let mut app = crate::test_fixtures::fixture_app(); // settings = None
+    let before = app.active_provider();
+    let up = press(&mut app, KeyCode::Char('p'));
+    assert_eq!(switched_provider(&up.cmds), None, "no providers list → no RPC");
+    assert_eq!(app.active_provider(), before, "active provider unchanged");
+}
+
+#[test]
+fn clicking_the_provider_indicator_cycles_like_p() {
+    use crate::hit::{HitMap, HitTarget};
+    let mut app = crate::test_fixtures::fixture_app();
+    app.snapshot.as_mut().unwrap().active_provider = Some("claude".into());
+    app.settings = settings_with_providers("claude", &[("claude", true), ("grok", true)]);
+    let mut hit = HitMap::default();
+    hit.push(Rect { x: 100, y: 0, width: 12, height: 1 }, HitTarget::ProviderIndicator);
+    app.hit = hit;
+    let up = app.update(mouse(MouseEventKind::Down(MouseButton::Left), 104, 0));
+    assert_eq!(switched_provider(&up.cmds).as_deref(), Some("grok"));
+    assert_eq!(app.active_provider().as_deref(), Some("grok"));
+}
+
+#[test]
+fn connect_snapshot_fetches_settings_once_for_the_provider_list() {
+    let mut app = app(); // settings = None, not yet connected
+    // First snapshot (connect) fetches the settings payload so `p` has providers.
+    let up = app.update(Event::Snapshot(snapshot_with(&["platform"], vec![])));
+    assert_eq!(
+        up.cmds.iter().filter(|c| matches!(c, Cmd::FetchSettings)).count(),
+        1,
+        "connect fetches settings once"
+    );
+    // Reply lands → a later snapshot must NOT re-fetch (cached).
+    app.update(Event::Settings { payload: Some(SettingsPayload::default()) });
+    let up = app.update(Event::Snapshot(snapshot_with(&["platform"], vec![])));
+    assert!(
+        !up.cmds.iter().any(|c| matches!(c, Cmd::FetchSettings)),
+        "cached settings must not re-fetch on later snapshots"
+    );
+}
+
 #[test]
 fn status_line_clears_on_list_mode_keypress() {
     let mut app = crate::test_fixtures::fixture_app();

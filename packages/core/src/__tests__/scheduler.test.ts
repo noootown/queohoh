@@ -40,7 +40,7 @@ function task(overrides: {
 		chainId: overrides.chainId ?? null,
 		chainSeq: overrides.chainSeq ?? null,
 		lane: overrides.lane ?? null,
-		attemptedProviders: [],
+		attemptedModels: [],
 	};
 }
 

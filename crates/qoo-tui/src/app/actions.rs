@@ -60,6 +60,54 @@ impl App {
         true
     }
 
+    /// The operator's currently-active provider name, or `None` when unknown.
+    /// Prefers the live snapshot's `active_provider` (the broadcast-reconciled
+    /// source the top-bar indicator renders) and falls back to the cached
+    /// `settings` payload's copy — so the value survives before the first
+    /// snapshot's field lands, and an old daemon that omits it on the snapshot
+    /// still shows the fetched settings value. Empty strings count as unknown.
+    pub(crate) fn active_provider(&self) -> Option<String> {
+        let from_snapshot = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.active_provider.clone())
+            .filter(|s| !s.is_empty());
+        from_snapshot.or_else(|| {
+            self.settings
+                .as_ref()
+                .and_then(|s| s.as_ref())
+                .map(|p| p.active_provider.clone())
+                .filter(|s| !s.is_empty())
+        })
+    }
+
+    /// The provider `p` (cycle) switches TO: the next ENABLED provider after the
+    /// current one, in the settings payload's provider-precedence order, cyclic.
+    /// `None` (a no-op, no RPC) when settings aren't fetched, fewer than two
+    /// providers are enabled, or the result would equal the current provider.
+    /// A current provider that is absent/disabled lands on the first enabled one.
+    fn next_enabled_provider(&self) -> Option<String> {
+        let payload = self.settings.as_ref().and_then(|s| s.as_ref())?;
+        let enabled: Vec<&str> = payload
+            .providers
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| p.name.as_str())
+            .collect();
+        // A single enabled provider (or none) has nothing to cycle to.
+        if enabled.len() < 2 {
+            return None;
+        }
+        let current = self.active_provider();
+        let cur = current.as_deref().unwrap_or("");
+        let next = match enabled.iter().position(|&n| n == cur) {
+            Some(i) => enabled[(i + 1) % enabled.len()],
+            // Current isn't among the enabled providers → start at the first.
+            None => enabled[0],
+        };
+        (next != cur).then(|| next.to_string())
+    }
+
     /// `Space`: toggle the focused pane's cursor row in/out of its marked set.
     /// The mark key is the row's stable identity ([`App::row_identity`]), so it
     /// survives search-filter edits and snapshot reorders. Toggle-in-place — the
@@ -102,6 +150,35 @@ impl App {
                     cmds.push(Cmd::FetchSettings);
                 }
                 true
+            }
+            A::CycleProvider => {
+                // Compute the next enabled provider (settings-payload order,
+                // skipping disabled, cyclic from the current). `None` = no-op:
+                // settings not fetched, fewer than two enabled providers, or the
+                // current is already the only enabled one — so no RPC is sent.
+                match self.next_enabled_provider() {
+                    Some(next) => {
+                        // Optimistic: write the new value into BOTH the live
+                        // snapshot (the indicator's reconcile source, so it flips
+                        // instantly) and the cached settings payload (so the `s`
+                        // overlay agrees). The daemon's next state broadcast
+                        // overwrites the snapshot field authoritatively.
+                        if let Some(snap) = self.snapshot.as_mut() {
+                            snap.active_provider = Some(next.clone());
+                        }
+                        if let Some(Some(p)) = self.settings.as_mut() {
+                            p.active_provider = next.clone();
+                        }
+                        cmds.push(self.dispatch_rpc(
+                            "switch provider",
+                            "set_active_provider",
+                            serde_json::json!({ "provider": next }),
+                            RpcOpts::default(),
+                        ));
+                        true
+                    }
+                    None => false,
+                }
             }
             A::SwitchTab(i) => {
                 let tabs = self

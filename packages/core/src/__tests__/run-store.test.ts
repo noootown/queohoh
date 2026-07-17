@@ -24,7 +24,7 @@ const task: TaskInstance = {
 	model: null,
 	timeoutMs: null,
 	prompt: "Review PR 257 with secret shh-token.\n",
-	attemptedProviders: [],
+	attemptedModels: [],
 };
 
 const redact = makeRedactor(new Map([["shh-token", "GH_TOKEN"]]));

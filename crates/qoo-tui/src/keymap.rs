@@ -101,6 +101,13 @@ pub enum AppAction {
     /// Read-only model-alias settings overlay (`s`). Distinct from the `ctrl+s`
     /// project-tab prefix, which `App` consumes before the keymap ever sees it.
     Settings,
+    /// `p`: cycle the operator's ACTIVE provider to the next ENABLED one (in the
+    /// settings payload's provider-precedence order, skipping disabled). Global —
+    /// like the top-right `⚡ <provider>` indicator it drives, it is not gated on
+    /// any pane's chip. A single enabled provider (or settings not yet fetched)
+    /// makes it a no-op with no RPC. Distinct from the `ctrl+s`-prefixed `p`
+    /// (previous project tab), which `App` consumes before the keymap sees it.
+    CycleProvider,
     Quit,
     None,
 }
@@ -133,6 +140,11 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         // never reaches here — `App` arms/consumes it before dispatching to the
         // keymap — so this bare arm can't shadow it.
         KeyCode::Char('s') => AppAction::Settings,
+        // Plain `p` cycles the active provider (global, ungated — it drives the
+        // always-visible top-right indicator). The `ctrl+s`-prefixed `p`
+        // (previous project tab) is consumed by `App` before the keymap runs, so
+        // this bare arm can't shadow it.
+        KeyCode::Char('p') => AppAction::CycleProvider,
         // Pane-action verbs, each gated on the focused pane's chip set:
         // QUEUE {r,x,g,a,c,z} · TASKS {r,d,z} · WORKTREES {r,g,x,t,c,z}.
         KeyCode::Char('t') => gated(PaneButton::Tasks, AppAction::OpenTaskMenu),
@@ -429,6 +441,16 @@ mod tests {
         // Ungated: marking is a selection primitive, live on all three panes.
         for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Char(' ')), f), AppAction::ToggleMark);
+        }
+    }
+
+    #[test]
+    fn p_cycles_provider_globally() {
+        // Plain `p` cycles the active provider on every focused list pane
+        // (ungated, like the indicator it drives). The `ctrl+s`-prefixed `p`
+        // (previous tab) never reaches the keymap — `App` consumes it first.
+        for f in LISTS {
+            assert_eq!(list_mode_action(&k(KeyCode::Char('p')), f), AppAction::CycleProvider);
         }
     }
 

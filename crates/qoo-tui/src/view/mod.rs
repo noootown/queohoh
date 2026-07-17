@@ -462,6 +462,28 @@ mod tests {
     }
 
     #[test]
+    fn header_shows_the_active_provider_indicator_and_registers_its_click_target() {
+        // fixture snapshot's active provider is "grok" → the `⚡ grok` indicator
+        // renders at the header's right edge with a ProviderIndicator hit target.
+        let app = fixture_app();
+        let (terminal, hits) = render_at(&app, 120, 40);
+        let buf = terminal.backend().buffer().clone();
+        let mut row0 = String::new();
+        for x in 0..120 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        // The ⚡ is a wide glyph (its skip cell flattens to a space), so assert on
+        // the two pieces rather than the exact spacing between them.
+        assert!(row0.contains('⚡'), "no ⚡ in header: {row0:?}");
+        assert!(row0.trim_end().ends_with("grok"), "provider name missing at right edge: {row0:?}");
+        // The indicator's rect is registered so a click cycles the provider.
+        assert!(
+            hits.iter().any(|(_, t)| matches!(t, crate::hit::HitTarget::ProviderIndicator)),
+            "no ProviderIndicator hit target registered"
+        );
+    }
+
+    #[test]
     fn apply_osc8_folds_link_into_first_cell_and_skips_the_rest() {
         const URL: &str = "https://github.com/acme/acme/pull/77";
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
@@ -604,9 +626,9 @@ mod tests {
         // cron only (no marker), discovery with no cron (bare `⌕` marker), and a
         // plain def (blank schedule). Two carry a description so
         // the desc FILL column renders (blank on the two that don't); all four
-        // carry a model so the model column renders (two `claude-`-prefixed to
-        // exercise stripping, two plain aliases); seeded here locally, not in the
-        // shared fixture, mirroring the cron-column precedent.
+        // carry a model so the model column renders (`provider/label` refs);
+        // seeded here locally, not in the shared fixture, mirroring the
+        // cron-column precedent.
         app.defs_by_project.insert(
             "acme".to_string(),
             vec![
@@ -618,7 +640,7 @@ mod tests {
                     has_discovery: true,
                     cron: Some("30 13 * * *".into()),
                     description: Some("Review an open PR end to end.".into()),
-                    model: Some("claude-opus-4-8".into()),
+                    model: Some("claude/opus".into()),
                     worktree: None,
                 },
                 crate::ipc::types::DefinitionSummary {
@@ -627,7 +649,7 @@ mod tests {
                     scope: "project".into(),
                     cron: Some("0 2 * * *".into()),
                     description: Some("Nightly repo tidy sweep.".into()),
-                    model: Some("sonnet".into()),
+                    model: Some("claude/sonnet".into()),
                     ..Default::default()
                 },
                 crate::ipc::types::DefinitionSummary {
@@ -635,14 +657,14 @@ mod tests {
                     name: "deploy".into(),
                     scope: "project".into(),
                     has_discovery: true,
-                    model: Some("claude-fable-5".into()),
+                    model: Some("claude/fable".into()),
                     ..Default::default()
                 },
                 crate::ipc::types::DefinitionSummary {
                     repo: "acme".into(),
                     name: "lint".into(),
                     scope: "project".into(),
-                    model: Some("haiku".into()),
+                    model: Some("claude/haiku".into()),
                     ..Default::default()
                 },
             ],
@@ -692,36 +714,37 @@ mod tests {
     #[test]
     fn snapshot_settings_overlay() {
         use crate::ipc::types::{
-            SettingsLayer, SettingsModels, SettingsPayload, SettingsProjectLayer,
+            CatalogEntry, DefaultModels, DefaultModelsProject, SettingsPayload, SettingsProvider,
         };
-        use std::collections::BTreeMap;
-        let m = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
-            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        let prov = |name: &str, enabled: bool| SettingsProvider { name: name.into(), enabled };
+        let cat = |provider: &str, id: &str, label: &str, hidden: bool| CatalogEntry {
+            provider: provider.into(),
+            id: id.into(),
+            label: label.into(),
+            hidden,
         };
         let mut app = fixture_app();
         app.mode = crate::app::Mode::Settings;
-        // Some(Some(_)): defaults ⊕ a global remap (sonnet) + one project delta,
-        // exercising all three row kinds the overlay renders.
+        // Some(Some(_)): the post-Task-5 shape — providers (active marked), a
+        // merged catalog (hidden marked), and default-model chains (global +
+        // one project override) — exercising every row kind the overlay renders.
         app.settings = Some(Some(SettingsPayload {
-            models: SettingsModels {
-                defaults: m(&[
-                    ("haiku", "claude-haiku-4-5"),
-                    ("opus", "claude-opus-4-8"),
-                    ("sonnet", "claude-sonnet-4-5"),
-                ]),
-                default_model: String::new(),
-                global: SettingsLayer {
-                    entries: m(&[("sonnet", "claude-sonnet-4-6")]),
-                    source: "~/.config/qoo/config.yaml".into(),
-                },
-                projects: vec![SettingsProjectLayer {
-                    repo: "acme".into(),
-                    entries: m(&[("opus", "claude-opus-4-9")]),
-                    default_model: String::new(),
+            active_provider: "grok".into(),
+            providers: vec![prov("claude", true), prov("grok", true), prov("codex", false)],
+            catalog: vec![
+                cat("claude", "claude-opus-4-8", "opus", false),
+                cat("grok", "grok-4.5", "grok-4.5", false),
+                cat("grok", "grok-legacy", "legacy", true),
+            ],
+            default_models: DefaultModels {
+                global: vec!["claude/opus".into(), "grok/grok-4.5".into()],
+                projects: vec![DefaultModelsProject {
+                    name: "acme".into(),
+                    default_models: vec!["grok/grok-4.5".into()],
                     source: "acme/vars.yaml".into(),
                 }],
             },
-            providers: vec![],
+            ..Default::default()
         }));
         let (terminal, hits) = render_at(&app, 80, 24);
         insta::assert_snapshot!("view_settings_overlay", terminal.backend());

@@ -1,16 +1,16 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { BUILTIN_CATALOG, effectiveCatalog } from "../catalog.js";
 import type { GlobalConfig } from "../config.js";
 import {
 	DEFAULT_PROVIDERS,
 	globalWorkspaceDir,
 	loadGlobalConfig,
 	loadProjectDefaultBranch,
-	loadProjectDefaultModel,
+	loadProjectDefaultModels,
 	loadProjectGithubId,
-	loadProjectModels,
 	loadProjectProtectedWorktrees,
 	loadProjectTaskRetentionDays,
 	loadProjectVars,
@@ -123,7 +123,8 @@ describe("resolveDefinition — project vs global", () => {
 			maxConcurrentTasks: 3,
 			archiveAfterDays: 7,
 			vars: {},
-			models: {},
+			catalog: BUILTIN_CATALOG,
+			defaultModels: ["claude/opus", "grok/grok-4.5"],
 			providers: DEFAULT_PROVIDERS,
 		};
 	}
@@ -219,6 +220,15 @@ describe("loadProjectVars", () => {
 		);
 		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
 	});
+
+	it("skips the reserved default_models key instead of exposing it as a var", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"ticket: JUS-1\ndefault_models:\n  - claude/opus\n",
+		);
+		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+	});
 });
 
 describe("loadProjectTaskRetentionDays", () => {
@@ -262,44 +272,6 @@ describe("loadProjectTaskRetentionDays", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
 		writeFileSync(join(dir, "vars.yaml"), "ticket: JUS-1\n");
 		expect(loadProjectTaskRetentionDays(dir, 30)).toBe(30);
-	});
-});
-
-describe("loadProjectDefaultModel", () => {
-	it("reads a string default_model from vars.yaml", () => {
-		const dir = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
-		writeFileSync(
-			join(dir, "vars.yaml"),
-			"default_model: opus\ngithub_id: noootown\n",
-		);
-		expect(loadProjectDefaultModel(dir)).toBe("opus");
-	});
-
-	it("returns undefined for absent file, absent key, empty string, or non-string", () => {
-		const absent = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
-		expect(loadProjectDefaultModel(absent)).toBeUndefined();
-
-		const noKey = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
-		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
-		expect(loadProjectDefaultModel(noKey)).toBeUndefined();
-
-		const blank = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
-		writeFileSync(join(blank, "vars.yaml"), "default_model: ''\n");
-		expect(loadProjectDefaultModel(blank)).toBeUndefined();
-
-		const nested = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
-		writeFileSync(join(nested, "vars.yaml"), "default_model:\n  a: b\n");
-		expect(loadProjectDefaultModel(nested)).toBeUndefined();
-	});
-
-	it("coexists with a models: override block", () => {
-		const dir = mkdtempSync(join(tmpdir(), "queohoh-dm-"));
-		writeFileSync(
-			join(dir, "vars.yaml"),
-			"default_model: opus\nmodels:\n  opus: claude-opus-4-8\n",
-		);
-		expect(loadProjectDefaultModel(dir)).toBe("opus");
-		expect(loadProjectModels(dir)).toEqual({ opus: "claude-opus-4-8" });
 	});
 });
 
@@ -380,72 +352,192 @@ describe("loadProjectGithubId", () => {
 	});
 });
 
-describe("loadGlobalConfig — models map", () => {
-	it("parses a global models: map and defaults to empty", () => {
-		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-models-"));
-		const withModels = join(dir, "with.yaml");
-		writeFileSync(
-			withModels,
-			["projects: []", "models:", "  sonnet: claude-sonnet-4-6"].join("\n"),
-		);
-		expect(loadGlobalConfig(withModels).models).toEqual({
-			sonnet: "claude-sonnet-4-6",
-		});
-		const bare = join(dir, "bare.yaml");
-		writeFileSync(bare, "projects: []\n");
-		expect(loadGlobalConfig(bare).models).toEqual({});
-	});
-
-	it("tolerates malformed models entries instead of crashing", () => {
-		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-models-bad-"));
+describe("loadGlobalConfig — catalog overlay", () => {
+	it("merges a catalog: overlay onto the built-in catalog", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-catalog-"));
 		const path = join(dir, "config.yaml");
 		writeFileSync(
 			path,
 			[
 				"projects: []",
-				"models:",
-				"  sonnet: claude-x",
-				"  bad: 4.6",
-				"  nested:",
-				"    a: b",
+				"catalog:",
+				"  - provider: grok",
+				"    id: grok-4.5",
+				"    label: grok-4.5",
+				"    hidden: true",
+				"  - provider: claude",
+				"    id: claude-extra-9",
+				"    label: extra",
 			].join("\n"),
 		);
-		expect(() => loadGlobalConfig(path)).not.toThrow();
-		expect(loadGlobalConfig(path).models).toEqual({ sonnet: "claude-x" });
+		const config = loadGlobalConfig(path);
+		const grokHead = config.catalog.find(
+			(e) => e.provider === "grok" && e.id === "grok-4.5",
+		);
+		expect(grokHead?.hidden).toBe(true);
+		const added = config.catalog.find((e) => e.id === "claude-extra-9");
+		expect(added).toEqual({
+			provider: "claude",
+			id: "claude-extra-9",
+			label: "extra",
+		});
+		// Re-grouped by provider precedence — a config reorder cannot interleave
+		// providers: every claude entry precedes every grok entry.
+		const providerOrder = config.catalog.map((e) => e.provider);
+		expect(providerOrder.lastIndexOf("claude")).toBeLessThan(
+			providerOrder.indexOf("grok"),
+		);
+	});
+
+	it("defaults to the built-in catalog unchanged when catalog: is absent", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-catalog-bare-"));
+		const path = join(dir, "config.yaml");
+		writeFileSync(path, "projects: []\n");
+		expect(loadGlobalConfig(path).catalog).toEqual(BUILTIN_CATALOG);
+	});
+
+	it("falls back to the built-in catalog and warns on a duplicate-label overlay", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-catalog-dup-"));
+		const path = join(dir, "config.yaml");
+		writeFileSync(
+			path,
+			[
+				"projects: []",
+				"catalog:",
+				"  - provider: claude",
+				"    id: claude-opus-4-8",
+				"    label: sonnet", // collides with the built-in claude/sonnet label
+			].join("\n"),
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const config = loadGlobalConfig(path);
+		expect(config.catalog).toEqual(effectiveCatalog(undefined));
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("catalog: duplicate label"),
+		);
+		warn.mockRestore();
+	});
+
+	it("falls back to the built-in catalog and warns when catalog: is malformed shape", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-catalog-shape-"));
+		const path = join(dir, "config.yaml");
+		writeFileSync(path, ["projects: []", "catalog:", "  foo: bar"].join("\n"));
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const config = loadGlobalConfig(path);
+		expect(config.catalog).toEqual(effectiveCatalog(undefined));
+		expect(warn).toHaveBeenCalled();
+		warn.mockRestore();
 	});
 });
 
-describe("loadProjectModels", () => {
-	it("reads the block and tolerates absence/garbage", () => {
-		const withBlock = mkdtempSync(join(tmpdir(), "queohoh-pm-"));
-		writeFileSync(
-			join(withBlock, "vars.yaml"),
-			"ticket: JUS-1\nmodels:\n  sonnet: claude-sonnet-4-6\n",
-		);
-		expect(loadProjectModels(withBlock)).toEqual({
-			sonnet: "claude-sonnet-4-6",
-		});
-
-		const withoutVarsYaml = mkdtempSync(join(tmpdir(), "queohoh-pm-"));
-		expect(loadProjectModels(withoutVarsYaml)).toEqual({});
-
-		const withGarbage = mkdtempSync(join(tmpdir(), "queohoh-pm-"));
-		writeFileSync(join(withGarbage, "vars.yaml"), "models: [not, a, map]\n");
-		expect(loadProjectModels(withGarbage)).toEqual({});
+describe("loadGlobalConfig — default_models", () => {
+	it("defaults to claude/opus, grok/grok-4.5 when absent", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-dm-"));
+		const path = join(dir, "config.yaml");
+		writeFileSync(path, "projects: []\n");
+		expect(loadGlobalConfig(path).defaultModels).toEqual([
+			"claude/opus",
+			"grok/grok-4.5",
+		]);
 	});
 
-	it("skips non-string and empty-string values, keeping valid entries", () => {
-		const dir = mkdtempSync(join(tmpdir(), "queohoh-pm-"));
+	it("parses a configured default_models: list", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-dm-set-"));
+		const path = join(dir, "config.yaml");
 		writeFileSync(
-			join(dir, "vars.yaml"),
+			path,
 			[
-				"models:",
-				"  sonnet: claude-sonnet-4-6",
-				"  bad: 4.6",
-				"  blank: ''",
+				"projects: []",
+				"default_models:",
+				"  - grok/grok-4.5",
+				"  - claude/sonnet",
 			].join("\n"),
 		);
-		expect(loadProjectModels(dir)).toEqual({ sonnet: "claude-sonnet-4-6" });
+		expect(loadGlobalConfig(path).defaultModels).toEqual([
+			"grok/grok-4.5",
+			"claude/sonnet",
+		]);
+	});
+});
+
+describe("loadGlobalConfig — providers[].models is deprecated", () => {
+	it("warns and drops the models key, keeping enabled/bin", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-provmodels-"));
+		const path = join(dir, "config.yaml");
+		writeFileSync(
+			path,
+			[
+				"projects: []",
+				"providers:",
+				"  - name: claude",
+				"    enabled: true",
+				"    models:",
+				"      sonnet: claude-sonnet-4-6",
+			].join("\n"),
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const config = loadGlobalConfig(path);
+		const claude = config.providers.find((p) => p.name === "claude");
+		expect(claude?.enabled).toBe(true);
+		expect(claude).not.toHaveProperty("models");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("providers.claude.models"),
+		);
+		warn.mockRestore();
+	});
+
+	it("does not warn when no provider sets models", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-provmodels-none-"));
+		const path = join(dir, "config.yaml");
+		writeFileSync(
+			path,
+			[
+				"projects: []",
+				"providers:",
+				"  - name: claude",
+				"    enabled: true",
+			].join("\n"),
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		loadGlobalConfig(path);
+		expect(warn).not.toHaveBeenCalled();
+		warn.mockRestore();
+	});
+});
+
+describe("loadProjectDefaultModels", () => {
+	it("reads a default_models: list from vars.yaml", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"default_models:\n  - claude/opus\n  - grok/grok-4.5\n",
+		);
+		expect(loadProjectDefaultModels(dir)).toEqual([
+			"claude/opus",
+			"grok/grok-4.5",
+		]);
+	});
+
+	it("returns undefined for absent file, absent key, or a non-list value", () => {
+		const absent = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
+		expect(loadProjectDefaultModels(absent)).toBeUndefined();
+
+		const noKey = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		expect(loadProjectDefaultModels(noKey)).toBeUndefined();
+
+		const scalar = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
+		writeFileSync(join(scalar, "vars.yaml"), "default_models: claude/opus\n");
+		expect(loadProjectDefaultModels(scalar)).toBeUndefined();
+	});
+
+	it("skips non-string/empty entries, keeping valid ones", () => {
+		const dir = mkdtempSync(join(tmpdir(), "queohoh-pdm-mixed-"));
+		writeFileSync(
+			join(dir, "vars.yaml"),
+			"default_models:\n  - claude/opus\n  - ''\n  - 5\n",
+		);
+		expect(loadProjectDefaultModels(dir)).toEqual(["claude/opus"]);
 	});
 });
 

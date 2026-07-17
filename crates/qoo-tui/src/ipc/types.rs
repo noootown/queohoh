@@ -39,6 +39,14 @@ pub struct StateSnapshot {
     /// substituted to `claude --resume <session>` (queue-goto) or empty
     /// (worktree-goto) when the window is driven in `event.rs`.
     pub goto_command: Option<String>,
+    /// The operator's currently-active provider (`SettingsStore`), echoed on
+    /// EVERY state broadcast so a `set_active_provider` from any client
+    /// re-renders the top-bar `⚡ <provider>` indicator live — this is the
+    /// reconcile source the optimistic switch writes to and the daemon overwrites
+    /// on the next broadcast. `None`/empty on an old daemon that omits it (via the
+    /// container `default`); the indicator then falls back to the `settings`
+    /// payload's `active_provider`, or shows nothing.
+    pub active_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -242,11 +250,13 @@ pub struct DefinitionSummary {
     /// One-line human description of the def, or `None` when unset. `default` on
     /// the container covers old daemons that omit the field.
     pub description: Option<String>,
-    /// Model the def runs with (e.g. `claude-fable-5`), shown in the TASKS def
-    /// rows (prefix-stripped). `None` on an old daemon that omits the field (via
-    /// the container `default`) — a modern daemon always sends it (config default
-    /// `"sonnet"`), so this is `Option` purely for backward compatibility.
-    pub model: Option<String>,
+    /// The def's authored `model:` — a single `provider/label` ref, an ordered
+    /// fallback list of them, or `None` (no `model:` → resolves against
+    /// `default_models` at run time; also the old-daemon default). Shown in the
+    /// TASKS def rows. Was a resolved model id before Task 5; the flat catalog
+    /// replaced the per-provider alias table, so the daemon now forwards the
+    /// authored ref(s) verbatim (`string | string[] | null` on the wire).
+    pub model: Option<ModelRef>,
     /// The def's `worktree:` setting (`"repo"`, `"temp"`, `"auto"`, or a
     /// `pr:{{…}}`-style template; schema default `"temp"`). `None` on an old
     /// daemon that omits it. The worktree-scoped task menu keeps only defs that
@@ -270,13 +280,13 @@ pub struct TaskDefinition {
     pub worktree: String,
     pub pre_run: Option<String>,
     pub post_run: Option<String>,
-    pub model: String,
-    /// The authored `model` alias resolved to a concrete id against the effective
-    /// per-project table (e.g. `opus` → `claude-opus-4-8`). `None` on an old
-    /// daemon that omits it (via the container `default`) — the detail pane then
-    /// falls back to showing the authored `model` alone. A modern daemon always
-    /// sends it (unknown/full ids resolve to themselves).
-    pub model_resolved: Option<String>,
+    /// The def's authored `model:` — a single `provider/label` ref, an ordered
+    /// fallback list of them, or `None` (no `model:` → resolves against
+    /// `default_models` at run time). Was a resolved-id string paired with a
+    /// sibling `modelResolved` before Task 5; the flat catalog replaced the alias
+    /// table, so `modelResolved` was REMOVED from the wire and the authored ref(s)
+    /// (`string | string[] | null`) are rendered directly.
+    pub model: Option<ModelRef>,
     pub timeout_ms: u64,
     pub priority: String,
     pub prompt: String,
@@ -289,6 +299,116 @@ pub struct Discovery {
     pub item_key: String,
 }
 
+/// A definition's authored `model:` on the wire: a single `provider/label` ref,
+/// or an ordered fallback list of them. Untagged so a bare JSON string and a
+/// JSON array both deserialize into the right variant; a `null`/missing `model`
+/// is represented by the enclosing `Option<ModelRef>` being `None`. Mirrors the
+/// daemon's `model: string | string[] | null` (see packages/core/src/definition.ts).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum ModelRef {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl ModelRef {
+    /// The ref(s) in authored order (a single ref → a one-element list).
+    pub fn refs(&self) -> Vec<String> {
+        match self {
+            ModelRef::One(s) => vec![s.clone()],
+            ModelRef::Many(v) => v.clone(),
+        }
+    }
+
+    /// Human display: the ref(s) joined with ` → ` (the fallback-order arrow).
+    pub fn display(&self) -> String {
+        self.refs().join(" → ")
+    }
+}
+
+impl From<&str> for ModelRef {
+    /// A bare ref string → a single-ref chain (`ModelRef::One`).
+    fn from(s: &str) -> Self {
+        ModelRef::One(s.to_string())
+    }
+}
+
+impl From<String> for ModelRef {
+    fn from(s: String) -> Self {
+        ModelRef::One(s)
+    }
+}
+
+/// One concrete model in the daemon's merged catalog — the Rust mirror of
+/// `CatalogEntry` in packages/core/src/catalog.ts. `id` is the provider-specific
+/// CLI model id; `label` is the short reference used in `provider/label` refs and
+/// pickers. `hidden` hides it from PICKERS only (a hidden entry still resolves
+/// when referenced explicitly), so the TUI filters it out of the model dropdown.
+/// Wire keys are single lowercase words, so field names match 1:1 (no rename).
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+pub struct CatalogEntry {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    /// Picker-only hide flag; absent on the wire for a visible entry → `false`.
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+impl CatalogEntry {
+    /// Reference form `provider/label` — the value stored in (and submitted from)
+    /// a `model:` dropdown option.
+    pub fn model_ref(&self) -> String {
+        format!("{}/{}", self.provider, self.label)
+    }
+
+    /// Display form `label (provider)` — the text shown in the model picker.
+    pub fn model_display(&self) -> String {
+        format!("{} ({})", self.label, self.provider)
+    }
+}
+
+/// The `settings` RPC's `default_models` block (Task 5): the effective global
+/// default-model chain plus any per-project overrides. Fields default so an old
+/// daemon that omits the block deserializes to empties.
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+pub struct DefaultModels {
+    /// The workspace-wide default chain (`provider/label` refs, fallback order).
+    #[serde(default)]
+    pub global: Vec<String>,
+    /// Only projects whose `vars.yaml` sets a NON-EMPTY `default_models:`
+    /// override; everyone else is described by `global`.
+    #[serde(default)]
+    pub projects: Vec<DefaultModelsProject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+pub struct DefaultModelsProject {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub default_models: Vec<String>,
+    /// Path the override was loaded from (its `vars.yaml`); provenance only.
+    #[serde(default)]
+    pub source: String,
+}
+
+impl DefaultModels {
+    /// The effective default-model chain for `repo`: its project override when
+    /// present and non-empty, else the global chain.
+    pub fn refs_for(&self, repo: &str) -> Vec<String> {
+        self.projects
+            .iter()
+            .find(|p| p.name == repo)
+            .map(|p| p.default_models.clone())
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| self.global.clone())
+    }
+}
+
 /// Read-only mirror of the daemon's `settings` RPC (Task 4). Every field is
 /// `#[serde(default)]` so an OLD daemon that omits the whole block — or any
 /// subtree of it — deserializes to empties rather than erroring; the app stores
@@ -299,15 +419,34 @@ pub struct Discovery {
 /// no `rename_all` is needed.
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 pub struct SettingsPayload {
+    /// The merged, provider-precedence-grouped model catalog (Task 5). Hidden
+    /// entries are INCLUDED — the model picker filters them out but still
+    /// resolves a hidden ref when named explicitly. `#[serde(default)]` so an old
+    /// daemon that omits it deserializes to an empty vec; the picker then falls
+    /// back to the built-in mirror (`form::builtin_catalog`).
     #[serde(default)]
-    pub models: SettingsModels,
-    /// Configured providers (Task 12's `settings` RPC addition), each with its
-    /// alias→model-id table. `#[serde(default)]` so an old daemon that omits the
-    /// field entirely (predates provider adapters) deserializes to an empty vec
-    /// rather than erroring — `form::model_options` then falls back to the
-    /// bare-tier `MODEL_OPTIONS` const.
+    pub catalog: Vec<CatalogEntry>,
+    /// The operator's currently-active provider (`SettingsStore`). Empty string
+    /// on an old daemon that omits it.
+    #[serde(default)]
+    pub active_provider: String,
+    /// The effective default-model chains: global + per-project overrides. Feeds
+    /// the dropdown's `default (…)` head-option label.
+    #[serde(default)]
+    pub default_models: DefaultModels,
+    /// Configured providers, `name` + `enabled` only. The per-provider tier
+    /// (alias→id) map was REMOVED in Task 5 — models now live in the flat
+    /// `catalog`. `#[serde(default)]` so an old daemon that omits the field (or a
+    /// stale one that still sends the retired `models` key per provider — serde
+    /// ignores unknown fields) deserializes cleanly.
     #[serde(default)]
     pub providers: Vec<SettingsProvider>,
+    // The pre-Task-5 top-level `models` block (alias→id defaults + global/
+    // project layers) was removed entirely in this cutover — no live reader
+    // consumed it (the picker reads `catalog` / `default_models` above). A
+    // pre-Task-5 daemon that still sends the field lands on an unrecognized
+    // key; serde silently drops it (no `deny_unknown_fields` on this struct),
+    // so old-daemon payloads still deserialize cleanly.
 }
 
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
@@ -316,71 +455,6 @@ pub struct SettingsProvider {
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
-    /// Tier alias → concrete model id (e.g. `"opus" → "grok-code-fast-1"`),
-    /// mirroring [`SettingsModels::defaults`]'s shape for the built-in claude
-    /// provider.
-    #[serde(default)]
-    pub models: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
-pub struct SettingsModels {
-    /// Built-in alias → model-id defaults the daemon ships with.
-    #[serde(default)]
-    pub defaults: std::collections::BTreeMap<String, String>,
-    /// Built-in default model an ad-hoc / enqueue run uses when nothing sets one
-    /// (the launcher form preselects this, unless a project overrides it). Empty
-    /// on an old daemon that omits the field.
-    #[serde(default)]
-    pub default_model: String,
-    /// The global override layer (config-file `models:` block). Overlays
-    /// `defaults` to form the effective global table.
-    #[serde(default)]
-    pub global: SettingsLayer,
-    /// Only projects that actually override models; each carries its deltas.
-    #[serde(default)]
-    pub projects: Vec<SettingsProjectLayer>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
-pub struct SettingsLayer {
-    #[serde(default)]
-    pub entries: std::collections::BTreeMap<String, String>,
-    /// Path the layer was loaded from, shown as the section's provenance line.
-    #[serde(default)]
-    pub source: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
-pub struct SettingsProjectLayer {
-    #[serde(default)]
-    pub repo: String,
-    #[serde(default)]
-    pub entries: std::collections::BTreeMap<String, String>,
-    /// This project's `default_model` override from vars.yaml, when set (empty
-    /// otherwise — the caller falls back to [`SettingsModels::default_model`]).
-    #[serde(default)]
-    pub default_model: String,
-    #[serde(default)]
-    pub source: String,
-}
-
-impl SettingsModels {
-    /// Effective default model for `repo`: the project's `default_model` override
-    /// when set, else the built-in `default_model`, falling back to `"opus"` when
-    /// an old daemon omitted the field entirely.
-    pub fn default_model_for(&self, repo: &str) -> String {
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.repo == repo)
-            .map(|p| p.default_model.as_str())
-            .filter(|s| !s.is_empty());
-        project
-            .or(Some(self.default_model.as_str()).filter(|s| !s.is_empty()))
-            .unwrap_or("opus")
-            .to_string()
-    }
 }
 
 #[cfg(test)]
@@ -515,6 +589,18 @@ mod tests {
     }
 
     #[test]
+    fn active_provider_present_deserializes_to_some_and_absent_to_none() {
+        // A modern daemon echoes camelCase `activeProvider` on the state
+        // broadcast (the top-bar indicator's reconcile source)...
+        let s: StateSnapshot =
+            serde_json::from_str(r#"{"activeProvider":"grok"}"#).unwrap();
+        assert_eq!(s.active_provider.as_deref(), Some("grok"));
+        // ...and an old daemon that omits it defaults to None (container `default`).
+        let old: StateSnapshot = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.active_provider, None);
+    }
+
+    #[test]
     fn null_valued_collections_coerce_to_empty() {
         // The nullable_default shim: `null` where an array/object is expected → default.
         let s: StateSnapshot = serde_json::from_str(
@@ -623,12 +709,12 @@ mod tests {
         let with: DefinitionSummary = serde_json::from_str(
             r#"{"repo": "platform", "name": "pr-review", "scope": "project",
                 "args": [], "hasDiscovery": true, "cron": "30 13 * * *",
-                "description": "Review an open PR.", "model": "claude-fable-5"}"#,
+                "description": "Review an open PR.", "model": "claude/fable"}"#,
         )
         .unwrap();
         assert_eq!(with.cron.as_deref(), Some("30 13 * * *"));
         assert_eq!(with.description.as_deref(), Some("Review an open PR."));
-        assert_eq!(with.model.as_deref(), Some("claude-fable-5"));
+        assert_eq!(with.model, Some(ModelRef::One("claude/fable".into())));
         // ...and an old daemon that omits them defaults to None (container `default`).
         let without: DefinitionSummary = serde_json::from_str(
             r#"{"repo": "platform", "name": "lint", "scope": "global",
@@ -641,20 +727,35 @@ mod tests {
     }
 
     #[test]
-    fn task_definition_model_resolved_present_and_absent() {
-        // A modern daemon sends camelCase `modelResolved`...
-        let with: TaskDefinition = serde_json::from_str(
-            r#"{"name": "pr-ready", "repo": "acme", "model": "opus",
-                "modelResolved": "claude-opus-4-8", "timeoutMs": 1800000}"#,
+    fn task_definition_model_is_ref_string_list_or_null() {
+        // Post-Task-5: `model` is a `provider/label` ref (single)...
+        let one: TaskDefinition = serde_json::from_str(
+            r#"{"name": "pr-ready", "repo": "acme", "model": "claude/opus", "timeoutMs": 1800000}"#,
         )
         .unwrap();
-        assert_eq!(with.model, "opus");
-        assert_eq!(with.model_resolved.as_deref(), Some("claude-opus-4-8"));
-        // ...and an old daemon that omits it defaults to None (container `default`).
-        let without: TaskDefinition =
-            serde_json::from_str(r#"{"name": "lint", "repo": "acme", "model": "sonnet"}"#).unwrap();
-        assert_eq!(without.model, "sonnet");
-        assert_eq!(without.model_resolved, None);
+        assert_eq!(one.model, Some(ModelRef::One("claude/opus".into())));
+        // ...an ordered fallback LIST...
+        let many: TaskDefinition = serde_json::from_str(
+            r#"{"name": "pr-ready", "repo": "acme",
+                "model": ["claude/opus", "grok/grok-4.5"], "timeoutMs": 1800000}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            many.model,
+            Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()]))
+        );
+        assert_eq!(many.model.as_ref().unwrap().display(), "claude/opus → grok/grok-4.5");
+        // ...or `null`/absent → None (no `model:`; also the old-daemon default).
+        // `modelResolved` was removed from the wire — a stale daemon that still
+        // sends it is silently ignored (no deny_unknown_fields).
+        let null: TaskDefinition = serde_json::from_str(
+            r#"{"name": "lint", "repo": "acme", "model": null, "modelResolved": "claude-opus-4-8"}"#,
+        )
+        .unwrap();
+        assert_eq!(null.model, None);
+        let absent: TaskDefinition =
+            serde_json::from_str(r#"{"name": "lint", "repo": "acme"}"#).unwrap();
+        assert_eq!(absent.model, None);
     }
 
     #[test]
@@ -674,11 +775,15 @@ mod tests {
     }
 
     #[test]
-    fn settings_payload_full_deserializes() {
-        // The exact shape the daemon's `settings` RPC returns (Task 4).
+    fn settings_payload_stale_top_level_models_block_is_ignored() {
+        // A pre-Task-5 daemon still sends the whole legacy top-level `models`
+        // block (defaults/default_model/global/project layers). The struct no
+        // longer has that field at all — serde silently drops the unrecognized
+        // key (no `deny_unknown_fields` on `SettingsPayload`) rather than
+        // erroring, same as the stale per-provider `models` key below.
         let s: SettingsPayload = serde_json::from_str(
             r#"{"models": {
-                "defaults": {"opus": "claude-opus-4-8", "sonnet": "claude-sonnet-4-5"},
+                "defaults": {"opus": "claude-opus-4-8"},
                 "default_model": "opus",
                 "global": {"entries": {"sonnet": "claude-sonnet-4-6"},
                            "source": "/home/ian/.config/qoo/config.yaml"},
@@ -687,64 +792,77 @@ mod tests {
             }}"#,
         )
         .unwrap();
+        // No catalog in this legacy shape → empty (picker falls back to built-ins).
+        assert!(s.catalog.is_empty());
         // `providers` is absent in this payload (pre-Task-12 daemon shape) → an
         // old daemon that omits the whole field defaults to an empty vec.
         assert_eq!(s.providers, vec![]);
-        assert_eq!(s.models.defaults.get("opus").map(String::as_str), Some("claude-opus-4-8"));
-        assert_eq!(s.models.default_model, "opus");
-        assert_eq!(s.models.projects[0].default_model, "sonnet");
-        // A project override wins; a repo with no layer falls back to the built-in.
-        assert_eq!(s.models.default_model_for("acme"), "sonnet");
-        assert_eq!(s.models.default_model_for("other"), "opus");
-        // BTreeMap: iteration order is sorted, so snapshots stay deterministic.
-        assert_eq!(
-            s.models.defaults.keys().cloned().collect::<Vec<_>>(),
-            vec!["opus", "sonnet"]
-        );
-        assert_eq!(s.models.global.entries.get("sonnet").map(String::as_str), Some("claude-sonnet-4-6"));
-        assert_eq!(s.models.global.source, "/home/ian/.config/qoo/config.yaml");
-        assert_eq!(s.models.projects.len(), 1);
-        assert_eq!(s.models.projects[0].repo, "acme");
-        assert_eq!(s.models.projects[0].entries.get("opus").map(String::as_str), Some("claude-opus-4-9"));
-        assert_eq!(s.models.projects[0].source, "/repos/acme/vars.yaml");
     }
 
     #[test]
-    fn settings_payload_with_providers_parses() {
-        // The exact shape Task 12's daemon settings RPC returns: a `providers`
-        // array alongside `models`, each entry carrying its own tier→model-id
-        // table (claude's mirrors the built-in `models.defaults`; non-claude
-        // adapters carry their own concrete ids).
+    fn settings_payload_catalog_active_provider_and_default_models_parse() {
+        // The exact shape the post-Task-5 `settings` RPC returns: a flat `catalog`
+        // (hidden included), the active provider, a `default_models` block, and
+        // `providers` reduced to name/enabled (the per-provider tier map is gone).
         let s: SettingsPayload = serde_json::from_str(
-            r#"{"models": {"defaults": {"opus": "claude-opus-4-8"}},
-                "providers": [
-                    {"name": "claude", "enabled": true,
-                     "models": {"fable": "claude-fable-5", "opus": "claude-opus-4-8",
-                                "sonnet": "claude-sonnet-5", "haiku": "claude-haiku-4-5"}},
-                    {"name": "grok", "enabled": false,
-                     "models": {"fable": "grok-4", "opus": "grok-code-fast-1",
-                                "sonnet": "grok-code-fast-1", "haiku": "grok-4-fast"}},
-                    {"name": "codex", "enabled": false,
-                     "models": {"fable": "gpt-5.1-codex", "opus": "gpt-5.1-codex",
-                                "sonnet": "gpt-5.1-codex-mini", "haiku": "gpt-5.1-codex-mini"}}
-                ]}"#,
+            r#"{
+              "catalog": [
+                {"provider": "claude", "id": "claude-fable-5", "label": "fable"},
+                {"provider": "claude", "id": "claude-opus-4-8", "label": "opus"},
+                {"provider": "grok", "id": "grok-4.5", "label": "grok-4.5"},
+                {"provider": "grok", "id": "grok-legacy", "label": "legacy", "hidden": true}
+              ],
+              "active_provider": "grok",
+              "default_models": {
+                "global": ["claude/opus", "grok/grok-4.5"],
+                "projects": [
+                  {"name": "acme", "default_models": ["grok/grok-4.5"],
+                   "source": "/repos/acme/vars.yaml"}
+                ]
+              },
+              "providers": [
+                {"name": "claude", "enabled": true},
+                {"name": "grok", "enabled": true},
+                {"name": "codex", "enabled": false}
+              ]
+            }"#,
         )
         .unwrap();
+        assert_eq!(s.catalog.len(), 4);
+        assert_eq!(s.catalog[0].provider, "claude");
+        assert_eq!(s.catalog[0].model_ref(), "claude/fable");
+        assert_eq!(s.catalog[0].model_display(), "fable (claude)");
+        assert!(!s.catalog[0].hidden);
+        // The hidden flag rides through so the picker can filter it.
+        assert!(s.catalog[3].hidden);
+        assert_eq!(s.active_provider, "grok");
+        // default_models: project override wins, global otherwise.
+        assert_eq!(s.default_models.global, vec!["claude/opus", "grok/grok-4.5"]);
+        assert_eq!(s.default_models.refs_for("acme"), vec!["grok/grok-4.5"]);
+        assert_eq!(s.default_models.refs_for("other"), vec!["claude/opus", "grok/grok-4.5"]);
+        // providers reduced to name/enabled; a stale per-provider `models` key
+        // would be silently ignored (no deny_unknown_fields).
         assert_eq!(s.providers.len(), 3);
         assert_eq!(s.providers[0].name, "claude");
         assert!(s.providers[0].enabled);
-        assert_eq!(
-            s.providers[0].models.get("opus").map(String::as_str),
-            Some("claude-opus-4-8")
-        );
-        assert_eq!(s.providers[1].name, "grok");
-        assert!(!s.providers[1].enabled);
-        assert_eq!(
-            s.providers[1].models.get("opus").map(String::as_str),
-            Some("grok-code-fast-1")
-        );
         assert_eq!(s.providers[2].name, "codex");
         assert!(!s.providers[2].enabled);
+    }
+
+    #[test]
+    fn settings_payload_stale_per_provider_models_key_is_ignored() {
+        // A pre-Task-5 daemon still sends `models` per provider — the field is
+        // gone from the struct, so serde drops it rather than erroring.
+        let s: SettingsPayload = serde_json::from_str(
+            r#"{"providers": [{"name": "grok", "enabled": true,
+                "models": {"opus": "grok-code-fast-1"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.providers.len(), 1);
+        assert_eq!(s.providers[0].name, "grok");
+        assert!(s.providers[0].enabled);
+        // No catalog in this legacy shape → empty (picker falls back to built-ins).
+        assert!(s.catalog.is_empty());
     }
 
     #[test]
@@ -754,20 +872,14 @@ mod tests {
         // `#[serde(default)]`, so the empty object is a fully-defaulted payload.
         let s: SettingsPayload = serde_json::from_str("{}").unwrap();
         assert_eq!(s, SettingsPayload::default());
+        // The Task-5 fields all default: no catalog, empty active provider, empty
+        // default_models — the picker then falls back to the built-in mirror.
+        assert!(s.catalog.is_empty());
+        assert_eq!(s.active_provider, "");
+        assert!(s.default_models.global.is_empty());
+        assert!(s.default_models.projects.is_empty());
+        assert!(s.default_models.refs_for("anything").is_empty());
         // Pre-Task-12 daemon omits `providers` entirely → empty vec, not an error.
         assert!(s.providers.is_empty());
-        assert!(s.models.defaults.is_empty());
-        assert!(s.models.global.entries.is_empty());
-        assert_eq!(s.models.global.source, "");
-        assert!(s.models.projects.is_empty());
-        // Partial: `models` present but `projects`/`global` omitted.
-        let partial: SettingsPayload =
-            serde_json::from_str(r#"{"models": {"defaults": {"haiku": "claude-haiku-4-5"}}}"#).unwrap();
-        assert_eq!(partial.models.defaults.get("haiku").map(String::as_str), Some("claude-haiku-4-5"));
-        assert!(partial.models.projects.is_empty());
-        assert_eq!(partial.models.global.source, "");
-        // Old daemon omits default_model entirely → resolver falls back to "opus".
-        assert_eq!(partial.models.default_model, "");
-        assert_eq!(partial.models.default_model_for("anything"), "opus");
     }
 }

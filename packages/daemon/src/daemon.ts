@@ -26,6 +26,7 @@ import {
 	socketPath,
 	statePath,
 } from "./paths.js";
+import { SettingsStore } from "./settings-store.js";
 import { makeShimSpawner } from "./shim-host.js";
 
 const STARTER_CONFIG = `# queohoh global config
@@ -69,6 +70,12 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 	const lineage = new SessionLineageStore(sessionLineagePath(state));
 	const redact = makeRedactor(buildSecretMap(process.env));
 	const resolverIO = createResolverIO(defaultExec);
+	// Persisted operator settings (active provider). Constructed here so both the
+	// Engine (reads it to head each run's fallback chain) and the ApiServer
+	// (reads/mutates it via the `settings` / `set_active_provider` RPCs) share one
+	// instance. Snaps a disabled/unknown persisted provider to precedence-first
+	// enabled at construction (a config load) and logs it.
+	const settings = new SettingsStore(state, config.providers);
 
 	// Late-bound broadcast to resolve the Engine<->ApiServer cycle without
 	// reaching into private state: the Engine is built first with an onChange
@@ -87,6 +94,9 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		redact,
 		lineage,
 		onChange: () => broadcastRef(),
+		// Read the active provider fresh at each run so a `set_active_provider`
+		// re-heads the NEXT run's fallback chain.
+		activeProvider: () => settings.activeProvider(),
 		// Detached per-run shim: a daemon reload/crash never kills a live run, and
 		// the adoption sweep re-adopts it on return. executeClaude stays wired as
 		// the in-process fallback the Engine builds when no spawnShim is present.
@@ -99,6 +109,7 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		runStore,
 		registry,
 		config,
+		settings,
 		onMutation: () => {
 			void engine.tick().then(() => server.broadcast());
 		},

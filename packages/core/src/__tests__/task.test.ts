@@ -27,7 +27,7 @@ const sample: TaskInstance = {
 	verified: null,
 	verifyExitCode: null,
 	verifyOutput: null,
-	attemptedProviders: [],
+	attemptedModels: [],
 	lane: null,
 };
 
@@ -123,6 +123,23 @@ describe("resume_session_id and model fields", () => {
 			"c77252c9-11d1-4e68-ab81-f099af529091",
 		);
 		expect(reparsed.model).toBe("claude-fable-5");
+	});
+});
+
+describe("model field accepts a list", () => {
+	it("round-trips an ordered model fallback list", () => {
+		const withList: TaskInstance = {
+			...sample,
+			model: ["claude/opus", "grok/grok-4.5"],
+		};
+		const reparsed = parseTaskFile(serializeTaskFile(withList));
+		expect(reparsed.model).toEqual(["claude/opus", "grok/grok-4.5"]);
+	});
+
+	it("still round-trips a single string model (no rotation)", () => {
+		const withString: TaskInstance = { ...sample, model: "claude/opus" };
+		const reparsed = parseTaskFile(serializeTaskFile(withString));
+		expect(reparsed.model).toBe("claude/opus");
 	});
 });
 

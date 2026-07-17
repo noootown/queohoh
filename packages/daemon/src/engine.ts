@@ -18,8 +18,6 @@ import type {
 import {
 	buildLiveState,
 	cronDue,
-	effectiveModelTable,
-	effectiveProviders,
 	finalizeRun,
 	globalWorkspaceDir,
 	instantiateDefinition,
@@ -27,10 +25,8 @@ import {
 	laneKey,
 	listDefinitions,
 	loadProjectDefaultBranch,
-	loadProjectDefaultModel,
-	loadProjectModels,
+	loadProjectDefaultModels,
 	loadProjectProtectedWorktrees,
-	loadProjectProviderModels,
 	loadProjectTaskRetentionDays,
 	loadProjectVars,
 	parseCron,
@@ -42,6 +38,7 @@ import {
 	schedule,
 	startRun,
 } from "@queohoh/core";
+import { firstEnabledProvider } from "./settings-store.js";
 import { inProcessSpawner, type ShimSpawner } from "./shim-host.js";
 
 /**
@@ -217,6 +214,12 @@ export interface EngineDeps {
 	/** Argv probe distinguishing a live shim from a reused pid; default a
 	 * `ps -p <pid> -o command=` check for `shim.js`. Injected by tests. */
 	isShimPid?: (pid: number) => boolean;
+	/** The provider the operator has currently switched to (persisted in the
+	 * daemon's SettingsStore). Read fresh at each `buildWorkerDeps` so a mid-run
+	 * `set_active_provider` re-heads the NEXT run's fallback chain. Absent ⇒ the
+	 * precedence-first enabled provider from `config.providers` (used by tests
+	 * that don't exercise the provider switch). */
+	activeProvider?: () => string;
 }
 
 export class Engine {
@@ -1108,41 +1111,34 @@ export class Engine {
 			return null;
 		}
 
-		// Effective alias→id table for this task's repo. Computed outside the
-		// vars.yaml guard above: loadProjectModels is tolerant (never throws), so a
-		// malformed `models:` block only disables the override — it must not add a
-		// new way to fail the task.
-		const modelTable = effectiveModelTable(
-			deps.config.models,
-			loadProjectModels(projectWorkspaceDir(deps.config, task.target.repo)),
+		// Effective model catalog for this task's repo (BUILTIN_CATALOG ⊕
+		// config.yaml `catalog:`), already merged at `loadGlobalConfig` — every
+		// `provider/label` ref a task/definition names resolves against it.
+		const catalog = deps.config.catalog;
+		// Ordered fallback model-ref list a task with NO `model:` of its own
+		// resolves against. A project's vars.yaml `default_models:` overrides the
+		// global list — but only when it is a NON-EMPTY list: `loadProjectDefaultModels`
+		// returns `[]` for an explicitly-empty / all-invalid list, and the ENGINE
+		// owns the []→global fallback decision (an empty override means "unset").
+		const projectDefaults = loadProjectDefaultModels(
+			projectWorkspaceDir(deps.config, task.target.repo),
 		);
-		// Project-configurable default model for ad-hoc / enqueue runs that set no
-		// model of their own (a definition always carries one). Built-in fallback
-		// is `opus`; resolved through the alias table by the worker.
-		const defaultModel =
-			loadProjectDefaultModel(
-				projectWorkspaceDir(deps.config, task.target.repo),
-			) ?? "opus";
+		const defaultModels =
+			projectDefaults && projectDefaults.length > 0
+				? projectDefaults
+				: deps.config.defaultModels;
 
 		const repoPath = this.repoPath(task.target.repo);
-		// Effective provider table for THIS task's repo: `deps.config.providers`
-		// is already built-in ⊕ config.yaml `providers:` (computed once at
-		// `loadGlobalConfig`), so re-running it through `effectiveProviders` here
-		// only layers the one thing that's still project-scoped — vars.yaml's
-		// `providers:` tier overrides — on top. This is idempotent for the
-		// already-merged `enabled`/`bin`/`systemPrompt`/`args`/`models` fields
-		// (each provider entry re-derives to the same value against its own
-		// DEFAULT_PROVIDERS base), so calling it twice in this chain is safe.
-		// The legacy `models:` alias table (`modelTable` above) is NOT merged in
-		// here — worker.ts's `resolveRunContext` is the single place that folds
-		// it onto the claude provider's tier table, so engine only has to pass
-		// `providers` + `modelTable` and let the worker own that merge.
-		const providers = effectiveProviders(
-			deps.config.providers,
-			loadProjectProviderModels(
-				projectWorkspaceDir(deps.config, task.target.repo),
-			),
-		);
+		// Effective provider table: `deps.config.providers` is already built-in ⊕
+		// config.yaml `providers:` (computed once at `loadGlobalConfig`). Per-provider
+		// model tiers and the per-project `providers:` override are gone (catalog.ts
+		// replaced them), so this is now forwarded as-is.
+		const providers = deps.config.providers;
+		// Which provider the operator has switched to (SettingsStore), read fresh
+		// so a mid-run switch re-heads the next run. Absent seam ⇒ the
+		// precedence-first enabled provider from the effective table.
+		const activeProvider =
+			this.deps.activeProvider?.() ?? firstEnabledProvider(providers);
 		return {
 			store: deps.store,
 			runStore: deps.runStore,
@@ -1164,8 +1160,10 @@ export class Engine {
 			// death, replayed on adoption).
 			isCancelled: (id) =>
 				this.cancelledTaskIds.has(id) || deps.runStore.readCancelMarker(id),
-			modelTable,
+			catalog,
+			defaultModels,
 			providers,
+			activeProvider,
 			loadDef: (definition) => {
 				const [repo, ...nameParts] = definition.split("/");
 				const name = nameParts.join("/");
@@ -1181,8 +1179,9 @@ export class Engine {
 			// 3h wall-clock ceiling. Idle reaping (12m, see runner.ts IDLE_TIMEOUT_MS)
 			// catches wedged workers early, so this ceiling is a generous backstop —
 			// not the primary reaper — for a run that keeps streaming but never
-			// actually finishes.
-			defaults: { model: defaultModel, timeoutMs: 10_800_000 },
+			// actually finishes. The default MODEL leg is gone (see WorkerDeps): a
+			// model-less task resolves against `defaultModels`.
+			defaults: { timeoutMs: 10_800_000 },
 		};
 	}
 
@@ -1225,7 +1224,7 @@ export class Engine {
 		// `outcome.retry` means an availability failure (session limit / out of
 		// budget / provider unavailable) with a next provider left in the chain:
 		// `finalizeRun` already stamped the task back to `queued` (with this
-		// attempt's provider appended to `attemptedProviders`) instead of
+		// attempt's provider appended to `attemptedModels`) instead of
 		// settling it terminal — there is nothing left to do here. The caller's
 		// `.then(() => this.cleanupRun(...))` still runs regardless (frees the
 		// lane/pid tracking), so the next `pass()` sees a `queued` task with a

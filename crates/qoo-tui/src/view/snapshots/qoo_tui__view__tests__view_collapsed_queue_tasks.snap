@@ -1,9 +1,9 @@
 ---
 source: crates/qoo-tui/src/view/mod.rs
-assertion_line: 704
+assertion_line: 764
 expression: terminal.backend()
 ---
-" 1:acme (2)                                               ● running 1 · acme 1/3"
+" 1:acme (2)                                      ● running 1 · acme 1/3  ⚡ grok" Hidden by multi-width symbols: [(74, " ")]
 "╭📋 QUEUE─────── [z]expand╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "╰─────────────────────────╯│ 1:report  2:transcript  3:prompt  4:info          │"
 "╭⚡TASKS · 0 tasks──── [z]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]

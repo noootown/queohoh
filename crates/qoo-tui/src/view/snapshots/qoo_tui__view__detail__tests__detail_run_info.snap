@@ -1,8 +1,9 @@
 ---
 source: crates/qoo-tui/src/view/detail.rs
+assertion_line: 1117
 expression: terminal.backend()
 ---
-" 1:acme                                                   ● running 0 · acme 0/3"
+" 1:acme                                          ● running 0 · acme 0/3  ⚡ grok" Hidden by multi-width symbols: [(74, " ")]
 "╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
@@ -20,7 +21,7 @@ expression: terminal.backend()
 "│                         ││  Details                                          │"
 "╰─────────────────────────╯│    worktree     /repos/acme.feature               │"
 "╭⚡TASKS [r] [d] · [c] [z]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
-"│                         ││    model        claude-opus-4-8                   │"
+"│                         ││    model        opus (claude) · claude-opus-4-8   │"
 "│ 🔍 [/]filter            ││    exit code    0                                 │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││    cost         $0.42                             │"
 "│ no task definitions     ││    turns        37                                │"

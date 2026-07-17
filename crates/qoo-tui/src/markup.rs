@@ -100,9 +100,19 @@ pub enum LineCtx {
 /// ```` ``` ```` closes the block (so a nested fence just ends the first — there
 /// is no nesting). An unclosed fence at EOF leaves trailing lines as `Fenced`.
 pub fn fence_states(lines: &[String]) -> Vec<LineCtx> {
+    fence_states_from(lines, false)
+}
+
+/// [`fence_states`] with an explicit starting state, for a window read from the
+/// middle of a file (the transcript tail): when `starts_in_fence` the opener
+/// scrolled out of the window, so the first line is treated as fenced content
+/// with an unknown (empty) language, and the first bare ```` ``` ```` CLOSES that
+/// fence. All other callers read from line 0 and pass `false` via [`fence_states`].
+pub fn fence_states_from(lines: &[String], starts_in_fence: bool) -> Vec<LineCtx> {
     let mut out = Vec::with_capacity(lines.len());
-    // Some(lang) while inside a fence; None outside.
-    let mut open: Option<String> = None;
+    // Some(lang) while inside a fence; None outside. An unknown-language open
+    // (window began mid-fence) carries the empty lang a bare ``` opener produces.
+    let mut open: Option<String> = starts_in_fence.then(String::new);
     for line in lines {
         if let Some(rest) = line.trim_start().strip_prefix("```") {
             if open.is_none() {
@@ -1299,6 +1309,35 @@ mod tests {
                 LineCtx::Fence { lang: Some("py".into()) },
                 LineCtx::Fenced { lang: "py".into() },
                 LineCtx::Fence { lang: None },
+            ]
+        );
+    }
+
+    fn kinds_from(lines: &[&str], starts_in_fence: bool) -> Vec<LineCtx> {
+        let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        fence_states_from(&owned, starts_in_fence)
+    }
+
+    #[test]
+    fn fence_states_from_false_matches_fence_states() {
+        // The `starts_in_fence == false` arm is exactly what every existing
+        // caller gets through the `fence_states` delegate.
+        let lines = &["intro", "```bash", "echo hi", "```", "outro"];
+        assert_eq!(kinds_from(lines, false), kinds(lines));
+    }
+
+    #[test]
+    fn fence_states_from_true_starts_inside_a_fence() {
+        // A tail window that opened mid-fence: the first lines are fenced code,
+        // the first bare ``` CLOSES the fence, and the prose after is Text.
+        let got = kinds_from(&["make build", "make test", "```", "### Tool: Bash"], true);
+        assert_eq!(
+            got,
+            vec![
+                LineCtx::Fenced { lang: String::new() },
+                LineCtx::Fenced { lang: String::new() },
+                LineCtx::Fence { lang: None },
+                LineCtx::Text,
             ]
         );
     }

@@ -14,6 +14,14 @@ const TAIL_WINDOW: u64 = 262_144;
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RunFiles {
     pub transcript_tail: Vec<String>,
+    /// Whether the kept `transcript_tail` begins INSIDE a ```` ``` ```` code
+    /// fence — true when the tail window's cut landed mid-fence (the opener
+    /// scrolled out). The transcript styler seeds [`crate::markup::fence_states_from`]
+    /// with this so mid-fence tails don't invert prose/code styling. `false`
+    /// when the transcript is missing/empty, and (a known limitation) when the
+    /// file exceeds the 256 KiB read window the unseen prefix's parity is
+    /// unknowable so we assume outside-fence — same as before this flag existed.
+    pub transcript_starts_in_fence: bool,
     pub report: Vec<String>,
     /// Claude session id for this run, read from `data.json` (`session_id`,
     /// written by the daemon's run store at finish). `None` until the run has
@@ -72,16 +80,15 @@ pub async fn read_run_files(runs_dir: &Path, task_id: &str, tail_lines: usize) -
         Ok(s) => s.split('\n').map(crate::markup::sanitize_display_line).collect(),
         Err(_) => Vec::new(),
     };
-    let transcript_tail = read_tail(&dir.join("transcript.md"), tail_lines)
-        .await
-        .unwrap_or_default();
+    let (transcript_tail, transcript_starts_in_fence) =
+        read_tail(&dir.join("transcript.md"), tail_lines).await.unwrap_or_default();
     let meta = read_run_meta(&dir.join("data.json")).await;
     // `session_id`/`worktree_path` are the "Resume" action's convenience copies,
     // derived from the same parse (blank strings already dropped as absent so
     // Resume never offers an unusable target).
     let session_id = meta.as_ref().and_then(|m| m.session_id.clone());
     let worktree_path = meta.as_ref().and_then(|m| m.resolved_worktree_path.clone());
-    RunFiles { transcript_tail, report, session_id, worktree_path, meta }
+    RunFiles { transcript_tail, transcript_starts_in_fence, report, session_id, worktree_path, meta }
 }
 
 /// Parse a run's `data.json` into [`RunMeta`]. Mixed key casing is deliberate:
@@ -124,14 +131,18 @@ async fn read_run_meta(path: &Path) -> Option<RunMeta> {
     })
 }
 
-async fn read_tail(path: &Path, tail_lines: usize) -> std::io::Result<Vec<String>> {
+/// Returns the kept tail lines and whether that tail begins inside a ``` fence
+/// (odd count of ``` markers among the lines trimmed off the FRONT). When the
+/// file exceeds `TAIL_WINDOW` the unseen prefix's parity is unknowable, so a
+/// fence opened before the window reads as outside-fence — an accepted, rare gap.
+async fn read_tail(path: &Path, tail_lines: usize) -> std::io::Result<(Vec<String>, bool)> {
     // Clamp at the source (parity with the TS slice(-0) guard): 0 would keep
     // everything instead of one line.
     let tail_lines = tail_lines.max(1);
     let mut file = fs::File::open(path).await?;
     let len = file.metadata().await?.len();
     if len == 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     }
     let start = len.saturating_sub(TAIL_WINDOW);
     if start > 0 {
@@ -147,13 +158,15 @@ async fn read_tail(path: &Path, tail_lines: usize) -> std::io::Result<Vec<String
         lines.remove(0);
     }
     let keep_from = lines.len().saturating_sub(tail_lines);
+    // Odd parity of ``` markers in the trimmed-off prefix → the kept tail's
+    // first line sits inside a fence whose opener is no longer in the window.
+    let starts_in_fence =
+        lines[..keep_from].iter().filter(|l| l.trim_start().starts_with("```")).count() % 2 == 1;
     // Reports/transcripts embed captured command output (test runners) that can
     // carry ANSI escapes, \r spinner overwrites, and tabs — sanitize per line
     // so the cell renderer never sees them (see sanitize_display_line).
-    Ok(lines[keep_from..]
-        .iter()
-        .map(|s| crate::markup::sanitize_display_line(s))
-        .collect())
+    let tail = lines[keep_from..].iter().map(|s| crate::markup::sanitize_display_line(s)).collect();
+    Ok((tail, starts_in_fence))
 }
 
 #[cfg(test)]
@@ -333,6 +346,37 @@ mod tests {
         let runs = setup("01EMPTY", Some(""), None);
         let out = read_run_files(&runs, "01EMPTY", 25).await;
         assert!(out.transcript_tail.is_empty());
+        assert!(!out.transcript_starts_in_fence);
+    }
+
+    #[tokio::test]
+    async fn tail_starting_mid_fence_flags_starts_in_fence() {
+        // The kept tail begins after a ```bash opener whose closer scrolled out
+        // of the window → odd parity in the trimmed-off prefix → starts_in_fence.
+        let transcript = ["intro", "```bash", "a", "b", "c", "d", "e"].join("\n");
+        let runs = setup("01MIDFENCE", Some(&transcript), None);
+        let out = read_run_files(&runs, "01MIDFENCE", 3).await;
+        assert_eq!(out.transcript_tail, vec!["c", "d", "e"]);
+        assert!(out.transcript_starts_in_fence);
+    }
+
+    #[tokio::test]
+    async fn tail_starting_outside_a_balanced_fence_is_false() {
+        // The trimmed-off prefix opens AND closes the fence (even parity), so the
+        // kept tail is outside any fence.
+        let transcript = ["```bash", "a", "```", "x", "y", "z"].join("\n");
+        let runs = setup("01BALANCED", Some(&transcript), None);
+        let out = read_run_files(&runs, "01BALANCED", 3).await;
+        assert_eq!(out.transcript_tail, vec!["x", "y", "z"]);
+        assert!(!out.transcript_starts_in_fence);
+    }
+
+    #[tokio::test]
+    async fn missing_transcript_is_not_in_fence() {
+        let runs = tempfile::tempdir().unwrap().keep();
+        let out = read_run_files(&runs, "01NONE", 25).await;
+        assert!(out.transcript_tail.is_empty());
+        assert!(!out.transcript_starts_in_fence);
     }
 
     #[tokio::test]

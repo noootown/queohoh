@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Exec, GlobalConfig, ResolverIO } from "@queohoh/core";
 import {
+	BUILTIN_CATALOG,
 	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
@@ -40,7 +41,8 @@ function workspaceWith(cronExpr: string) {
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
 		vars: {},
-		models: {},
+		catalog: BUILTIN_CATALOG,
+		defaultModels: ["claude/opus", "grok/grok-4.5"],
 		providers: DEFAULT_PROVIDERS,
 	};
 	return { workspace, config };

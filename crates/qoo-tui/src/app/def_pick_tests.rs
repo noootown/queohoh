@@ -563,8 +563,8 @@ fn form_from_args_type_branch_is_dropdown_seeded_with_branches_incl_default() {
     );
     match &state.fields[0].kind {
         crate::view::form::FieldKind::Dropdown { options } => {
-            assert_eq!(options.first().map(String::as_str), Some("main"), "default prepended");
-            assert!(options.contains(&"improvement".to_string()));
+            assert_eq!(options.first().map(|o| o.value.as_str()), Some("main"), "default prepended");
+            assert!(options.iter().any(|o| o.value == "improvement"));
         }
         other => panic!("expected Dropdown seeded with branches, got {other:?}"),
     }

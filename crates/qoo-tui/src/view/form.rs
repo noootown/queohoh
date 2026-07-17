@@ -18,13 +18,33 @@ use crate::view::modal::{render_button_row, DIALOG_WIDTH, MODAL_PADDING};
 use crate::view::multiline_input::{sanitize_paste, MultilineInput};
 use crate::view::theme::{GLYPH_CHEVRON_DOWN, GLYPH_CHEVRON_RIGHT, Palette};
 
+/// One selectable dropdown option: the `value` is what gets stored on the field
+/// and submitted (e.g. a `provider/label` model ref, or `""` for a "leave unset"
+/// head option); the `label` is what the closed field and the open list render
+/// (e.g. `opus (claude)` or `default (…)`). For a plain dropdown the two are
+/// equal — see [`Field::dropdown`]; the model picker uses distinct display via
+/// [`Field::dropdown_labeled`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropdownOption {
+    pub value: String,
+    pub label: String,
+}
+
+impl DropdownOption {
+    /// A `value == label` option (the plain, self-describing case).
+    pub fn plain(value: impl Into<String>) -> Self {
+        let value = value.into();
+        DropdownOption { label: value.clone(), value }
+    }
+}
+
 /// The three field shapes. Shape alone signals the type — a one-row box is an
 /// input, a three-row box a textarea, a `▾` a dropdown (no label tags needed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
     Input,
     Textarea,
-    Dropdown { options: Vec<String> },
+    Dropdown { options: Vec<DropdownOption> },
     /// An editable text value (the typed filter/value) with an openable,
     /// FILTERED option list — type a worktree name to filter the seeded rows,
     /// or type a bare PR number / ticket id and pick the synthetic "use <ref>"
@@ -60,6 +80,19 @@ impl Field {
         Field { label: label.into(), kind: FieldKind::Textarea, value: value.into(), required, readonly: false }
     }
     pub fn dropdown(label: &str, options: Vec<String>, value: &str) -> Self {
+        Field {
+            label: label.into(),
+            kind: FieldKind::Dropdown { options: options.into_iter().map(DropdownOption::plain).collect() },
+            value: value.into(),
+            required: false,
+            readonly: false,
+        }
+    }
+    /// A dropdown whose options carry a display `label` distinct from their
+    /// stored `value` — the model picker (value `provider/label`, display
+    /// `label (provider)`; a `""`-valued head option displayed `default (…)`).
+    /// `value` selects the option whose `value` matches.
+    pub fn dropdown_labeled(label: &str, options: Vec<DropdownOption>, value: &str) -> Self {
         Field {
             label: label.into(),
             kind: FieldKind::Dropdown { options },
@@ -378,7 +411,7 @@ impl FormState {
     }
 
     /// The focused field's dropdown options, if the focus is on a Dropdown.
-    fn focused_options(&self) -> Option<&[String]> {
+    fn focused_options(&self) -> Option<&[DropdownOption]> {
         match self.focus_kind() {
             FocusKind::Field(i) => match &self.fields[i].kind {
                 FieldKind::Dropdown { options } => Some(options),
@@ -435,7 +468,7 @@ impl FormState {
             match &self.fields[i].kind {
                 FieldKind::Dropdown { options } => {
                     self.dropdown_index =
-                        options.iter().position(|o| *o == self.fields[i].value).unwrap_or(0);
+                        options.iter().position(|o| o.value == self.fields[i].value).unwrap_or(0);
                     self.dropdown_open = true;
                 }
                 FieldKind::Combobox { .. } => {
@@ -486,7 +519,7 @@ impl FormState {
         match &self.fields[i].kind {
             FieldKind::Dropdown { options } => {
                 if let Some(opt) = options.get(idx) {
-                    self.fields[i].value = opt.clone();
+                    self.fields[i].value = opt.value.clone();
                 }
             }
             FieldKind::Combobox { .. } => {
@@ -712,8 +745,13 @@ pub(crate) fn render_fields(
 
         match &f.kind {
             FieldKind::Dropdown { options } => {
-                // `value` left, `▾` right-aligned.
-                let val = if f.value.is_empty() { "—" } else { f.value.as_str() };
+                // The selected option's DISPLAY label left (falling back to the raw
+                // value, then `—` when empty and unmatched), `▾` right-aligned.
+                let val = options
+                    .iter()
+                    .find(|o| o.value == f.value)
+                    .map(|o| o.label.as_str())
+                    .unwrap_or(if f.value.is_empty() { "—" } else { f.value.as_str() });
                 let chev = GLYPH_CHEVRON_DOWN.to_string();
                 let gap = (content.width as usize)
                     .saturating_sub(val.chars().count() + chev.chars().count());
@@ -724,7 +762,11 @@ pub(crate) fn render_fields(
                 ]);
                 frame.render_widget(Paragraph::new(line), content);
                 if focused && state.dropdown_open {
-                    open_anchor = Some((box_rect, options.clone()));
+                    // The open list shows each option's display label; the row
+                    // order matches `options`, so the highlight index and the
+                    // picked value stay aligned.
+                    let labels = options.iter().map(|o| o.label.clone()).collect();
+                    open_anchor = Some((box_rect, labels));
                 }
             }
             FieldKind::Picker => {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
 import {
+	BUILTIN_CATALOG,
 	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
@@ -14,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ApiServer } from "../api.js";
 import { ApiClient } from "../client.js";
 import { Engine } from "../engine.js";
+import { SettingsStore } from "../settings-store.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -34,7 +36,7 @@ const CONFIG_YAML = `discovery:
   item_key: "{{url}}"
 dedup: skip_seen
 worktree: "pr:{{number}}"
-model: opus
+model: claude/opus
 timeout: 30m
 priority: normal
 `;
@@ -68,7 +70,8 @@ async function setup() {
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
 		vars: { github_username: "ianchiu-jb" },
-		models: {},
+		catalog: BUILTIN_CATALOG,
+		defaultModels: ["claude/opus", "grok/grok-4.5"],
 		providers: DEFAULT_PROVIDERS,
 	};
 	const okResult: RunResult = {
@@ -114,6 +117,7 @@ async function setup() {
 		runStore,
 		registry,
 		config,
+		settings: new SettingsStore(join(base, "state"), config.providers),
 		onMutation: () => {},
 	});
 	const sock = join(base, "d.sock");
@@ -147,8 +151,9 @@ describe("agent247 pr-review port shape", () => {
 				hasDiscovery: true,
 				cron: null,
 				description: null,
-				// summary carries the RESOLVED id (built-in default opus alias).
-				model: "claude-opus-4-8",
+				// summary forwards the authored `provider/label` ref as-is (there is
+				// no alias table to resolve against anymore).
+				model: "claude/opus",
 				worktree: "pr:{{number}}",
 			},
 		]);

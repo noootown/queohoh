@@ -9,85 +9,137 @@
 //! flows land in Phase 5).
 
 use super::*;
-use crate::view::form::{Field, FieldKind, FocusKind, FormState};
+use crate::ipc::types::CatalogEntry;
+use crate::view::form::{DropdownOption, Field, FieldKind, FocusKind, FormState};
 
-/// Model dropdown options, most→least powerful (spec-fixed order). Shared by
-/// every launch form.
-pub(super) const MODEL_OPTIONS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
+/// Hardcoded mirror of `BUILTIN_CATALOG` in packages/core/src/catalog.ts — the
+/// model picker's fallback when the cached `settings` payload has no catalog (an
+/// old daemon, or settings not fetched yet). **Keep in sync with that file.**
+/// codex is omitted deliberately: it ships disabled-by-default, so it never
+/// appears in a picker anyway (a disabled provider is filtered out regardless).
+pub(super) fn builtin_catalog() -> Vec<CatalogEntry> {
+    let e = |provider: &str, id: &str, label: &str| CatalogEntry {
+        provider: provider.into(),
+        id: id.into(),
+        label: label.into(),
+        hidden: false,
+    };
+    vec![
+        e("claude", "claude-fable-5", "fable"),
+        e("claude", "claude-opus-4-8", "opus"),
+        e("claude", "claude-sonnet-5", "sonnet"),
+        e("claude", "claude-haiku-4-5", "haiku"),
+        e("grok", "grok-4.5", "grok-4.5"),
+        e("grok", "grok-composer-2.5-fast", "composer"),
+    ]
+}
+
+/// The dropdown's head-option display label: `default (<refs joined with " → ">)`,
+/// or the bare `default` when there are no refs to show. When launching a
+/// specific definition the refs come from the def's own `model:` list and carry
+/// a `def: ` marker (`default (def: claude/opus → grok/grok-4.5)`); for an
+/// ad-hoc / new-session run they come from the repo's `default_models` and carry
+/// no marker (`default (claude/opus)`). The head option's stored VALUE is always
+/// the empty string (= leave `model` unset → the daemon resolves the chain).
+///
+/// `from_def` is exercised by Task 8's def-launch picker; the model forms here
+/// pass `false` (the repo-default case).
+pub(super) fn default_head_label(refs: &[String], from_def: bool) -> String {
+    if refs.is_empty() {
+        return "default".into();
+    }
+    let marker = if from_def { "def: " } else { "" };
+    format!("default ({marker}{})", refs.join(" → "))
+}
 
 impl App {
-    /// Resolve the model to preselect in a launch form for `repo`: a project
-    /// `default_model` override wins, else the global default, else the built-in
-    /// `opus`. Reads the cached `settings` payload when present.
-    // TODO: settings are only fetched when the `s` overlay first opens, so a
-    // project override isn't honored until then; a launcher-time prefetch would
-    // close that gap. Falls back to `opus` (the built-in default) meanwhile.
-    pub(super) fn resolve_default_model(&self, repo: &str) -> String {
-        if let Some(Some(payload)) = &self.settings {
-            let project_override = payload
-                .models
-                .projects
-                .iter()
-                .find(|p| p.repo == repo)
-                .map(|p| p.default_model.as_str())
-                .filter(|d| !d.is_empty());
-            if let Some(d) = project_override {
-                return d.to_string();
-            }
-            if !payload.models.default_model.is_empty() {
-                return payload.models.default_model.clone();
-            }
-        }
-        "opus".into()
-    }
-
-    /// Model dropdown options: the four tiers (spec-fixed order) first, then
-    /// `"<provider>/<tier>"` for each enabled NON-claude provider in the cached
-    /// `settings` payload — claude's own tiers ARE the bare tier names, so a
-    /// `claude/opus` entry would be redundant. Only tiers the provider actually
-    /// carries a model id for are listed, in `MODEL_OPTIONS` order. Falls back
-    /// to the bare `MODEL_OPTIONS` list when `settings`/`providers` is absent or
-    /// empty (no settings fetched yet, an old daemon, or a daemon with zero
-    /// configured providers).
-    pub(super) fn model_options(&self) -> Vec<String> {
-        let mut options: Vec<String> = MODEL_OPTIONS.iter().map(|s| s.to_string()).collect();
-        let providers = self
-            .settings
+    /// The effective model catalog: the cached `settings` payload's `catalog`
+    /// when present and non-empty, else the built-in mirror ([`builtin_catalog`]).
+    /// Hidden entries and disabled providers are still included here — the picker
+    /// ([`Self::visible_model_options`]) filters them. `pub(crate)` so the run-info
+    /// detail pane (`view::detail`) can resolve a run's raw model id to its
+    /// `label (provider)` display without duplicating the settings/builtin
+    /// fallback logic.
+    pub(crate) fn model_catalog(&self) -> Vec<CatalogEntry> {
+        self.settings
             .as_ref()
             .and_then(|s| s.as_ref())
-            .map(|p| p.providers.as_slice())
-            .unwrap_or(&[]);
-        for provider in providers {
-            if !provider.enabled || provider.name == "claude" {
-                continue;
-            }
-            for tier in MODEL_OPTIONS {
-                if provider.models.contains_key(tier) {
-                    options.push(format!("{}/{tier}", provider.name));
-                }
-            }
-        }
-        options
+            .map(|p| p.catalog.clone())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(builtin_catalog)
     }
 
-    /// The model dropdown field, preselected to `repo`'s resolved default model.
+    /// Provider names the payload marks `enabled: false`. Empty when settings are
+    /// absent (nothing to filter → the built-in fallback shows all its groups).
+    fn disabled_providers(&self) -> std::collections::HashSet<String> {
+        self.settings
+            .as_ref()
+            .and_then(|s| s.as_ref())
+            .map(|p| {
+                p.providers
+                    .iter()
+                    .filter(|pr| !pr.enabled)
+                    .map(|pr| pr.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The catalog entries the model picker offers, in catalog order: hidden
+    /// entries and entries whose provider is disabled are filtered out.
+    fn visible_model_options(&self) -> Vec<CatalogEntry> {
+        let disabled = self.disabled_providers();
+        self.model_catalog()
+            .into_iter()
+            .filter(|e| !e.hidden && !disabled.contains(&e.provider))
+            .collect()
+    }
+
+    /// The effective `default_models` chain for `repo` (project override, else
+    /// global), from the cached `settings` payload. Empty when settings are
+    /// absent or the daemon sent no defaults — the head label then reads just
+    /// `default`.
+    pub(super) fn default_refs_for(&self, repo: &str) -> Vec<String> {
+        self.settings
+            .as_ref()
+            .and_then(|s| s.as_ref())
+            .map(|p| p.default_models.refs_for(repo))
+            .unwrap_or_default()
+    }
+
+    /// The full labeled option list for the model dropdown: the `default (…)`
+    /// head (value `""`, label from `repo`'s `default_models`) followed by one
+    /// `label (provider)` option per visible catalog entry (value `provider/label`).
+    fn model_dropdown_options(&self, repo: &str) -> Vec<DropdownOption> {
+        let head = DropdownOption {
+            value: String::new(),
+            label: default_head_label(&self.default_refs_for(repo), false),
+        };
+        std::iter::once(head)
+            .chain(self.visible_model_options().iter().map(|e| DropdownOption {
+                value: e.model_ref(),
+                label: e.model_display(),
+            }))
+            .collect()
+    }
+
+    /// The model dropdown field, preselected to its head option (leave `model`
+    /// unset → the daemon resolves the chain).
     pub(super) fn model_field(&self, repo: &str) -> Field {
         self.model_field_defaulting(repo, None)
     }
 
-    /// The model dropdown field, preselected to `preferred` when it names a
-    /// known model option (e.g. the model a resumed session already ran on),
-    /// else `repo`'s resolved default. `preferred` is validated against
-    /// [`Self::model_options`] (the settings-driven dynamic list, falling back
-    /// to `MODEL_OPTIONS`) so a stale/foreign value can't select a phantom
-    /// option.
+    /// The model dropdown field, preselected to `preferred` when it names a real
+    /// catalog option (e.g. the `provider/label` ref a resumed session already
+    /// ran on), else the head option (`""` = leave unset). `preferred` is
+    /// validated against the visible option VALUES so a stale/foreign ref can't
+    /// select a phantom option.
     pub(super) fn model_field_defaulting(&self, repo: &str, preferred: Option<&str>) -> Field {
-        let options = self.model_options();
+        let options = self.model_dropdown_options(repo);
         let default = preferred
-            .filter(|m| options.iter().any(|o| o == m))
-            .map(str::to_string)
-            .unwrap_or_else(|| self.resolve_default_model(repo));
-        Field::dropdown("model", options, &default)
+            .filter(|m| options.iter().any(|o| o.value == *m))
+            .unwrap_or("");
+        Field::dropdown_labeled("model", options, default)
     }
 
     /// The adhoc-create session field's display label: `New session` when no

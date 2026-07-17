@@ -27,7 +27,7 @@ function existing(
 		model: null,
 		timeoutMs: null,
 		prompt: "p",
-		attemptedProviders: [],
+		attemptedModels: [],
 	};
 }
 

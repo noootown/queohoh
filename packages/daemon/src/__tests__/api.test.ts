@@ -1,10 +1,16 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
 import {
+	BUILTIN_CATALOG,
 	createResolverIO,
-	DEFAULT_MODEL_ALIASES,
 	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
@@ -12,11 +18,12 @@ import {
 	SessionLineageStore,
 	SessionRegistry,
 } from "@queohoh/core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiServer } from "../api.js";
 import { ApiClient } from "../client.js";
 import { Engine } from "../engine.js";
-import { configPath } from "../paths.js";
+import { settingsPath } from "../paths.js";
+import { SettingsStore } from "../settings-store.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -43,9 +50,11 @@ async function setup(opts?: {
 	exec?: Exec;
 	executeClaude?: () => Promise<RunResult>;
 	vars?: Record<string, string>;
-	models?: Record<string, string>;
 	claudeProjectsDir?: string;
 	gotoCommand?: string;
+	/** Pre-seed `<state>/daemon/settings.json` with this active_provider before
+	 * the SettingsStore is constructed — exercises the config-load snap path. */
+	activeProviderSeed?: string;
 }) {
 	const base = mkdtempSync(join(tmpdir(), "qo-api-"));
 	const repoPath = join(base, "repo");
@@ -68,10 +77,21 @@ async function setup(opts?: {
 		maxConcurrentTasks: 3,
 		archiveAfterDays: 7,
 		vars: opts?.vars ?? {},
-		models: opts?.models ?? {},
+		catalog: BUILTIN_CATALOG,
+		defaultModels: ["claude/opus", "grok/grok-4.5"],
 		gotoCommand: opts?.gotoCommand,
 		providers: DEFAULT_PROVIDERS,
 	};
+	const stateDir = join(base, "state");
+	if (opts?.activeProviderSeed !== undefined) {
+		const sp = settingsPath(stateDir);
+		mkdirSync(dirname(sp), { recursive: true });
+		writeFileSync(
+			sp,
+			JSON.stringify({ active_provider: opts.activeProviderSeed }),
+		);
+	}
+	const settings = new SettingsStore(stateDir, config.providers);
 	const okResult: RunResult = {
 		exitCode: 0,
 		timedOut: false,
@@ -124,6 +144,7 @@ async function setup(opts?: {
 		runStore,
 		registry,
 		config,
+		settings,
 		claudeProjectsDir: opts?.claudeProjectsDir,
 		onMutation: () => {
 			mutations += 1;
@@ -142,6 +163,8 @@ async function setup(opts?: {
 		runStore,
 		engine,
 		lineage,
+		settings,
+		stateDir,
 		workspace,
 		repoPath,
 		mutations: () => mutations,
@@ -552,7 +575,7 @@ describe("ApiServer", () => {
 			hasDiscovery: boolean;
 			cron: string | null;
 			description: string | null;
-			model: string;
+			model: string | string[] | null;
 		}[];
 		expect(defs).toEqual([
 			{
@@ -563,8 +586,10 @@ describe("ApiServer", () => {
 				hasDiscovery: false,
 				cron: "*/15 * * * *",
 				description: "Greet someone by name.",
-				// summary carries the RESOLVED id (built-in default sonnet alias).
-				model: "claude-sonnet-5",
+				// The greet fixture omits `model:`, so it resolves against
+				// `default_models` at run time — the summary forwards the authored
+				// value, which is `null` (there is no alias table to resolve against).
+				model: null,
 				// schema default when the def omits `worktree:` — the TUI's
 				// worktree-scoped task menu keys off this field.
 				worktree: "temp",
@@ -572,86 +597,230 @@ describe("ApiServer", () => {
 		]);
 	});
 
-	it("definitions resolves the model alias against the per-project table", async () => {
+	it("definitions forwards an authored provider/label model ref as-is", async () => {
 		const { client, workspace } = await setup();
-		// Project-local override: sonnet → a custom id via vars.yaml models block.
-		writeFileSync(
-			join(workspace, "platform", "vars.yaml"),
-			"models:\n  sonnet: my-custom-sonnet\n",
-		);
-		const defs = (await client.call("definitions")) as { model: string }[];
-		expect(defs[0]?.model).toBe("my-custom-sonnet");
+		// A def authoring an explicit `provider/label` ref is forwarded verbatim —
+		// there is no alias table to resolve against anymore (the flat catalog
+		// replaced it).
+		const dir = join(workspace, "platform", "tasks", "grokdef");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "config.yaml"), "model: grok/grok-4.5\n");
+		writeFileSync(join(dir, "prompt.md"), "hi\n");
+		const defs = (await client.call("definitions")) as {
+			name: string;
+			model: string | string[] | null;
+		}[];
+		expect(defs.find((d) => d.name === "grokdef")?.model).toBe("grok/grok-4.5");
 	});
 
 	describe("settings", () => {
-		it("returns defaults, an empty global, and no projects when nothing is overridden", async () => {
+		it("returns the merged catalog, active_provider, global default_models, and no project overrides", async () => {
 			const { client } = await setup();
 			const settings = (await client.call("settings")) as {
-				models: {
-					defaults: Record<string, string>;
-					global: { entries: Record<string, string>; source: string };
+				catalog: { provider: string; id: string; label: string }[];
+				active_provider: string;
+				default_models: {
+					global: string[];
 					projects: unknown[];
 				};
+				providers: { name: string; enabled: boolean }[];
 			};
-			expect(settings.models.defaults).toEqual(DEFAULT_MODEL_ALIASES);
-			expect(settings.models.global).toEqual({
-				entries: {},
-				source: configPath(),
-			});
-			expect(settings.models.projects).toEqual([]);
+			// Full merged catalog (built-in, incl. hidden flags the TUI filters).
+			expect(settings.catalog).toEqual(BUILTIN_CATALOG);
+			// No settings.json seeded → precedence-first enabled provider (claude).
+			expect(settings.active_provider).toBe("claude");
+			expect(settings.default_models.global).toEqual([
+				"claude/opus",
+				"grok/grok-4.5",
+			]);
+			expect(settings.default_models.projects).toEqual([]);
+			// Providers carry name/enabled ONLY (no per-provider model tiers).
+			expect(settings.providers).toEqual(
+				DEFAULT_PROVIDERS.map((p) => ({ name: p.name, enabled: p.enabled })),
+			);
 		});
 
-		it("carries the global override and only overriding project blocks", async () => {
-			const { client, workspace } = await setup({
-				models: { sonnet: "claude-sonnet-global" },
-			});
+		it("lists a project's non-empty default_models override under projects", async () => {
+			const { client, workspace } = await setup();
 			writeFileSync(
 				join(workspace, "platform", "vars.yaml"),
-				"models:\n  opus: claude-opus-project\n",
+				"default_models:\n  - grok/grok-4.5\n  - claude/opus\n",
 			);
 			const settings = (await client.call("settings")) as {
-				models: {
-					defaults: Record<string, string>;
-					global: { entries: Record<string, string>; source: string };
+				default_models: {
+					global: string[];
 					projects: {
-						repo: string;
-						entries: Record<string, string>;
+						name: string;
+						default_models: string[];
 						source: string;
 					}[];
 				};
 			};
-			expect(settings.models.defaults).toEqual(DEFAULT_MODEL_ALIASES);
-			expect(settings.models.global.entries).toEqual({
-				sonnet: "claude-sonnet-global",
-			});
-			expect(settings.models.projects).toEqual([
+			expect(settings.default_models.projects).toEqual([
 				{
-					repo: "platform",
-					entries: { opus: "claude-opus-project" },
+					name: "platform",
+					default_models: ["grok/grok-4.5", "claude/opus"],
 					source: join(workspace, "platform", "vars.yaml"),
 				},
 			]);
 		});
 
-		it("lists providers in fallback order with enabled flags and model tiers", async () => {
-			const { client } = await setup();
+		it("reflects the persisted active_provider", async () => {
+			const { client } = await setup({ activeProviderSeed: "grok" });
 			const settings = (await client.call("settings")) as {
-				providers: {
-					name: string;
-					enabled: boolean;
-					models: Record<string, string>;
-				}[];
+				active_provider: string;
 			};
-			// config.providers is already the global-effective set (loadGlobalConfig
-			// runs it through effectiveProviders); the RPC forwards it as-is rather
-			// than merging again.
-			expect(settings.providers).toEqual(
-				DEFAULT_PROVIDERS.map((p) => ({
-					name: p.name,
-					enabled: p.enabled,
-					models: p.models,
-				})),
+			expect(settings.active_provider).toBe("grok");
+		});
+	});
+
+	describe("set_active_provider", () => {
+		it("switches to an enabled provider, persists, and broadcasts to subscribers", async () => {
+			const { client, stateDir } = await setup();
+			// subscribe delivers the state SNAPSHOT (frame.data), not the raw frame.
+			const snapshots: { activeProvider?: string }[] = [];
+			await client.subscribe((state) =>
+				snapshots.push(state as { activeProvider?: string }),
 			);
+			const result = await client.call("set_active_provider", {
+				provider: "grok",
+			});
+			expect(result).toBe("grok");
+			// Persisted write-through: settings.json now names grok.
+			const persisted = JSON.parse(
+				readFileSync(settingsPath(stateDir), "utf-8"),
+			);
+			expect(persisted.active_provider).toBe("grok");
+			// The state broadcast carries the new active provider.
+			await vi.waitFor(() => {
+				expect(snapshots.at(-1)?.activeProvider).toBe("grok");
+			});
+			// And the settings RPC now reflects it.
+			const settings = (await client.call("settings")) as {
+				active_provider: string;
+			};
+			expect(settings.active_provider).toBe("grok");
+		});
+
+		it("rejects a disabled provider without persisting", async () => {
+			const { client, stateDir } = await setup();
+			// codex is disabled in DEFAULT_PROVIDERS.
+			await expect(
+				client.call("set_active_provider", { provider: "codex" }),
+			).rejects.toThrow(/disabled: codex/);
+			expect(existsSync(settingsPath(stateDir))).toBe(false);
+		});
+
+		it("rejects an unknown provider", async () => {
+			const { client } = await setup();
+			await expect(
+				client.call("set_active_provider", { provider: "nope" }),
+			).rejects.toThrow(/unknown provider: nope/);
+		});
+
+		it("round-trips: a switch survives a fresh SettingsStore load", async () => {
+			const { client, stateDir, server } = await setup();
+			await client.call("set_active_provider", { provider: "grok" });
+			await server.close();
+			// A fresh store (a daemon restart / config load) reads the persisted value.
+			const reloaded = new SettingsStore(stateDir, DEFAULT_PROVIDERS);
+			expect(reloaded.activeProvider()).toBe("grok");
+		});
+	});
+
+	describe("active_provider config-load snap", () => {
+		it("snaps a persisted disabled provider to precedence-first enabled", async () => {
+			// codex is disabled by default → the store snaps to claude on load.
+			const { client } = await setup({ activeProviderSeed: "codex" });
+			const settings = (await client.call("settings")) as {
+				active_provider: string;
+			};
+			expect(settings.active_provider).toBe("claude");
+		});
+
+		it("snaps an unknown persisted provider to precedence-first enabled", async () => {
+			const { client } = await setup({ activeProviderSeed: "made-up" });
+			const settings = (await client.call("settings")) as {
+				active_provider: string;
+			};
+			expect(settings.active_provider).toBe("claude");
+		});
+	});
+
+	describe("enqueue model validation", () => {
+		it("rejects a bare label with a did-you-mean provider/label suggestion", async () => {
+			const { client } = await setup();
+			await expect(
+				client.call("enqueue", {
+					repo: "platform",
+					prompt: "p",
+					model: "opus",
+				}),
+			).rejects.toThrow(/unknown model: opus \(did you mean claude\/opus\?\)/);
+		});
+
+		it("rejects a well-formed ref that names no catalog entry", async () => {
+			const { client } = await setup();
+			await expect(
+				client.call("enqueue", {
+					repo: "platform",
+					prompt: "p",
+					model: "claude/nope",
+				}),
+			).rejects.toThrow(/unknown model: claude\/nope/);
+		});
+
+		it("accepts a single valid provider/label ref", async () => {
+			const { client } = await setup();
+			const task = (await client.call("enqueue", {
+				repo: "platform",
+				prompt: "p",
+				model: "claude/opus",
+			})) as { model: string | string[] | null };
+			expect(task.model).toBe("claude/opus");
+		});
+
+		it("accepts an ordered fallback list of refs", async () => {
+			const { client } = await setup();
+			const task = (await client.call("enqueue", {
+				repo: "platform",
+				prompt: "p",
+				model: ["claude/opus", "grok/grok-4.5"],
+			})) as { model: string | string[] | null };
+			expect(task.model).toEqual(["claude/opus", "grok/grok-4.5"]);
+		});
+
+		it("rejects a list containing one unknown ref", async () => {
+			const { client } = await setup();
+			await expect(
+				client.call("enqueue", {
+					repo: "platform",
+					prompt: "p",
+					model: ["claude/opus", "grok/nope"],
+				}),
+			).rejects.toThrow(/unknown model: grok\/nope/);
+		});
+
+		it("rejects a list with a non-string element instead of silently filtering it", async () => {
+			const { client } = await setup();
+			await expect(
+				client.call("enqueue", {
+					repo: "platform",
+					prompt: "p",
+					model: [123],
+				}),
+			).rejects.toThrow(/invalid model list entry/);
+		});
+
+		it("rejects a list with an empty-string element", async () => {
+			const { client } = await setup();
+			await expect(
+				client.call("enqueue", {
+					repo: "platform",
+					prompt: "p",
+					model: ["claude/opus", ""],
+				}),
+			).rejects.toThrow(/invalid model list entry/);
 		});
 	});
 
@@ -840,48 +1009,44 @@ describe("ApiServer", () => {
 			prompt: string;
 			args: { name: string }[];
 			worktree: string;
-			model: string;
+			model: string | string[] | null;
 		};
 		expect(def.prompt).toBe("Say hi to {{name}}.\n");
 		expect(def.args).toEqual([{ name: "name" }]);
 		expect(def.worktree).toBe("temp");
-		expect(def.model).toBe("sonnet");
+		// The greet fixture omits `model:`, so the authored value is null (it
+		// resolves against `default_models` at run time — no alias table anymore).
+		expect(def.model).toBeNull();
 	});
 
-	it("definition resolves the model alias into modelResolved, preserving the authored model", async () => {
+	it("definition forwards the authored model ref as-is (no modelResolved)", async () => {
 		const { client, workspace } = await setup();
-		// A def authored with the `opus` alias resolves to its built-in id, while
-		// the authored `model` field stays "opus".
+		// A single `provider/label` ref is forwarded verbatim.
 		const opusDir = join(workspace, "platform", "tasks", "opusdef");
 		mkdirSync(opusDir, { recursive: true });
-		writeFileSync(join(opusDir, "config.yaml"), "model: opus\n");
+		writeFileSync(join(opusDir, "config.yaml"), "model: claude/opus\n");
 		writeFileSync(join(opusDir, "prompt.md"), "hi\n");
 		const opus = (await client.call("definition", {
 			repo: "platform",
 			name: "opusdef",
-		})) as { model: string; modelResolved: string };
-		expect(opus.model).toBe("opus");
-		expect(opus.modelResolved).toBe("claude-opus-4-8");
+		})) as { model: string | string[] | null; modelResolved?: unknown };
+		expect(opus.model).toBe("claude/opus");
+		// There is no alias resolution anymore — the field is gone.
+		expect(opus.modelResolved).toBeUndefined();
 
-		// The greet fixture defaults to the `sonnet` alias.
-		const greet = (await client.call("definition", {
+		// An ordered fallback list is preserved element-for-element.
+		const listDir = join(workspace, "platform", "tasks", "listdef");
+		mkdirSync(listDir, { recursive: true });
+		writeFileSync(
+			join(listDir, "config.yaml"),
+			"model:\n  - claude/opus\n  - grok/grok-4.5\n",
+		);
+		writeFileSync(join(listDir, "prompt.md"), "hi\n");
+		const list = (await client.call("definition", {
 			repo: "platform",
-			name: "greet",
-		})) as { model: string; modelResolved: string };
-		expect(greet.model).toBe("sonnet");
-		expect(greet.modelResolved).toBe("claude-sonnet-5");
-
-		// A def already naming a full/unknown model id passes through unchanged.
-		const fullDir = join(workspace, "platform", "tasks", "fulldef");
-		mkdirSync(fullDir, { recursive: true });
-		writeFileSync(join(fullDir, "config.yaml"), "model: claude-custom-9\n");
-		writeFileSync(join(fullDir, "prompt.md"), "hi\n");
-		const full = (await client.call("definition", {
-			repo: "platform",
-			name: "fulldef",
-		})) as { model: string; modelResolved: string };
-		expect(full.model).toBe("claude-custom-9");
-		expect(full.modelResolved).toBe("claude-custom-9");
+			name: "listdef",
+		})) as { model: string | string[] | null };
+		expect(list.model).toEqual(["claude/opus", "grok/grok-4.5"]);
 	});
 
 	it("definition rejects unknown repo", async () => {
@@ -1217,7 +1382,7 @@ describe("ApiServer", () => {
 		expect(res.sessions.length).toBe(2);
 	});
 
-	it("listSessions reports each session's model, reverse-mapped to an alias", async () => {
+	it("listSessions reports each session's model, mapped back to a provider/label ref", async () => {
 		const projects = mkdtempSync(join(tmpdir(), "claude-projects-"));
 		const wtPath = "/wt/platform.wt-a";
 		const dir = join(projects, wtPath.replace(/[/.]/g, "-"));
@@ -1270,7 +1435,7 @@ describe("ApiServer", () => {
 		const byModel = Object.fromEntries(
 			res.sessions.map((s) => [s.session_id, s.model]),
 		);
-		expect(byModel["sess-opus"]).toBe("opus"); // claude-opus-4-8 reverse-maps to opus
+		expect(byModel["sess-opus"]).toBe("claude/opus"); // id maps back to its provider/label ref
 		expect(byModel["sess-foreign"]).toBeUndefined(); // no run data -> no model
 	});
 
@@ -1409,7 +1574,7 @@ describe("ApiServer", () => {
 				prompt: "continue",
 				cwd: "/wt/repo.fix-x/src/deep",
 				resume_session_id: "sess-1",
-				model: "claude-fable-5",
+				model: "claude/fable",
 			})) as {
 				target: { repo: string; ref: string };
 				resumeSessionId: string;
@@ -1418,7 +1583,7 @@ describe("ApiServer", () => {
 			expect(task.target.repo).toBe("platform");
 			expect(task.target.ref).toBe("worktree:repo.fix-x");
 			expect(task.resumeSessionId).toBe("sess-1");
-			expect(task.model).toBe("claude-fable-5");
+			expect(task.model).toBe("claude/fable");
 		});
 
 		it("prefers the longest matching worktree path", async () => {

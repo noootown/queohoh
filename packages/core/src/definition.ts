@@ -67,7 +67,13 @@ const DefinitionConfigSchema = z
 		// (e.g. `[ -z "$(git status --porcelain)" ]`) — there is no universal
 		// dirty-tree check.
 		verify: z.string().optional(),
-		model: z.string().default("sonnet"),
+		// A `provider/label` model ref, or an ordered fallback list of them (see
+		// `resolveModelChain`). Optional: a definition with no `model:` resolves
+		// against `default_models` like any other model-less task — so this is
+		// left unset (→ null) rather than defaulted to a single alias.
+		model: z
+			.union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+			.optional(),
 		timeout: z.string().default("30m"),
 		priority: PrioritySchema.default("normal"),
 	})
@@ -88,7 +94,10 @@ export interface TaskDefinition {
 	preRun: string | null;
 	postRun: string | null;
 	verify: string | null;
-	model: string;
+	/** Requested model(s): a single `provider/label` ref, an ordered fallback
+	 * list, or null (no `model:` → resolves against `default_models`). See
+	 * `resolveModelChain`. */
+	model: string | string[] | null;
 	timeoutMs: number;
 	priority: Priority;
 	prompt: string;
@@ -173,7 +182,7 @@ export function loadDefinition(
 		preRun: config.pre_run ?? null,
 		postRun: config.post_run ?? null,
 		verify: config.verify ?? null,
-		model: config.model,
+		model: config.model ?? null,
 		timeoutMs: parseDuration(config.timeout),
 		priority: config.priority,
 		prompt,

@@ -12,9 +12,11 @@ use crate::detail::{
     DetailContext, bottom_anchored, clamp_sub_tab, derive_context, sub_tab_names, window_lines,
 };
 use crate::hit::{HitMap, HitTarget};
-use crate::ipc::types::{TaskDefinition, TaskInstance, TaskStatus};
+use crate::ipc::types::{CatalogEntry, TaskDefinition, TaskInstance, TaskStatus};
 use crate::runfiles::RunMeta;
-use crate::markup::{DisplayLine, LineCtx, fence_states, style_transcript_line, wrap_lines};
+use crate::markup::{
+    DisplayLine, LineCtx, fence_states, fence_states_from, style_transcript_line, wrap_lines,
+};
 use crate::selectors::arg_summary;
 use crate::view::Computed;
 use crate::view::theme::{Palette, TITLE_DETAIL};
@@ -42,14 +44,13 @@ fn format_duration(ms: u64) -> String {
     if rem_min == 0 { format!("{hours}h") } else { format!("{hours}h {rem_min}m") }
 }
 
-/// `(key, value)` rows for the config sub-tab. The model row folds the resolved
-/// id in as `alias → id` when the daemon sent a `model_resolved` that differs
-/// from the authored alias; otherwise it shows the single authored value.
+/// `(key, value)` rows for the config sub-tab. The model row shows the def's
+/// authored `model:` — a `provider/label` ref, or a fallback list joined with
+/// ` → ` — falling back to a dash when the def has no `model:` (it resolves
+/// against `default_models` at run time). `modelResolved` was removed from the
+/// wire in Task 5 (the flat catalog replaced the alias table).
 fn config_rows(def: &TaskDefinition) -> Vec<(&'static str, String)> {
-    let model = match &def.model_resolved {
-        Some(resolved) if resolved != &def.model => format!("{} → {}", def.model, resolved),
-        _ => def.model.clone(),
-    };
+    let model = def.model.as_ref().map(|m| m.display()).unwrap_or_else(|| EM_DASH.to_string());
     vec![
         ("args", if def.args.is_empty() { EM_DASH.to_string() } else { arg_summary(&def.args) }),
         ("worktree", def.worktree.clone()),
@@ -136,11 +137,21 @@ fn status_label(status: TaskStatus) -> &'static str {
 fn run_info_lines(
     task: &TaskInstance,
     meta: &RunMeta,
+    catalog: &[CatalogEntry],
     now_epoch_s: u64,
     tz_offset_s: i32,
 ) -> (Vec<String>, Vec<LineCtx>) {
     let dash = || EM_DASH.to_string();
     let or_dash = |v: Option<String>| v.filter(|s| !s.is_empty()).unwrap_or_else(dash);
+    // The recorded model is the raw resolved id (e.g. `claude-opus-4-8`), not a
+    // `provider/label` ref. Resolve it against the catalog for `label
+    // (provider) · <id>` (spec §4) when the id is a known entry; fall back to
+    // the bare id alone when it isn't (unknown provider, or a stale/removed
+    // catalog entry — the raw id is still the ground truth either way).
+    let model_display = |id: &str| match catalog.iter().find(|e| e.id == id) {
+        Some(entry) => format!("{} · {id}", entry.model_display()),
+        None => id.to_string(),
+    };
     // "MM/DD HH:MM (Nd ago)" from an ISO stamp; dim `—` when absent.
     let stamp = |iso: Option<&str>| match iso.filter(|s| !s.is_empty()) {
         Some(s) => {
@@ -202,7 +213,10 @@ fn run_info_lines(
             or_dash(meta.resolved_worktree.clone().or_else(|| task.target.worktree.clone())),
         ),
         ("session", or_dash(meta.session_id.clone())),
-        ("model", or_dash(meta.model.clone().or_else(|| task.model.clone()))),
+        (
+            "model",
+            or_dash(meta.model.clone().or_else(|| task.model.clone()).map(|id| model_display(&id))),
+        ),
         ("exit code", meta.exit_code.map(|c| c.to_string()).unwrap_or_else(dash)),
     ];
     if meta.timed_out {
@@ -351,12 +365,14 @@ fn worktree_pr_link(
 /// the lines so the renderer styles each line under exactly the right rules —
 /// markdown fences for run/prompt views, aligned key/value for config + the
 /// worktree info block, and queue-style rows for the lane-task list.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn content_for(
     ctx: &DetailContext,
     sub_tab: usize,
     def: Option<&TaskDefinition>,
     run_files: Option<&crate::runfiles::RunFiles>,
     detail_row: usize,
+    catalog: &[CatalogEntry],
     now_epoch_s: u64,
     tz_offset_s: i32,
 ) -> (Vec<String>, Vec<LineCtx>, &'static str) {
@@ -369,14 +385,21 @@ pub(crate) fn content_for(
         // Sub-tabs: 0 report (default/first), 1 transcript (tail-anchored),
         // 2 prompt, 3 info. Clamp guarantees the range, so `_` == report.
         DetailContext::Run { task } => match sub_tab {
-            1 => fenced(
-                run_files.map(|f| f.transcript_tail.clone()).unwrap_or_default(),
-                "(no transcript yet)",
-            ),
+            1 => {
+                // The transcript is a TAIL window: seed the fence machinery with
+                // whether that window began mid-fence, or prose after the cut is
+                // mis-styled as code and vice versa. Report/prompt read from line 0.
+                let lines = run_files.map(|f| f.transcript_tail.clone()).unwrap_or_default();
+                let starts_in_fence =
+                    run_files.is_some_and(|f| f.transcript_starts_in_fence);
+                let ctxs = fence_states_from(&lines, starts_in_fence);
+                (lines, ctxs, "(no transcript yet)")
+            }
             2 => fenced(task.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
             3 => match run_files.and_then(|f| f.meta.as_ref()) {
                 Some(meta) => {
-                    let (lines, ctxs) = run_info_lines(task, meta, now_epoch_s, tz_offset_s);
+                    let (lines, ctxs) =
+                        run_info_lines(task, meta, catalog, now_epoch_s, tz_offset_s);
                     (lines, ctxs, "")
                 }
                 None => (Vec::new(), Vec::new(), "(no run recorded yet)"),
@@ -662,12 +685,14 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     // Timezone offset for the worktree info block's absolute `updated` stamp —
     // same source the queue pane's timestamps use.
     let tz_offset = chrono::Local::now().offset().local_minus_utc();
+    let catalog = app.model_catalog();
     let (lines, ctxs, placeholder) = content_for(
         &ctx,
         sub_tab,
         def.as_ref(),
         run_files,
         c.ui.detail_row,
+        &catalog,
         app.now_epoch_s,
         tz_offset,
     );
@@ -943,8 +968,7 @@ mod tests {
                 worktree: "auto".to_string(),
                 pre_run: None,
                 post_run: None,
-                model: "opus".to_string(),
-                model_resolved: Some("claude-opus-4-8".to_string()),
+                model: Some("claude/opus".into()),
                 timeout_ms: 1_800_000,
                 priority: "normal".to_string(),
                 prompt: "do the thing".to_string(),
@@ -1057,7 +1081,7 @@ mod tests {
                         description: Some("Squash-merge the branch.".to_string()),
                         dedup: "none".to_string(),
                         worktree: "auto".to_string(),
-                        model: "opus".to_string(),
+                        model: Some("claude/opus".into()),
                         timeout_ms: 1_800_000,
                         priority: "normal".to_string(),
                         cron: Some("30 13 * * *".to_string()),
@@ -1184,7 +1208,7 @@ mod tests {
         // No run record yet: sections still render, but unfinished fields dash out
         // and there is no Config section (no def snapshot) and no error/reason row.
         let task = info_task(TaskStatus::Queued);
-        let (lines, ctxs) = run_info_lines(&task, &RunMeta::default(), INFO_NOW, INFO_TZ);
+        let (lines, ctxs) = run_info_lines(&task, &RunMeta::default(), &[], INFO_NOW, INFO_TZ);
         assert!(lines.iter().any(|l| l == "Run"));
         assert!(lines.iter().any(|l| l == "Timing"));
         assert!(lines.iter().any(|l| l == "Details"));
@@ -1228,7 +1252,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let (lines, _) = run_info_lines(&task, &meta, INFO_NOW, INFO_TZ);
+        let (lines, _) = run_info_lines(&task, &meta, &[], INFO_NOW, INFO_TZ);
         assert!(lines.iter().any(|l| l == "Config"), "Config section present with a def");
         assert!(lines.iter().any(|l| l.contains("$0.42")), "cost shown");
         assert!(lines.iter().any(|l| l.trim_start().starts_with("turns") && l.contains("37")));
@@ -1236,6 +1260,42 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("Squash-merge the branch.")), "description row");
         assert!(lines.iter().any(|l| l.trim_start().starts_with("cron") && l.contains("30 13")));
         assert!(!lines.iter().any(|l| l.trim_start().starts_with("timed out")), "false → no row");
+    }
+
+    /// Spec §4: the `model` row shows `label (provider) · <raw id>` when the
+    /// recorded id resolves against the catalog, and the bare raw id alone
+    /// when it doesn't (unknown provider, or a stale/removed catalog entry —
+    /// the recorded id is still ground truth either way).
+    #[test]
+    fn run_info_lines_model_row_resolves_via_catalog_or_falls_back_to_raw_id() {
+        let task = info_task(TaskStatus::Done);
+        let catalog = vec![CatalogEntry {
+            provider: "claude".to_string(),
+            id: "claude-opus-4-8".to_string(),
+            label: "opus".to_string(),
+            hidden: false,
+        }];
+        let known = RunMeta { model: Some("claude-opus-4-8".to_string()), ..Default::default() };
+        let (lines, _) = run_info_lines(&task, &known, &catalog, INFO_NOW, INFO_TZ);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.trim_start().starts_with("model")
+                    && l.contains("opus (claude) · claude-opus-4-8")),
+            "known id resolves to label (provider) · raw id: {lines:?}"
+        );
+
+        // A stale/unknown id (not in the catalog) falls back to the bare id —
+        // no `label (provider) · ` decoration.
+        let unknown = RunMeta { model: Some("claude-legacy-1".to_string()), ..Default::default() };
+        let (lines, _) = run_info_lines(&task, &unknown, &catalog, INFO_NOW, INFO_TZ);
+        assert!(
+            lines.iter().any(|l| {
+                let trimmed = l.trim_start();
+                trimmed.starts_with("model") && trimmed.trim_end().ends_with("claude-legacy-1") && !l.contains('(')
+            }),
+            "unknown id falls back to the raw id alone: {lines:?}"
+        );
     }
 
     #[test]
@@ -1249,7 +1309,7 @@ mod tests {
             timed_out: true,
             ..Default::default()
         };
-        let (lines, _) = run_info_lines(&task, &meta, INFO_NOW, INFO_TZ);
+        let (lines, _) = run_info_lines(&task, &meta, &[], INFO_NOW, INFO_TZ);
         assert!(
             lines.iter().any(|l| l.trim_start().starts_with("reason") && l.contains("timed out waiting"))
         );
@@ -1257,7 +1317,7 @@ mod tests {
         assert!(lines.iter().any(|l| l.trim_start().starts_with("timed out") && l.contains("yes")));
         // Live error preempts the run record's reason.
         task.error = Some("boom".to_string());
-        let (lines2, _) = run_info_lines(&task, &meta, INFO_NOW, INFO_TZ);
+        let (lines2, _) = run_info_lines(&task, &meta, &[], INFO_NOW, INFO_TZ);
         assert!(lines2.iter().any(|l| l.trim_start().starts_with("error") && l.contains("boom")));
         assert!(!lines2.iter().any(|l| l.trim_start().starts_with("reason")), "error preempts reason");
     }
@@ -1417,10 +1477,10 @@ mod tests {
     }
 
     #[test]
-    fn config_view_aligns_keys_and_folds_resolved_model() {
+    fn config_view_aligns_keys_and_shows_model_refs() {
+        use crate::ipc::types::ModelRef;
         let mut def = TaskDefinition {
-            model: "opus".to_string(),
-            model_resolved: Some("claude-opus-4-8".to_string()),
+            model: Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()])),
             timeout_ms: 1_800_000,
             worktree: "auto".to_string(),
             dedup: "none".to_string(),
@@ -1434,17 +1494,18 @@ mod tests {
         for line in &lines {
             assert!(line.chars().count() >= key_col, "{line:?} shorter than key column");
         }
-        assert!(lines.iter().any(|l| l == "model      opus → claude-opus-4-8"));
+        // A fallback list joins with the ` → ` arrow.
+        assert!(lines.iter().any(|l| l == "model      claude/opus → grok/grok-4.5"));
         assert!(lines.iter().any(|l| l == "timeout    30m"));
         assert!(lines.iter().any(|l| l == "discovery  —"));
-        // When resolved == authored, no arrow is shown.
-        def.model_resolved = Some("opus".to_string());
+        // A single ref shows verbatim.
+        def.model = Some(ModelRef::One("claude/opus".into()));
         let (lines, _) = config_view(&def);
-        assert!(lines.iter().any(|l| l == "model      opus"));
-        // Absent resolved (old daemon) also shows the authored alias alone.
-        def.model_resolved = None;
+        assert!(lines.iter().any(|l| l == "model      claude/opus"));
+        // No `model:` (an old daemon, or a model-less def) → a dash.
+        def.model = None;
         let (lines, _) = config_view(&def);
-        assert!(lines.iter().any(|l| l == "model      opus"));
+        assert!(lines.iter().any(|l| l == "model      —"));
     }
 
     #[test]
@@ -1455,7 +1516,7 @@ mod tests {
             item_key: "{{url}}".to_string(),
         });
         let ctx = DetailContext::Definition { repo: "p".into(), name: "pr-review".into() };
-        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, 0, 0);
+        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, &[], 0, 0);
         assert_eq!(placeholder, "");
         assert!(lines.iter().any(|l| l == "gh pr list --json url"), "lines: {lines:?}");
         assert!(lines.iter().any(|l| l == "jq '.[]'"), "multi-line command preserved");
@@ -1466,9 +1527,31 @@ mod tests {
     fn definition_discovery_tab_placeholder_when_no_discovery() {
         let def = crate::ipc::types::TaskDefinition::default();
         let ctx = DetailContext::Definition { repo: "p".into(), name: "lint".into() };
-        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, 0, 0);
+        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, &[], 0, 0);
         assert!(lines.is_empty());
         assert_eq!(placeholder, "(no discovery)");
+    }
+
+    #[test]
+    fn transcript_arm_respects_starts_in_fence_flag() {
+        // A tail window that opened mid-fence: with the flag set, a `### heading`
+        // line inside the window styles as Fenced (plain), not as a markdown
+        // Header/Text — the fix that keeps mid-fence tails from inverting.
+        let files = RunFiles {
+            transcript_tail: vec!["make test".into(), "### Tool: Bash".into()],
+            transcript_starts_in_fence: true,
+            ..Default::default()
+        };
+        let ctx = DetailContext::Run { task: crate::ipc::types::TaskInstance::default() };
+        let (_lines, ctxs, _) = content_for(&ctx, 1, None, Some(&files), 0, &[], 0, 0);
+        assert_eq!(ctxs[0], LineCtx::Fenced { lang: String::new() });
+        assert_eq!(ctxs[1], LineCtx::Fenced { lang: String::new() });
+
+        // Same lines WITHOUT the flag: the `###` line is a plain Text line.
+        let files_flat = RunFiles { transcript_starts_in_fence: false, ..files };
+        let (_lines, ctxs_flat, _) = content_for(&ctx, 1, None, Some(&files_flat), 0, &[], 0, 0);
+        assert_eq!(ctxs_flat[0], LineCtx::Text);
+        assert_eq!(ctxs_flat[1], LineCtx::Text);
     }
 
     #[test]

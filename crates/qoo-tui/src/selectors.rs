@@ -1160,9 +1160,8 @@ pub const NAME_CAP: usize = 48;
 /// fallback longer than this is clipped with `…` rather than blowing out the
 /// row.
 pub const SCHED_CAP: usize = 20;
-/// Max width of the model cell in the TASKS pane (the `claude-` prefix is
-/// stripped first, so real values are short: `sonnet`, `opus`, `fable-5`,
-/// `opus-4-8`). Clipped with `…` if somehow longer.
+/// Max width of the model cell in the TASKS pane (a `provider/label` ref such as
+/// `claude/opus`, or a joined fallback list). Clipped with `…` if longer.
 pub const MODEL_CAP: usize = 20;
 pub const SUMMARY_MIN: usize = 10;
 /// Gutter between adjacent field columns (glyph/chain markers keep single
@@ -1368,15 +1367,13 @@ pub fn def_desc_text(def: &DefinitionSummary) -> String {
     def.description.clone().unwrap_or_default()
 }
 
-/// The model cell text for a def ("" when the summary has no model, e.g. an old
-/// daemon). The `claude-` prefix is stripped so the column stays narrow
-/// (`claude-fable-5` → `fable-5`); short aliases like `sonnet`/`opus` pass
-/// through unchanged.
+/// The model cell text for a def: its authored `model:` ref(s) joined with
+/// ` → ` (`claude/opus`, or `claude/opus → grok/grok-4.5` for a fallback list),
+/// or "" when the def has no `model:` (or an old daemon omitted it). Was a
+/// `claude-`-stripped resolved id before Task 5; the flat catalog replaced the
+/// alias table, so the authored `provider/label` ref(s) are shown verbatim.
 pub fn def_model_text(def: &DefinitionSummary) -> String {
-    match def.model.as_deref() {
-        Some(m) if !m.is_empty() => m.strip_prefix("claude-").unwrap_or(m).to_string(),
-        _ => String::new(),
-    }
+    def.model.as_ref().map(|m| m.display()).unwrap_or_default()
 }
 
 /// Trailing schedule-cell text for a def row: the humanized cron schedule, or
@@ -3647,50 +3644,62 @@ mod tests {
     }
 
     #[test]
-    fn def_model_text_strips_claude_prefix_and_handles_absence() {
-        let stripped = DefinitionSummary { model: Some("claude-fable-5".into()), ..Default::default() };
-        assert_eq!(def_model_text(&stripped), "fable-5");
-        // Short aliases pass through unchanged.
-        let alias = DefinitionSummary { model: Some("sonnet".into()), ..Default::default() };
-        assert_eq!(def_model_text(&alias), "sonnet");
-        // Absent (old daemon) and empty both render blank.
+    fn def_model_text_renders_ref_or_list_and_handles_absence() {
+        use crate::ipc::types::ModelRef;
+        // A single `provider/label` ref renders verbatim.
+        let one = DefinitionSummary { model: Some(ModelRef::One("claude/opus".into())), ..Default::default() };
+        assert_eq!(def_model_text(&one), "claude/opus");
+        // A fallback list joins with the ` → ` arrow.
+        let list = DefinitionSummary {
+            model: Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()])),
+            ..Default::default()
+        };
+        assert_eq!(def_model_text(&list), "claude/opus → grok/grok-4.5");
+        // Absent (no `model:` / an old daemon) renders blank.
         assert_eq!(def_model_text(&DefinitionSummary::default()), "");
-        let empty = DefinitionSummary { model: Some(String::new()), ..Default::default() };
-        assert_eq!(def_model_text(&empty), "");
     }
 
     #[test]
     fn def_col_layout_model_sizes_and_degrades_before_name() {
-        // name="pr-review"(9), model "claude-fable-5"→"fable-5"(7),
+        // name="pr-review"(9), model "grok/grok-4.5"(13, the widest cell),
         // cron→"Everyday 1:30pm"(15 cells), plus a 2-cell front discovery-marker
         // slot (pr-review has_discovery), description present. Schedule
         // footprint = 15; marker footprint = 2.
+        use crate::ipc::types::ModelRef;
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
-                model: Some("claude-fable-5".into()),
+                model: Some(ModelRef::One("claude/opus".into())),
                 cron: Some("30 13 * * *".into()),
                 has_discovery: true,
                 description: Some("Review an open PR end to end.".into()),
                 ..Default::default()
             },
-            DefinitionSummary { name: "lint".into(), model: Some("sonnet".into()), ..Default::default() },
+            DefinitionSummary {
+                name: "lint".into(),
+                model: Some(ModelRef::One("grok/grok-4.5".into())),
+                ..Default::default()
+            },
         ];
-        // Wide: model sized to the widest cell (7), desc is the fill remainder.
-        // used_wo_desc = marker(2) + name(9) + (2+7) + (2+15) = 37; desc = 120 - 37 - 2 = 81.
+        // Wide: model sized to the widest cell (13), desc is the fill remainder.
+        // used_wo_desc = marker(2) + name(9) + (2+13) + (2+15) = 43; desc = 120 - 43 - 2 = 75.
         let wide = def_col_layout(&defs, 120);
-        assert_eq!((wide.name_w, wide.model_w, wide.sched_w, wide.marker_w), (9, 7, 15, 2));
-        assert_eq!(wide.desc_w, 81, "description is the fill remainder after the model column");
-        // Tighter: name+model+schedule+marker (37) still fit in 40; the fill takes the rest.
-        let mid = def_col_layout(&defs, 40);
-        assert_eq!(mid.model_w, 7, "model kept while the fixed columns fit");
-        assert_eq!(mid.desc_w, 1, "fill absorbs only what's left: 40 - 37 - 2");
-        // Narrower: the model column drops (before the name shrinks).
+        assert_eq!((wide.name_w, wide.model_w, wide.sched_w, wide.marker_w), (9, 13, 15, 2));
+        assert_eq!(wide.desc_w, 75, "description is the fill remainder after the model column");
+        // Kept: name+model+schedule+marker (43) still fit in 50; the fill takes the rest.
+        let kept = def_col_layout(&defs, 50);
+        assert_eq!(kept.model_w, 13, "model kept while the fixed columns fit");
+        assert_eq!(kept.desc_w, 5, "fill absorbs only what's left: 50 - 43 - 2");
+        // Tighter (40): the model column drops (before the name shrinks).
         // used_wo_desc without model = marker(2) + name(9) + (2+15) = 28.
-        let narrow = def_col_layout(&defs, 30);
-        assert_eq!((narrow.model_w, narrow.desc_w), (0, 0));
+        let narrow = def_col_layout(&defs, 40);
+        assert_eq!(narrow.model_w, 0);
         assert_eq!(narrow.name_w, 9, "name still fits; schedule/marker kept");
+        assert_eq!(narrow.desc_w, 10, "fill absorbs the rest: 40 - 28 - 2");
         assert_eq!(narrow.marker_w, 2, "marker slot survives model drop");
+        // Narrowest (25): model gone AND the name shrinks (28 - 25 = 3 → 9-3=6).
+        let tightest = def_col_layout(&defs, 25);
+        assert_eq!((tightest.model_w, tightest.name_w), (0, 6));
         // No model anywhere → the model column is omitted pane-wide even when wide.
         let no_model = vec![DefinitionSummary { name: "lint".into(), ..Default::default() }];
         assert_eq!(def_col_layout(&no_model, 120).model_w, 0);
