@@ -107,16 +107,34 @@ queohoh reload              # after changing daemon code: rebuild + restart
                             # (refuses if tasks are running; --force overrides)
 ```
 
-## 4. Claude Code integration
+## 4. Agent MCP integration
+
+The daemon exposes an MCP server over stdio (`queohoh mcp` / `node packages/daemon/dist/cli.js mcp`) with `enqueue_task`, `enqueue_chain`, `list_tasks`, `list_task_definitions`, and `run_task_definition`. Register it once per agent CLI you use:
 
 ```bash
-# MCP server (enqueue_task / list_tasks / list_task_definitions / run_task_definition):
-claude mcp add queohoh -- queohoh mcp
+# One-shot: every supported CLI present on PATH (Claude Code, Codex, Grok Build)
+mise run mcp:register
+
+# Or a subset:
+mise run mcp:register -- claude
+mise run mcp:register -- codex grok
 ```
 
-A minimal reference `/qoo` skill ships in `examples/skills/qoo/` — copy it into `~/.claude/skills/` and it routes requests to the daemon purely through the MCP server above. It's intentionally simple; grow your own from it (see `examples/README.md`).
+Equivalent manual commands (user scope where the CLI has one):
 
-Interactive-session awareness (the scheduler won't run tasks in a worktree you're actively using) — add to `~/.claude/settings.json` hooks:
+```bash
+claude mcp add --scope user queohoh -- "$(command -v node)" /path/to/queohoh/packages/daemon/dist/cli.js mcp
+codex  mcp add             queohoh -- "$(command -v node)" /path/to/queohoh/packages/daemon/dist/cli.js mcp
+grok   mcp add --scope user queohoh -- "$(command -v node)" /path/to/queohoh/packages/daemon/dist/cli.js mcp
+```
+
+`scripts/mcp-register.sh` is idempotent (remove-then-add) and skips missing CLIs with a warning.
+
+A minimal reference `/qoo` skill ships in `examples/skills/qoo/` — copy it into your agent skills dir (e.g. `~/.claude/skills/`) and it routes requests to the daemon purely through the MCP server above. It's intentionally simple; grow your own from it (see `examples/README.md`).
+
+### Claude Code: interactive-session awareness
+
+The scheduler won't run tasks in a worktree you're actively using — add to `~/.claude/settings.json` hooks:
 
 ```json
 {
