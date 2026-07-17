@@ -183,6 +183,58 @@ fn dropdown_down_opens_then_moves_and_enter_picks() {
     }
 }
 
+fn dropdown_index(app: &App) -> usize {
+    match &app.mode {
+        Mode::Form { state, .. } => state.dropdown_index,
+        other => panic!("expected Form, got {other:?}"),
+    }
+}
+
+// Options: fable(0) opus(1) sonnet(2) haiku(3), default "opus" so open → idx 1.
+#[test]
+fn dropdown_down_wraps_from_last_to_first() {
+    let mut app = form_app();
+    app.update(key(KeyCode::Down)); // open → opus (1)
+    app.update(key(KeyCode::Down)); // → sonnet (2)
+    app.update(key(KeyCode::Down)); // → haiku (3), the last option
+    assert_eq!(dropdown_index(&app), 3);
+    app.update(key(KeyCode::Down)); // Down on last wraps to first
+    assert_eq!(dropdown_index(&app), 0);
+}
+
+#[test]
+fn dropdown_up_wraps_from_first_to_last() {
+    let mut app = form_app();
+    app.update(key(KeyCode::Down)); // open → opus (1)
+    app.update(key(KeyCode::Up)); // → fable (0), the first option
+    assert_eq!(dropdown_index(&app), 0);
+    app.update(key(KeyCode::Up)); // Up on first wraps to last
+    assert_eq!(dropdown_index(&app), 3);
+}
+
+#[test]
+fn single_option_dropdown_stays_put_on_up_and_down() {
+    let mut app = form_app();
+    app.mode = Mode::Form {
+        state: FormState::new(
+            "New session",
+            "Enqueue",
+            vec![Field::dropdown("model", vec!["only".into()], "only"), Field::textarea("prompt", "", true)],
+        ),
+        action: FormAction::NewSession {
+            repo: "platform".into(),
+            worktree: "platform.wt-a".into(),
+            resume_session_id: None,
+        },
+    };
+    app.update(key(KeyCode::Down)); // open → only (0)
+    assert_eq!(dropdown_index(&app), 0);
+    app.update(key(KeyCode::Down)); // wrap-to-self, no move, no crash
+    assert_eq!(dropdown_index(&app), 0);
+    app.update(key(KeyCode::Up)); // wrap-to-self, no move, no crash
+    assert_eq!(dropdown_index(&app), 0);
+}
+
 #[test]
 fn enter_on_primary_with_valid_fields_returns_to_list() {
     let mut app = form_app();

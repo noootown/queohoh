@@ -496,14 +496,22 @@ impl FormState {
         }
     }
 
-    /// Move the open-select highlight (clamped, non-wrapping) over a Dropdown's
-    /// options or a Combobox's filtered rows.
+    /// Move the open-select highlight over a Dropdown's options (wrapping
+    /// circularly — Down past the last lands on the first, Up past the first
+    /// lands on the last; a single-option list stays put) or a Combobox's
+    /// filtered rows (clamped, non-wrapping — its rows change as you type, so a
+    /// stable wrap point would be disorienting).
     pub fn dropdown_move(&mut self, delta: i32) {
         let len = self.open_list_len();
         if len == 0 {
             return;
         }
-        let next = (self.dropdown_index as i64 + delta as i64).clamp(0, len as i64 - 1) as usize;
+        let raw = self.dropdown_index as i64 + delta as i64;
+        let next = if self.is_dropdown_focused() {
+            raw.rem_euclid(len as i64) as usize
+        } else {
+            raw.clamp(0, len as i64 - 1) as usize
+        };
         self.dropdown_index = next;
     }
 
@@ -1030,12 +1038,16 @@ mod tests {
         f.dropdown_pick();
         assert_eq!(f.fields[1].value, "sonnet");
         assert!(!f.dropdown_open);
-        // Clamp: cannot move below 0 or past the last option.
-        f.open_dropdown();
-        f.dropdown_move(-10);
+        // Wrap: Up past the first option lands on the last, Down past the last
+        // lands on the first.
+        f.open_dropdown(); // value "sonnet" → index 2
+        f.dropdown_move(-1); // 2 → 1
+        f.dropdown_move(-1); // 1 → 0 (first)
         assert_eq!(f.dropdown_index, 0);
-        f.dropdown_move(99);
+        f.dropdown_move(-1); // wraps to last
         assert_eq!(f.dropdown_index, 3);
+        f.dropdown_move(1); // wraps back to first
+        assert_eq!(f.dropdown_index, 0);
     }
 
     #[test]
