@@ -8,7 +8,7 @@ use crate::hit::{HitMap, HitTarget};
 use crate::view::Computed;
 use crate::view::theme::{GLYPH_DOT, Palette};
 
-/// A per-provider accent for the `⚡ <provider>` indicator, reusing the theme's
+/// A per-provider accent for the `↯ <provider>` indicator, reusing the theme's
 /// existing color slots so it re-themes with the rest of the UI. A provider name
 /// beyond the known set falls back to the generic metadata color.
 fn provider_style(name: &str, p: &Palette) -> Style {
@@ -83,17 +83,18 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         Span::styled("daemon unreachable — retrying…", Style::default().fg(p.warn))
     };
     // The always-visible active-provider indicator sits at the far right edge
-    // (`⚡ <provider>`), styled per provider. It reads the broadcast-reconciled
+    // (`↯ <provider>`), styled per provider. It reads the broadcast-reconciled
     // active provider (snapshot, else the cached settings copy); absent only when
     // neither is known (pre-connect / old daemon). Its hit rect (registered
     // below) makes a click cycle the provider, mirroring the `p` key.
     let mut right_spans = vec![conn, Span::styled(run_label, Style::default().fg(p.fg))];
     let mut prov_w = 0u16;
     if let Some(name) = app.active_provider() {
-        // U+FE0E forces the narrow text-presentation glyph: bare ⚡ is
-        // emoji-presentation (buffer width 2) while most terminal fonts draw it
-        // one cell wide, leaving a phantom blank cell between icon and name.
-        let span = Span::styled(format!("  ⚡\u{FE0E} {name}"), provider_style(&name, p));
+        // ↯ (U+21AF) rather than ⚡: the emoji bolt is width-ambiguous — buffer
+        // and terminal fonts disagree on 1 vs 2 cells (phantom gap or clipped
+        // name, depending on the font), and terminals ignore U+FE0E on it.
+        // U+21AF is a plain width-1 arrow everywhere.
+        let span = Span::styled(format!("  ↯ {name}"), provider_style(&name, p));
         prov_w = span.width() as u16;
         right_spans.push(span);
     }

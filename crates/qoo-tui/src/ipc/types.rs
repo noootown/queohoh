@@ -41,7 +41,7 @@ pub struct StateSnapshot {
     pub goto_command: Option<String>,
     /// The operator's currently-active provider (`SettingsStore`), echoed on
     /// EVERY state broadcast so a `set_active_provider` from any client
-    /// re-renders the top-bar `⚡ <provider>` indicator live — this is the
+    /// re-renders the top-bar `↯ <provider>` indicator live — this is the
     /// reconcile source the optimistic switch writes to and the daemon overwrites
     /// on the next broadcast. `None`/empty on an old daemon that omits it (via the
     /// container `default`); the indicator then falls back to the `settings`

@@ -103,7 +103,7 @@ pub enum AppAction {
     Settings,
     /// `p`: cycle the operator's ACTIVE provider to the next ENABLED one (in the
     /// settings payload's provider-precedence order, skipping disabled). Global —
-    /// like the top-right `⚡ <provider>` indicator it drives, it is not gated on
+    /// like the top-right `↯ <provider>` indicator it drives, it is not gated on
     /// any pane's chip. A single enabled provider (or settings not yet fetched)
     /// makes it a no-op with no RPC. Distinct from the `ctrl+s`-prefixed `p`
     /// (previous project tab), which `App` consumes before the keymap sees it.

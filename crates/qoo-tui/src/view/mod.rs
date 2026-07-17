@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn header_shows_the_active_provider_indicator_and_registers_its_click_target() {
-        // fixture snapshot's active provider is "grok" → the `⚡ grok` indicator
+        // fixture snapshot's active provider is "grok" → the `↯ grok` indicator
         // renders at the header's right edge with a ProviderIndicator hit target.
         let app = fixture_app();
         let (terminal, hits) = render_at(&app, 120, 40);
@@ -472,9 +472,8 @@ mod tests {
         for x in 0..120 {
             row0.push_str(buf[(x, 0)].symbol());
         }
-        // The ⚡ is a wide glyph (its skip cell flattens to a space), so assert on
-        // the two pieces rather than the exact spacing between them.
-        assert!(row0.contains('⚡'), "no ⚡ in header: {row0:?}");
+        // ↯ is a plain width-1 glyph, so icon + single space + name is exact.
+        assert!(row0.contains("↯ grok"), "no ↯ grok in header: {row0:?}");
         assert!(row0.trim_end().ends_with("grok"), "provider name missing at right edge: {row0:?}");
         // The indicator's rect is registered so a click cycles the provider.
         assert!(

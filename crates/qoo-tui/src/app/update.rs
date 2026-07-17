@@ -31,7 +31,7 @@ impl App {
                 // (Defer/RestartNow status + a Cmd::Heal on restart-now).
                 cmds.extend(self.heal_on_snapshot());
                 // Fetch the settings payload once on connect so the provider
-                // switch (`p` / the ⚡ indicator click) has the enabled-providers
+                // switch (`p` / the ↯ indicator click) has the enabled-providers
                 // list to cycle over — the always-visible indicator itself reads
                 // the snapshot's `active_provider`, but cycling needs the ordered
                 // provider set, which lives only in the settings payload. Same

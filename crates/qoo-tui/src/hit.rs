@@ -100,7 +100,7 @@ pub enum HitTarget {
     /// `Modal`); the mouse wheel over it scrolls the preview instead of moving
     /// the list selection.
     MenuPreview,
-    /// The top-right `⚡ <provider>` indicator. A click cycles the active provider
+    /// The top-right `↯ <provider>` indicator. A click cycles the active provider
     /// (same as the `p` key / [`crate::keymap::AppAction::CycleProvider`]).
     ProviderIndicator,
     Modal,

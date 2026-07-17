@@ -3,7 +3,7 @@ assertion_line: 707
 source: crates/qoo-tui/src/view/mod.rs
 expression: terminal.backend()
 ---
-" 1:acme ╭ keymap ──────────────────────────────────────────────────────╮  ⚡︎ grok"
+" 1:acme ╭ keymap ──────────────────────────────────────────────────────╮  ↯ grok"
 "╭📋 QUEU│                                                              │───────╮" Hidden by multi-width symbols: [(2, " ")]
 "│       │   Tab / Shift+Tab cycle focus: queue → tasks → worktrees     │       │"
 "│ 🔍 [/]│   1–9 / 0         switch project tab (0 = 10th)              │       │" Hidden by multi-width symbols: [(3, " ")]
