@@ -51,8 +51,10 @@ function toChainEntry(entry: CatalogEntry): ChainEntry {
  * 4. Stable-partition: entries with `provider === activeProvider` first
  *    (keeping order), rest after.
  * 5. If no entry has `provider === activeProvider` AND that provider is
- *    enabled: prepend `groupHead(catalog, activeProvider)` (skip prepend if
- *    the group is empty).
+ *    enabled: prepend the active provider's `defaultModels` entry (its chosen
+ *    default from the pool), falling back to `groupHead(catalog, activeProvider)`
+ *    when `defaultModels` names no model for that provider (skip if neither
+ *    exists).
  * 6. Dedup by `provider/id` keeping first occurrence. Empty final chain ⇒ an
  *    error.
  */
@@ -81,9 +83,18 @@ export function resolveModelChain(
 	let ordered = [...active, ...rest];
 
 	if (active.length === 0 && isEnabled(providers, activeProvider)) {
-		const head = groupHead(catalog, activeProvider);
-		if (head !== undefined) {
-			ordered = [head, ...ordered];
+		// Inject the active provider's DEFAULT from the pool: the `defaultModels`
+		// entry whose provider is the active one (the model the operator chose as
+		// that provider's default), NOT the provider's most-powerful group head.
+		// Fall back to the group head only when `defaultModels` names no model for
+		// the active provider (conservative — keeps the task runnable).
+		const injected =
+			defaultModels
+				.map((r) => findModel(catalog, r))
+				.find((e) => e !== undefined && e.provider === activeProvider) ??
+			groupHead(catalog, activeProvider);
+		if (injected !== undefined) {
+			ordered = [injected, ...ordered];
 		}
 	}
 

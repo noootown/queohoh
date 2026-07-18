@@ -4,7 +4,7 @@
 //! `packages/core/src/catalog.ts` it depends on).
 //!
 //! The TASKS Model column shows the **effective head** of this chain under
-//! the operator's `active_provider` (stable re-head + group-head prepend),
+//! the operator's `active_provider` (stable re-head + default-model prepend),
 //! not the authored yaml list — so switching the active provider flips the
 //! column without rewriting every definition.
 
@@ -100,8 +100,10 @@ fn to_chain_entry(entry: &CatalogEntry) -> ChainEntry {
 /// 4. Stable-partition: entries with `provider == active_provider` first
 ///    (keeping order), rest after.
 /// 5. If no entry has `provider == active_provider` AND that provider is
-///    enabled: prepend `group_head(catalog, active_provider)` (skip if the
-///    group is empty).
+///    enabled: prepend the active provider's `default_models` entry (its
+///    chosen default from the pool), falling back to
+///    `group_head(catalog, active_provider)` when `default_models` names no
+///    model for that provider (skip if neither exists).
 /// 6. Dedup by `provider/id` keeping first occurrence. Empty final chain ⇒
 ///    an error.
 pub fn resolve_model_chain(
@@ -140,11 +142,18 @@ pub fn resolve_model_chain(
         .collect();
     let mut ordered: Vec<&CatalogEntry> = active.iter().copied().chain(rest).collect();
 
-    if active.is_empty()
-        && is_enabled(enabled_providers, active_provider)
-        && let Some(head) = group_head(catalog, active_provider)
-    {
-        ordered.insert(0, head);
+    if active.is_empty() && is_enabled(enabled_providers, active_provider) {
+        // Inject the active provider's DEFAULT from the pool (its `default_models`
+        // entry), NOT its most-powerful group head; fall back to the group head
+        // only when `default_models` names no model for the active provider.
+        let injected = default_models
+            .iter()
+            .filter_map(|r| find_model(catalog, r))
+            .find(|e| e.provider == active_provider)
+            .or_else(|| group_head(catalog, active_provider));
+        if let Some(head) = injected {
+            ordered.insert(0, head);
+        }
     }
 
     let mut seen = std::collections::HashSet::new();
@@ -322,8 +331,40 @@ mod tests {
     }
 
     #[test]
-    fn switch_miss_prepends_active_provider_group_head_when_enabled() {
-        // [claude/opus] + active grok → head grok/grok-4.5 (group-head prepend)
+    fn switch_miss_injects_active_provider_default_not_group_head() {
+        // [grok/grok-4.5] + active claude, pool = [claude/opus, grok/grok-4.5] →
+        // inject claude's DEFAULT (opus), not claude's group head (fable).
+        let cat = builtin_catalog();
+        let spec = ModelRef::One("grok/grok-4.5".into());
+        let defaults = vec!["claude/opus".to_string(), "grok/grok-4.5".to_string()];
+        assert_eq!(
+            resolve_model_chain(Some(&spec), &cat, ENABLED, &defaults, "claude").unwrap(),
+            vec![
+                entry("claude", "claude-opus-4-8", "claude/opus"),
+                entry("grok", "grok-4.5", "grok/grok-4.5"),
+            ]
+        );
+    }
+
+    #[test]
+    fn switch_miss_falls_back_to_group_head_when_no_default_for_active() {
+        // [grok/grok-4.5] + active claude, pool has only a grok entry → fall back
+        // to claude's group head (fable).
+        let cat = builtin_catalog();
+        let spec = ModelRef::One("grok/grok-4.5".into());
+        let defaults = vec!["grok/grok-4.5".to_string()];
+        assert_eq!(
+            resolve_model_chain(Some(&spec), &cat, ENABLED, &defaults, "claude").unwrap(),
+            vec![
+                entry("claude", "claude-fable-5", "claude/fable"),
+                entry("grok", "grok-4.5", "grok/grok-4.5"),
+            ]
+        );
+    }
+
+    #[test]
+    fn switch_miss_empty_defaults_falls_back_to_group_head() {
+        // [claude/opus] + active grok, empty pool → group-head fallback grok-4.5.
         let cat = builtin_catalog();
         let spec = ModelRef::One("claude/opus".into());
         assert_eq!(
@@ -375,7 +416,8 @@ mod tests {
 
     #[test]
     fn null_spec_reheads_defaults_under_active_provider() {
-        // defaults = [claude/opus], active = grok → head is group head grok/grok-4.5
+        // defaults = [claude/opus] (no grok entry), active = grok → group-head
+        // fallback grok/grok-4.5.
         let cat = builtin_catalog();
         let defaults = vec!["claude/opus".to_string()];
         assert_eq!(

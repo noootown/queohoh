@@ -132,7 +132,49 @@ describe("resolveModelChain", () => {
 		});
 	});
 
-	it("switch-miss prepends the active provider's group head when it is enabled", () => {
+	it("switch-miss injects the active provider's default_models entry, not its group head", () => {
+		// default_models is the pool; claude's default is opus, but claude's
+		// group head is fable (its first catalog entry). A grok-only spec under
+		// active=claude must inject OPUS (the chosen default), never fable.
+		expect(
+			resolveModelChain(
+				["grok/grok-4.5"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				["claude/opus", "grok/grok-4.5"],
+				"claude",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
+			],
+		});
+	});
+
+	it("switch-miss falls back to the group head when default_models names no model for the active provider", () => {
+		// default_models has only a grok entry; active=claude has no default in the
+		// pool → fall back to claude's group head (fable). Conservative + runnable.
+		expect(
+			resolveModelChain(
+				["grok/grok-4.5"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				["grok/grok-4.5"],
+				"claude",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-fable-5", ref: "claude/fable" },
+				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
+			],
+		});
+	});
+
+	it("switch-miss with empty default_models falls back to the group head", () => {
+		// No pool at all → group-head fallback (grok's most powerful, grok-4.5).
 		expect(
 			resolveModelChain(
 				["claude/opus"],
