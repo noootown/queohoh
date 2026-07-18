@@ -141,7 +141,7 @@ function unregisteredCwdMessage(cwd: string, toplevel: string | null): string {
 	const repoPath = toplevel ?? cwd;
 	return [
 		`no registered project contains: ${cwd}`,
-		"Add the repo to ~/.config/queohoh/config.yaml under projects:, then retry:",
+		"Add the repo to $QUEOHOH_WORKSPACE/config.yaml under projects:, then retry:",
 		"projects:",
 		`  - name: ${basename(repoPath)}`,
 		`    path: ${repoPath}`,

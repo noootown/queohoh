@@ -19,9 +19,18 @@ claude ◀───spawn────│  worktree+PR       │  socket─▶│ 
 
 The daemon is the single writer of all state; the TUI never touches git or task state directly. Runs are detached through a per-run shim process, so a daemon reload or crash never kills a run in flight — a returning daemon re-adopts live runs and finalizes completed ones from their run-dir files.
 
-## Config lives in a separate repo
+## Config lives in a separate workspace
 
-This repo is the daemon and TUI **source**. The projects you orchestrate, and the task definitions you run against them, live in a separate config workspace (`~/workspace/queohoh` by default). The daemon reads `~/.config/queohoh/config.yaml`, which lists your registered projects and points at that workspace; task definitions sit under `<workspace>/<project>/tasks/<name>/`. See `docs/setup.md` for the config schema, builtin template vars, and verify/done-condition setup.
+This repo is the daemon and TUI **source**. The projects you orchestrate, and the task definitions you run against them, live in a **private config workspace** you own (not this git tree).
+
+Point the daemon at it with an environment variable (preferred — no personal paths in the product):
+
+```bash
+export QUEOHOH_WORKSPACE=~/path/to/your-config-workspace
+# daemon then reads: $QUEOHOH_WORKSPACE/config.yaml
+```
+
+Optional overrides: `QUEOHOH_CONFIG` (explicit config file), `QUEOHOH_STATE_DIR` (runtime state; default `~/.local/state/queohoh`). Task definitions sit under `$QUEOHOH_WORKSPACE/<project>/tasks/<name>/`. See `docs/setup.md` for the schema, builtin template vars, and verify/done-condition setup.
 
 ## Repo layout
 

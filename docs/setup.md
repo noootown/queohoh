@@ -10,20 +10,36 @@ pnpm -F @queohoh/daemon link --global   # or add packages/daemon/dist/cli.js to 
 
 ## 2. Configure
 
-`~/.config/queohoh/config.yaml` (created with comments on first daemon start):
+### Discovery (env-only)
+
+```bash
+export QUEOHOH_WORKSPACE=~/path/to/your-config-workspace
+# optional:
+# export QUEOHOH_CONFIG=/path/to/config.yaml   # explicit file override
+# export QUEOHOH_STATE_DIR=~/.local/state/queohoh
+```
+
+The daemon loads **`$QUEOHOH_WORKSPACE/config.yaml`**. Put that export in your shell profile (e.g. `path.zsh`) so interactive shells, the TUI, and `daemon-ensure` all agree. `launchd:install` snapshots the same env into the plist so a reboot still finds the workspace.
+
+If neither `QUEOHOH_WORKSPACE` nor `QUEOHOH_CONFIG` is set, the daemon falls back to `~/.config/queohoh/config.yaml` (legacy).
+
+### Config file
+
+Created with comments on first daemon start if missing:
 
 ```yaml
-workspace: ~/workspace/queohoh
+# $QUEOHOH_WORKSPACE/config.yaml
+workspace: .   # or an absolute path to the config workspace root
 projects:
-  - name: platform
-    path: ~/workspace/platform
+  - name: my-app
+    path: ~/code/my-app
 max_concurrent_tasks: 3
 archive_after_days: 7
 vars:
   github_user: you
 ```
 
-Task definitions live in the workspace, one directory per project: `<workspace>/<project>/tasks/<name>/` (`config.yaml` + `prompt.md`). An optional `<workspace>/<project>/vars.yaml` supplies per-project template vars. For the config above, `platform`'s definitions live in `~/workspace/queohoh/platform/tasks/<name>/`.
+Task definitions live in the workspace, one directory per project: `$QUEOHOH_WORKSPACE/<project>/tasks/<name>/` (`config.yaml` + `prompt.md`). An optional `$QUEOHOH_WORKSPACE/<project>/vars.yaml` supplies per-project template vars.
 
 `vars.yaml` also holds two reserved keys that are read as settings rather than exposed as `{{var}}` placeholders:
 

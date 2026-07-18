@@ -68,6 +68,17 @@ program
 		mkdirSync(join(homedir(), "Library/LaunchAgents"), { recursive: true });
 		mkdirSync(join(statePath(), "daemon"), { recursive: true });
 		const cliPath = fileURLToPath(import.meta.url);
+		// Snapshot the discovery env so launchd (no path.zsh) still finds the
+		// config workspace the same way an interactive shell does.
+		const env: Record<string, string> = {};
+		for (const k of [
+			"QUEOHOH_WORKSPACE",
+			"QUEOHOH_CONFIG",
+			"QUEOHOH_STATE_DIR",
+		] as const) {
+			const v = process.env[k];
+			if (v && v.trim() !== "") env[k] = v;
+		}
 		writeFileSync(
 			PLIST_PATH,
 			launchdPlist({
@@ -75,6 +86,7 @@ program
 				nodeBin: process.execPath,
 				cliPath,
 				logPath: join(statePath(), "daemon/daemon.log"),
+				env,
 			}),
 		);
 		console.log(`wrote ${PLIST_PATH}`);

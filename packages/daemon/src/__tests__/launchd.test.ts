@@ -31,4 +31,21 @@ describe("launchdPlist", () => {
 		expect(xml).toContain("<string>/tmp/a&gt;b.log</string>");
 		expect(xml).not.toContain("<string>a&b</string>");
 	});
+
+	it("embeds non-empty EnvironmentVariables for workspace discovery", () => {
+		const xml = launchdPlist({
+			label: "com.queohoh.daemon",
+			nodeBin: "/usr/local/bin/node",
+			cliPath: "/opt/queohoh/cli.js",
+			logPath: "/tmp/queohoh.log",
+			env: {
+				QUEOHOH_WORKSPACE: "/home/me/ws",
+				QUEOHOH_CONFIG: "",
+			},
+		});
+		expect(xml).toContain("<key>EnvironmentVariables</key>");
+		expect(xml).toContain("<key>QUEOHOH_WORKSPACE</key>");
+		expect(xml).toContain("<string>/home/me/ws</string>");
+		expect(xml).not.toContain("QUEOHOH_CONFIG");
+	});
 });

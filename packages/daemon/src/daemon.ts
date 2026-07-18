@@ -31,11 +31,18 @@ import { SettingsStore } from "./settings-store.js";
 import { makeShimSpawner } from "./shim-host.js";
 import { UsagePoller } from "./usage-poller.js";
 
-const STARTER_CONFIG = `# queohoh global config
-# workspace: ~/workspace/queohoh
+const STARTER_CONFIG = `# queohoh config (lives in your private config workspace)
+#
+# Point the daemon at this file via:
+#   export QUEOHOH_WORKSPACE=~/path/to/this-directory
+# (config is then $QUEOHOH_WORKSPACE/config.yaml). Optional overrides:
+#   QUEOHOH_CONFIG=/path/to/config.yaml
+#   QUEOHOH_STATE_DIR=~/.local/state/queohoh
+#
+# workspace: .                    # or an absolute path; defaults relative to this file's tree
 # projects:
-#   - name: platform
-#     path: ~/workspace/platform
+#   - name: my-app
+#     path: ~/code/my-app
 # max_concurrent_tasks: 5   # per project
 # archive_after_days: 7
 # vars: {}
@@ -48,6 +55,11 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		mkdirSync(dirname(cfgPath), { recursive: true });
 		writeFileSync(cfgPath, STARTER_CONFIG);
 		console.log(`created starter config at ${cfgPath}`);
+		if (!process.env.QUEOHOH_WORKSPACE && !process.env.QUEOHOH_CONFIG) {
+			console.log(
+				"tip: set QUEOHOH_WORKSPACE to your config workspace so discovery is env-only",
+			);
+		}
 	}
 	const config = loadGlobalConfig(cfgPath);
 
