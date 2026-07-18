@@ -120,6 +120,52 @@ mod tests {
     }
 
     #[test]
+    fn run_button_click_hits_confirm_for_a_four_field_def() {
+        // Repro of the pr-review shape: model "" head + a required worktree
+        // combobox + two enum dropdowns (4 fields after the model-first reorder).
+        // Clicking `[ Run ]` must resolve to Button(Confirm), not the inert Modal.
+        use crate::view::form::DropdownOption;
+        let mut model = Field::dropdown_labeled(
+            "model",
+            vec![
+                DropdownOption { value: String::new(), label: "default (grok-4.5)".into() },
+                DropdownOption { value: "grok/grok-4.5".into(), label: "grok-4.5 (grok)".into() },
+            ],
+            "",
+        );
+        model.required = false;
+        let mut target = Field::combobox("target", vec![], "pr:1762");
+        target.required = true;
+        let mut state = FormState::new(
+            "pr-review",
+            "Run",
+            vec![
+                model,
+                target,
+                Field::dropdown("static_review", vec!["false".into(), "true".into()], "false"),
+                Field::dropdown("e2e_review", vec!["true".into(), "false".into()], "true"),
+            ],
+        );
+        let (s, hit) = render(&mut state, Some("Review the PR."), 100, 30);
+        // Locate `[ Run ]` and probe the middle of "Run".
+        let (rx, ry) = {
+            let mut found = None;
+            for (y, line) in s.lines().enumerate() {
+                if let Some(cx) = line.find("[ Run ]") {
+                    found = Some((cx + 3, y)); // the 'R'
+                    break;
+                }
+            }
+            found.expect("[ Run ] button rendered")
+        };
+        assert!(
+            matches!(hit.hit(rx as u16, ry as u16), Some(HitTarget::Button(crate::hit::ButtonKind::Confirm))),
+            "a click on [ Run ] must hit Button(Confirm), got {:?}",
+            hit.hit(rx as u16, ry as u16)
+        );
+    }
+
+    #[test]
     fn renders_fields_button_row_and_prompt() {
         let mut state = FormState::new(
             "pr-ready",

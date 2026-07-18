@@ -463,7 +463,13 @@ impl App {
                     target_ref.as_deref(),
                     model.as_deref(),
                 );
+                // Immediate feedback so Run is never a dead click: the RPC is
+                // async (and a slow worktree-provisioning run is deliberately
+                // treated as success on timeout, so it would otherwise report
+                // nothing). An RPC error overwrites this via the ActionResult.
+                let running = format!("running {def_name}…");
                 self.mode = Mode::List;
+                self.status_line = Some(running);
                 Update { dirty: true, cmds: vec![cmd] }
             }
             Err(_) => Update { dirty: true, cmds: vec![] }, // error flagged on the row

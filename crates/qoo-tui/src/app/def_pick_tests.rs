@@ -726,6 +726,13 @@ fn def_args_untouched_default_head_is_unpinned() {
         }
         other => panic!("expected runDefinition, got {other:?}"),
     }
+    // Run is never a dead click: submit shows immediate feedback even before the
+    // async RPC resolves.
+    assert!(
+        app.status_line.as_deref().is_some_and(|s| s.contains("running")),
+        "def-run submit must set an immediate status: {:?}",
+        app.status_line
+    );
     // Actively selecting a concrete entry: submit sends the exact ref AND pins it.
     let mut app = mk("claude/opus");
     if let Mode::DefArgs { state, .. } = &mut app.mode {
