@@ -404,12 +404,16 @@ pub fn render_session_pick(
     let selectable = 2 + if loading { 0 } else { filtered.len() };
     let index = index.min(selectable - 1);
 
-    // Width scales with the terminal (≈70%, floored at DIALOG_WIDTH so it never
-    // shrinks below the old size, capped to the frame) so each session row shows
-    // more of its prompt/title before clipping. It still never resizes with its
-    // CONTENT — the same dialog whether the filter matches 5 rows or none.
-    // inner_w = width − border(2) − padding(4).
-    let want = (area.width.saturating_mul(7) / 10).max(DIALOG_WIDTH);
+    // Width scales with the terminal (≈47%), floored at DIALOG_WIDTH so it never
+    // shrinks below the old size and CAPPED at `SESSION_PICKER_MAX_W` so a very
+    // wide monitor doesn't leave a huge dead gap between the prompt and the
+    // right-aligned provider/age column. Rows still show more prompt than the
+    // old fixed 60, without the dialog spanning the whole screen. It never
+    // resizes with its CONTENT — the same dialog whether the filter matches 5
+    // rows or none. inner_w = width − border(2) − padding(4).
+    const SESSION_PICKER_MAX_W: u16 = 110;
+    let want =
+        (area.width.saturating_mul(7) / 15).clamp(DIALOG_WIDTH, SESSION_PICKER_MAX_W);
     let width = want.clamp(50.min(area.width.max(1)), area.width.saturating_sub(4).max(1));
     let inner_w = width.saturating_sub(6).max(1) as usize;
 
@@ -787,15 +791,18 @@ mod menu_view_tests {
 
     #[test]
     fn session_pick_width_scales_with_terminal_not_content() {
-        // The launcher width scales with the TERMINAL (≈70%) so rows show more
+        // The launcher width scales with the TERMINAL (≈47%) so rows show more
         // of their prompt — but it is NOT content-driven: it must not resize as
         // the filter narrows or labels change length.
-        let (s, _) = draw_session_pick(120, 24, false, 1, "");
+        let (s, _) = draw_session_pick(200, 24, false, 1, "");
         let w = popup_width(&s);
-        assert_eq!(w, 84, "≈70% of the 120-col terminal (120*7/10)");
+        assert_eq!(w, 93, "≈47% of the 200-col terminal (200*7/15)");
         // Same width when the filter matches nothing (content-independent).
-        let (s2, _) = draw_session_pick(120, 24, false, 0, "zzz");
+        let (s2, _) = draw_session_pick(200, 24, false, 0, "zzz");
         assert_eq!(popup_width(&s2), w);
+        // A very wide terminal is CAPPED so the dialog never spans the monitor.
+        let (s_cap, _) = draw_session_pick(400, 40, false, 1, "");
+        assert_eq!(popup_width(&s_cap), 110, "capped at SESSION_PICKER_MAX_W");
         // Narrow terminals keep the old floor (never smaller than before).
         let (s3, _) = draw_session_pick(80, 24, false, 1, "");
         assert_eq!(popup_width(&s3), 60, "floored at DIALOG_WIDTH on an 80-col terminal");
