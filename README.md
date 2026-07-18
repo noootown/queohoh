@@ -59,7 +59,7 @@ Run the pieces:
 mise run daemon          # run the daemon in the foreground (rebuilds first)
 mise run daemon:ensure   # start a detached daemon if none is running
 mise run status          # print daemon state JSON over the socket
-mise run tui             # build the release binary, self-heal the daemon, launch the cockpit
+mise run tui             # rebuild+restart daemon from this worktree, build TUI, launch
 mise run tui:rs:dev      # run the TUI unoptimized for a fast rebuild loop
 ```
 

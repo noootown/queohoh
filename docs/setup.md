@@ -147,6 +147,6 @@ pnpm -r build          # compile the daemon
 mise run tui           # builds the release binary, self-heals the daemon, launches
 ```
 
-`mise run tui` is the one-shot path; it also rebuilds `qoo-tui` and ensures the daemon is up. Pass `--no-daemon` for attach-only mode: it skips the daemon (and its TS build) *and* launches the TUI with `--no-heal`, so it never restarts a daemon owned by another checkout. Without that, the TUI's self-heal compares the daemon's build id to its own worktree's `packages/daemon/dist` and two worktrees' TUIs restart the shared daemon back and forth. Use it in secondary worktrees where the daemon runs from the main checkout. To iterate on the TUI unoptimized, use `mise run tui:rs:dev`.
+`mise run tui` is the one-shot path; it rebuilds the TypeScript daemon, **restarts** it from *this* worktree's `packages/daemon/dist` (so a live daemon never keeps an older in-memory build), rebuilds `qoo-tui`, and launches. Pass `--no-daemon` for attach-only mode: it skips the daemon (and its TS build) *and* launches the TUI with `--no-heal`, so it never restarts a daemon owned by another checkout. Without that, the TUI's self-heal compares the daemon's build id to this worktree's `packages/daemon/dist` and two worktrees' TUIs restart the shared daemon back and forth. Use it in secondary worktrees where the daemon runs from the main checkout. To iterate on the TUI unoptimized, use `mise run tui:rs:dev`.
 
 Run it in tmux tab 0 and leave it open — queue left, cron/worktrees right, `a` to add, `enter` for the live transcript, `q` to quit.

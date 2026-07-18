@@ -26,9 +26,27 @@ pub fn layout_path(state: &Path) -> PathBuf {
     state.join("tui-layout.json")
 }
 
+/// Directory holding the daemon's built `cli.js` (and siblings). Resolution
+/// order — each step only wins when it can point at a real directory:
+///
+/// 1. `QUEOHOH_DAEMON_DIST` — explicit override (`mise run tui` sets this to
+///    `$PWD/packages/daemon/dist` so a shared `CARGO_TARGET_DIR` binary still
+///    heals against the worktree the operator launched from).
+/// 2. `$CWD/packages/daemon/dist` — same idea without the env: launching the
+///    binary from a checkout root pins heal to that checkout.
+/// 3. Compile-time `CARGO_MANIFEST_DIR/../../packages/daemon/dist` — last
+///    resort for `cargo run` from `crates/qoo-tui` and tests. Wrong under a
+///    shared cargo target dir when the binary was last compiled in another
+///    worktree (which is why (1)/(2) exist).
 pub fn daemon_dist_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("QUEOHOH_DAEMON_DIST") {
         return PathBuf::from(dir);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let from_cwd = cwd.join("packages/daemon/dist");
+        if from_cwd.is_dir() {
+            return from_cwd;
+        }
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/daemon/dist")
 }
@@ -84,5 +102,27 @@ mod tests {
         assert_eq!(daemon_dist_dir(), PathBuf::from("/opt/dist"));
         assert_eq!(daemon_cli_path(), PathBuf::from("/opt/dist/cli.js"));
         unsafe { std::env::remove_var("QUEOHOH_DAEMON_DIST") };
+    }
+
+    #[test]
+    #[serial]
+    fn daemon_dist_prefers_cwd_checkout_over_compile_time() {
+        // Shared CARGO_TARGET_DIR means the binary may have been compiled in
+        // another worktree; a real `packages/daemon/dist` under cwd must win
+        // so self-heal restarts THIS checkout's daemon.
+        unsafe { std::env::remove_var("QUEOHOH_DAEMON_DIST") };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path().join("packages/daemon/dist");
+        std::fs::create_dir_all(&dist).expect("mkdir dist");
+        let prev = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(tmp.path()).expect("chdir");
+        let got = daemon_dist_dir();
+        std::env::set_current_dir(prev).expect("restore cwd");
+        // macOS temp dirs often live under /var → /private/var; compare after
+        // canonicalize so the assertion is path-identity, not string identity.
+        assert_eq!(
+            got.canonicalize().expect("got"),
+            dist.canonicalize().expect("dist"),
+        );
     }
 }

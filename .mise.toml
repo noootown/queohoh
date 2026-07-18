@@ -79,17 +79,23 @@ description = "Print daemon state JSON via the unix socket"
 run = "node packages/daemon/dist/cli.js status"
 
 [tasks.tui]
-description = "Launch the qoo-tui cockpit (ratatui; builds the release binary, self-heals the daemon unless --no-daemon)"
-usage = 'flag "--no-daemon" help="Attach-only: skip building/ensuring the daemon AND disable the TUI self-heal, so this TUI never restarts a daemon owned by another checkout"'
+description = "Launch the qoo-tui cockpit (ratatui; rebuilds + restarts the daemon from THIS worktree unless --no-daemon)"
+usage = 'flag "--no-daemon" help="Attach-only: skip building/restarting the daemon AND disable the TUI self-heal, so this TUI never restarts a daemon owned by another checkout"'
 run = [
 	# Skipping the daemon also skips the TS build it depends on — UI-only
 	# worktrees just need the release binary.
-	'if [ "${usage_no_daemon:-false}" != "true" ]; then mise run daemon:ensure; fi',
+	# restart (not ensure): a live daemon keeps its in-memory build; ensure would
+	# leave an old process running even after this worktree's dist is rebuilt.
+	# Always replace so `mise run tui` from a worktree owns the shared daemon.
+	'if [ "${usage_no_daemon:-false}" != "true" ]; then mise run daemon:restart; fi',
 	"cargo build --release -p qoo-tui",
 	# The binary lands in the shared CARGO_TARGET_DIR (see [env]), not ./target.
+	# QUEOHOH_DAEMON_DIST pins self-heal to THIS worktree's dist — the release
+	# binary may have been compiled from another checkout (shared target dir
+	# bakes that checkout's CARGO_MANIFEST_DIR into paths::daemon_dist_dir).
 	# --no-heal: without it the TUI compares the daemon build to THIS worktree's
 	# packages/daemon/dist and restarts on mismatch — two worktrees would fight.
-	'extra=""; [ "${usage_no_daemon:-false}" = "true" ] && extra="--no-heal"; exec "${CARGO_TARGET_DIR:-./target}/release/qoo-tui" $extra',
+	'extra=""; [ "${usage_no_daemon:-false}" = "true" ] && extra="--no-heal"; export QUEOHOH_DAEMON_DIST="${QUEOHOH_DAEMON_DIST:-$PWD/packages/daemon/dist}"; exec "${CARGO_TARGET_DIR:-./target}/release/qoo-tui" $extra',
 ]
 
 # --- integrations ---
