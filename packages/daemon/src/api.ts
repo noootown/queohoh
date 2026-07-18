@@ -70,11 +70,20 @@ export interface StateSnapshot {
 	 */
 	activeProvider?: string;
 	/**
-	 * Active provider usage sample (design: provider-usage-header). Optional —
-	 * old daemons omit; null when no successful sample for the active provider.
-	 * Present only when a usagePoller is wired (production daemon).
+	 * Active provider usage sample (design: provider-usage-header, single-chip
+	 * era). Kept for wire compat with older TUIs that only know the one-chip
+	 * shape: when a multi-provider poller is wired this is the active provider's
+	 * entry from `providerUsages` (or null). Prefer `providerUsages` for new
+	 * clients. Optional — old daemons omit.
 	 */
 	providerUsage?: ProviderUsage | null;
+	/**
+	 * Usage samples for every enabled provider the poller has data for, in
+	 * config-precedence order (design: provider-usage-header, multi-chip).
+	 * Optional — old daemons omit; empty array when the poller has nothing yet.
+	 * Present only when a usagePoller is wired (production daemon).
+	 */
+	providerUsages?: ProviderUsage[];
 }
 
 interface ApiDeps {
@@ -95,13 +104,15 @@ interface ApiDeps {
 	 */
 	claudeProjectsDir?: string;
 	/**
-	 * Active-provider usage poller (design: provider-usage-header). Optional so
+	 * Multi-provider usage poller (design: provider-usage-header). Optional so
 	 * unit tests that don't care about usage omit it (snapshot then omits
-	 * `providerUsage`). Production daemon always wires one; onChange → broadcast.
+	 * `providerUsages` / `providerUsage`). Production daemon always wires one;
+	 * onChange → broadcast. Polls every enabled provider on its own interval —
+	 * provider switches do not kick a refresh.
 	 */
 	usagePoller?: {
-		snapshot: () => ProviderUsage | null;
-		onActiveProviderChanged: () => void;
+		/** All known samples, in providers() order. */
+		snapshot: () => ProviderUsage[];
 	};
 	onMutation: () => void;
 	/**
@@ -178,9 +189,14 @@ export class ApiServer {
 			buildId: this.buildId,
 			activeProvider: this.deps.settings.activeProvider(),
 		};
-		// Only set when a poller is wired so bare tests stay free of the field.
+		// Only set when a poller is wired so bare tests stay free of the fields.
 		if (this.deps.usagePoller) {
-			snap.providerUsage = this.deps.usagePoller.snapshot();
+			const usages = this.deps.usagePoller.snapshot();
+			snap.providerUsages = usages;
+			// Single-chip back-compat: active provider's sample (or null).
+			const active = this.deps.settings.activeProvider();
+			snap.providerUsage =
+				usages.find((u) => u.provider === active) ?? null;
 		}
 		return snap;
 	}
@@ -322,14 +338,13 @@ export class ApiServer {
 				// persists (write-through) and returns the new value. Broadcasting the
 				// state snapshot (which now carries `activeProvider`) re-renders every
 				// subscriber, including a different client than the one that switched.
-				// Order: set settings → notify poller (may sync-publish stale cache +
-				// kick async fetch) → broadcast so the UI flips immediately.
+				// Usage is polled for all enabled providers on a timer, so a switch does
+				// not kick a fetch — the header already has every sample.
 				const provider = String(params.provider ?? "");
 				const value = deps.settings.setActiveProvider(
 					provider,
 					deps.config.providers,
 				);
-				deps.usagePoller?.onActiveProviderChanged();
 				this.broadcast();
 				return value;
 			}

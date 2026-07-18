@@ -29,28 +29,49 @@ describe("UsagePoller", () => {
 		vi.useRealTimers();
 	});
 
-	it("start → fetch active → snapshot fresh non-stale", async () => {
+	it("start → fetch all enabled → snapshot fresh non-stale in order", async () => {
 		const onChange = vi.fn();
-		const sample: UsageSample = { text: "10%/20%", severity: "ok" };
-		const fetch = vi.fn().mockResolvedValue(sample);
+		const claudeFetch = vi
+			.fn()
+			.mockResolvedValue({ text: "10%/20%", severity: "ok" });
+		const grokFetch = vi
+			.fn()
+			.mockResolvedValue({ text: "42% mo", severity: "warn" });
 		const poller = new UsagePoller({
-			activeProvider: () => "claude",
-			getProbe: () => makeProbe("claude", fetch),
+			providers: () => ["claude", "grok"],
+			getProbe: (p) => {
+				if (p === "claude") return makeProbe("claude", claudeFetch);
+				if (p === "grok") return makeProbe("grok", grokFetch);
+				return null;
+			},
 			onChange,
 			now: () => 1_000,
 		});
 
 		poller.start();
-		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-		await Promise.resolve(); // flush then-chain after fetch resolves
-
-		expect(poller.snapshot()).toEqual({
-			provider: "claude",
-			text: "10%/20%",
-			severity: "ok",
-			fetchedAt: 1_000,
-			stale: false,
+		await vi.waitFor(() => {
+			expect(claudeFetch).toHaveBeenCalledTimes(1);
+			expect(grokFetch).toHaveBeenCalledTimes(1);
 		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(poller.snapshot()).toEqual([
+			{
+				provider: "claude",
+				text: "10%/20%",
+				severity: "ok",
+				fetchedAt: 1_000,
+				stale: false,
+			},
+			{
+				provider: "grok",
+				text: "42% mo",
+				severity: "warn",
+				fetchedAt: 1_000,
+				stale: false,
+			},
+		]);
 		expect(onChange).toHaveBeenCalled();
 		poller.stop();
 	});
@@ -62,7 +83,7 @@ describe("UsagePoller", () => {
 			.mockResolvedValueOnce({ text: "40%/50%", severity: "ok" })
 			.mockResolvedValueOnce(null);
 		const poller = new UsagePoller({
-			activeProvider: () => "claude",
+			providers: () => ["claude"],
 			getProbe: () => makeProbe("claude", fetch),
 			onChange,
 			now: () => 2_000,
@@ -72,29 +93,31 @@ describe("UsagePoller", () => {
 		poller.start();
 		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
 		await Promise.resolve();
-		expect(poller.snapshot()?.stale).toBe(false);
-		expect(poller.snapshot()?.text).toBe("40%/50%");
+		expect(poller.snapshot()[0]?.stale).toBe(false);
+		expect(poller.snapshot()[0]?.text).toBe("40%/50%");
 
 		// Interval re-fetch fails → last-good published as stale.
 		await vi.advanceTimersByTimeAsync(60_000);
 		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
 		await Promise.resolve();
 
-		expect(poller.snapshot()).toEqual({
-			provider: "claude",
-			text: "40%/50%",
-			severity: "ok",
-			fetchedAt: 2_000,
-			stale: true,
-		});
+		expect(poller.snapshot()).toEqual([
+			{
+				provider: "claude",
+				text: "40%/50%",
+				severity: "ok",
+				fetchedAt: 2_000,
+				stale: true,
+			},
+		]);
 		poller.stop();
 	});
 
-	it("fail without cache → snapshot null", async () => {
+	it("fail without cache → empty snapshot for that provider", async () => {
 		const onChange = vi.fn();
 		const fetch = vi.fn().mockResolvedValue(null);
 		const poller = new UsagePoller({
-			activeProvider: () => "claude",
+			providers: () => ["claude"],
 			getProbe: () => makeProbe("claude", fetch),
 			onChange,
 			now: () => 3_000,
@@ -104,206 +127,58 @@ describe("UsagePoller", () => {
 		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
 		await Promise.resolve();
 
-		expect(poller.snapshot()).toBeNull();
+		expect(poller.snapshot()).toEqual([]);
 		expect(onChange).toHaveBeenCalled();
 		poller.stop();
 	});
 
-	it("switch A→B with B cached → immediately stale B, then success → fresh B", async () => {
-		let active = "claude";
-		const onChange = vi.fn();
-		const clocks = { n: 10_000 };
-		const claudeFetch = vi
-			.fn()
-			.mockResolvedValue({ text: "1%/1%", severity: "ok" });
-		const grokFetch = vi
-			.fn()
-			.mockResolvedValueOnce({ text: "g-old", severity: "warn" })
-			.mockResolvedValueOnce({ text: "g-new", severity: "ok" });
-
-		const poller = new UsagePoller({
-			activeProvider: () => active,
-			getProbe: (p) => {
-				if (p === "claude") return makeProbe("claude", claudeFetch);
-				if (p === "grok") return makeProbe("grok", grokFetch);
-				return null;
-			},
-			onChange,
-			now: () => clocks.n,
-		});
-
-		// Seed cache for both: first start as claude, then as grok.
-		poller.start();
-		await vi.waitFor(() => expect(claudeFetch).toHaveBeenCalledTimes(1));
-		await Promise.resolve();
-
-		active = "grok";
-		poller.onActiveProviderChanged();
-		await vi.waitFor(() => expect(grokFetch).toHaveBeenCalledTimes(1));
-		await Promise.resolve();
-		expect(poller.snapshot()).toEqual({
-			provider: "grok",
-			text: "g-old",
-			severity: "warn",
-			fetchedAt: 10_000,
-			stale: false,
-		});
-
-		// Switch away to claude and back so we exercise switch-with-cache path.
-		active = "claude";
-		poller.onActiveProviderChanged();
-		await vi.waitFor(() => expect(claudeFetch).toHaveBeenCalledTimes(2));
-		await Promise.resolve();
-
-		clocks.n = 20_000;
-		const changesBefore = onChange.mock.calls.length;
-		active = "grok";
-		poller.onActiveProviderChanged();
-
-		// Immediate publish from cache: stale B, before fetch completes.
-		expect(poller.snapshot()).toEqual({
-			provider: "grok",
-			text: "g-old",
-			severity: "warn",
-			fetchedAt: 10_000,
-			stale: true,
-		});
-		expect(onChange.mock.calls.length).toBeGreaterThan(changesBefore);
-
-		await vi.waitFor(() => expect(grokFetch).toHaveBeenCalledTimes(2));
-		await Promise.resolve();
-
-		expect(poller.snapshot()).toEqual({
-			provider: "grok",
-			text: "g-new",
-			severity: "ok",
-			fetchedAt: 20_000,
-			stale: false,
-		});
-		poller.stop();
-	});
-
-	it("late A response after switch to B is discarded", async () => {
-		let active = "claude";
-		const onChange = vi.fn();
-		const a = deferred<UsageSample | null>();
-		const b = deferred<UsageSample | null>();
-		const claudeFetch = vi.fn().mockReturnValue(a.promise);
-		const grokFetch = vi.fn().mockReturnValue(b.promise);
-
-		const poller = new UsagePoller({
-			activeProvider: () => active,
-			getProbe: (p) => {
-				if (p === "claude") return makeProbe("claude", claudeFetch);
-				if (p === "grok") return makeProbe("grok", grokFetch);
-				return null;
-			},
-			onChange,
-			now: () => 5_000,
-		});
-
-		poller.start();
-		await vi.waitFor(() => expect(claudeFetch).toHaveBeenCalledTimes(1));
-
-		active = "grok";
-		poller.onActiveProviderChanged();
-		await vi.waitFor(() => expect(grokFetch).toHaveBeenCalledTimes(1));
-
-		// Late A completes after switch — must not overwrite B's published value.
-		a.resolve({ text: "late-A", severity: "crit" });
-		await Promise.resolve();
-		await Promise.resolve();
-
-		expect(poller.snapshot()).toBeNull(); // B still in flight, no B cache
-
-		b.resolve({ text: "B-ok", severity: "ok" });
-		await Promise.resolve();
-		await Promise.resolve();
-
-		expect(poller.snapshot()).toEqual({
-			provider: "grok",
-			text: "B-ok",
-			severity: "ok",
-			fetchedAt: 5_000,
-			stale: false,
-		});
-		// Ensure late A never appeared as published after B won.
-		expect(poller.snapshot()?.text).not.toBe("late-A");
-		poller.stop();
-	});
-
-	it("late A1 after A→B→A does not overwrite newer A2", async () => {
-		// Regression: activeProvider()===A is not enough — generation must
-		// drop the superseded A1 flight (wrong text + fetchedAt, and clearing
-		// inFlightFor would break A2 coalesce).
-		let active = "claude";
-		const clocks = { n: 1_000 };
+	it("interval replaces prior sample with the newer fetch", async () => {
+		// Sequential flights for the same provider: second success overwrites.
 		const a1 = deferred<UsageSample | null>();
 		const a2 = deferred<UsageSample | null>();
-		const b = deferred<UsageSample | null>();
-		let claudeCalls = 0;
-		const claudeFetch = vi.fn().mockImplementation(() => {
-			claudeCalls += 1;
-			return claudeCalls === 1 ? a1.promise : a2.promise;
+		let calls = 0;
+		const fetch = vi.fn().mockImplementation(() => {
+			calls += 1;
+			return calls === 1 ? a1.promise : a2.promise;
 		});
-		const grokFetch = vi.fn().mockReturnValue(b.promise);
-
+		const clocks = { n: 1_000 };
 		const poller = new UsagePoller({
-			activeProvider: () => active,
-			getProbe: (p) => {
-				if (p === "claude") return makeProbe("claude", claudeFetch);
-				if (p === "grok") return makeProbe("grok", grokFetch);
-				return null;
-			},
+			providers: () => ["claude"],
+			getProbe: () => makeProbe("claude", fetch),
 			onChange: () => {},
 			now: () => clocks.n,
+			intervalMs: 60_000,
 		});
 
 		poller.start();
-		await vi.waitFor(() => expect(claudeFetch).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+		a1.resolve({ text: "A1", severity: "ok" });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(poller.snapshot()[0]?.text).toBe("A1");
 
-		active = "grok";
-		poller.onActiveProviderChanged();
-		await vi.waitFor(() => expect(grokFetch).toHaveBeenCalledTimes(1));
-
-		active = "claude";
-		poller.onActiveProviderChanged();
-		await vi.waitFor(() => expect(claudeFetch).toHaveBeenCalledTimes(2));
-
-		// Superseded A1 completes while A2 still in flight — must not publish.
 		clocks.n = 2_000;
-		a1.resolve({ text: "A1-stale", severity: "crit" });
+		await vi.advanceTimersByTimeAsync(60_000);
+		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+		a2.resolve({ text: "A2", severity: "warn" });
 		await Promise.resolve();
 		await Promise.resolve();
-		expect(poller.snapshot()?.text).not.toBe("A1-stale");
-
-		// A2 wins: fresh sample + its fetchedAt.
-		clocks.n = 3_000;
-		a2.resolve({ text: "A2-fresh", severity: "ok" });
-		await Promise.resolve();
-		await Promise.resolve();
-
-		expect(poller.snapshot()).toEqual({
-			provider: "claude",
-			text: "A2-fresh",
-			severity: "ok",
-			fetchedAt: 3_000,
-			stale: false,
-		});
-
-		// A1 resolving first must not have cleared A2's in-flight slot in a
-		// way that left published wrong; also resolve B so nothing leaks.
-		b.resolve({ text: "B", severity: "ok" });
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(poller.snapshot()?.text).toBe("A2-fresh");
+		expect(poller.snapshot()).toEqual([
+			{
+				provider: "claude",
+				text: "A2",
+				severity: "warn",
+				fetchedAt: 2_000,
+				stale: false,
+			},
+		]);
 		poller.stop();
 	});
 
-	it("null probe → snapshot null", async () => {
+	it("null probe → empty snapshot for that provider", async () => {
 		const onChange = vi.fn();
 		const poller = new UsagePoller({
-			activeProvider: () => "codex",
+			providers: () => ["codex"],
 			getProbe: () => null,
 			onChange,
 			now: () => 1,
@@ -312,11 +187,11 @@ describe("UsagePoller", () => {
 		poller.start();
 		await Promise.resolve();
 
-		expect(poller.snapshot()).toBeNull();
+		expect(poller.snapshot()).toEqual([]);
 		poller.stop();
 	});
 
-	it("interval re-fetches same provider", async () => {
+	it("interval re-fetches all providers", async () => {
 		const onChange = vi.fn();
 		const fetch = vi
 			.fn()
@@ -324,7 +199,7 @@ describe("UsagePoller", () => {
 			.mockResolvedValueOnce({ text: "b", severity: "warn" });
 		const clock = { n: 100 };
 		const poller = new UsagePoller({
-			activeProvider: () => "claude",
+			providers: () => ["claude"],
 			getProbe: () => makeProbe("claude", fetch),
 			onChange,
 			now: () => clock.n,
@@ -334,20 +209,22 @@ describe("UsagePoller", () => {
 		poller.start();
 		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
 		await Promise.resolve();
-		expect(poller.snapshot()?.text).toBe("a");
+		expect(poller.snapshot()[0]?.text).toBe("a");
 
 		clock.n = 200;
 		await vi.advanceTimersByTimeAsync(60_000);
 		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
 		await Promise.resolve();
 
-		expect(poller.snapshot()).toEqual({
-			provider: "claude",
-			text: "b",
-			severity: "warn",
-			fetchedAt: 200,
-			stale: false,
-		});
+		expect(poller.snapshot()).toEqual([
+			{
+				provider: "claude",
+				text: "b",
+				severity: "warn",
+				fetchedAt: 200,
+				stale: false,
+			},
+		]);
 		poller.stop();
 	});
 
@@ -355,7 +232,7 @@ describe("UsagePoller", () => {
 		const gate = deferred<UsageSample | null>();
 		const fetch = vi.fn().mockReturnValue(gate.promise);
 		const poller = new UsagePoller({
-			activeProvider: () => "claude",
+			providers: () => ["claude"],
 			getProbe: () => makeProbe("claude", fetch),
 			onChange: () => {},
 			now: () => 1,
@@ -372,7 +249,94 @@ describe("UsagePoller", () => {
 		gate.resolve({ text: "x", severity: "ok" });
 		await Promise.resolve();
 		await Promise.resolve();
-		expect(poller.snapshot()?.text).toBe("x");
+		expect(poller.snapshot()[0]?.text).toBe("x");
+		poller.stop();
+	});
+
+	it("polls providers independently (A hang does not block B publish)", async () => {
+		const a = deferred<UsageSample | null>();
+		const claudeFetch = vi.fn().mockReturnValue(a.promise);
+		const grokFetch = vi
+			.fn()
+			.mockResolvedValue({ text: "B-ok", severity: "ok" });
+		const poller = new UsagePoller({
+			providers: () => ["claude", "grok"],
+			getProbe: (p) => {
+				if (p === "claude") return makeProbe("claude", claudeFetch);
+				if (p === "grok") return makeProbe("grok", grokFetch);
+				return null;
+			},
+			onChange: () => {},
+			now: () => 5_000,
+		});
+
+		poller.start();
+		await vi.waitFor(() => expect(grokFetch).toHaveBeenCalledTimes(1));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// B published while A still in flight.
+		expect(poller.snapshot()).toEqual([
+			{
+				provider: "grok",
+				text: "B-ok",
+				severity: "ok",
+				fetchedAt: 5_000,
+				stale: false,
+			},
+		]);
+
+		a.resolve({ text: "A-ok", severity: "ok" });
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(poller.snapshot()).toEqual([
+			{
+				provider: "claude",
+				text: "A-ok",
+				severity: "ok",
+				fetchedAt: 5_000,
+				stale: false,
+			},
+			{
+				provider: "grok",
+				text: "B-ok",
+				severity: "ok",
+				fetchedAt: 5_000,
+				stale: false,
+			},
+		]);
+		poller.stop();
+	});
+
+	it("drops published sample when provider leaves the enabled list", async () => {
+		let names = ["claude", "grok"];
+		const fetch = vi
+			.fn()
+			.mockResolvedValue({ text: "ok", severity: "ok" });
+		const poller = new UsagePoller({
+			providers: () => names,
+			getProbe: (p) => makeProbe(p, fetch),
+			onChange: () => {},
+			now: () => 1,
+			intervalMs: 60_000,
+		});
+
+		poller.start();
+		await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(poller.snapshot().map((u) => u.provider)).toEqual([
+			"claude",
+			"grok",
+		]);
+
+		names = ["claude"];
+		await vi.advanceTimersByTimeAsync(60_000);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(poller.snapshot().map((u) => u.provider)).toEqual(["claude"]);
 		poller.stop();
 	});
 
@@ -381,7 +345,7 @@ describe("UsagePoller", () => {
 		const fetch = vi.fn().mockReturnValue(gate.promise);
 		const onChange = vi.fn();
 		const poller = new UsagePoller({
-			activeProvider: () => "claude",
+			providers: () => ["claude"],
 			getProbe: () => makeProbe("claude", fetch),
 			onChange,
 			now: () => 1,
@@ -396,7 +360,7 @@ describe("UsagePoller", () => {
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(poller.snapshot()).toBeNull();
+		expect(poller.snapshot()).toEqual([]);
 		expect(onChange.mock.calls.length).toBe(calls);
 	});
 });

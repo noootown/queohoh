@@ -323,8 +323,8 @@ impl App {
                 Some(HitTarget::Tab(i)) => {
                     return self.apply_action(crate::keymap::AppAction::SwitchTab(i));
                 }
-                // The top-right `↯ <provider>` indicator: a click cycles the
-                // active provider, exactly like the `p` key.
+                // The top-right provider chip cluster (`↯ <name> …`): a click
+                // cycles the active provider, exactly like the `p` key.
                 Some(HitTarget::ProviderIndicator) => {
                     return self.apply_action(crate::keymap::AppAction::CycleProvider);
                 }

@@ -486,19 +486,20 @@ mod tests {
 
     #[test]
     fn header_shows_usage_next_to_active_provider() {
-        // Active grok + matching provider_usage → `↯ grok 42% mo` at the right
-        // edge. ProviderIndicator hit covers the provider span only (not usage).
+        // Active grok + matching usage → `↯ grok 42% mo` at the right edge.
+        // ProviderIndicator hit covers the whole provider+usage cluster (click
+        // cycles, same as `p`).
         use crate::ipc::types::{ProviderUsage, UsageSeverity};
         use ratatui::text::Span;
 
         let mut app = fixture_app();
-        app.snapshot.as_mut().unwrap().provider_usage = Some(ProviderUsage {
+        app.snapshot.as_mut().unwrap().provider_usages = Some(vec![ProviderUsage {
             provider: "grok".into(),
             text: "42% mo".into(),
             severity: UsageSeverity::Ok,
             fetched_at: 1,
             stale: false,
-        });
+        }]);
         let (terminal, hits) = render_at(&app, 120, 40);
         let buf = terminal.backend().buffer().clone();
         let mut row0 = String::new();
@@ -515,23 +516,98 @@ mod tests {
             "usage should be rightmost in the cluster: {row0:?}"
         );
 
-        let prov_w = Span::raw("  ↯ grok").width() as u16;
-        let usage_w = Span::raw(" 42% mo").width() as u16;
+        let cluster_w = Span::raw("  ↯ grok 42% mo").width() as u16;
         let (rect, _) = hits
             .iter()
             .find(|(_, t)| matches!(t, HitTarget::ProviderIndicator))
             .expect("ProviderIndicator hit target registered");
-        assert_eq!(rect.width, prov_w, "hit width is provider span only, not usage");
-        assert_eq!(
-            rect.x,
-            120 - usage_w - prov_w,
-            "hit sits left of usage on the right-aligned cluster"
-        );
+        assert_eq!(rect.width, cluster_w, "hit covers full provider+usage cluster");
+        assert_eq!(rect.x, 120 - cluster_w, "cluster is right-aligned");
     }
 
     #[test]
-    fn header_hides_usage_when_provider_mismatches() {
-        // Active is grok; usage sample is for claude → do not show claude's text.
+    fn header_shows_all_enabled_providers_with_usage() {
+        // Settings lists claude + grok; both have samples; active is grok.
+        // Both chips render; order follows settings precedence.
+        use crate::ipc::types::{
+            ProviderUsage, SettingsPayload, SettingsProvider, UsageSeverity,
+        };
+        use ratatui::text::Span;
+
+        let mut app = fixture_app();
+        app.settings = Some(Some(SettingsPayload {
+            active_provider: "grok".into(),
+            providers: vec![
+                SettingsProvider {
+                    name: "claude".into(),
+                    enabled: true,
+                    bin: None,
+                },
+                SettingsProvider {
+                    name: "grok".into(),
+                    enabled: true,
+                    bin: None,
+                },
+                SettingsProvider {
+                    name: "codex".into(),
+                    enabled: false,
+                    bin: None,
+                },
+            ],
+            ..Default::default()
+        }));
+        app.snapshot.as_mut().unwrap().provider_usages = Some(vec![
+            ProviderUsage {
+                provider: "claude".into(),
+                text: "10%".into(),
+                severity: UsageSeverity::Ok,
+                fetched_at: 1,
+                stale: false,
+            },
+            ProviderUsage {
+                provider: "grok".into(),
+                text: "42% mo".into(),
+                severity: UsageSeverity::Warn,
+                fetched_at: 2,
+                stale: false,
+            },
+        ]);
+        let (terminal, hits) = render_at(&app, 120, 40);
+        let buf = terminal.backend().buffer().clone();
+        let mut row0 = String::new();
+        for x in 0..120 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        assert!(
+            row0.contains("↯ claude 10%"),
+            "inactive claude+usage shown: {row0:?}"
+        );
+        assert!(
+            row0.contains("↯ grok 42% mo"),
+            "active grok+usage shown: {row0:?}"
+        );
+        assert!(
+            !row0.contains("codex"),
+            "disabled codex must not render: {row0:?}"
+        );
+        // claude before grok (settings precedence).
+        let c = row0.find("↯ claude").expect("claude chip");
+        let g = row0.find("↯ grok").expect("grok chip");
+        assert!(c < g, "claude precedes grok: {row0:?}");
+
+        let cluster_w = Span::raw("  ↯ claude 10%  ↯ grok 42% mo").width() as u16;
+        let (rect, _) = hits
+            .iter()
+            .find(|(_, t)| matches!(t, HitTarget::ProviderIndicator))
+            .expect("ProviderIndicator hit target registered");
+        assert_eq!(rect.width, cluster_w);
+        assert_eq!(rect.x, 120 - cluster_w);
+    }
+
+    #[test]
+    fn header_hides_usage_when_sample_provider_not_shown() {
+        // No settings (only active grok shown); single-chip sample is for
+        // claude → do not attach claude's text to the grok chip.
         use crate::ipc::types::{ProviderUsage, UsageSeverity};
 
         let mut app = fixture_app();
@@ -553,7 +629,6 @@ mod tests {
             !row0.contains("100%"),
             "mismatched usage text must not render: {row0:?}"
         );
-        // Hit is still just the provider span at the right edge (no usage).
         let prov_w = ratatui::text::Span::raw("  ↯ grok").width() as u16;
         let (rect, _) = hits
             .iter()
@@ -565,7 +640,7 @@ mod tests {
 
     #[test]
     fn header_omits_usage_when_none() {
-        // provider_usage absent (fixture default): header ends with the provider
+        // provider_usages absent (fixture default): header ends with the provider
         // name, no percent/usage suffix after ↯ grok.
         let app = fixture_app();
         let (terminal, _hits) = render_at(&app, 120, 40);
@@ -581,7 +656,7 @@ mod tests {
         );
         assert!(
             !row0.contains('%'),
-            "no usage percent when provider_usage is None: {row0:?}"
+            "no usage percent when provider_usages is None: {row0:?}"
         );
     }
 

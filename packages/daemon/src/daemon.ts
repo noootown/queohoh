@@ -107,11 +107,14 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		spawnShim: makeShimSpawner({ runStore }),
 	});
 
-	// Provider usage poller (design: provider-usage-header). onChange uses the
-	// same late-bound broadcastRef so a completed fetch re-renders every TUI
-	// without the poller knowing about ApiServer.
+	// Provider usage poller (design: provider-usage-header). Polls EVERY enabled
+	// provider on a 60s interval so the TUI header can show all chips (active
+	// colored, inactive grey). onChange uses the same late-bound broadcastRef so
+	// a completed fetch re-renders every TUI without the poller knowing about
+	// ApiServer. providers() is re-read each tick so enable/disable takes effect.
 	const usagePoller = new UsagePoller({
-		activeProvider: () => settings.activeProvider(),
+		providers: () =>
+			config.providers.filter((p) => p.enabled).map((p) => p.name),
 		onChange: () => broadcastRef(),
 	});
 

@@ -147,6 +147,7 @@ pub fn fixture_snapshot() -> StateSnapshot {
         build_id: Some("build-1".to_string()),
         active_provider: Some("grok".to_string()),
         provider_usage: None,
+        provider_usages: None,
     }
 }
 

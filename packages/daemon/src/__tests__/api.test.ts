@@ -101,8 +101,7 @@ async function setup(opts?: {
 	activeProviderSeed?: string;
 	/** Optional usage poller injected into ApiServer (provider-usage-header). */
 	usagePoller?: {
-		snapshot: () => ProviderUsage | null;
-		onActiveProviderChanged: () => void;
+		snapshot: () => ProviderUsage[];
 	};
 }) {
 	const base = mkdtempSync(join(tmpdir(), "qo-api-"));
@@ -794,51 +793,75 @@ describe("ApiServer", () => {
 		});
 	});
 
-	describe("providerUsage", () => {
-		const sample: ProviderUsage = {
+	describe("providerUsage / providerUsages", () => {
+		const claudeSample: ProviderUsage = {
 			provider: "claude",
 			text: "5h 12%",
 			severity: "ok",
 			fetchedAt: 1_700_000_000_000,
 			stale: false,
 		};
+		const grokSample: ProviderUsage = {
+			provider: "grok",
+			text: "42% mo",
+			severity: "warn",
+			fetchedAt: 1_700_000_000_001,
+			stale: false,
+		};
+		const samples = [claudeSample, grokSample];
 
-		it("includes providerUsage from the injected poller in state snapshots", async () => {
+		it("includes providerUsages + active providerUsage from the poller", async () => {
+			// setup's default active provider is precedence-first enabled
+			// (claude in the fixture config). providerUsage is the active entry.
 			const usagePoller = {
-				snapshot: () => sample,
-				onActiveProviderChanged: vi.fn(),
+				snapshot: () => samples,
 			};
 			const { client } = await setup({ usagePoller });
 			const state = (await client.call("state")) as {
 				providerUsage?: ProviderUsage | null;
+				providerUsages?: ProviderUsage[];
 			};
-			expect(state.providerUsage).toEqual(sample);
+			expect(state.providerUsages).toEqual(samples);
+			expect(state.providerUsage).toEqual(claudeSample);
 		});
 
-		it("omits providerUsage when no poller is injected", async () => {
+		it("omits usage fields when no poller is injected", async () => {
 			const { client } = await setup();
 			const state = (await client.call("state")) as {
 				providerUsage?: ProviderUsage | null;
+				providerUsages?: ProviderUsage[];
 			};
 			expect(state.providerUsage).toBeUndefined();
+			expect(state.providerUsages).toBeUndefined();
 		});
 
-		it("calls onActiveProviderChanged on set_active_provider before broadcast", async () => {
-			const onActiveProviderChanged = vi.fn();
+		it("set_active_provider re-derives providerUsage from the multi list", async () => {
+			// Switch does not kick a poller refresh — it only flips activeProvider
+			// and re-picks the single-chip back-compat field from providerUsages.
 			const usagePoller = {
-				snapshot: () => sample,
-				onActiveProviderChanged,
+				snapshot: () => samples,
 			};
 			const { client } = await setup({ usagePoller });
-			const snapshots: { providerUsage?: ProviderUsage | null }[] = [];
+			const snapshots: {
+				providerUsage?: ProviderUsage | null;
+				providerUsages?: ProviderUsage[];
+				activeProvider?: string;
+			}[] = [];
 			await client.subscribe((state) =>
-				snapshots.push(state as { providerUsage?: ProviderUsage | null }),
+				snapshots.push(
+					state as {
+						providerUsage?: ProviderUsage | null;
+						providerUsages?: ProviderUsage[];
+						activeProvider?: string;
+					},
+				),
 			);
 			await client.call("set_active_provider", { provider: "grok" });
-			expect(onActiveProviderChanged).toHaveBeenCalledTimes(1);
-			// Broadcast after switch still carries poller snapshot.
 			await vi.waitFor(() => {
-				expect(snapshots.at(-1)?.providerUsage).toEqual(sample);
+				const last = snapshots.at(-1);
+				expect(last?.activeProvider).toBe("grok");
+				expect(last?.providerUsages).toEqual(samples);
+				expect(last?.providerUsage).toEqual(grokSample);
 			});
 		});
 	});

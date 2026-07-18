@@ -8,7 +8,7 @@ import {
 
 /**
  * Last successful sample per provider this process (design: provider-usage-header).
- * Not on the wire — only seeds stale publishes on fail/switch.
+ * Not on the wire — only seeds stale publishes on fail.
  */
 type CacheEntry = {
 	text: string;
@@ -17,8 +17,11 @@ type CacheEntry = {
 };
 
 export interface UsagePollerDeps {
-	/** Current active provider name. */
-	activeProvider: () => string;
+	/**
+	 * Enabled provider names in display/poll order (settings precedence).
+	 * Re-read each tick so config/settings changes take effect without restart.
+	 */
+	providers: () => string[];
 	/** Resolve probe for a provider; default getUsageProbe. */
 	getProbe?: (provider: string) => UsageProbe | null;
 	/** Notify after published value may have changed (daemon wires → broadcast). */
@@ -30,53 +33,53 @@ export interface UsagePollerDeps {
 }
 
 /**
- * Polls usage for the active provider only: interval + immediate on start /
- * provider switch. Owns cache, stale flags, and late-response discard so the
- * API can merge `snapshot()` into StateSnapshot without knowing about probes.
+ * Polls usage for EVERY enabled provider on interval + immediate on start.
+ * Owns per-provider cache, stale flags, in-flight coalesce, and late-response
+ * discard so the API can merge `snapshot()` into StateSnapshot without knowing
+ * about probes.
  *
- * Failure never throws out of the poller (null/stale path only).
+ * Failure never throws out of the poller (null/stale path only). Providers with
+ * no probe or a permanently-null probe simply omit that name from snapshot().
  */
 export class UsagePoller {
-	private readonly activeProvider: () => string;
+	private readonly providers: () => string[];
 	private readonly getProbe: (provider: string) => UsageProbe | null;
 	private readonly onChange: () => void;
 	private readonly now: () => number;
 	private readonly intervalMs: number;
 
 	private cache = new Map<string, CacheEntry>();
-	private published: ProviderUsage | null = null;
-	/** Provider name of the in-flight fetch, if any (coalesce same-P only). */
-	private inFlightFor: string | null = null;
+	/** Last published sample per provider (success or last-good stale). */
+	private published = new Map<string, ProviderUsage>();
 	/**
-	 * Monotonic generation bumped when each fetch starts. Captured as `myGen`
-	 * per flight so a late A1 after A→B→A cannot overwrite a newer A2 (same
-	 * provider name is not enough — only the latest flight may publish).
+	 * Monotonic generation per provider. Captured as `myGen` per flight so a
+	 * late response from a superseded fetch cannot overwrite a newer one.
 	 */
-	private epoch = 0;
-	/** Generation that currently owns `inFlightFor` (clear only if matching). */
-	private inFlightGen = 0;
+	private epoch = new Map<string, number>();
+	/** Provider → generation that currently owns the in-flight slot. */
+	private inFlight = new Map<string, number>();
 	/** After stop(), ignore late completions and further refresh work. */
 	private stopped = true;
 	private timer: ReturnType<typeof setInterval> | null = null;
 
 	constructor(deps: UsagePollerDeps) {
-		this.activeProvider = deps.activeProvider;
+		this.providers = deps.providers;
 		this.getProbe = deps.getProbe ?? getUsageProbe;
 		this.onChange = deps.onChange;
 		this.now = deps.now ?? (() => Date.now());
 		this.intervalMs = deps.intervalMs ?? 60_000;
 	}
 
-	/** Start interval + immediate refresh for current active provider. */
+	/** Start interval + immediate refresh for all enabled providers. */
 	start(): void {
 		this.stopped = false;
 		if (this.timer !== null) {
 			clearInterval(this.timer);
 		}
 		this.timer = setInterval(() => {
-			void this.refresh(false);
+			void this.refreshAll();
 		}, this.intervalMs);
-		void this.refresh(false);
+		void this.refreshAll();
 	}
 
 	stop(): void {
@@ -87,60 +90,58 @@ export class UsagePoller {
 		}
 	}
 
-	/** Call after set_active_provider succeeds. Immediate refresh for new active. */
-	onActiveProviderChanged(): void {
-		void this.refresh(true);
-	}
-
-	/** Value to merge into StateSnapshot (null → omit / null on wire). */
-	snapshot(): ProviderUsage | null {
-		return this.published;
-	}
-
 	/**
-	 * @param isSwitch — true on active-provider change: publish cache[P] as
-	 *   stale (or null) before fetching so the UI flips immediately.
+	 * Samples currently on the wire, in `providers()` order. Providers with no
+	 * successful sample yet (or a null-only probe) are omitted.
 	 */
-	private async refresh(isSwitch: boolean): Promise<void> {
+	snapshot(): ProviderUsage[] {
+		const out: ProviderUsage[] = [];
+		for (const name of this.providers()) {
+			const u = this.published.get(name);
+			if (u) out.push(u);
+		}
+		return out;
+	}
+
+	private async refreshAll(): Promise<void> {
 		if (this.stopped) return;
 
-		const P = this.activeProvider();
-
-		if (isSwitch) {
-			const cached = this.cache.get(P);
-			if (cached) {
-				this.published = {
-					provider: P,
-					text: cached.text,
-					severity: cached.severity,
-					fetchedAt: cached.fetchedAt,
-					stale: true,
-				};
-			} else {
-				this.published = null;
+		const names = this.providers();
+		// Drop published entries for providers no longer enabled/listed so the
+		// wire doesn't keep showing a disabled provider's last sample.
+		let pruned = false;
+		for (const key of [...this.published.keys()]) {
+			if (!names.includes(key)) {
+				this.published.delete(key);
+				pruned = true;
 			}
-			this.onChange();
 		}
+		if (pruned) this.onChange();
+
+		await Promise.all(names.map((p) => this.refreshOne(p)));
+	}
+
+	private async refreshOne(P: string): Promise<void> {
+		if (this.stopped) return;
 
 		const probe = this.getProbe(P);
 		if (probe === null) {
-			if (this.published !== null) {
-				this.published = null;
+			if (this.published.has(P)) {
+				this.published.delete(P);
 				this.onChange();
 			}
 			return;
 		}
 
-		// Interval coalesce: at most one in-flight fetch per provider name.
-		// (Does not apply across A→B→A: after switch away, inFlightFor is B,
-		// so the return trip starts a new A flight with a new generation.)
-		if (this.inFlightFor === P) {
+		// Coalesce: at most one in-flight fetch per provider name.
+		if (this.inFlight.has(P)) {
 			return;
 		}
 
-		const myGen = ++this.epoch;
-		this.inFlightFor = P;
-		this.inFlightGen = myGen;
+		const myGen = (this.epoch.get(P) ?? 0) + 1;
+		this.epoch.set(P, myGen);
+		this.inFlight.set(P, myGen);
+
 		let sample: UsageSample | null;
 		try {
 			sample = await probe.fetch();
@@ -149,17 +150,16 @@ export class UsagePoller {
 			sample = null;
 		}
 
-		// Clear coalesce slot only if this flight still owns it (not a
-		// superseded same-P flight that started after A→B→A).
-		if (this.inFlightFor === P && this.inFlightGen === myGen) {
-			this.inFlightFor = null;
+		// Clear coalesce slot only if this flight still owns it.
+		if (this.inFlight.get(P) === myGen) {
+			this.inFlight.delete(P);
 		}
 
-		// Discard after stop, active switch away, or a newer flight for any
-		// provider (covers late A1 after A→B→A where active is again A).
+		// Discard after stop, or a newer flight for the same provider.
 		if (this.stopped) return;
-		if (this.activeProvider() !== P) return;
-		if (myGen !== this.epoch) return;
+		if (this.epoch.get(P) !== myGen) return;
+		// Provider dropped from the enabled list while we were in flight.
+		if (!this.providers().includes(P)) return;
 
 		if (sample !== null) {
 			const fetchedAt = this.now();
@@ -168,29 +168,29 @@ export class UsagePoller {
 				severity: sample.severity,
 				fetchedAt,
 			});
-			this.published = {
+			this.published.set(P, {
 				provider: P,
 				text: sample.text,
 				severity: sample.severity,
 				fetchedAt,
 				stale: false,
-			};
+			});
 			this.onChange();
 			return;
 		}
 
-		// Fetch failed / null: last-good stale, or hide chip.
+		// Fetch failed / null: last-good stale, or drop the chip for this provider.
 		const cached = this.cache.get(P);
 		if (cached) {
-			this.published = {
+			this.published.set(P, {
 				provider: P,
 				text: cached.text,
 				severity: cached.severity,
 				fetchedAt: cached.fetchedAt,
 				stale: true,
-			};
+			});
 		} else {
-			this.published = null;
+			this.published.delete(P);
 		}
 		this.onChange();
 	}

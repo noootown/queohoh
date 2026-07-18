@@ -51,11 +51,17 @@ pub struct StateSnapshot {
     // workspace init-tab overrides are gone; interactive goto uses provider `bin`
     // instead. A stale daemon that still sends the key is silently ignored (no
     // `deny_unknown_fields`).
-    /// Active provider usage chip (optional; old daemons omit). The daemon's
-    /// UsagePoller publishes this on every state broadcast when a probe has a
-    /// sample; `None`/null when the poller has nothing, the provider is
-    /// unsupported, or an old daemon omits the field (container `default`).
+    /// Active provider usage chip (optional; old daemons / single-chip era).
+    /// Kept for wire compat: a modern daemon still publishes the active entry
+    /// here alongside `provider_usages`. Prefer `provider_usages` for multi-chip
+    /// headers. `None` when the poller has nothing, the active provider has no
+    /// sample, or an old daemon omits the field (container `default`).
     pub provider_usage: Option<ProviderUsage>,
+    /// Usage samples for every enabled provider the poller has data for, in
+    /// config-precedence order (multi-chip header). Optional — old daemons omit
+    /// (`None` via container `default`); empty vec when the poller has nothing
+    /// yet. The TUI falls back to `provider_usage` when this is absent.
+    pub provider_usages: Option<Vec<ProviderUsage>>,
 }
 
 /// Severity bucket for a provider usage sample. Wire values are lowercase
@@ -675,7 +681,7 @@ mod tests {
     #[test]
     fn provider_usage_present_and_absent() {
         // A modern daemon publishes camelCase `providerUsage` on the state
-        // broadcast (the top-bar usage chip's source)...
+        // broadcast (single-chip back-compat for the active entry)...
         let s: StateSnapshot = serde_json::from_str(
             r#"{"providerUsage":{"provider":"claude","text":"100%/73%","severity":"crit","fetchedAt":1,"stale":false}}"#,
         )
@@ -690,6 +696,29 @@ mod tests {
         // ...and an old daemon that omits it defaults to None (container `default`).
         let old: StateSnapshot = serde_json::from_str(r#"{}"#).unwrap();
         assert!(old.provider_usage.is_none());
+        assert!(old.provider_usages.is_none());
+    }
+
+    #[test]
+    fn provider_usages_array_present_and_absent() {
+        // Multi-chip header: camelCase `providerUsages` is a list in precedence order.
+        let s: StateSnapshot = serde_json::from_str(
+            r#"{"providerUsages":[
+                {"provider":"claude","text":"10%","severity":"ok","fetchedAt":1,"stale":false},
+                {"provider":"grok","text":"42% mo","severity":"warn","fetchedAt":2,"stale":true}
+            ]}"#,
+        )
+        .unwrap();
+        let us = s.provider_usages.unwrap();
+        assert_eq!(us.len(), 2);
+        assert_eq!(us[0].provider, "claude");
+        assert_eq!(us[0].text, "10%");
+        assert_eq!(us[1].provider, "grok");
+        assert!(us[1].stale);
+        assert_eq!(us[1].severity, UsageSeverity::Warn);
+
+        let old: StateSnapshot = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(old.provider_usages.is_none());
     }
 
     #[test]
