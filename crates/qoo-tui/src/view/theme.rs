@@ -25,12 +25,13 @@ pub const GLYPH_SKIPPED: char = '⊝';
 /// glyph from the worker `✗` so the two failure modes read apart, but the same
 /// red because both are failures needing attention.
 pub const GLYPH_VERIFY_FAILED: char = '⊗';
-/// Session-limit hit — `⊠` (squared times), single-width, in error red. A
+/// Session-limit hit — `$` (dollar sign), single-width, in error red. A
 /// `failed` run whose result text reported Claude's own session/usage limit
-/// (`worker.ts`'s `SESSION_LIMIT_RE`) — distinct from the generic worker `✗`
-/// because retrying right away won't help (the fix is to wait for the reset),
-/// but the same red because it's still a failure needing attention.
-pub const GLYPH_SESSION_LIMIT: char = '⊠';
+/// (`worker.ts`'s `SESSION_LIMIT_RE`). Shares the `$` limit glyph with
+/// out-of-budget by design: both mean "hit a spend/usage limit" — one visual
+/// category; the detail pane's status text disambiguates which. Distinct from
+/// the generic worker `✗` because retrying right away won't help.
+pub const GLYPH_SESSION_LIMIT: char = '$';
 /// Timed-out — `⧗` (hourglass), single-width, in error red. A `failed` run
 /// that hit its configured `timeout` before finishing — distinct from the
 /// generic worker `✗` so a wedged/slow task reads apart from an outright
@@ -38,11 +39,11 @@ pub const GLYPH_SESSION_LIMIT: char = '⊠';
 pub const GLYPH_TIMED_OUT: char = '⧗';
 /// Out-of-budget — `$` (dollar sign), single-width, in error red. A `failed`
 /// run whose result text reported Anthropic's credit-balance/out-of-credits
-/// billing error (`worker.ts`'s `OUT_OF_BUDGET_RE`) — distinct from a session
-/// limit (`⊠`, which resets on a timer) because this needs an account top-up
-/// before a rerun can succeed. Same red because it's still a failure needing
-/// attention; the money glyph lets a "rerun the out-of-budget ones after I've
-/// topped up" sweep pick them out at a glance.
+/// billing error (`worker.ts`'s `OUT_OF_BUDGET_RE`). Shares the `$` limit glyph
+/// with session-limit by design (both are "hit a spend/usage limit"); the
+/// detail pane's status text disambiguates a top-up-needed budget failure from
+/// a wait-for-reset session limit. Same red because it's still a failure; the
+/// money glyph lets a "rerun the limit-hit ones" sweep pick them out at a glance.
 pub const GLYPH_OUT_OF_BUDGET: char = '$';
 /// Provider-unavailable — `⊟` (squared minus), single-width, in error red. A
 /// `failed` run whose configured provider/model (a non-claude adapter) was
@@ -163,7 +164,7 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
 /// | `fg`             | prose / summaries      | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
-/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⊠ ⧗ $ ⊟`)                                    |
+/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⧗ $ ⊟`)                                    |
 ///
 /// `info` is deliberately reserved for timestamp-related text (user request);
 /// every other informational column reads in `meta`.
@@ -378,9 +379,10 @@ pub fn glyph_style(glyph: char, p: &Palette) -> Style {
         GLYPH_FAILED => Style::default().fg(p.error),
         // A failed done-condition is a failure too — same red, distinct glyph.
         GLYPH_VERIFY_FAILED => Style::default().fg(p.error),
-        // Session-limit, timeout, and out-of-budget are still failures — same
-        // red, distinct glyphs so each reads apart from a generic `✗` at a glance.
-        GLYPH_SESSION_LIMIT => Style::default().fg(p.error),
+        // Timeout and the shared `$` limit glyph (session-limit + out-of-budget)
+        // are still failures — same red. `GLYPH_SESSION_LIMIT` isn't matched
+        // separately: it equals `GLYPH_OUT_OF_BUDGET` (both `$`), so that arm
+        // covers it (a separate arm would be an unreachable duplicate pattern).
         GLYPH_TIMED_OUT => Style::default().fg(p.error),
         GLYPH_OUT_OF_BUDGET => Style::default().fg(p.error),
         GLYPH_PROVIDER_UNAVAILABLE => Style::default().fg(p.error),
@@ -422,10 +424,11 @@ mod tests {
         // Cancelled and skipped use DISTINCT glyphs (glyph_style keys on the char,
         // so they must differ to color differently).
         assert_ne!(GLYPH_CANCELLED, GLYPH_SKIPPED);
-        // Verify-failed, session-limit, timed-out, out-of-budget, and
-        // provider-unavailable all share the error color with failed but MUST
-        // each be a distinct glyph so the six failure modes read apart in the
-        // queue.
+        // Verify-failed, timed-out, provider-unavailable, and the shared `$`
+        // limit glyph all share the error color with failed but MUST otherwise
+        // read apart in the queue. Session-limit and out-of-budget DELIBERATELY
+        // share `$` (one "hit a spend/usage limit" category, disambiguated by the
+        // detail status text), so those two are asserted EQUAL.
         assert_ne!(GLYPH_VERIFY_FAILED, GLYPH_FAILED);
         assert_ne!(GLYPH_SESSION_LIMIT, GLYPH_FAILED);
         assert_ne!(GLYPH_TIMED_OUT, GLYPH_FAILED);
@@ -436,7 +439,7 @@ mod tests {
         assert_ne!(GLYPH_OUT_OF_BUDGET, GLYPH_VERIFY_FAILED);
         assert_ne!(GLYPH_PROVIDER_UNAVAILABLE, GLYPH_VERIFY_FAILED);
         assert_ne!(GLYPH_SESSION_LIMIT, GLYPH_TIMED_OUT);
-        assert_ne!(GLYPH_OUT_OF_BUDGET, GLYPH_SESSION_LIMIT);
+        assert_eq!(GLYPH_OUT_OF_BUDGET, GLYPH_SESSION_LIMIT, "session-limit shares the $ limit glyph");
         assert_ne!(GLYPH_OUT_OF_BUDGET, GLYPH_TIMED_OUT);
         assert_ne!(GLYPH_PROVIDER_UNAVAILABLE, GLYPH_SESSION_LIMIT);
         assert_ne!(GLYPH_PROVIDER_UNAVAILABLE, GLYPH_TIMED_OUT);

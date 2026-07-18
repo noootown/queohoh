@@ -219,7 +219,7 @@ fn status_glyph(task: &TaskInstance) -> char {
         TaskStatus::NeedsInput => '‼',
         TaskStatus::Done => '●',
         TaskStatus::Failed => match task.error.as_deref() {
-            Some(SESSION_LIMIT_REASON) => '⊠',
+            Some(SESSION_LIMIT_REASON) => '$',
             Some(TIMED_OUT_REASON) => '⧗',
             Some(OUT_OF_BUDGET_REASON) => '$',
             Some(PROVIDER_UNAVAILABLE_REASON) => '⊟',
@@ -2065,7 +2065,7 @@ mod tests {
         );
         let glyph_for = |id: &str| rows.iter().find(|r| r.task_id == id).unwrap().glyph;
         assert_eq!(glyph_for("t1"), '⧗');
-        assert_eq!(glyph_for("t2"), '⊠');
+        assert_eq!(glyph_for("t2"), '$'); // session-limit shares the $ limit glyph
         assert_eq!(glyph_for("t3"), '✗');
         assert_eq!(glyph_for("t4"), '✗');
         assert_eq!(glyph_for("t5"), '$');
@@ -3281,7 +3281,7 @@ mod tests {
         s.worktrees = platform_worktrees();
         let rows = worktree_rows(&s, "platform");
         let b = rows.iter().find(|r| r.name == "wt-b").unwrap();
-        assert_eq!(b.last.as_ref().unwrap().0, '⊠');
+        assert_eq!(b.last.as_ref().unwrap().0, '$'); // session-limit → $ limit glyph
 
         let mut out_of_budget =
             task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-a"));
