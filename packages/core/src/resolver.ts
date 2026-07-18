@@ -128,10 +128,15 @@ export async function resolveTarget(
 			if (match) {
 				return { outcome: "resolved", worktree: match.name, ephemeral: false };
 			}
-			return {
-				outcome: "needs-input",
-				reason: `worktree not found: ${ref.name}`,
-			};
+			// Create-or-reuse: an unknown worktree name provisions a fresh
+			// worktree (new branch off the repo default) via the same
+			// `spawnWorktree` primitive the ticket/temp/pr cases and
+			// `engine.createWorktree` use — so an ad-hoc task (or a re-run) that
+			// targets a name that doesn't exist yet CREATES it instead of failing
+			// with "worktree not found". Persistent (not ephemeral), matching the
+			// ticket case. This was the only ref kind that didn't auto-spawn.
+			const spawned = await io.spawnWorktree(ctx.repoPath, ref.name);
+			return { outcome: "resolved", worktree: spawned.name, ephemeral: false };
 		}
 		case "pr": {
 			const branch = await io.prBranch(ctx.repoPath, ref.number);

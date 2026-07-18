@@ -180,15 +180,34 @@ describe("Engine.tick", () => {
 	});
 
 	it("maps resolver needs-input outcome onto the task", async () => {
+		// A `pr:` ref whose PR can't be found still yields needs-input (the stub's
+		// prBranch returns null). A `worktree:<name>` ref no longer parks as
+		// needs-input — it create-or-reuses (spawns) — so this uses a PR ref.
 		const { engine, store } = setup();
 		store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:missing",
+			ref: "pr:9999",
 			source: "tui",
 		});
 		await engine.tick();
 		expect(store.list()[0]?.status).toBe("needs-input");
+	});
+
+	it("create-or-reuse: a task targeting an unknown worktree name spawns it", async () => {
+		// Repro of the ad-hoc [c]reate-with-new-name bug: instead of failing with
+		// "worktree not found", the task provisions the worktree and resolves.
+		const { engine, store } = setup();
+		store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:brand-new",
+			source: "tui",
+		});
+		await engine.tick(); // resolve pass
+		const task = store.list()[0];
+		expect(task?.status).not.toBe("needs-input");
+		expect(task?.target.worktree).toBe("brand-new");
 	});
 
 	it("names ephemeral temp worktrees from the prompt with a qoo- prefix", async () => {

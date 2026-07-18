@@ -37,9 +37,17 @@ describe("resolveTarget", () => {
 		});
 	});
 
-	it("worktree ref: needs-input when absent", async () => {
-		const result = await resolveTarget("worktree:gone", ctx, stubIO());
-		expect(result.outcome).toBe("needs-input");
+	it("worktree ref: create-or-reuse spawns a fresh worktree when absent", async () => {
+		// An unknown worktree name is provisioned (new branch off the repo
+		// default), not parked as needs-input — so an ad-hoc task targeting a new
+		// name creates it. Consistent with the ticket/temp/pr cases.
+		const io = stubIO();
+		expect(await resolveTarget("worktree:gone", ctx, io)).toEqual({
+			outcome: "resolved",
+			worktree: "gone",
+			ephemeral: false,
+		});
+		expect(io.spawned).toEqual([{ name: "gone", branch: undefined }]);
 	});
 
 	it("pr ref: matches existing worktree by branch", async () => {
