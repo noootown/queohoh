@@ -92,6 +92,28 @@ describe("grokAdapter", () => {
 			costUsd: null,
 			turns: 2,
 			durationMs: null,
+			// grok reports no priced cost but DOES report token counts — these come
+			// straight off `usage.input_tokens`/`output_tokens`, ignoring the
+			// cache/reasoning/total fields the row deliberately doesn't display.
+			inputTokens: 16517,
+			outputTokens: 31,
+		});
+	});
+
+	it("leaves inputTokens/outputTokens null when the end event carries no usage object", () => {
+		const r = grokAdapter.parseEvent({
+			type: "end",
+			stopReason: "EndTurn",
+			sessionId: "gsess-nousage",
+			num_turns: 1,
+		});
+		expect(r.result).toEqual({
+			text: "",
+			costUsd: null,
+			turns: 1,
+			durationMs: null,
+			inputTokens: null,
+			outputTokens: null,
 		});
 	});
 	it("classifies quota/subscription errors as unavailable, passes real failures through", () => {

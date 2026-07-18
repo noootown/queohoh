@@ -23,16 +23,16 @@ expression: terminal.backend()
 "│                         ││    model        opus (claude) · claude-opus-4-8   │"
 "│ 🔍 [/]filter            ││    exit code    0                                 │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││    cost         $0.42                             │"
-"│ no task definitions     ││    turns        37                                │"
+"│ no task definitions     ││    tokens       199k in / 22k out                 │"
+"│                         ││    turns        37                                │"
 "│                         ││                                                   │"
-"│                         ││  Config                                           │"
-"╰─────────────────────────╯│    description  Squash-merge the branch.          │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│    worktree     auto                              │" Hidden by multi-width symbols: [(2, " ")]
-"│                         ││    dedup        none                              │"
-"│ 🔍 [/]filter            ││    timeout      30m                               │" Hidden by multi-width symbols: [(3, " ")]
-"│   Name     Live         ││    priority     normal                            │"
-"│ ● feature               ││    cron         30 13 * * *                       │"
-"│ ● hotfix                ││                                                   │"
+"╰─────────────────────────╯│  Config                                           │"
+"╭🌲 WORKTREES─ [r] [g] [x]╮│    description  Squash-merge the branch.          │" Hidden by multi-width symbols: [(2, " ")]
+"│                         ││    worktree     auto                              │"
+"│ 🔍 [/]filter            ││    dedup        none                              │" Hidden by multi-width symbols: [(3, " ")]
+"│   Name     Live         ││    timeout      30m                               │"
+"│ ● feature               ││    priority     normal                            │"
+"│ ● hotfix                ││    cron         30 13 * * *                       │"
 "│ ● feature               ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
 "[1-9/0 · ctrl+s n/p]tab · [ctrl+x/z]sub-tab · [?]help · [q]uit                  "

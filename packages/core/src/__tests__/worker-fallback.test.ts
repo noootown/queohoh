@@ -42,7 +42,7 @@ const okResult: RunResult = {
 	sessionId: "s",
 	resultText: "did it",
 	stderr: "",
-	usage: { costUsd: 0.1, turns: 1, durationMs: 100 },
+	usage: { costUsd: 0.1, turns: 1, durationMs: 100, inputTokens: null, outputTokens: null },
 };
 
 const sessionLimitResult: RunResult = {
@@ -52,7 +52,7 @@ const sessionLimitResult: RunResult = {
 	sessionId: null,
 	resultText: "You've hit your session limit · resets 1pm (America/Chicago)",
 	stderr: "",
-	usage: { costUsd: null, turns: null, durationMs: null },
+	usage: { costUsd: null, turns: null, durationMs: null, inputTokens: null, outputTokens: null },
 };
 
 // Two enabled providers — the exact fallback shape (claude → grok) the

@@ -20,6 +20,17 @@ describe("codexAdapter", () => {
 	it("parses usage on turn.completed", () => {
 		const p = codexAdapter.parseEvent({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } });
 		expect(p.result?.turns).toBe(1);
+		// costUsd stays null (codex usage isn't priced here) but the token counts
+		// themselves still come through — unpriced ≠ uncounted.
+		expect(p.result?.costUsd).toBeNull();
+		expect(p.result?.inputTokens).toBe(1);
+		expect(p.result?.outputTokens).toBe(2);
+	});
+
+	it("leaves inputTokens/outputTokens null when turn.completed carries no usage object", () => {
+		const p = codexAdapter.parseEvent({ type: "turn.completed" });
+		expect(p.result?.inputTokens).toBeNull();
+		expect(p.result?.outputTokens).toBeNull();
 	});
 	it("classifies auth/quota failures as unavailable", () => {
 		expect(codexAdapter.classifyUnavailable({ exitCode: 1, stderr: "401 Unauthorized", resultText: "" })).toBe("provider unavailable");

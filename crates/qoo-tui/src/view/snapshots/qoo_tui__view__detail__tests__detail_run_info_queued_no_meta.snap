@@ -23,8 +23,8 @@ expression: terminal.backend()
 "│                         ││    model       opus (claude) · claude-opus-4-8    │"
 "│                         ││    exit code   —                                  │"
 "╰─────────────────────────╯│    cost        —                                  │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│    turns       —                                  │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
+"╭🌲 WORKTREES─ [r] [g] [x]╮│    tokens      —                                  │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]filter            ││    turns       —                                  │" Hidden by multi-width symbols: [(3, " ")]
 "│ 1 feature               ││                                                   │"
 "│ ● hotfix                ││                                                   │"
 "│ ● feature               ││                                                   │"

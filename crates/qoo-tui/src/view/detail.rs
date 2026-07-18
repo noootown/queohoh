@@ -28,6 +28,21 @@ const CONFIG_KEY_GAP: usize = 2;
 /// Two-space indent under each `info` sub-tab section header.
 const INFO_INDENT: &str = "  ";
 
+/// Compact human-readable token count for the `tokens` row: the bare number
+/// below 1000, rounded to the nearest thousand with a `k` suffix below
+/// 1,000,000, one decimal place with an `M` suffix at or above 1,000,000.
+/// Mirrors `formatTokenCount` in `run-store.ts` so the TUI and report.md agree
+/// on the same rendering. Pure — the ideal unit-test target.
+fn compact_count(n: u64) -> String {
+    if n < 1000 {
+        return n.to_string();
+    }
+    if n < 1_000_000 {
+        return format!("{}k", (n as f64 / 1000.0).round() as u64);
+    }
+    format!("{:.1}M", n as f64 / 1_000_000.0)
+}
+
 /// Human-readable duration from milliseconds: `Xs` below a minute, `Xm` on the
 /// minute range (whole minutes, seconds truncated), `Xh` / `Xh Ym` for hours.
 /// Pure — the ideal unit-test target.
@@ -235,6 +250,19 @@ fn run_info_lines(
         details.push(("timed out", "yes".to_string()));
     }
     details.push(("cost", meta.cost_usd.map(|c| format!("${c}")).unwrap_or_else(dash)));
+    // ADDITIONAL to cost, not a replacement: a provider (grok) can report token
+    // counts with no priced cost, so `cost` stays `—` while `tokens` still has a
+    // value — the whole reason this row exists. Only dashes out when NEITHER
+    // side was reported at all; a single present side still renders (the other
+    // side dashes independently), since the two counts come off the provider's
+    // usage object independently of each other.
+    if meta.input_tokens.is_some() || meta.output_tokens.is_some() {
+        let in_str = meta.input_tokens.map(compact_count).unwrap_or_else(dash);
+        let out_str = meta.output_tokens.map(compact_count).unwrap_or_else(dash);
+        details.push(("tokens", format!("{in_str} in / {out_str} out")));
+    } else {
+        details.push(("tokens", dash()));
+    }
     details.push(("turns", meta.turns.map(|t| t.to_string()).unwrap_or_else(dash)));
     sections.push(("Details", details));
 
@@ -1090,6 +1118,8 @@ mod tests {
                     cost_usd: Some(0.42),
                     turns: Some(37),
                     duration_ms: Some(195_000),
+                    input_tokens: Some(199_057),
+                    output_tokens: Some(22_341),
                     definition: Some(TaskDefinition {
                         name: "squash-merge".to_string(),
                         repo: "acme".to_string(),
@@ -1126,6 +1156,7 @@ mod tests {
         }
         assert!(body.contains("squash-merge"), "definition name shown");
         assert!(body.contains("$0.42"), "cost shown");
+        assert!(body.contains("199k in / 22k out"), "tokens row shown next to cost");
         assert!(
             hits.iter().any(|(_, t)| *t == HitTarget::SubTab(3)),
             "info sub-tab chip is clickable"
@@ -1230,7 +1261,7 @@ mod tests {
         assert!(!lines.iter().any(|l| l == "Config"), "no Config without a def snapshot");
         assert_eq!(ctxs.iter().filter(|c| matches!(c, LineCtx::Header)).count(), 3);
         assert!(lines.iter().any(|l| l.contains("01RUN")), "id row");
-        for key in ["started", "finished", "duration", "exit code", "cost", "turns"] {
+        for key in ["started", "finished", "duration", "exit code", "cost", "tokens", "turns"] {
             assert!(
                 lines.iter().any(|l| l.trim_start().starts_with(key) && l.contains(EM_DASH)),
                 "{key} dashes out"
@@ -1256,6 +1287,8 @@ mod tests {
             cost_usd: Some(0.42),
             turns: Some(37),
             duration_ms: Some(195_000),
+            input_tokens: Some(199_057),
+            output_tokens: Some(22_341),
             definition: Some(TaskDefinition {
                 worktree: "auto".to_string(),
                 dedup: "none".to_string(),
@@ -1270,11 +1303,43 @@ mod tests {
         let (lines, _) = run_info_lines(&task, &meta, &[], INFO_NOW, INFO_TZ);
         assert!(lines.iter().any(|l| l == "Config"), "Config section present with a def");
         assert!(lines.iter().any(|l| l.contains("$0.42")), "cost shown");
+        assert!(
+            lines.iter().any(|l| l.trim_start().starts_with("tokens") && l.contains("199k in / 22k out")),
+            "tokens row shown next to cost: {lines:?}"
+        );
         assert!(lines.iter().any(|l| l.trim_start().starts_with("turns") && l.contains("37")));
         assert!(lines.iter().any(|l| l.trim_start().starts_with("duration") && l.contains("3m")));
         assert!(lines.iter().any(|l| l.contains("Squash-merge the branch.")), "description row");
         assert!(lines.iter().any(|l| l.trim_start().starts_with("cron") && l.contains("30 13")));
         assert!(!lines.iter().any(|l| l.trim_start().starts_with("timed out")), "false → no row");
+    }
+
+    #[test]
+    fn run_info_lines_tokens_row_dashes_when_absent_and_handles_partial_presence() {
+        let task = info_task(TaskStatus::Done);
+        // Neither side reported (a claude/codex run with no usage object at
+        // all, or an old run record predating this field) → the whole row
+        // dashes out, same as `cost` does — not `"— in / — out"`.
+        let no_usage = RunMeta::default();
+        let (lines, _) = run_info_lines(&task, &no_usage, &[], INFO_NOW, INFO_TZ);
+        let tokens_line = lines
+            .iter()
+            .find(|l| l.trim_start().starts_with("tokens"))
+            .expect("tokens row present");
+        assert!(tokens_line.trim_end().ends_with(EM_DASH), "bare dash: {tokens_line:?}");
+        assert!(!tokens_line.contains("in /"), "bare dash, not a formatted pair: {tokens_line:?}");
+
+        // Only one side reported: the present side still renders, the missing
+        // side dashes out independently — the two counts don't gate each other.
+        let input_only =
+            RunMeta { input_tokens: Some(500), output_tokens: None, ..Default::default() };
+        let (lines2, _) = run_info_lines(&task, &input_only, &[], INFO_NOW, INFO_TZ);
+        assert!(
+            lines2
+                .iter()
+                .any(|l| l.trim_start().starts_with("tokens") && l.contains(&format!("500 in / {EM_DASH} out"))),
+            "input-only still renders, output side dashes: {lines2:?}"
+        );
     }
 
     /// Spec §4: the `model` row shows `label (provider) · <raw id>` when the
@@ -1474,6 +1539,25 @@ mod tests {
             buf[(x, y)].modifier.contains(Modifier::UNDERLINED),
             "the #42 link cell is underlined"
         );
+    }
+
+    #[test]
+    fn compact_count_boundary_cases() {
+        // Below 1000: the bare number, no suffix.
+        assert_eq!(compact_count(0), "0");
+        assert_eq!(compact_count(1), "1");
+        assert_eq!(compact_count(999), "999");
+        // [1000, 1_000_000): rounded to the nearest thousand, `k` suffix.
+        assert_eq!(compact_count(1000), "1k");
+        assert_eq!(compact_count(1500), "2k"); // round-half-up
+        assert_eq!(compact_count(22_341), "22k");
+        assert_eq!(compact_count(199_057), "199k");
+        assert_eq!(compact_count(999_499), "999k");
+        assert_eq!(compact_count(999_500), "1000k"); // rounds up, stays in k range
+        // >= 1_000_000: one decimal place, `M` suffix.
+        assert_eq!(compact_count(1_000_000), "1.0M");
+        assert_eq!(compact_count(1_200_000), "1.2M");
+        assert_eq!(compact_count(12_340_000), "12.3M");
     }
 
     #[test]

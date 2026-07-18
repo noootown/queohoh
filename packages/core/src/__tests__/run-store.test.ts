@@ -91,7 +91,13 @@ describe("RunStore", () => {
 					sessionId: "s1",
 					resultText: "Fixed everything with shh-token.",
 					stderr: "",
-					usage: { costUsd: 1.5, turns: 7, durationMs: 60000 },
+					usage: {
+						costUsd: 1.5,
+						turns: 7,
+						durationMs: 60000,
+						inputTokens: 199_057,
+						outputTokens: 22_341,
+					},
 				},
 				outcome: "done",
 				reason: null,
@@ -104,10 +110,17 @@ describe("RunStore", () => {
 		expect((meta?.usage as Record<string, unknown> | undefined)?.costUsd).toBe(
 			1.5,
 		);
+		// The new usage fields round-trip through data.json untouched.
+		const usage = meta?.usage as Record<string, unknown> | undefined;
+		expect(usage?.inputTokens).toBe(199_057);
+		expect(usage?.outputTokens).toBe(22_341);
 		const report = readFileSync(join(rs.runDir(task.id), "report.md"), "utf-8");
 		expect(report).toContain("[REDACTED:GH_TOKEN]");
 		expect(report).toContain("- model: opus");
 		expect(report).toContain("$1.5");
+		// Compact formatting: 199057 → "199k", 22341 → "22k" (rounded to nearest
+		// thousand, matching the TUI's `compact_count`).
+		expect(report).toContain("- tokens: 199k in / 22k out");
 		expect(existsSync(rs.eventsPath(task.id))).toBe(false); // runner owns these
 	});
 
@@ -141,7 +154,7 @@ describe("RunStore", () => {
 					sessionId: "s1",
 					resultText: "ok",
 					stderr: "",
-					usage: { costUsd: null, turns: null, durationMs: null },
+					usage: { costUsd: null, turns: null, durationMs: null, inputTokens: null, outputTokens: null },
 				},
 				outcome: "done",
 				reason: null,
@@ -151,6 +164,9 @@ describe("RunStore", () => {
 		const report = readFileSync(join(rs.runDir(task.id), "report.md"), "utf-8");
 		// Provider recorded on the snapshot → "<provider>/<model>" Stats line.
 		expect(report).toContain("- model: grok/grok-composer-2.5-fast");
+		// No usage.inputTokens/outputTokens recorded → the tokens line reads n/a,
+		// same as cost does for a no-cost/no-usage provider.
+		expect(report).toContain("- tokens: n/a");
 	});
 });
 
@@ -162,7 +178,7 @@ describe("RunStore attempt trail (fallback hops)", () => {
 		sessionId: "s1",
 		resultText: "ok",
 		stderr: "",
-		usage: { costUsd: null, turns: null, durationMs: null },
+		usage: { costUsd: null, turns: null, durationMs: null, inputTokens: null, outputTokens: null },
 	};
 
 	const snapshot = (rs: RunStore) =>
@@ -264,7 +280,7 @@ describe("RunStore shim contract files", () => {
 		sessionId: "s1",
 		resultText: "ok",
 		stderr: "",
-		usage: { costUsd: 1, turns: 2, durationMs: 3 },
+		usage: { costUsd: 1, turns: 2, durationMs: 3, inputTokens: null, outputTokens: null },
 	};
 
 	it("spawn.json round-trips UNREDACTED and is mode 0600", () => {

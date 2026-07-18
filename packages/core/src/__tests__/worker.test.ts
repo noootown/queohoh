@@ -21,7 +21,7 @@ const okResult: RunResult = {
 	sessionId: "s",
 	resultText: "did it",
 	stderr: "",
-	usage: { costUsd: 0.1, turns: 1, durationMs: 100 },
+	usage: { costUsd: 0.1, turns: 1, durationMs: 100, inputTokens: null, outputTokens: null },
 };
 
 function makeDeps(overrides: Partial<WorkerDeps> = {}) {

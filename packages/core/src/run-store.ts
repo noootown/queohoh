@@ -10,8 +10,33 @@ import {
 import { join } from "node:path";
 import type { TaskDefinition } from "./definition.js";
 import type { Redactor } from "./redact.js";
-import type { RunResult } from "./runner.js";
+import type { RunResult, RunUsage } from "./runner.js";
 import type { TaskInstance } from "./task.js";
+
+/** Compact token-count formatting for the report.md Stats block, mirroring the
+ * TUI's `compact_count` (crates/qoo-tui/src/view/detail.rs): below 1000 the
+ * bare number, below 1,000,000 rounded to the nearest thousand with a `k`
+ * suffix, at or above 1,000,000 one decimal place with an `M` suffix. */
+export function formatTokenCount(n: number): string {
+	if (n < 1000) return String(n);
+	if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+	return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** The report.md `- tokens:` line body: `n/a` when the run recorded no token
+ * usage at all (neither side present — e.g. a provider whose events carry no
+ * usage object), else `<in> in / <out> out` with each side independently
+ * falling back to `n/a` if that one side is missing. */
+export function formatTokensLine(usage: RunUsage): string {
+	if (usage.inputTokens === null && usage.outputTokens === null) return "n/a";
+	const inStr =
+		usage.inputTokens === null ? "n/a" : formatTokenCount(usage.inputTokens);
+	const outStr =
+		usage.outputTokens === null
+			? "n/a"
+			: formatTokenCount(usage.outputTokens);
+	return `${inStr} in / ${outStr} out`;
+}
 
 /**
  * The exact inputs the shim needs to reconstruct an `executeClaude` call: the
@@ -276,6 +301,7 @@ export class RunStore {
 			`- outcome: ${data.outcome}${data.reason ? ` (${data.reason})` : ""}`,
 			`- model: ${modelLine}`,
 			`- cost: ${usage.costUsd === null ? "n/a" : `$${usage.costUsd}`}`,
+			`- tokens: ${formatTokensLine(usage)}`,
 			`- turns: ${usage.turns ?? "n/a"}`,
 			`- duration: ${usage.durationMs === null ? "n/a" : `${Math.round(usage.durationMs / 1000)}s`}`,
 			"",

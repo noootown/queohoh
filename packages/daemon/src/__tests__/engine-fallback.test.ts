@@ -31,7 +31,7 @@ const sessionLimitResult: RunResult = {
 	sessionId: null,
 	resultText: "You've hit your session limit · resets 1pm (America/Chicago)",
 	stderr: "",
-	usage: { costUsd: null, turns: null, durationMs: null },
+	usage: { costUsd: null, turns: null, durationMs: null, inputTokens: null, outputTokens: null },
 };
 
 const okResult: RunResult = {
@@ -41,7 +41,7 @@ const okResult: RunResult = {
 	sessionId: "sess-grok",
 	resultText: "ok",
 	stderr: "",
-	usage: { costUsd: 0, turns: 1, durationMs: 10 },
+	usage: { costUsd: 0, turns: 1, durationMs: 10, inputTokens: null, outputTokens: null },
 };
 
 /** An availability-failure result matching grok's `classifyUnavailable`
@@ -56,7 +56,7 @@ const grokUnavailableResult: RunResult = {
 	sessionId: null,
 	resultText: "429 Too Many Requests: rate limit exceeded",
 	stderr: "",
-	usage: { costUsd: null, turns: null, durationMs: null },
+	usage: { costUsd: null, turns: null, durationMs: null, inputTokens: null, outputTokens: null },
 };
 
 /** Mirrors `engine.test.ts`'s `setup`, minus the `executeClaude`/`claudeResult`

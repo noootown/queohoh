@@ -94,7 +94,13 @@ const EMPTY_RESULT: RunResult = {
 	sessionId: null,
 	resultText: "",
 	stderr: "",
-	usage: { costUsd: null, turns: null, durationMs: null },
+	usage: {
+		costUsd: null,
+		turns: null,
+		durationMs: null,
+		inputTokens: null,
+		outputTokens: null,
+	},
 };
 
 /** Everything both `startRun` and `finalizeRun` need to know about a task's

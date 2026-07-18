@@ -28,7 +28,7 @@ const okResult: RunResult = {
 	sessionId: "s",
 	resultText: "ok",
 	stderr: "",
-	usage: { costUsd: 0, turns: 1, durationMs: 1 },
+	usage: { costUsd: 0, turns: 1, durationMs: 1, inputTokens: null, outputTokens: null },
 };
 
 describe("Engine default_models []→global fallback", () => {

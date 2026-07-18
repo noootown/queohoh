@@ -10,6 +10,11 @@ export interface RunUsage {
 	costUsd: number | null;
 	turns: number | null;
 	durationMs: number | null;
+	/** Input/output token counts from the provider's usage reporting (see
+	 * `ParsedEvent.result` in `providers/types.ts`). null when the provider
+	 * emitted no result event, or its result carried no usage object. */
+	inputTokens: number | null;
+	outputTokens: number | null;
 }
 
 export interface RunResult {
@@ -93,7 +98,13 @@ export function executeRun(
 				sessionId: null,
 				resultText: "",
 				stderr: `Failed to initialize run files: ${msg}`,
-				usage: { costUsd: null, turns: null, durationMs: null },
+				usage: {
+					costUsd: null,
+					turns: null,
+					durationMs: null,
+					inputTokens: null,
+					outputTokens: null,
+				},
 			});
 			return;
 		}
@@ -126,7 +137,13 @@ export function executeRun(
 		let resultText = "";
 		let timedOut = false;
 		let sessionId: string | null = null;
-		let usage: RunUsage = { costUsd: null, turns: null, durationMs: null };
+		let usage: RunUsage = {
+			costUsd: null,
+			turns: null,
+			durationMs: null,
+			inputTokens: null,
+			outputTokens: null,
+		};
 		let lineBuffer = "";
 		// Token-delta accumulators for adapters (grok) whose stream carries no
 		// full-text result event: deltas append here so `resultText` still has a
@@ -278,6 +295,8 @@ export function executeRun(
 					costUsd: parsed.result.costUsd,
 					turns: parsed.result.turns,
 					durationMs: parsed.result.durationMs,
+					inputTokens: parsed.result.inputTokens,
+					outputTokens: parsed.result.outputTokens,
 				};
 				finalizeStreamBuffer();
 			}

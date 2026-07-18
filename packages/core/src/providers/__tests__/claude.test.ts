@@ -34,8 +34,20 @@ describe("claudeAdapter", () => {
 			}),
 		).toEqual({
 			sessionId: "abc",
-			result: { text: "done", costUsd: 0.5, turns: 3, durationMs: 2000 },
+			result: {
+				text: "done", costUsd: 0.5, turns: 3, durationMs: 2000,
+				inputTokens: null, outputTokens: null,
+			},
 		});
+	});
+
+	it("parses input/output token counts from the result event's usage object", () => {
+		const p = claudeAdapter.parseEvent({
+			type: "result", session_id: "abc", result: "done",
+			usage: { input_tokens: 111_234, output_tokens: 4_567, cache_read_input_tokens: 128 },
+		});
+		expect(p.result?.inputTokens).toBe(111_234);
+		expect(p.result?.outputTokens).toBe(4_567);
 	});
 
 	it("renders assistant text to markdown via transcriptMd", () => {

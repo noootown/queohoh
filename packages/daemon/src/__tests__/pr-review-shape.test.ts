@@ -81,7 +81,7 @@ async function setup() {
 		sessionId: null,
 		resultText: "ok",
 		stderr: "",
-		usage: { costUsd: 0, turns: 1, durationMs: 1 },
+		usage: { costUsd: 0, turns: 1, durationMs: 1, inputTokens: null, outputTokens: null },
 	};
 	const exec: Exec = async () => ({ stdout: "", exitCode: 0 });
 	const resolverIO: ResolverIO = {

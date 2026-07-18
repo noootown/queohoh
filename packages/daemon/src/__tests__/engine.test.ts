@@ -28,7 +28,7 @@ const okResult: RunResult = {
 	sessionId: null,
 	resultText: "ok",
 	stderr: "",
-	usage: { costUsd: 0, turns: 1, durationMs: 10 },
+	usage: { costUsd: 0, turns: 1, durationMs: 10, inputTokens: null, outputTokens: null },
 };
 
 function setup(

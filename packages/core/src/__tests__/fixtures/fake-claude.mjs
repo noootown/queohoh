@@ -29,6 +29,7 @@ if (mode === "ok") {
 		total_cost_usd: 0.42,
 		num_turns: 3,
 		duration_ms: 1234,
+		usage: { input_tokens: 111234, output_tokens: 4567 },
 	});
 	process.exit(0);
 } else if (mode === "hang") {

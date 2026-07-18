@@ -5,6 +5,12 @@ export interface ParsedEvent {
 		costUsd: number | null;
 		turns: number | null;
 		durationMs: number | null;
+		/** Input/output token counts from the provider's own usage reporting.
+		 * Populated independently of `costUsd` — a provider (grok) can report
+		 * tokens with no priced cost, so these are never derived FROM costUsd.
+		 * null when the provider's event carries no usage object at all. */
+		inputTokens: number | null;
+		outputTokens: number | null;
 	};
 	transcriptMd?: string;
 	/** Token-level deltas for adapters whose stream carries no full-text result

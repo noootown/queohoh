@@ -63,6 +63,8 @@ const echoAdapter: ProviderAdapter = {
 						costUsd: 0.01,
 						turns: 1,
 						durationMs: 42,
+						inputTokens: 100,
+						outputTokens: 20,
 					},
 				}
 			: {},
@@ -83,6 +85,8 @@ const promptFileAdapter: ProviderAdapter = {
 						costUsd: null,
 						turns: null,
 						durationMs: null,
+						inputTokens: null,
+						outputTokens: null,
 					},
 				}
 			: {},
@@ -112,7 +116,13 @@ process.stdout.write(JSON.stringify({ type: "result", text: argv.join(",") }) + 
 		expect(res.exitCode).toBe(0);
 		expect(res.resultText).toBe("hello,from-build-args,from-claude-args");
 		expect(res.sessionId).toBe("sess-echo");
-		expect(res.usage).toEqual({ costUsd: 0.01, turns: 1, durationMs: 42 });
+		expect(res.usage).toEqual({
+			costUsd: 0.01,
+			turns: 1,
+			durationMs: 42,
+			inputTokens: 100,
+			outputTokens: 20,
+		});
 	});
 
 	it("writes the prompt to a temp file for prompt-file adapters, threads its path through buildArgs, and removes it after the run settles", async () => {
@@ -170,7 +180,16 @@ emit({ type: "end", stopReason: "EndTurn", sessionId: "gsess-1", num_turns: 1, u
 		expect(res.exitCode).toBe(0);
 		expect(res.resultText).toBe("pong");
 		expect(res.sessionId).toBe("gsess-1");
-		expect(res.usage).toEqual({ costUsd: null, turns: 1, durationMs: null });
+		expect(res.usage).toEqual({
+			costUsd: null,
+			turns: 1,
+			durationMs: null,
+			// The fixture's `end` event carries `usage.output_tokens` with no
+			// `input_tokens` — proves the two sides are read independently, not
+			// as an all-or-nothing pair.
+			inputTokens: null,
+			outputTokens: 2,
+		});
 		// This particular delta shape (no embedded newlines until the section
 		// switch/end) happens to land byte-identical to the old one-shot flush,
 		// mirroring formatEventToMarkdown's shape.

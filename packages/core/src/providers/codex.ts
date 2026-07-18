@@ -68,12 +68,18 @@ export const codexAdapter: ProviderAdapter = {
 			// codex's turn.completed has no turn count; 1 is a placeholder (this
 			// adapter reports per-turn, not per-conversation, invocations).
 			// Token usage isn't priced here, so costUsd stays null (best-effort
-			// per the ParsedEvent contract).
+			// per the ParsedEvent contract); the `usage` object itself, when
+			// present, still carries token counts (unpriced ≠ uncounted).
+			const usage = event.usage as Record<string, unknown> | undefined;
 			out.result = {
 				text: "",
 				costUsd: null,
 				turns: 1,
 				durationMs: null,
+				inputTokens:
+					typeof usage?.input_tokens === "number" ? usage.input_tokens : null,
+				outputTokens:
+					typeof usage?.output_tokens === "number" ? usage.output_tokens : null,
 			};
 		}
 

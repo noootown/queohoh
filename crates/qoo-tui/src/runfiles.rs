@@ -67,6 +67,16 @@ pub struct RunMeta {
     pub cost_usd: Option<f64>,
     pub turns: Option<i64>,
     pub duration_ms: Option<u64>,
+    /// Input/output token counts from the provider's own usage reporting
+    /// (`data.json` → `usage.inputTokens`/`usage.outputTokens`). Populated
+    /// independently of `cost_usd` — a provider (grok) can report tokens with
+    /// no priced cost, so the detail pane's `tokens` row fills in where `cost`
+    /// shows a dash. `None` for a run whose provider/event carried no usage
+    /// object, or an old run record predating this field (adoption-safe:
+    /// absent key on the parsed JSON just yields `None`, same as every other
+    /// optional field here).
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
     /// The def snapshot recorded at run start (`null`/absent for an adhoc run).
     pub definition: Option<TaskDefinition>,
 }
@@ -134,6 +144,8 @@ async fn read_run_meta(path: &Path) -> Option<RunMeta> {
         cost_usd: usage("costUsd").and_then(|v| v.as_f64()),
         turns: usage("turns").and_then(|v| v.as_i64()),
         duration_ms: usage("durationMs").and_then(|v| v.as_u64()),
+        input_tokens: usage("inputTokens").and_then(|v| v.as_u64()),
+        output_tokens: usage("outputTokens").and_then(|v| v.as_u64()),
         definition,
     })
 }
@@ -318,11 +330,33 @@ mod tests {
         assert_eq!(m.cost_usd, Some(0.42));
         assert_eq!(m.turns, Some(37));
         assert_eq!(m.duration_ms, Some(195_000));
+        // Old-shaped `usage` object (predates the tokens fields) → None, never
+        // an error: adoption-safe for a run record written before this feature.
+        assert_eq!(m.input_tokens, None);
+        assert_eq!(m.output_tokens, None);
         let def = m.definition.unwrap();
         assert_eq!(def.name, "squash-merge");
         assert_eq!(def.timeout_ms, 1_800_000);
         assert_eq!(def.cron.as_deref(), Some("30 13 * * *"));
         assert_eq!(def.description.as_deref(), Some("Squash-merge the branch."));
+    }
+
+    #[tokio::test]
+    async fn parses_token_usage_when_present() {
+        // A run whose provider reported token usage (e.g. grok, which has no
+        // priced cost) — `usage.inputTokens`/`usage.outputTokens` surface on
+        // `RunMeta` alongside (not instead of) the existing cost/turns fields.
+        let runs = setup("01TOK", Some("hi"), None);
+        std::fs::write(
+            runs.join("01TOK").join("data.json"),
+            r#"{"usage": {"costUsd": null, "turns": 2, "durationMs": null,
+                          "inputTokens": 199057, "outputTokens": 22341}}"#,
+        )
+        .unwrap();
+        let m = read_run_files(&runs, "01TOK", 25).await.meta.unwrap();
+        assert_eq!(m.cost_usd, None);
+        assert_eq!(m.input_tokens, Some(199_057));
+        assert_eq!(m.output_tokens, Some(22_341));
     }
 
     #[tokio::test]

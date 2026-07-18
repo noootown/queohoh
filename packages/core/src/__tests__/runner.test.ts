@@ -41,7 +41,13 @@ describe("executeClaude", () => {
 		expect(result.signal).toBeNull();
 		expect(result.sessionId).toBe("sess-123");
 		expect(result.resultText).toBe("All done.");
-		expect(result.usage).toEqual({ costUsd: 0.42, turns: 3, durationMs: 1234 });
+		expect(result.usage).toEqual({
+			costUsd: 0.42,
+			turns: 3,
+			durationMs: 1234,
+			inputTokens: 111234,
+			outputTokens: 4567,
+		});
 
 		const events = readFileSync(eventsPath, "utf-8").trim().split("\n");
 		expect(events).toHaveLength(3);

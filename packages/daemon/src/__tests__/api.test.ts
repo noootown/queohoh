@@ -38,7 +38,7 @@ const okRunResult: RunResult = {
 	sessionId: null,
 	resultText: "ok",
 	stderr: "",
-	usage: { costUsd: 0, turns: 1, durationMs: 1 },
+	usage: { costUsd: 0, turns: 1, durationMs: 1, inputTokens: null, outputTokens: null },
 };
 
 /** Writes a Claude Code on-disk transcript file with an explicit mtime, so
@@ -130,7 +130,7 @@ async function setup(opts?: {
 		sessionId: null,
 		resultText: "ok",
 		stderr: "",
-		usage: { costUsd: 0, turns: 1, durationMs: 1 },
+		usage: { costUsd: 0, turns: 1, durationMs: 1, inputTokens: null, outputTokens: null },
 	};
 	const exec: Exec =
 		opts?.exec ??
@@ -502,7 +502,7 @@ describe("ApiServer", () => {
 			sessionId: null,
 			resultText: "ok",
 			stderr: "",
-			usage: { costUsd: 0, turns: 1, durationMs: 1 },
+			usage: { costUsd: 0, turns: 1, durationMs: 1, inputTokens: null, outputTokens: null },
 		};
 		const { client, store, engine } = await setup({
 			worktrees: [{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" }],

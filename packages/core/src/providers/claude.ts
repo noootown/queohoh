@@ -58,6 +58,7 @@ export const claudeAdapter: ProviderAdapter = {
 		const out: ParsedEvent = {};
 		if (event.session_id) out.sessionId = event.session_id as string;
 		if ((event.type as string) === "result") {
+			const usage = event.usage as Record<string, unknown> | undefined;
 			out.result = {
 				text: (event.result as string) ?? "",
 				costUsd:
@@ -67,6 +68,10 @@ export const claudeAdapter: ProviderAdapter = {
 				turns: typeof event.num_turns === "number" ? event.num_turns : null,
 				durationMs:
 					typeof event.duration_ms === "number" ? event.duration_ms : null,
+				inputTokens:
+					typeof usage?.input_tokens === "number" ? usage.input_tokens : null,
+				outputTokens:
+					typeof usage?.output_tokens === "number" ? usage.output_tokens : null,
 			};
 		}
 		const md = formatEventToMarkdown(event);

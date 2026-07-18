@@ -66,14 +66,21 @@ export const grokAdapter: ProviderAdapter = {
 
 		if (type === "end") {
 			if (typeof event.sessionId === "string") out.sessionId = event.sessionId;
+			const usage = event.usage as Record<string, unknown> | undefined;
 			// No cost or duration field in the stream (both stay null, best-effort
 			// per the ParsedEvent contract); text is accumulated from the deltas by
-			// the runner, so the result text here is empty.
+			// the runner, so the result text here is empty. Token counts DO live in
+			// `usage` even though cost doesn't — grok reports usage with no priced
+			// cost, so tokens are the only usage signal this adapter can surface.
 			out.result = {
 				text: "",
 				costUsd: null,
 				turns: typeof event.num_turns === "number" ? event.num_turns : null,
 				durationMs: null,
+				inputTokens:
+					typeof usage?.input_tokens === "number" ? usage.input_tokens : null,
+				outputTokens:
+					typeof usage?.output_tokens === "number" ? usage.output_tokens : null,
 			};
 		}
 
