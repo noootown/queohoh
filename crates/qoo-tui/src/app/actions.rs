@@ -630,6 +630,7 @@ impl App {
                 timeout_ms: 5000,
                 timeout_is_ok: false,
                 invalidate_defs_for: None,
+                report_empty_as: None,
             }],
         }
     }
@@ -903,6 +904,7 @@ impl App {
             timeout_ms: 120_000,
             timeout_is_ok: true,
             invalidate_defs_for: Some(repo.to_string()),
+            report_empty_as: None,
         }
     }
 
@@ -962,6 +964,7 @@ impl App {
             timeout_ms: 5000,
             timeout_is_ok: false,
             invalidate_defs_for: Some(repo.to_string()),
+            report_empty_as: None,
         }
     }
 
@@ -987,6 +990,13 @@ impl App {
     /// to zero created tasks against an item already seen (even a failed one).
     /// Cron/discovery/MCP-driven instantiation is untouched — only this
     /// picker's def-run path sets it.
+    ///
+    /// Sends `report_empty_as`: with `bypass_dedup` in place a def-run should
+    /// never come back empty, but this stays as defensive/honest behavior
+    /// (e.g. against an old daemon that doesn't understand the flag yet) — an
+    /// empty `runDefinition` reply (zero created tasks) overwrites the
+    /// immediate "running {def}…" status instead of silently looking like a
+    /// no-op success.
     pub(super) fn run_definition_cmd(
         repo: &str,
         name: &str,
@@ -1014,6 +1024,9 @@ impl App {
             timeout_ms: 5000,
             timeout_is_ok: true,
             invalidate_defs_for: Some(repo.to_string()),
+            report_empty_as: Some(format!(
+                "{name}: nothing ran — deduped (already seen). Use a fresh target or re-run after it clears."
+            )),
         }
     }
 

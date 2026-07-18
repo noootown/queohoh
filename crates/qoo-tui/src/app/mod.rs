@@ -397,6 +397,10 @@ impl App {
             timeout_ms,
             timeout_is_ok,
             invalidate_defs_for: opts.invalidate_defs_for,
+            // `dispatch_rpc` is a generic helper (enqueue, RemoveWorktree, …);
+            // only the dedicated `run_definition_cmd` path reports an empty
+            // array — see its doc comment.
+            report_empty_as: None,
         }
     }
 

@@ -90,6 +90,12 @@ pub enum Cmd {
         timeout_ms: u64,
         timeout_is_ok: bool,
         invalidate_defs_for: Option<String>,
+        /// Status message to surface when the call succeeds AND the response
+        /// is an empty JSON array — e.g. `runDefinition`'s reply is the array
+        /// of created tasks, so an empty array means every item deduped away
+        /// (a real outcome, not a no-op). `None` on every other Cmd::Rpc
+        /// (a normal success still leaves the status line untouched).
+        report_empty_as: Option<String>,
     },
     RpcSeq {
         verb: String, // past tense, e.g. "reran"
@@ -285,6 +291,19 @@ pub fn seq_summary(verb: &str, ok: usize, errs: &[String]) -> String {
     format!("{verb} {ok}, {} failed: {}", errs.len(), errs[0])
 }
 
+/// Map a successful RPC response to a status message when it is an empty JSON
+/// array and the caller supplied `report_empty_as` — e.g. `runDefinition`
+/// returns the array of created tasks, so an empty array means every item
+/// deduped away (dedup.ts `filterNewItems`). Any other response shape (a
+/// non-empty array, an object, a scalar) or a `None` `report_empty_as` is a
+/// normal success: `None`, leave the status line untouched.
+fn empty_array_status(value: &serde_json::Value, report_empty_as: Option<&str>) -> Option<String> {
+    match (value.as_array(), report_empty_as) {
+        (Some(arr), Some(msg)) if arr.is_empty() => Some(msg.to_string()),
+        _ => None,
+    }
+}
+
 async fn rpc_once(sock: &Path, call: &RpcCall, timeout_ms: u64) -> Result<serde_json::Value, String> {
     let mut client = RpcClient::connect(sock).await.map_err(|e| e.to_string())?;
     client
@@ -408,11 +427,14 @@ async fn run_goto(plan: GotoPlan, tx: UnboundedSender<Event>) {
 /// The UI thread never blocks (mutations are fire-and-forget).
 pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: PathBuf) {
     match cmd {
-        Cmd::Rpc { label, call, timeout_ms, timeout_is_ok, invalidate_defs_for } => {
+        Cmd::Rpc { label, call, timeout_ms, timeout_is_ok, invalidate_defs_for, report_empty_as } => {
             tokio::spawn(async move {
                 let result = rpc_once(&sock, &call, timeout_ms).await;
                 let status = match result {
-                    Ok(_) => None,
+                    // An empty-array success (e.g. runDefinition deduped every
+                    // item) still surfaces when the caller asked for it —
+                    // otherwise a normal success leaves the status untouched.
+                    Ok(v) => empty_array_status(&v, report_empty_as.as_deref()),
                     // runDefinition parity: discovery can outlive the client
                     // timeout — the tasks may still land and the subscription
                     // re-syncs, so timeout reports as success (actions.ts).
@@ -688,6 +710,39 @@ mod tests {
             seq_summary("skipped", 0, &["first".to_string(), "second".to_string()]),
             "skipped 0, 2 failed: first"
         );
+    }
+
+    #[test]
+    fn empty_array_status_surfaces_the_message_on_an_empty_array() {
+        let v = serde_json::json!([]);
+        assert_eq!(
+            empty_array_status(&v, Some("pr-review: nothing ran — deduped")),
+            Some("pr-review: nothing ran — deduped".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_array_status_stays_none_on_a_non_empty_array() {
+        let v = serde_json::json!([{"id": "t1"}]);
+        assert_eq!(empty_array_status(&v, Some("deduped")), None);
+    }
+
+    #[test]
+    fn empty_array_status_stays_none_when_the_caller_did_not_ask() {
+        // Every Cmd::Rpc other than run_definition_cmd sends `report_empty_as:
+        // None` — an empty-array reply from e.g. `archive`/`set_cron_enabled`
+        // must not spuriously report anything.
+        let v = serde_json::json!([]);
+        assert_eq!(empty_array_status(&v, None), None);
+    }
+
+    #[test]
+    fn empty_array_status_stays_none_on_a_non_array_response() {
+        // `archive`/`set_cron_enabled`/etc. return non-array shapes (or the
+        // response is simply irrelevant to them, since they send `None`) —
+        // guard against misreading an object/scalar as "empty".
+        let v = serde_json::json!({"ok": true});
+        assert_eq!(empty_array_status(&v, Some("should not fire")), None);
     }
 }
 

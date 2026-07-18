@@ -626,7 +626,7 @@ fn def_args_fill_text_and_submit_positional_with_fixed_and_worktree() {
     app.update(key(Tab));
     let update = app.update(key(Enter));
     match &update.cmds[0] {
-        Cmd::Rpc { call, invalidate_defs_for, .. } => {
+        Cmd::Rpc { call, invalidate_defs_for, report_empty_as, .. } => {
             assert_eq!(call.method, "runDefinition");
             assert_eq!(call.params["args"], serde_json::json!(["wt-a", "dev"]));
             assert_eq!(call.params["worktree"], "platform.wt-a");
@@ -635,6 +635,12 @@ fn def_args_fill_text_and_submit_positional_with_fixed_and_worktree() {
             // NOW" intent — it must never silently no-op against a def's
             // configured dedup (see `instantiateDefinition`'s `bypassDedup`).
             assert_eq!(call.params["bypass_dedup"], true);
+            // Defensive/honest fallback: if the daemon ever returns zero
+            // created tasks anyway, the TUI surfaces it (naming the def)
+            // instead of a silent "running…" that never resolves.
+            let msg = report_empty_as.as_deref().expect("report_empty_as set");
+            assert!(msg.contains("pr-ready"), "message names the def: {msg}");
+            assert!(msg.contains("deduped"), "message explains why: {msg}");
         }
         other => panic!("expected runDefinition, got {other:?}"),
     }
