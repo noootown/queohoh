@@ -268,7 +268,8 @@ setTimeout(() => {
 }, 400);
 `,
 		);
-		const redact = (s: string) => s.replaceAll("SECRET_TOKEN_ABC", "[REDACTED:X]");
+		const redact = (s: string) =>
+			s.replaceAll("SECRET_TOKEN_ABC", "[REDACTED:X]");
 		let finished = false;
 		const runPromise = executeRun(grokAdapter, {
 			prompt: "ping",

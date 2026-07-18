@@ -28,6 +28,7 @@ import {
 } from "./paths.js";
 import { SettingsStore } from "./settings-store.js";
 import { makeShimSpawner } from "./shim-host.js";
+import { UsagePoller } from "./usage-poller.js";
 
 const STARTER_CONFIG = `# queohoh global config
 # workspace: ~/workspace/queohoh
@@ -77,8 +78,8 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 	// enabled at construction (a config load) and logs it.
 	const settings = new SettingsStore(state, config.providers);
 
-	// Late-bound broadcast to resolve the Engine<->ApiServer cycle without
-	// reaching into private state: the Engine is built first with an onChange
+	// Late-bound broadcast to resolve the Engine/UsagePoller↔ApiServer cycle
+	// without reaching into private state: both are built first with onChange
 	// that defers to broadcastRef, which we point at the server once it exists.
 	let broadcastRef: () => void = () => {};
 
@@ -106,6 +107,14 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		spawnShim: makeShimSpawner({ runStore }),
 	});
 
+	// Provider usage poller (design: provider-usage-header). onChange uses the
+	// same late-bound broadcastRef so a completed fetch re-renders every TUI
+	// without the poller knowing about ApiServer.
+	const usagePoller = new UsagePoller({
+		activeProvider: () => settings.activeProvider(),
+		onChange: () => broadcastRef(),
+	});
+
 	const server = new ApiServer({
 		engine,
 		store,
@@ -114,6 +123,7 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		config,
 		settings,
 		lineage,
+		usagePoller,
 		onMutation: () => {
 			void engine.tick().then(() => server.broadcast());
 		},
@@ -128,6 +138,9 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 	broadcastRef = () => server.broadcast();
 
 	await server.listen(socketPath(state));
+	// Start after listen so the first onChange (immediate refresh) can broadcast
+	// to any client that connects during the first probe.
+	usagePoller.start();
 
 	// Watch the tasks dir — a dropped file IS an enqueue.
 	let debounce: NodeJS.Timeout | null = null;
@@ -147,6 +160,7 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 	console.log(`queohoh daemon up — socket ${socketPath(state)}`);
 
 	const stop = async () => {
+		usagePoller.stop();
 		watcher.close();
 		clearInterval(interval);
 		await server.close();

@@ -51,6 +51,38 @@ pub struct StateSnapshot {
     // workspace init-tab overrides are gone; interactive goto uses provider `bin`
     // instead. A stale daemon that still sends the key is silently ignored (no
     // `deny_unknown_fields`).
+    /// Active provider usage chip (optional; old daemons omit). The daemon's
+    /// UsagePoller publishes this on every state broadcast when a probe has a
+    /// sample; `None`/null when the poller has nothing, the provider is
+    /// unsupported, or an old daemon omits the field (container `default`).
+    pub provider_usage: Option<ProviderUsage>,
+}
+
+/// Severity bucket for a provider usage sample. Wire values are lowercase
+/// `"ok"|"warn"|"crit"|"unknown"` (single-word, so `camelCase` rename matches).
+/// Unknown wire values (and the default) land on `Unknown` via `#[serde(other)]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageSeverity {
+    Ok,
+    Warn,
+    Crit,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Active provider usage published on `StateSnapshot` for the top-bar chip.
+/// Mirrors `ProviderUsage` in packages/core (provider, text, severity, fetchedAt,
+/// stale). Container `default` so a partial payload still deserializes.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProviderUsage {
+    pub provider: String,
+    pub text: String,
+    pub severity: UsageSeverity,
+    pub fetched_at: u64,
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -638,6 +670,26 @@ mod tests {
         // ...and an old daemon that omits it defaults to None (container `default`).
         let old: StateSnapshot = serde_json::from_str("{}").unwrap();
         assert_eq!(old.active_provider, None);
+    }
+
+    #[test]
+    fn provider_usage_present_and_absent() {
+        // A modern daemon publishes camelCase `providerUsage` on the state
+        // broadcast (the top-bar usage chip's source)...
+        let s: StateSnapshot = serde_json::from_str(
+            r#"{"providerUsage":{"provider":"claude","text":"100%/73%","severity":"crit","fetchedAt":1,"stale":false}}"#,
+        )
+        .unwrap();
+        let u = s.provider_usage.unwrap();
+        assert_eq!(u.provider, "claude");
+        assert_eq!(u.text, "100%/73%");
+        assert_eq!(u.severity, UsageSeverity::Crit);
+        assert_eq!(u.fetched_at, 1);
+        assert!(!u.stale);
+
+        // ...and an old daemon that omits it defaults to None (container `default`).
+        let old: StateSnapshot = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(old.provider_usage.is_none());
     }
 
     #[test]

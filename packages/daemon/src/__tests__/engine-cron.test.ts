@@ -70,7 +70,13 @@ function engineWith(
 			sessionId: null,
 			resultText: "",
 			stderr: "",
-			usage: { costUsd: null, turns: null, durationMs: null, inputTokens: null, outputTokens: null },
+			usage: {
+				costUsd: null,
+				turns: null,
+				durationMs: null,
+				inputTokens: null,
+				outputTokens: null,
+			},
 		}),
 		executeVerify: async () => ({
 			exitCode: 0,
@@ -115,7 +121,11 @@ describe("Engine cron firing", () => {
 	it("does not fire a due slot while the def is cron-disabled (paused)", async () => {
 		const { config } = workspaceWith("30 15 * * *");
 		let clock = at(2026, 7, 14, 15, 29);
-		const { engine, store } = engineWith(config, () => clock, () => true);
+		const { engine, store } = engineWith(
+			config,
+			() => clock,
+			() => true,
+		);
 		await engine.tick(); // seed at 15:29
 		clock = at(2026, 7, 14, 15, 30); // slot crosses — but the def is paused
 		await engine.tick();
@@ -127,7 +137,11 @@ describe("Engine cron firing", () => {
 		const { config } = workspaceWith("30 15 * * *");
 		let clock = at(2026, 7, 14, 15, 29);
 		let paused = true;
-		const { engine, store } = engineWith(config, () => clock, () => paused);
+		const { engine, store } = engineWith(
+			config,
+			() => clock,
+			() => paused,
+		);
 		await engine.tick(); // seed at 15:29
 		clock = at(2026, 7, 14, 15, 30); // due slot passes while paused → cursor advances
 		await engine.tick();

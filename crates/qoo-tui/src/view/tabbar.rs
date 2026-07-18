@@ -5,6 +5,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::hit::{HitMap, HitTarget};
+use crate::ipc::types::UsageSeverity;
 use crate::view::Computed;
 use crate::view::theme::{GLYPH_DOT, Palette};
 
@@ -85,18 +86,38 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     // The always-visible active-provider indicator sits at the far right edge
     // (`↯ <provider>`), styled per provider. It reads the broadcast-reconciled
     // active provider (snapshot, else the cached settings copy); absent only when
-    // neither is known (pre-connect / old daemon). Its hit rect (registered
-    // below) makes a click cycle the provider, mirroring the `p` key.
+    // neither is known (pre-connect / old daemon). Optional usage text trails it
+    // when the poller's sample matches this provider. Hit rect (registered
+    // below) covers the provider span only so a click cycles the provider
+    // (mirroring the `p` key), not the usage chip.
     let mut right_spans = vec![conn, Span::styled(run_label, Style::default().fg(p.fg))];
     let mut prov_w = 0u16;
+    let mut usage_w = 0u16;
     if let Some(name) = app.active_provider() {
         // ↯ (U+21AF) rather than ⚡: the emoji bolt is width-ambiguous — buffer
         // and terminal fonts disagree on 1 vs 2 cells (phantom gap or clipped
         // name, depending on the font), and terminals ignore U+FE0E on it.
         // U+21AF is a plain width-1 arrow everywhere.
-        let span = Span::styled(format!("  ↯ {name}"), provider_style(&name, p));
-        prov_w = span.width() as u16;
-        right_spans.push(span);
+        let prov_span = Span::styled(format!("  ↯ {name}"), provider_style(&name, p));
+        prov_w = prov_span.width() as u16;
+        right_spans.push(prov_span);
+
+        if let Some(u) = app.snapshot.as_ref().and_then(|s| s.provider_usage.as_ref())
+            && u.provider == name
+        {
+            let mut style = Style::default().fg(match u.severity {
+                UsageSeverity::Ok => p.ok,
+                UsageSeverity::Warn => p.warn,
+                UsageSeverity::Crit => p.error,
+                UsageSeverity::Unknown => p.meta,
+            });
+            if u.stale {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            let usage_span = Span::styled(format!(" {}", u.text), style);
+            usage_w = usage_span.width() as u16;
+            right_spans.push(usage_span);
+        }
     }
     let right = Line::from(right_spans);
     let width = area.width; // right-align via Paragraph alignment
@@ -104,11 +125,17 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         Paragraph::new(right).alignment(ratatui::layout::Alignment::Right),
         Rect { x: area.x, y: area.y, width, height: 1 },
     );
-    // The indicator is the rightmost span, so a right-aligned line ends it at
-    // `area.right()`. Register its click rect there (clamped to the header).
-    if prov_w > 0 && prov_w <= area.width {
+    // Right-aligned: usage (if any) ends at `area.right()`; the provider chip
+    // ends at `area.right() - usage_w`. Hit only the provider span so clicking
+    // the usage text does not cycle the provider.
+    if prov_w > 0 && prov_w.saturating_add(usage_w) <= area.width {
         hits.push(
-            Rect { x: area.right() - prov_w, y: area.y, width: prov_w, height: 1 },
+            Rect {
+                x: area.right() - usage_w - prov_w,
+                y: area.y,
+                width: prov_w,
+                height: 1,
+            },
             HitTarget::ProviderIndicator,
         );
     }

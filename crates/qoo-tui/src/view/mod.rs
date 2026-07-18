@@ -485,6 +485,107 @@ mod tests {
     }
 
     #[test]
+    fn header_shows_usage_next_to_active_provider() {
+        // Active grok + matching provider_usage → `↯ grok 42% mo` at the right
+        // edge. ProviderIndicator hit covers the provider span only (not usage).
+        use crate::ipc::types::{ProviderUsage, UsageSeverity};
+        use ratatui::text::Span;
+
+        let mut app = fixture_app();
+        app.snapshot.as_mut().unwrap().provider_usage = Some(ProviderUsage {
+            provider: "grok".into(),
+            text: "42% mo".into(),
+            severity: UsageSeverity::Ok,
+            fetched_at: 1,
+            stale: false,
+        });
+        let (terminal, hits) = render_at(&app, 120, 40);
+        let buf = terminal.backend().buffer().clone();
+        let mut row0 = String::new();
+        for x in 0..120 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        assert!(
+            row0.contains("↯ grok 42% mo"),
+            "expected ↯ grok 42% mo in header: {row0:?}"
+        );
+        let trimmed = row0.trim_end();
+        assert!(
+            trimmed.ends_with("42% mo"),
+            "usage should be rightmost in the cluster: {row0:?}"
+        );
+
+        let prov_w = Span::raw("  ↯ grok").width() as u16;
+        let usage_w = Span::raw(" 42% mo").width() as u16;
+        let (rect, _) = hits
+            .iter()
+            .find(|(_, t)| matches!(t, HitTarget::ProviderIndicator))
+            .expect("ProviderIndicator hit target registered");
+        assert_eq!(rect.width, prov_w, "hit width is provider span only, not usage");
+        assert_eq!(
+            rect.x,
+            120 - usage_w - prov_w,
+            "hit sits left of usage on the right-aligned cluster"
+        );
+    }
+
+    #[test]
+    fn header_hides_usage_when_provider_mismatches() {
+        // Active is grok; usage sample is for claude → do not show claude's text.
+        use crate::ipc::types::{ProviderUsage, UsageSeverity};
+
+        let mut app = fixture_app();
+        app.snapshot.as_mut().unwrap().provider_usage = Some(ProviderUsage {
+            provider: "claude".into(),
+            text: "100%".into(),
+            severity: UsageSeverity::Crit,
+            fetched_at: 1,
+            stale: false,
+        });
+        let (terminal, hits) = render_at(&app, 120, 40);
+        let buf = terminal.backend().buffer().clone();
+        let mut row0 = String::new();
+        for x in 0..120 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        assert!(row0.contains("↯ grok"), "provider still shown: {row0:?}");
+        assert!(
+            !row0.contains("100%"),
+            "mismatched usage text must not render: {row0:?}"
+        );
+        // Hit is still just the provider span at the right edge (no usage).
+        let prov_w = ratatui::text::Span::raw("  ↯ grok").width() as u16;
+        let (rect, _) = hits
+            .iter()
+            .find(|(_, t)| matches!(t, HitTarget::ProviderIndicator))
+            .expect("ProviderIndicator hit target registered");
+        assert_eq!(rect.width, prov_w);
+        assert_eq!(rect.x, 120 - prov_w);
+    }
+
+    #[test]
+    fn header_omits_usage_when_none() {
+        // provider_usage absent (fixture default): header ends with the provider
+        // name, no percent/usage suffix after ↯ grok.
+        let app = fixture_app();
+        let (terminal, _hits) = render_at(&app, 120, 40);
+        let buf = terminal.backend().buffer().clone();
+        let mut row0 = String::new();
+        for x in 0..120 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        assert!(row0.contains("↯ grok"), "no ↯ grok in header: {row0:?}");
+        assert!(
+            row0.trim_end().ends_with("grok"),
+            "without usage the header ends at the provider name: {row0:?}"
+        );
+        assert!(
+            !row0.contains('%'),
+            "no usage percent when provider_usage is None: {row0:?}"
+        );
+    }
+
+    #[test]
     fn apply_osc8_folds_link_into_first_cell_and_skips_the_rest() {
         const URL: &str = "https://github.com/acme/acme/pull/77";
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));

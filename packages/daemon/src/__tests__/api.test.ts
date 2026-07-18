@@ -8,7 +8,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
+import type {
+	Exec,
+	GlobalConfig,
+	ProviderUsage,
+	ResolverIO,
+	RunResult,
+} from "@queohoh/core";
 import {
 	BUILTIN_CATALOG,
 	createResolverIO,
@@ -38,7 +44,13 @@ const okRunResult: RunResult = {
 	sessionId: null,
 	resultText: "ok",
 	stderr: "",
-	usage: { costUsd: 0, turns: 1, durationMs: 1, inputTokens: null, outputTokens: null },
+	usage: {
+		costUsd: 0,
+		turns: 1,
+		durationMs: 1,
+		inputTokens: null,
+		outputTokens: null,
+	},
 };
 
 /** Writes a Claude Code on-disk transcript file with an explicit mtime, so
@@ -87,6 +99,11 @@ async function setup(opts?: {
 	/** Pre-seed `<state>/daemon/settings.json` with this active_provider before
 	 * the SettingsStore is constructed — exercises the config-load snap path. */
 	activeProviderSeed?: string;
+	/** Optional usage poller injected into ApiServer (provider-usage-header). */
+	usagePoller?: {
+		snapshot: () => ProviderUsage | null;
+		onActiveProviderChanged: () => void;
+	};
 }) {
 	const base = mkdtempSync(join(tmpdir(), "qo-api-"));
 	const repoPath = join(base, "repo");
@@ -130,7 +147,13 @@ async function setup(opts?: {
 		sessionId: null,
 		resultText: "ok",
 		stderr: "",
-		usage: { costUsd: 0, turns: 1, durationMs: 1, inputTokens: null, outputTokens: null },
+		usage: {
+			costUsd: 0,
+			turns: 1,
+			durationMs: 1,
+			inputTokens: null,
+			outputTokens: null,
+		},
 	};
 	const exec: Exec =
 		opts?.exec ??
@@ -178,6 +201,7 @@ async function setup(opts?: {
 		settings,
 		lineage,
 		claudeProjectsDir: opts?.claudeProjectsDir,
+		usagePoller: opts?.usagePoller,
 		onMutation: () => {
 			mutations += 1;
 		},
@@ -502,7 +526,13 @@ describe("ApiServer", () => {
 			sessionId: null,
 			resultText: "ok",
 			stderr: "",
-			usage: { costUsd: 0, turns: 1, durationMs: 1, inputTokens: null, outputTokens: null },
+			usage: {
+				costUsd: 0,
+				turns: 1,
+				durationMs: 1,
+				inputTokens: null,
+				outputTokens: null,
+			},
 		};
 		const { client, store, engine } = await setup({
 			worktrees: [{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" }],
@@ -761,6 +791,55 @@ describe("ApiServer", () => {
 				active_provider: string;
 			};
 			expect(settings.active_provider).toBe("grok");
+		});
+	});
+
+	describe("providerUsage", () => {
+		const sample: ProviderUsage = {
+			provider: "claude",
+			text: "5h 12%",
+			severity: "ok",
+			fetchedAt: 1_700_000_000_000,
+			stale: false,
+		};
+
+		it("includes providerUsage from the injected poller in state snapshots", async () => {
+			const usagePoller = {
+				snapshot: () => sample,
+				onActiveProviderChanged: vi.fn(),
+			};
+			const { client } = await setup({ usagePoller });
+			const state = (await client.call("state")) as {
+				providerUsage?: ProviderUsage | null;
+			};
+			expect(state.providerUsage).toEqual(sample);
+		});
+
+		it("omits providerUsage when no poller is injected", async () => {
+			const { client } = await setup();
+			const state = (await client.call("state")) as {
+				providerUsage?: ProviderUsage | null;
+			};
+			expect(state.providerUsage).toBeUndefined();
+		});
+
+		it("calls onActiveProviderChanged on set_active_provider before broadcast", async () => {
+			const onActiveProviderChanged = vi.fn();
+			const usagePoller = {
+				snapshot: () => sample,
+				onActiveProviderChanged,
+			};
+			const { client } = await setup({ usagePoller });
+			const snapshots: { providerUsage?: ProviderUsage | null }[] = [];
+			await client.subscribe((state) =>
+				snapshots.push(state as { providerUsage?: ProviderUsage | null }),
+			);
+			await client.call("set_active_provider", { provider: "grok" });
+			expect(onActiveProviderChanged).toHaveBeenCalledTimes(1);
+			// Broadcast after switch still carries poller snapshot.
+			await vi.waitFor(() => {
+				expect(snapshots.at(-1)?.providerUsage).toEqual(sample);
+			});
 		});
 	});
 
@@ -1736,7 +1815,9 @@ describe("ApiServer", () => {
 		const res = (await client.call("listSessions", {
 			repo: "platform",
 			worktree: "platform.wt-a",
-		})) as { sessions: { session_id: string; mtime_ms: number; label: string }[] };
+		})) as {
+			sessions: { session_id: string; mtime_ms: number; label: string }[];
+		};
 		const dup1 = res.sessions.filter((s) => s.session_id === "dup1");
 		expect(dup1).toHaveLength(1); // appears once, not twice
 		expect(dup1[0]?.label).toBe("run-store prompt line"); // run-store metadata wins

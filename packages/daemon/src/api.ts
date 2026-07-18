@@ -7,6 +7,7 @@ import type {
 	CatalogEntry,
 	ChainStepInput,
 	GlobalConfig,
+	ProviderUsage,
 	QueueStore,
 	RunStore,
 	SessionEntry,
@@ -68,6 +69,12 @@ export interface StateSnapshot {
 	 * TUIs ignore it.
 	 */
 	activeProvider?: string;
+	/**
+	 * Active provider usage sample (design: provider-usage-header). Optional —
+	 * old daemons omit; null when no successful sample for the active provider.
+	 * Present only when a usagePoller is wired (production daemon).
+	 */
+	providerUsage?: ProviderUsage | null;
 }
 
 interface ApiDeps {
@@ -87,6 +94,15 @@ interface ApiDeps {
 	 * temp dir so `listSessions` reads fixture transcripts.
 	 */
 	claudeProjectsDir?: string;
+	/**
+	 * Active-provider usage poller (design: provider-usage-header). Optional so
+	 * unit tests that don't care about usage omit it (snapshot then omits
+	 * `providerUsage`). Production daemon always wires one; onChange → broadcast.
+	 */
+	usagePoller?: {
+		snapshot: () => ProviderUsage | null;
+		onActiveProviderChanged: () => void;
+	};
 	onMutation: () => void;
 	/**
 	 * Tears the daemon down so a fresh build can take over. Invoked by the
@@ -145,7 +161,7 @@ export class ApiServer {
 	}
 
 	snapshot(): StateSnapshot {
-		return {
+		const snap: StateSnapshot = {
 			tasks: this.deps.store.list(),
 			archivedRecent: this.deps.store.listArchived().slice(-20),
 			sessions: this.deps.registry.list(),
@@ -162,6 +178,11 @@ export class ApiServer {
 			buildId: this.buildId,
 			activeProvider: this.deps.settings.activeProvider(),
 		};
+		// Only set when a poller is wired so bare tests stay free of the field.
+		if (this.deps.usagePoller) {
+			snap.providerUsage = this.deps.usagePoller.snapshot();
+		}
+		return snap;
 	}
 
 	broadcast(): void {
@@ -301,11 +322,14 @@ export class ApiServer {
 				// persists (write-through) and returns the new value. Broadcasting the
 				// state snapshot (which now carries `activeProvider`) re-renders every
 				// subscriber, including a different client than the one that switched.
+				// Order: set settings → notify poller (may sync-publish stale cache +
+				// kick async fetch) → broadcast so the UI flips immediately.
 				const provider = String(params.provider ?? "");
 				const value = deps.settings.setActiveProvider(
 					provider,
 					deps.config.providers,
 				);
+				deps.usagePoller?.onActiveProviderChanged();
 				this.broadcast();
 				return value;
 			}

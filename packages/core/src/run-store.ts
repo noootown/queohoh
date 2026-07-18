@@ -32,9 +32,7 @@ export function formatTokensLine(usage: RunUsage): string {
 	const inStr =
 		usage.inputTokens === null ? "n/a" : formatTokenCount(usage.inputTokens);
 	const outStr =
-		usage.outputTokens === null
-			? "n/a"
-			: formatTokenCount(usage.outputTokens);
+		usage.outputTokens === null ? "n/a" : formatTokenCount(usage.outputTokens);
 	return `${inStr} in / ${outStr} out`;
 }
 

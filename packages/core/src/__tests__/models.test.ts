@@ -199,7 +199,9 @@ describe("resolvePinnedModel", () => {
 	it("resolves to an exact 1-entry chain — no active-provider re-head", () => {
 		// Active provider is grok, but a pinned pick names claude — unlike
 		// resolveModelChain, no grok head is prepended.
-		expect(resolvePinnedModel("claude/opus", BUILTIN_CATALOG, PROVIDERS)).toEqual({
+		expect(
+			resolvePinnedModel("claude/opus", BUILTIN_CATALOG, PROVIDERS),
+		).toEqual({
 			ok: true,
 			chain: [
 				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },

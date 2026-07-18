@@ -76,9 +76,7 @@ describe("loadGlobalConfig", () => {
 			["projects: []", 'goto_command: "init-tab {cmd}"'].join("\n"),
 		);
 		const withCfg = loadGlobalConfig(withCmd);
-		expect(
-			(withCfg as { gotoCommand?: string }).gotoCommand,
-		).toBeUndefined();
+		expect((withCfg as { gotoCommand?: string }).gotoCommand).toBeUndefined();
 		expect("gotoCommand" in withCfg).toBe(false);
 
 		const without = join(dir, "without.yaml");

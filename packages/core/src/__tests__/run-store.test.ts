@@ -154,7 +154,13 @@ describe("RunStore", () => {
 					sessionId: "s1",
 					resultText: "ok",
 					stderr: "",
-					usage: { costUsd: null, turns: null, durationMs: null, inputTokens: null, outputTokens: null },
+					usage: {
+						costUsd: null,
+						turns: null,
+						durationMs: null,
+						inputTokens: null,
+						outputTokens: null,
+					},
 				},
 				outcome: "done",
 				reason: null,
@@ -178,7 +184,13 @@ describe("RunStore attempt trail (fallback hops)", () => {
 		sessionId: "s1",
 		resultText: "ok",
 		stderr: "",
-		usage: { costUsd: null, turns: null, durationMs: null, inputTokens: null, outputTokens: null },
+		usage: {
+			costUsd: null,
+			turns: null,
+			durationMs: null,
+			inputTokens: null,
+			outputTokens: null,
+		},
 	};
 
 	const snapshot = (rs: RunStore) =>
@@ -280,7 +292,13 @@ describe("RunStore shim contract files", () => {
 		sessionId: "s1",
 		resultText: "ok",
 		stderr: "",
-		usage: { costUsd: 1, turns: 2, durationMs: 3, inputTokens: null, outputTokens: null },
+		usage: {
+			costUsd: 1,
+			turns: 2,
+			durationMs: 3,
+			inputTokens: null,
+			outputTokens: null,
+		},
 	};
 
 	it("spawn.json round-trips UNREDACTED and is mode 0600", () => {

@@ -56,10 +56,7 @@ export const codexAdapter: ProviderAdapter = {
 
 		if (type === "item.completed") {
 			const item = event.item as Record<string, unknown> | undefined;
-			if (
-				item?.type === "assistant_message" &&
-				typeof item.text === "string"
-			) {
+			if (item?.type === "assistant_message" && typeof item.text === "string") {
 				out.transcriptMd = renderAssistantMessage(item.text);
 			}
 		}
