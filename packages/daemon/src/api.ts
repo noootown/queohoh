@@ -641,6 +641,11 @@ export class ApiServer {
 				// that dropdown — see `def_model_field`), so the worker runs
 				// EXACTLY this ref: no active-provider re-head, no fallback.
 				const modelPinned = params.model_pinned === true;
+				// Explicit TUI dialog def-run only (see `run_definition_cmd`) —
+				// pressing Run is "run NOW" intent, so dedup must not silently
+				// collapse this call to zero created tasks. MCP's runDefinition
+				// call never sends this and stays deduped.
+				const bypassDedup = params.bypass_dedup === true;
 				let refOverride = worktree ? `worktree:${worktree}` : undefined;
 				// `ref` pins the run's target when no worktree param is given. It beats
 				// the definition's own `worktree:` setting — notably a `worktree: auto`
@@ -696,6 +701,7 @@ export class ApiServer {
 						resumeSessionId,
 						model,
 						modelPinned,
+						bypassDedup,
 					},
 				);
 				deps.onMutation();

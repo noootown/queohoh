@@ -472,3 +472,37 @@ describe("instantiateDefinition — cron dedup coercion", () => {
 		expect(second).toHaveLength(0); // skip_seen blocks the repeat
 	});
 });
+
+describe("instantiateDefinition — bypassDedup", () => {
+	it("creates a new task for a skip_seen item already seen when bypassDedup is set", async () => {
+		const store = freshStore();
+		const d = { ...deps(store, ""), source: "tui" as const };
+		await instantiateDefinition(
+			def({ dedup: "skip_seen" }),
+			{ mode: "args", values: ["257"] },
+			d,
+		);
+		const second = await instantiateDefinition(
+			def({ dedup: "skip_seen" }),
+			{ mode: "args", values: ["257"] },
+			{ ...d, bypassDedup: true },
+		);
+		expect(second).toHaveLength(1); // explicit TUI run NOW — dedup ignored
+	});
+
+	it("still dedups the same item without bypassDedup (control)", async () => {
+		const store = freshStore();
+		const d = { ...deps(store, ""), source: "tui" as const };
+		await instantiateDefinition(
+			def({ dedup: "skip_seen" }),
+			{ mode: "args", values: ["257"] },
+			d,
+		);
+		const second = await instantiateDefinition(
+			def({ dedup: "skip_seen" }),
+			{ mode: "args", values: ["257"] },
+			d,
+		);
+		expect(second).toHaveLength(0);
+	});
+});

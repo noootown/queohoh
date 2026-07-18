@@ -980,6 +980,13 @@ impl App {
     /// `def_model_field`), so a present `model` is always sent with
     /// `model_pinned: true` — the daemon runs it exactly, no active-provider
     /// re-head, no fallback.
+    ///
+    /// Always sends `bypass_dedup: true`: a human filling this form and
+    /// pressing Run is explicit "run NOW" intent, so a def's configured
+    /// `dedup: skip_seen`/`retry_errored` must not silently collapse the call
+    /// to zero created tasks against an item already seen (even a failed one).
+    /// Cron/discovery/MCP-driven instantiation is untouched — only this
+    /// picker's def-run path sets it.
     pub(super) fn run_definition_cmd(
         repo: &str,
         name: &str,
@@ -990,6 +997,7 @@ impl App {
     ) -> Cmd {
         let mut params = serde_json::json!({
             "repo": repo, "name": name, "args": values, "source": "tui",
+            "bypass_dedup": true,
         });
         if let Some(r) = target_ref {
             params["ref"] = serde_json::Value::String(r.to_string());

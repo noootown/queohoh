@@ -65,6 +65,13 @@ export interface InstantiateDeps {
 	 * `TaskInstance.modelPinned`). Absent/false keeps today's re-heading
 	 * behavior. */
 	modelPinned?: boolean;
+	/** True for an explicit TUI dialog def-run — run NOW, ignore dedup. A human
+	 * filling the run form and pressing Run means "run this now", even if the
+	 * exact item was already seen (possibly failed, possibly still queued
+	 * elsewhere) — it must never silently no-op into an empty task list.
+	 * Absent/false keeps the definition's configured `dedup` mode. Cron and
+	 * MCP-driven runs never set this — they stay deduped. */
+	bypassDedup?: boolean;
 }
 
 export async function instantiateDefinition(
@@ -105,8 +112,12 @@ export async function instantiateDefinition(
 	// after the first. Fire-timing dedup is owned by the engine's cron cursor, so
 	// item dedup is meaningless here — force it off. Discovery-backed crons keep
 	// their configured dedup (hourly pr-review must still skip PRs already queued).
+	// An explicit TUI dialog def-run (`bypassDedup`) forces it off too: pressing
+	// Run is "run NOW" intent and must never silently create zero tasks.
 	const dedupMode =
-		deps.source === "cron" && !def.discovery ? "none" : def.dedup;
+		deps.bypassDedup || (deps.source === "cron" && !def.discovery)
+			? "none"
+			: def.dedup;
 	const fresh = filterNewItems(items, {
 		definition,
 		itemKeyTemplate,

@@ -631,6 +631,10 @@ fn def_args_fill_text_and_submit_positional_with_fixed_and_worktree() {
             assert_eq!(call.params["args"], serde_json::json!(["wt-a", "dev"]));
             assert_eq!(call.params["worktree"], "platform.wt-a");
             assert_eq!(invalidate_defs_for.as_deref(), Some("platform"));
+            // A human filling the run dialog and pressing Run is explicit "run
+            // NOW" intent — it must never silently no-op against a def's
+            // configured dedup (see `instantiateDefinition`'s `bypassDedup`).
+            assert_eq!(call.params["bypass_dedup"], true);
         }
         other => panic!("expected runDefinition, got {other:?}"),
     }
