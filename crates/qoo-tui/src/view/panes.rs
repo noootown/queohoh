@@ -1044,6 +1044,18 @@ fn render_list_pane<T, C>(
     let offset = window_start(total, cursor_disp, cap);
     let visible = cap.min(total - offset);
 
+    // Reserve the rightmost column for the vertical scrollbar when the list
+    // overflows (same condition `render_scrollbar` draws under). Column layout,
+    // row painting, and row hit targets all use this narrower `content_area` so
+    // the last data column (e.g. QUEUE's `Live` cell) is never occluded by the
+    // scrollbar; the scrollbar itself still draws over the full-width `rows_area`
+    // right edge. When the list fits, content_area == rows_area (no reservation).
+    let will_scroll = total > visible;
+    let content_area = Rect {
+        width: rows_area.width.saturating_sub(u16::from(will_scroll)),
+        ..rows_area
+    };
+
     // The visible real rows are contiguous (the divider is the only gap), so size
     // the columns from that slice — `ctx_of` still sees only real rows.
     let real_span = || {
@@ -1055,7 +1067,7 @@ fn render_list_pane<T, C>(
         (Some(lo), Some(hi)) => &rows[lo..=hi],
         _ => &[],
     };
-    let ctx = ctx_of(ctx_rows, rows_area.width as usize);
+    let ctx = ctx_of(ctx_rows, content_area.width as usize);
 
     // Column headers live in the bottom-spacer row (between the hint and the
     // data rows). Inert — no hit target — and already dim, so the spotlight
@@ -1092,8 +1104,8 @@ fn render_list_pane<T, C>(
                     // so the bar spans the WHOLE row even when the line's own spans
                     // end early — `Line::style` alone tints only covered cells.
                     let w = line.width();
-                    if w < rows_area.width as usize {
-                        line.spans.push(Span::raw(" ".repeat(rows_area.width as usize - w)));
+                    if w < content_area.width as usize {
+                        line.spans.push(Span::raw(" ".repeat(content_area.width as usize - w)));
                     }
                     // Patch every span so per-span fg colors don't survive over the
                     // bar (a colored name on the bar would be unreadable).
@@ -1104,13 +1116,13 @@ fn render_list_pane<T, C>(
                     patch_line(&mut line, p.dim_style());
                 }
                 lines.push(line);
-                let row_rect = Rect { x: rows_area.x, y, width: rows_area.width, height: 1 };
+                let row_rect = Rect { x: content_area.x, y, width: content_area.width, height: 1 };
                 hits.push(row_rect, HitTarget::Row(list_pane, idx));
             }
             DisplayRow::Divider => {
                 // Inert: no hit target and no cursor position.
                 lines.push(section_divider_line(
-                    rows_area.width,
+                    content_area.width,
                     DIVIDER_LABEL_FINISHED,
                     p,
                     dimmed,
@@ -1118,7 +1130,7 @@ fn render_list_pane<T, C>(
             }
         }
     }
-    frame.render_widget(Paragraph::new(Text::from(lines)), rows_area);
+    frame.render_widget(Paragraph::new(Text::from(lines)), content_area);
 
     // Post-render row decoration (the WORKTREES PR-cell OSC 8 hyperlink). Runs
     // AFTER the paragraph paints so it can rewrite the freshly-drawn glyph
@@ -1128,8 +1140,12 @@ fn render_list_pane<T, C>(
         let buf = frame.buffer_mut();
         for vd in 0..visible {
             if let DisplayRow::Row(idx) = &display[offset + vd] {
-                let row_rect =
-                    Rect { x: rows_area.x, y: rows_area.y + vd as u16, width: rows_area.width, height: 1 };
+                let row_rect = Rect {
+                    x: content_area.x,
+                    y: content_area.y + vd as u16,
+                    width: content_area.width,
+                    height: 1,
+                };
                 decorate_row(&rows[*idx], row_rect, &ctx, buf);
             }
         }

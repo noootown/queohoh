@@ -25,7 +25,12 @@ describe("BUILTIN_CATALOG", () => {
 			{ provider: "claude", id: "claude-sonnet-5", label: "sonnet" },
 			{ provider: "claude", id: "claude-haiku-4-5", label: "haiku" },
 			{ provider: "grok", id: "grok-4.5", label: "grok-4.5" },
-			{ provider: "grok", id: "grok-composer-2.5-fast", label: "composer" },
+			{
+				provider: "grok",
+				id: "grok-composer-2.5-fast",
+				label: "composer",
+				hidden: true,
+			},
 			{ provider: "codex", id: "gpt-5.6-sol", label: "sol" },
 			{ provider: "codex", id: "gpt-5.6-terra", label: "terra" },
 			{ provider: "codex", id: "gpt-5.6-luna", label: "luna" },

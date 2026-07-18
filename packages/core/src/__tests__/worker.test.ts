@@ -645,6 +645,65 @@ describe("runTask model-ref resolution", () => {
 	});
 });
 
+describe("runTask model_pinned (explicit TUI pick)", () => {
+	it("pinned ref runs EXACTLY as picked — no active-provider re-head", async () => {
+		// Active provider is grok, but the task is pinned to claude/opus (an
+		// explicit TUI dialog pick). Unlike an unpinned task (which would
+		// prepend grok's group head, see the next test), the run must go to
+		// claude/opus exactly.
+		let seenModel = "";
+		const { deps, store } = makeDeps({
+			activeProvider: "grok",
+			executeClaude: async (opts) => {
+				seenModel = opts.model;
+				return okResult;
+			},
+		});
+		const t = store.create({
+			prompt: "p\n",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+			model: "claude/opus",
+			modelPinned: true,
+		});
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("done");
+		expect(seenModel).toBe("claude-opus-4-8");
+	});
+
+	it("pinned ref on a disabled provider fails fast — no fallback", async () => {
+		// codex is disabled by default (DEFAULT_PROVIDERS); a pin to it must
+		// fail the task outright rather than silently substituting the active
+		// provider's chain.
+		let executed = false;
+		const { deps, store } = makeDeps({
+			executeClaude: async (opts) => {
+				executed = true;
+				return { ...okResult, model: opts.model };
+			},
+		});
+		const t = store.create({
+			prompt: "p\n",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+			model: "codex/sol",
+			modelPinned: true,
+		});
+		withWorktree(store, t.id);
+		const result = await runTask(t.id, deps);
+		expect(result.status).toBe("failed");
+		expect(result.error).toContain("codex/sol");
+		expect(executed).toBe(false);
+	});
+
+	// The non-pinned "still re-heads onto the active provider" counterpart
+	// lives in worker-fallback.test.ts (it needs a mocked `executeRun` to
+	// safely drive a resolved-to-grok run in-process).
+});
+
 describe("runTask resume via lineage", () => {
 	function lineageStore(): SessionLineageStore {
 		return new SessionLineageStore(

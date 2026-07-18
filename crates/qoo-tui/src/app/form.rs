@@ -9,7 +9,7 @@
 //! flows land in Phase 5).
 
 use super::*;
-use crate::chain::{find_model, resolve_model_chain};
+use crate::chain::{effective_model_head, resolve_model_chain};
 use crate::ipc::types::{CatalogEntry, DefaultModels, ModelRef};
 use crate::selectors::ModelResolveOwned;
 use crate::view::form::{DropdownOption, Field, FieldKind, FocusKind, FormState};
@@ -20,19 +20,22 @@ use crate::view::form::{DropdownOption, Field, FieldKind, FocusKind, FormState};
 /// codex is omitted deliberately: it ships disabled-by-default, so it never
 /// appears in a picker anyway (a disabled provider is filtered out regardless).
 pub(super) fn builtin_catalog() -> Vec<CatalogEntry> {
-    let e = |provider: &str, id: &str, label: &str| CatalogEntry {
+    let mk = |provider: &str, id: &str, label: &str, hidden: bool| CatalogEntry {
         provider: provider.into(),
         id: id.into(),
         label: label.into(),
-        hidden: false,
+        hidden,
     };
+    let e = |provider: &str, id: &str, label: &str| mk(provider, id, label, false);
     vec![
         e("claude", "claude-fable-5", "fable"),
         e("claude", "claude-opus-4-8", "opus"),
         e("claude", "claude-sonnet-5", "sonnet"),
         e("claude", "claude-haiku-4-5", "haiku"),
         e("grok", "grok-4.5", "grok-4.5"),
-        e("grok", "grok-composer-2.5-fast", "composer"),
+        // Hidden from pickers (grok group offers only grok-4.5); still resolves
+        // when referenced explicitly. Mirrors catalog.ts's `hidden: true`.
+        mk("grok", "grok-composer-2.5-fast", "composer", true),
     ]
 }
 
@@ -97,18 +100,6 @@ impl App {
             .collect()
     }
 
-    /// The effective `default_models` chain for `repo` (project override, else
-    /// global), from the cached `settings` payload. Empty when settings are
-    /// absent or the daemon sent no defaults — the head label then reads just
-    /// `default`.
-    pub(super) fn default_refs_for(&self, repo: &str) -> Vec<String> {
-        self.settings
-            .as_ref()
-            .and_then(|s| s.as_ref())
-            .map(|p| p.default_models.refs_for(repo))
-            .unwrap_or_default()
-    }
-
     /// Owned model-chain resolution inputs for the TASKS Model column (catalog,
     /// enabled providers, default_models, active_provider). Settings absent or
     /// an empty `providers` list → every catalog provider treated as enabled
@@ -153,19 +144,54 @@ impl App {
         }
     }
 
-    /// The full labeled option list for the model dropdown: the `default (…)`
-    /// head (value `""`, label from `repo`'s `default_models`) followed by one
-    /// `label (provider)` option per visible catalog entry (value `provider/label`).
+    /// Every visible catalog entry as a dropdown option (`provider/label` value,
+    /// `label (provider)` display), reordered so the ACTIVE provider's group
+    /// leads and the other providers follow — each group in catalog order
+    /// (stable). This is the shared "provider-first" body both the new-session
+    /// and def-run pickers list below their respective head option.
+    fn provider_first_model_options(&self) -> Vec<DropdownOption> {
+        let active = self.active_provider().unwrap_or_default();
+        let (mut active_group, mut rest): (Vec<DropdownOption>, Vec<DropdownOption>) =
+            (Vec::new(), Vec::new());
+        for e in self.visible_model_options() {
+            let opt = DropdownOption { value: e.model_ref(), label: e.model_display() };
+            if e.provider == active {
+                active_group.push(opt);
+            } else {
+                rest.push(opt);
+            }
+        }
+        active_group.into_iter().chain(rest).collect()
+    }
+
+    /// The resolved head of `repo`'s DEFAULT chain — `resolveModelChain(null,
+    /// …, active_provider)`'s `chain[0]` ref — as a one-element slice (empty
+    /// when defaults resolve to nothing). Drives the new-session picker's
+    /// `default (<resolved-head>)` head label: only the model the default
+    /// actually resolves to under the active provider, not the whole authored
+    /// chain.
+    fn default_resolved_head_refs(&self, repo: &str) -> Vec<String> {
+        let owned = self.model_resolve_owned();
+        let defaults = owned.default_models.refs_for(repo);
+        let enabled: Vec<&str> = owned.enabled_providers.iter().map(String::as_str).collect();
+        effective_model_head(None, &owned.catalog, &enabled, &defaults, &owned.active_provider)
+            // Render label-only (provider prefix dropped) via the shared helper,
+            // so the head reads `default (grok-4.5)` not `default (grok/grok-4.5)`.
+            .map(|r| vec![crate::chain::model_ref_display(&owned.catalog, &r)])
+            .unwrap_or_default()
+    }
+
+    /// The full labeled option list for the new-session/adhoc model dropdown:
+    /// the `default (<resolved-head>)` head (value `""`, label = the single
+    /// model the repo's `default_models` resolve to under the active provider)
+    /// followed by the provider-first full catalog ([`Self::provider_first_model_options`]).
     fn model_dropdown_options(&self, repo: &str) -> Vec<DropdownOption> {
         let head = DropdownOption {
             value: String::new(),
-            label: default_head_label(&self.default_refs_for(repo), false),
+            label: default_head_label(&self.default_resolved_head_refs(repo), false),
         };
         std::iter::once(head)
-            .chain(self.visible_model_options().iter().map(|e| DropdownOption {
-                value: e.model_ref(),
-                label: e.model_display(),
-            }))
+            .chain(self.provider_first_model_options())
             .collect()
     }
 
@@ -188,51 +214,44 @@ impl App {
         Field::dropdown_labeled("model", options, default)
     }
 
-    /// Def-run model picker: options are the **effective chain** for this def
-    /// under the operator's `active_provider` (stable re-head + group-head
-    /// prepend — see [`resolve_model_chain`]), not the full catalog. Labels are
-    /// `label (provider)`; values are `provider/label`. Preselects chain\[0\];
-    /// there is **no** empty `""` "default (…)" head — submitting a concrete
-    /// model is always a 1-entry exact pick (same wire contract as today's
-    /// non-default catalog pick on ad-hoc forms). Ad-hoc create keeps
-    /// [`Self::model_field`] (full catalog + default head).
+    /// Def-run model picker: a `default (<resolved-head>)` HEAD (value `""`,
+    /// label = the model this def resolves to under the operator's
+    /// `active_provider` — `resolveModelChain(def_model, …)`'s `chain[0]`,
+    /// rendered label-only) followed by the FULL visible catalog in
+    /// provider-first order ([`Self::provider_first_model_options`]).
     ///
-    /// On resolve failure (unknown model / nothing runnable) the dropdown is
-    /// empty and the value is `""` so submit omits `model` and the daemon falls
-    /// back to the def's authored chain.
+    /// The head is preselected. Leaving it untouched submits NO `model` — the
+    /// daemon runs the def's AUTHORED chain (with today's active-provider
+    /// re-heading and full fallback), so a plain Run never silently pins a
+    /// single model. Only actively selecting a concrete entry below the head
+    /// submits that exact `provider/label` ref as a hard pin (`model_pinned`).
+    /// Mirrors the new-session picker's empty-head contract.
     pub(super) fn def_model_field(&self, repo: &str, def_model: Option<&ModelRef>) -> Field {
         let owned = self.model_resolve_owned();
         let defaults = owned.default_models.refs_for(repo);
         let enabled: Vec<&str> = owned.enabled_providers.iter().map(String::as_str).collect();
-        let options = match resolve_model_chain(
+        let head_label_refs = resolve_model_chain(
             def_model,
             &owned.catalog,
             &enabled,
             &defaults,
             &owned.active_provider,
-        ) {
-            Ok(chain) => chain
-                .into_iter()
-                .map(|e| {
-                    // Prefer catalog display (`label (provider)`); fall back to the
-                    // canonical ref if the entry somehow isn't look-up-able (should
-                    // not happen — resolve only keeps catalog hits).
-                    let label = find_model(&owned.catalog, &e.model_ref)
-                        .map(|c| c.model_display())
-                        .unwrap_or_else(|| e.model_ref.clone());
-                    DropdownOption {
-                        value: e.model_ref,
-                        label,
-                    }
-                })
-                .collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
+        )
+        .ok()
+        .and_then(|c| c.into_iter().next())
+        // Label the head with the resolved-head ref, rendered label-only (drops
+        // the provider prefix); empty when the def resolves to nothing, so the
+        // head reads a bare `default`.
+        .map(|e| vec![crate::chain::model_ref_display(&owned.catalog, &e.model_ref)])
+        .unwrap_or_default();
+        let head = DropdownOption {
+            value: String::new(),
+            label: default_head_label(&head_label_refs, false),
         };
-        let default = options
-            .first()
-            .map(|o| o.value.clone())
-            .unwrap_or_default();
-        Field::dropdown_labeled("model", options, &default)
+        let options = std::iter::once(head)
+            .chain(self.provider_first_model_options())
+            .collect();
+        Field::dropdown_labeled("model", options, "")
     }
 
     /// The adhoc-create session field's display label: `New session` when no
@@ -265,19 +284,20 @@ impl App {
     /// Open the unified adhoc-create form (`c` / Create), optionally with the
     /// `target` combobox prefilled from the invoking pane's selected entity (an
     /// existing worktree name, or a `pr:N` for a PR-associated row). Fields, in
-    /// `adhoc_field` order: `[target combobox, session picker, model dropdown,
-    /// prompt textarea]`. The target is optional (empty ⇒ a fresh temp worktree,
-    /// the legacy adhoc behavior); the session picker offers continuation when
-    /// the target names an existing worktree.
+    /// `adhoc_field` order: `[model dropdown, target combobox, session picker,
+    /// prompt textarea]` — model is field 0 so initial focus lands on it. The
+    /// target is optional (empty ⇒ a fresh temp worktree, the legacy adhoc
+    /// behavior); the session picker offers continuation when the target names
+    /// an existing worktree.
     pub(super) fn open_adhoc_create(&mut self, repo: String, prefill_target: Option<String>) {
         let worktrees = self.active_worktree_names();
         let state = FormState::new(
             &format!("New task · {repo}"),
             "Enqueue",
             vec![
+                self.model_field(&repo),
                 Field::combobox("worktree / PR / ticket", worktrees, prefill_target.as_deref().unwrap_or("")),
                 Field::picker("session", &Self::adhoc_session_label(None)),
-                self.model_field(&repo),
                 Field::textarea("prompt", "", true),
             ],
         );
@@ -500,18 +520,22 @@ impl App {
     }
 
     /// Field-level validation beyond required-empty, keyed on the action. For a
-    /// Create Worktree the branch/name field must be a valid git branch name.
-    /// Returns the failing field index, or `None` when the values pass.
+    /// Create Worktree the branch/name field (index 1, after the leading model
+    /// dropdown) must be a valid git branch name. Returns the failing field
+    /// index, or `None` when the values pass.
     fn action_field_error(action: &FormAction, values: &[String]) -> Option<usize> {
         match action {
             FormAction::CreateWorktree { .. } => {
-                let name = values.first().map(String::as_str).unwrap_or("");
-                crate::worktree_context::validate_branch(name).map(|_| 0)
+                let name = values.get(1).map(String::as_str).unwrap_or("");
+                crate::worktree_context::validate_branch(name).map(|_| 1)
             }
             // The adhoc target combobox accepts a worktree name, a PR/ticket, or
             // empty (temp) — `resolve_target_ref` normalizes all three, so no
-            // secondary field validation is needed.
-            FormAction::NewSession { .. } | FormAction::AdhocTask { .. } => None,
+            // secondary field validation is needed. The provider dropdown is
+            // always one of its own options, so it can't fail either.
+            FormAction::NewSession { .. }
+            | FormAction::AdhocTask { .. }
+            | FormAction::GotoProvider { .. } => None,
         }
     }
 
@@ -570,6 +594,10 @@ impl App {
                 let mut params =
                     serde_json::json!({ "prompt": prompt, "repo": repo, "worktree": worktree });
                 if !model.is_empty() {
+                    // A concrete pick (not the head "" default) is an explicit
+                    // dialog choice: pin it so the worker runs it exactly, no
+                    // active-provider re-head, no fallback.
+                    params["model_pinned"] = serde_json::Value::Bool(true);
                     params["model"] = serde_json::Value::String(model);
                 }
                 if let Some(sid) = resume_session_id {
@@ -578,13 +606,13 @@ impl App {
                 let cmd = self.dispatch_rpc("enqueue task", "enqueue", params, RpcOpts::default());
                 Update { dirty: true, cmds: vec![cmd] }
             }
-            // Fields: [branch/name input, model dropdown, prompt textarea]. The
+            // Fields: [model dropdown, branch/name input, prompt textarea]. The
             // name is validated in `submit_form` before we get here. Create the
             // worktree, then (Option A) the handler enqueues the first task into
             // it using the create reply's path basename.
             FormAction::CreateWorktree { repo } => {
-                let name = values.first().cloned().unwrap_or_default();
-                let model = values.get(1).cloned().unwrap_or_default();
+                let model = values.first().cloned().unwrap_or_default();
+                let name = values.get(1).cloned().unwrap_or_default();
                 let prompt = values.get(2).cloned().unwrap_or_default();
                 self.status_line = Some(format!("creating worktree {name}…"));
                 let cmd = Self::create_worktree_cmd(
@@ -594,7 +622,7 @@ impl App {
                 );
                 Update { dirty: true, cmds: vec![cmd] }
             }
-            // Fields: `[target combobox, session picker, model dropdown, prompt
+            // Fields: `[model dropdown, target combobox, session picker, prompt
             // textarea]` (see `adhoc_field`). The target resolves to a canonical
             // ref (empty → temp); the pinned session is honored only when the
             // resolved target names the worktree it was picked for.
@@ -615,6 +643,10 @@ impl App {
                     params["ref"] = serde_json::Value::String(r.clone());
                 }
                 if !model.is_empty() {
+                    // A concrete pick (not the head "" default) is an explicit
+                    // dialog choice: pin it so the worker runs it exactly, no
+                    // active-provider re-head, no fallback.
+                    params["model_pinned"] = serde_json::Value::Bool(true);
                     params["model"] = serde_json::Value::String(model);
                 }
                 // The session pin is only valid on the worktree it was picked for
@@ -627,6 +659,20 @@ impl App {
                 }
                 let cmd = self.dispatch_rpc("enqueue task", "enqueue", params, RpcOpts::default());
                 Update { dirty: true, cmds: vec![cmd] }
+            }
+            // Fields: [provider dropdown]. Look up the picked provider's
+            // resolved bin in the frozen `choices` and fire the SAME
+            // `Cmd::Goto` the old `Mode::ProviderPick` fired (fresh
+            // interactive — no resume). A picked name absent from `choices`
+            // (shouldn't happen — the dropdown only offers `choices`' names)
+            // is a silent no-op, matching the old picker's index-miss guard.
+            FormAction::GotoProvider { path, choices } => {
+                let name = values.first().cloned().unwrap_or_default();
+                let cmd = choices.iter().find(|(n, _)| *n == name).map(|(_, bin)| bin.clone());
+                match cmd {
+                    Some(cmd) => Update { dirty: true, cmds: vec![Cmd::Goto { path, cmd }] },
+                    None => Update { dirty: true, cmds: vec![] },
+                }
             }
         }
     }

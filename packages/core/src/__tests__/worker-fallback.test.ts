@@ -77,6 +77,10 @@ function makeFallbackDeps(opts: {
 	/** Task's explicit model spec; omit to leave the task model-less so the
 	 * chain comes from `defaultModels` (the default two-entry claude→grok list). */
 	model?: string | string[];
+	/** True to stamp `model_pinned` (an explicit TUI dialog pick) onto the
+	 * task — see the "runTask activeProvider vs resume pin" pinned-vs-unpinned
+	 * pair. Omit/false leaves the task unpinned (today's re-heading behavior). */
+	modelPinned?: boolean;
 	defaultModels?: string[];
 	activeProvider?: string;
 }) {
@@ -118,6 +122,7 @@ function makeFallbackDeps(opts: {
 		source: "tui",
 		resumeSessionId: opts.resumeSessionId,
 		model: opts.model,
+		modelPinned: opts.modelPinned,
 	});
 	store.update(t.id, {
 		target: { repo: "platform", ref: "temp", worktree: "tmp-x" },
@@ -336,6 +341,34 @@ describe("runTask activeProvider vs resume pin", () => {
 		expect(out.status).toBe("done");
 		// The default chain is claude-first; the switch re-heads it onto grok.
 		expect(seenProviders).toEqual(["grok"]);
+	});
+
+	it("a non-pinned task.model naming another provider still re-heads onto active (today's behavior)", async () => {
+		// task.model explicitly names claude/opus, but no model_pinned stamp —
+		// resolveModelChain still prepends the active provider's (grok) group
+		// head, exactly like the model-less case above. Contrast with the next
+		// test, where model_pinned suppresses the re-head entirely.
+		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
+			firstResult: okResult,
+			model: "claude/opus",
+			activeProvider: "grok",
+		});
+		const out = await runTask(taskId, { ...deps, providers });
+		expect(out.status).toBe("done");
+		expect(seenProviders).toEqual(["grok"]);
+	});
+
+	it("model_pinned suppresses the active-provider re-head — runs exactly the pinned ref", async () => {
+		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
+			firstResult: okResult,
+			model: "claude/opus",
+			modelPinned: true,
+			activeProvider: "grok",
+		});
+		const out = await runTask(taskId, { ...deps, providers });
+		expect(out.status).toBe("done");
+		// No grok head prepended — runs claude directly, as picked.
+		expect(seenProviders).toEqual(["claude"]);
 	});
 
 	it("a resume pin ignores activeProvider (follows its session's tagged provider)", async () => {

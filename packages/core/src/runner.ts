@@ -129,12 +129,23 @@ export function executeRun(
 		let usage: RunUsage = { costUsd: null, turns: null, durationMs: null };
 		let lineBuffer = "";
 		// Token-delta accumulators for adapters (grok) whose stream carries no
-		// full-text result event: deltas append here and flush as one transcript
-		// section. Stay empty for claude/codex (they never set the deltas), so
-		// those paths are byte-identical to a run without accumulation.
+		// full-text result event: deltas append here so `resultText` still has a
+		// fallback at the `result` event. Stay empty for claude/codex (they never
+		// set the deltas), so those paths are unaffected by any of this.
 		let textAcc = "";
 		let thinkingAcc = "";
-		let transcriptFlushed = false;
+		// Live transcript streaming for delta-stream adapters (grok): unlike
+		// textAcc/thinkingAcc above (which exist only to feed resultText), this
+		// buffer drives incremental writes to transcript.md as deltas arrive, so the
+		// TUI live tail isn't empty until the run ends. `streamBuf` holds content
+		// not yet flushed to disk; `streamSection` tracks which part of the old
+		// batched shape ("### Thinking" header / blank-line separator / body text)
+		// we're in, so those markers get injected at the same points the old
+		// single-shot flush used to. claude/codex never set thinkingDelta/textDelta,
+		// so streamBuf stays empty and neither helper below ever writes for them.
+		let streamBuf = "";
+		let streamSection: "none" | "thinking" | "text" = "none";
+		let streamFinalized = false;
 		let killTimer: ReturnType<typeof setTimeout> | null = null;
 
 		// Two independent reapers, both landing the same `timedOut` outcome (the
@@ -187,24 +198,46 @@ export function executeRun(
 			}
 		};
 
-		// Flush accumulated token deltas as ONE transcript section, mirroring
-		// formatEventToMarkdown's shape ("### Thinking" then the text). Guarded so
-		// it writes at most once; a no-op when nothing accumulated (claude/codex).
-		const flushAccumulated = () => {
-			if (transcriptFlushed) return;
-			if (!textAcc && !thinkingAcc) return;
-			transcriptFlushed = true;
-			const parts: string[] = [];
-			if (thinkingAcc) {
-				parts.push("### Thinking");
-				parts.push(thinkingAcc);
-				parts.push("");
+		// Flush any COMPLETE lines out of streamBuf: redact only whole lines so a
+		// secret split across two token deltas (but landing within the same line)
+		// is never redacted half-formed -- opts.redact only ever runs on text up to
+		// and including the last "\n", never on a still-open partial line. Any
+		// trailing partial line stays buffered for the next delta.
+		const flushStreamLines = () => {
+			const lastNl = streamBuf.lastIndexOf("\n");
+			if (lastNl === -1) return;
+			const complete = streamBuf.slice(0, lastNl + 1);
+			streamBuf = streamBuf.slice(lastNl + 1);
+			appendFileSync(opts.transcriptPath, opts.redact(complete));
+		};
+
+		// Append one thinking/text delta to the live stream, injecting the same
+		// "### Thinking" header and blank-line separator the old batched flush used
+		// -- but as each section STARTS rather than only once fully accumulated --
+		// then flushing whatever complete lines that produced.
+		const appendStreamDelta = (kind: "thinking" | "text", delta: string) => {
+			if (streamSection === "none" && kind === "thinking") {
+				streamBuf += "### Thinking\n";
+			} else if (streamSection === "thinking" && kind === "text") {
+				streamBuf += "\n\n";
 			}
-			if (textAcc) {
-				parts.push(textAcc);
-				parts.push("");
-			}
-			appendFileSync(opts.transcriptPath, `${opts.redact(parts.join("\n"))}\n`);
+			streamSection = kind;
+			streamBuf += delta;
+			flushStreamLines();
+		};
+
+		// Flush whatever remains buffered (a trailing partial line with no newline
+		// yet) plus the closing blank line, mirroring the tail of the old batched
+		// shape. Idempotent so both the `result` event and the process `close`
+		// handler can call it safely without double-writing; a no-op when nothing
+		// was ever streamed (claude/codex, or a grok run with no deltas at all).
+		const finalizeStreamBuffer = () => {
+			if (streamFinalized) return;
+			if (streamSection === "none") return;
+			streamFinalized = true;
+			streamBuf += "\n\n";
+			appendFileSync(opts.transcriptPath, opts.redact(streamBuf));
+			streamBuf = "";
 		};
 
 		const handleLine = (line: string) => {
@@ -228,8 +261,14 @@ export function executeRun(
 			if (!sessionId && parsed.sessionId) {
 				sessionId = parsed.sessionId;
 			}
-			if (parsed.thinkingDelta) thinkingAcc += parsed.thinkingDelta;
-			if (parsed.textDelta) textAcc += parsed.textDelta;
+			if (parsed.thinkingDelta) {
+				thinkingAcc += parsed.thinkingDelta;
+				appendStreamDelta("thinking", parsed.thinkingDelta);
+			}
+			if (parsed.textDelta) {
+				textAcc += parsed.textDelta;
+				appendStreamDelta("text", parsed.textDelta);
+			}
 			if (parsed.result) {
 				// Delta-stream adapters (grok) carry no full-text result event, so
 				// fall back to the accumulated text; direct adapters set a non-empty
@@ -240,7 +279,7 @@ export function executeRun(
 					turns: parsed.result.turns,
 					durationMs: parsed.result.durationMs,
 				};
-				flushAccumulated();
+				finalizeStreamBuffer();
 			}
 			if (parsed.transcriptMd) {
 				appendFileSync(
@@ -265,8 +304,8 @@ export function executeRun(
 			clearTimers();
 			if (lineBuffer) handleLine(lineBuffer);
 			// Stream ended without a result event (crash/timeout): still land any
-			// accumulated deltas. No-op if the result event already flushed.
-			flushAccumulated();
+			// buffered stream content. No-op if the result event already finalized it.
+			finalizeStreamBuffer();
 			resolve({
 				exitCode: code ?? 1,
 				timedOut,

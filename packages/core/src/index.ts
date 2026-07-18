@@ -48,7 +48,7 @@ export { execHook } from "./hooks.js";
 export type { InstantiateDeps, Trigger } from "./instantiate.js";
 export { buildItemFromArgs, instantiateDefinition } from "./instantiate.js";
 export type { ChainEntry, ChainResult } from "./models.js";
-export { resolveModelChain } from "./models.js";
+export { resolveModelChain, resolvePinnedModel } from "./models.js";
 export * from "./providers/index.js";
 export type { Redactor } from "./redact.js";
 export { buildSecretMap, makeRedactor, redact } from "./redact.js";
@@ -87,6 +87,8 @@ export {
 export type { LiveState, ScheduleDecision } from "./scheduler.js";
 export { schedule } from "./scheduler.js";
 export { SessionLineageStore } from "./session-lineage.js";
+export type { SessionRow } from "./session-merge.js";
+export { mergeSessionSources } from "./session-merge.js";
 export type { SessionEntry } from "./sessions.js";
 export { buildLiveState, SessionRegistry } from "./sessions.js";
 export { qooTempName, slugify } from "./slug.js";

@@ -382,12 +382,20 @@ pub fn render_session_pick(
     query: &str,
     now_ms: u64,
     focus: ButtonKind,
+    active_provider: &str,
 ) {
     let p = Palette::default();
     let filtered = filter_rows(items, query, |s| s.label.clone());
     let area = frame.area();
 
-    const NEW_SESSION: &str = "New session";
+    // `✦ New session (<active provider>)` — the ACTIVE provider dictates what
+    // kind of agent the fresh session spawns, so the label names it live. Falls
+    // back to a bare `New session` when no provider is known (old daemon).
+    let new_session_label = if active_provider.is_empty() {
+        "New session".to_string()
+    } else {
+        format!("New session ({active_provider})")
+    };
     const CREATE_WT: &str = "Create Worktree…";
 
     // Selectable view rows: New session (0), Create Worktree (1), then the loaded
@@ -396,10 +404,13 @@ pub fn render_session_pick(
     let selectable = 2 + if loading { 0 } else { filtered.len() };
     let index = index.min(selectable - 1);
 
-    // Fixed width (shared with the form) so the launcher never resizes with its
-    // content — the same dialog whether the filter matches 5 rows or none.
+    // Width scales with the terminal (≈70%, floored at DIALOG_WIDTH so it never
+    // shrinks below the old size, capped to the frame) so each session row shows
+    // more of its prompt/title before clipping. It still never resizes with its
+    // CONTENT — the same dialog whether the filter matches 5 rows or none.
     // inner_w = width − border(2) − padding(4).
-    let width = DIALOG_WIDTH.clamp(50.min(area.width.max(1)), area.width.saturating_sub(4).max(1));
+    let want = (area.width.saturating_mul(7) / 10).max(DIALOG_WIDTH);
+    let width = want.clamp(50.min(area.width.max(1)), area.width.saturating_sub(4).max(1));
     let inner_w = width.saturating_sub(6).max(1) as usize;
 
     // Bottom description for the highlighted row (dim, under a thin rule): a hint
@@ -407,10 +418,12 @@ pub fn render_session_pick(
     let mut desc: Vec<Line<'static>> = Vec::new();
     {
         let body: Vec<Line<'static>> = if index == 0 {
-            wrap_styled(
-                &[("Start a fresh Claude session in this worktree.".into(), p.dim_style())],
-                inner_w,
-            )
+            let hint = if active_provider.is_empty() {
+                "Start a fresh session in this worktree.".to_string()
+            } else {
+                format!("Start a fresh {active_provider} session in this worktree.")
+            };
+            wrap_styled(&[(hint, p.dim_style())], inner_w)
         } else if index == 1 {
             wrap_styled(
                 &[("Create a new worktree, then run a task in it.".into(), p.dim_style())],
@@ -522,7 +535,7 @@ pub fn render_session_pick(
     let sel = |vix: usize| if vix == index { p.selection() } else { Style::default().fg(p.fg) };
     let line = |text: String, style: Style| -> Vec<(String, Style)> { vec![(text, style)] };
     let mut lines: Vec<SpannedLine> = vec![
-        (Some(0), line(format!("{GLYPH_NEW_SESSION} {NEW_SESSION}"), sel(0))),
+        (Some(0), line(format!("{GLYPH_NEW_SESSION} {new_session_label}"), sel(0))),
         (Some(1), line(format!("{GLYPH_CREATE_WORKTREE} {CREATE_WT}"), sel(1))),
         (None, line(RULE_CHAR.to_string().repeat(inner_w), Style::default().fg(p.border))),
     ];
@@ -747,6 +760,7 @@ mod menu_view_tests {
                 query,
                 5 * 86_400_000,
                 ButtonKind::Confirm,
+                "",
             );
         })
         .unwrap();
@@ -772,14 +786,51 @@ mod menu_view_tests {
     }
 
     #[test]
-    fn session_pick_uses_a_fixed_dialog_width() {
-        // The launcher is a fixed width, not content-driven — it must not resize
-        // as the filter narrows or labels change length.
+    fn session_pick_width_scales_with_terminal_not_content() {
+        // The launcher width scales with the TERMINAL (≈70%) so rows show more
+        // of their prompt — but it is NOT content-driven: it must not resize as
+        // the filter narrows or labels change length.
         let (s, _) = draw_session_pick(120, 24, false, 1, "");
-        assert_eq!(popup_width(&s), 60, "launcher uses the fixed DIALOG_WIDTH");
-        // Same width when the filter matches nothing.
+        let w = popup_width(&s);
+        assert_eq!(w, 84, "≈70% of the 120-col terminal (120*7/10)");
+        // Same width when the filter matches nothing (content-independent).
         let (s2, _) = draw_session_pick(120, 24, false, 0, "zzz");
-        assert_eq!(popup_width(&s2), 60);
+        assert_eq!(popup_width(&s2), w);
+        // Narrow terminals keep the old floor (never smaller than before).
+        let (s3, _) = draw_session_pick(80, 24, false, 1, "");
+        assert_eq!(popup_width(&s3), 60, "floored at DIALOG_WIDTH on an 80-col terminal");
+    }
+
+    #[test]
+    fn session_pick_new_session_names_the_active_provider() {
+        // With an active provider, the `✦ New session` row and its hint name it
+        // (the active provider dictates what the fresh session spawns).
+        let items = vec![SessionChoice {
+            session_id: "sess-1".into(),
+            label: "Fix the parser".into(),
+            mtime_ms: 0,
+            model: None,
+            provider: None,
+        }];
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        let mut hit = HitMap::default();
+        term.draw(|f| {
+            render_session_pick(f, &mut hit, "wt", &items, false, 0, "", 5_000, ButtonKind::Confirm, "grok");
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut s = String::new();
+        for y in 0..24 {
+            for x in 0..120 {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        assert!(s.contains("New session (grok)"), "row 0 names the active provider: {s}");
+        assert!(
+            s.contains("Start a fresh grok session in this worktree."),
+            "the hint names the active provider: {s}"
+        );
     }
 
     #[test]
@@ -875,7 +926,7 @@ mod menu_view_tests {
         let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hit = HitMap::default();
         term.draw(|f| {
-            render_session_pick(f, &mut hit, "wt", &items, false, 2, "", 5_000, ButtonKind::Confirm);
+            render_session_pick(f, &mut hit, "wt", &items, false, 2, "", 5_000, ButtonKind::Confirm, "");
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
@@ -923,6 +974,7 @@ mod menu_view_tests {
                 "",
                 3_600_000,
                 ButtonKind::Confirm,
+                "",
             );
         })
         .unwrap();

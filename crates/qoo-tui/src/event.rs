@@ -540,6 +540,11 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                             let mut params =
                                 serde_json::json!({ "prompt": after.prompt, "repo": repo, "worktree": wt });
                             if !after.model.is_empty() {
+                                // A concrete pick (not the head "" default) is an
+                                // explicit dialog choice: pin it so the worker
+                                // runs it exactly, no active-provider re-head, no
+                                // fallback.
+                                params["model_pinned"] = serde_json::Value::Bool(true);
                                 params["model"] = serde_json::Value::String(after.model);
                             }
                             let enq = RpcCall { method: "enqueue".into(), params };

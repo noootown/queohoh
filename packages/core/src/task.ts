@@ -75,6 +75,13 @@ const TaskMetaSchema = z
 			.union([z.string(), z.array(z.string())])
 			.nullable()
 			.default(null),
+		// True when `model` was an explicit TUI dialog pick that must run
+		// EXACTLY that ref: no active-provider re-head (resolveModelChain's
+		// step 5 group-head prepend), no fallback chain — see
+		// `resolvePinnedModel` in models.ts. Absent/false on legacy task files,
+		// and on a task whose `model` came from a definition's authored list or
+		// `default_models` resolution — only a stamped TUI pick sets this true.
+		model_pinned: z.boolean().default(false),
 		// Per-task hard wall-clock ceiling override, in ms (additive; absent on
 		// legacy files → null). Set from the MCP `timeout` param (enqueue_task /
 		// enqueue_chain); resolution precedence at run time is definition >
@@ -140,6 +147,12 @@ export interface TaskInstance {
 	 * `task.model ?? def?.model ?? default_models` so a stamped override beats
 	 * the def list. See `models.ts`'s `resolveModelChain`. */
 	model: string | string[] | null;
+	/** True when `model` was an explicit TUI dialog pick that must run EXACTLY
+	 * that ref (no active-provider re-head, no fallback chain) — see
+	 * `resolvePinnedModel` in models.ts. Optional so pre-pin callers and test
+	 * literals need not set it; absent reads as false (today's re-heading
+	 * behavior preserved for def-authored `model:` and `default_models`). */
+	modelPinned?: boolean;
 	/** Per-task hard wall-clock ceiling override, in ms; null = fall back to the
 	 * definition's `timeout:` (if any) or the daemon default. See
 	 * `TaskMetaSchema.timeout_ms`. */
@@ -193,6 +206,7 @@ export function parseTaskFile(content: string): TaskInstance {
 		session: m.session,
 		resumeSessionId: m.resume_session_id,
 		model: m.model,
+		modelPinned: m.model_pinned,
 		timeoutMs: m.timeout_ms,
 		prompt: body,
 		chainId: m.chain_id,
@@ -231,6 +245,7 @@ export function serializeTaskFile(task: TaskInstance): string {
 		session: task.session,
 		resume_session_id: task.resumeSessionId,
 		model: task.model,
+		model_pinned: task.modelPinned ?? false,
 		timeout_ms: task.timeoutMs ?? null,
 		chain_id: task.chainId ?? null,
 		chain_seq: task.chainSeq ?? null,

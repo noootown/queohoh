@@ -12,6 +12,7 @@ import type {
 	SessionEntry,
 	SessionLineageStore,
 	SessionRegistry,
+	SessionRow,
 	TaskInstance,
 	WorktreeInfo,
 } from "@queohoh/core";
@@ -26,6 +27,7 @@ import {
 	loadProjectDefaultModels,
 	loadProjectGithubId,
 	loadProjectVars,
+	mergeSessionSources,
 	modelRef,
 	projectWorkspaceDir,
 	render,
@@ -103,6 +105,28 @@ function unregisteredCwdMessage(cwd: string, toplevel: string | null): string {
 		`  - name: ${basename(repoPath)}`,
 		`    path: ${repoPath}`,
 	].join("\n");
+}
+
+/**
+ * `listSessions` raw per-source scan bound: how many candidates EACH source
+ * (Claude's on-disk transcripts; the daemon's own run store) may contribute
+ * before the two are unioned. Distinct from `SESSIONS_PER_PROVIDER` below —
+ * that final cap is applied AFTER the union, so a provider isn't pre-
+ * truncated before another provider's sessions get a chance to merge in.
+ */
+const RAW_SESSION_SCAN_LIMIT = 20;
+
+/** Final per-provider cap on the merged, deduped session list (design spec:
+ * "5 per provider"). */
+const SESSIONS_PER_PROVIDER = 5;
+
+/** Parses an ISO timestamp (`data.json`'s `started_at`/`finished_at`) into
+ * epoch ms for session recency ordering; `undefined`/`null`/malformed → null
+ * so the caller can fall back to another field. */
+function parseTimestamp(iso: string | null | undefined): number | null {
+	if (typeof iso !== "string" || iso === "") return null;
+	const ms = Date.parse(iso);
+	return Number.isNaN(ms) ? null : ms;
 }
 
 export class ApiServer {
@@ -327,6 +351,11 @@ export class ApiServer {
 				// validated against the merged catalog (invalid → the enqueue fails
 				// with an `unknown model` / did-you-mean message).
 				const model = this.coerceModel(deps.config.catalog, params.model);
+				// Explicit TUI dialog pick (new-session/adhoc/create-worktree forms):
+				// stamped onto the task so the worker runs EXACTLY this ref, no
+				// active-provider re-head, no fallback. Absent on MCP's enqueue_task
+				// (which never sends it), so it stays unpinned there.
+				const modelPinned = params.model_pinned === true;
 				const verify =
 					typeof params.verify === "string" && params.verify.length > 0
 						? params.verify
@@ -363,6 +392,7 @@ export class ApiServer {
 					session: "fresh",
 					resumeSessionId,
 					model,
+					modelPinned,
 					timeoutMs,
 					verify,
 				});
@@ -582,6 +612,11 @@ export class ApiServer {
 				// coerce/validate path as enqueue. Stamped onto the task so worker
 				// prefers it over the def's authored list.
 				const model = this.coerceModel(deps.config.catalog, params.model);
+				// The def-run picker always sends a concrete pick alongside
+				// `model_pinned: true` (there is no empty "default" head option on
+				// that dropdown — see `def_model_field`), so the worker runs
+				// EXACTLY this ref: no active-provider re-head, no fallback.
+				const modelPinned = params.model_pinned === true;
 				let refOverride = worktree ? `worktree:${worktree}` : undefined;
 				// `ref` pins the run's target when no worktree param is given. It beats
 				// the definition's own `worktree:` setting — notably a `worktree: auto`
@@ -636,6 +671,7 @@ export class ApiServer {
 						refOverride,
 						resumeSessionId,
 						model,
+						modelPinned,
 					},
 				);
 				deps.onMutation();
@@ -822,7 +858,11 @@ export class ApiServer {
 				if (path === null) {
 					throw new Error(`unknown worktree: ${repo}/${worktree}`);
 				}
-				const infos = listClaudeSessions(this.claudeProjectsDir, path, 5);
+				const infos = listClaudeSessions(
+					this.claudeProjectsDir,
+					path,
+					RAW_SESSION_SCAN_LIMIT,
+				);
 				const promptBySession = this.runPromptBySession();
 				const modelBySession = this.runModelBySession();
 				// Map the run's stored model (the RESOLVED provider-specific id, e.g.
@@ -840,27 +880,96 @@ export class ApiServer {
 					const byRef = catalog.find((e) => modelRef(e) === m);
 					return byRef !== undefined ? modelRef(byRef) : undefined;
 				};
+
+				// Source A: Claude Code's own on-disk transcripts — the ONLY way to
+				// see a claude session started OUTSIDE the daemon (a manual `claude`
+				// run in this worktree). Every row here lives under Claude's own
+				// transcript dir, so it defaults to "claude" unless a more specific
+				// tag is known (a resumed session's model ref, or a lineage tag from
+				// a prior daemon spawn that reused this on-disk session).
+				const diskRows: SessionRow[] = infos.map((s) => {
+					const model = aliasForModel(modelBySession.get(s.sessionId));
+					const provider =
+						model?.split("/")[0] ??
+						deps.lineage.providerOf(s.sessionId) ??
+						"claude";
+					return {
+						sessionId: s.sessionId,
+						mtimeMs: s.mtimeMs,
+						provider,
+						label:
+							promptBySession.get(s.sessionId) ??
+							s.aiTitle ??
+							s.firstPrompt ??
+							s.sessionId.slice(0, 8),
+						model,
+					};
+				});
+
+				// Source B: the daemon's OWN run store — records every daemon-
+				// launched run across ALL providers (claude, codex, grok, ...) for
+				// this worktree. This is the only place a codex/grok session (which
+				// never writes into Claude Code's on-disk transcript dir) becomes
+				// visible to the picker.
+				const rawRunStoreRows: SessionRow[] = [];
+				for (const taskId of deps.runStore.listRunTaskIds()) {
+					const data = deps.runStore.readRunData(taskId);
+					const sessionId = data?.session_id;
+					if (
+						typeof sessionId !== "string" ||
+						sessionId === "" ||
+						data?.resolved_worktree_path !== path
+					) {
+						continue;
+					}
+					const mtimeMs =
+						parseTimestamp(data?.finished_at) ??
+						parseTimestamp(data?.started_at) ??
+						0;
+					// Adoption-safe: a spawn.json/data.json written by an older daemon
+					// that predates multi-provider support has no `provider` field —
+					// see SpawnSpec.provider's doc comment.
+					const provider =
+						typeof data?.provider === "string" && data.provider !== ""
+							? data.provider
+							: "claude";
+					rawRunStoreRows.push({
+						sessionId,
+						mtimeMs,
+						provider,
+						label: promptBySession.get(sessionId) ?? sessionId.slice(0, 8),
+						model: aliasForModel(
+							typeof data?.model === "string" ? data.model : undefined,
+						),
+					});
+				}
+				// A resumed session can produce several run-store records for the
+				// same session id (one per attempt) — dedup + bound per provider
+				// BEFORE unioning with disk, distinct from the final per-provider
+				// cap applied below.
+				const runStoreRows = mergeSessionSources(
+					[],
+					rawRunStoreRows,
+					RAW_SESSION_SCAN_LIMIT,
+				);
+
+				// Union both sources, dedup by session id (run-store metadata wins
+				// on conflict, max mtime survives), cap to SESSIONS_PER_PROVIDER most
+				// recent sessions PER PROVIDER, then merge every provider's survivors
+				// into one list sorted by recency — interleaved, not grouped.
+				const merged = mergeSessionSources(
+					diskRows,
+					runStoreRows,
+					SESSIONS_PER_PROVIDER,
+				);
 				return {
-					sessions: infos.map((s) => {
-						const model = aliasForModel(modelBySession.get(s.sessionId));
-						// Provider for the session picker tag: prefer the model ref's
-						// provider segment; else lineage (spawn-time tag) when known.
-						const provider =
-							model?.split("/")[0] ??
-							deps.lineage.providerOf(s.sessionId) ??
-							undefined;
-						return {
-							session_id: s.sessionId,
-							mtime_ms: Math.round(s.mtimeMs),
-							label:
-								promptBySession.get(s.sessionId) ??
-								s.aiTitle ??
-								s.firstPrompt ??
-								s.sessionId.slice(0, 8),
-							model,
-							...(provider !== undefined ? { provider } : {}),
-						};
-					}),
+					sessions: merged.map((row) => ({
+						session_id: row.sessionId,
+						mtime_ms: Math.round(row.mtimeMs),
+						label: row.label,
+						model: row.model,
+						provider: row.provider,
+					})),
 				};
 			}
 			case "shutdown": {

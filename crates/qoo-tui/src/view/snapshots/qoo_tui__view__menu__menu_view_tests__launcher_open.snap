@@ -1,6 +1,5 @@
 ---
 source: crates/qoo-tui/src/view/menu.rs
-assertion_line: 1242
 expression: s
 ---
                                                             
@@ -14,7 +13,7 @@ expression: s
   │  Fix the parser                              5d ago  │  
   │  Redesign TUI                                5d ago  │  
   │  ──────────────────────────────────────────────────  │  
-  │  Start a fresh Claude session in this worktree.      │  
+  │  Start a fresh session in this worktree.             │  
   │                                                      │  
   │  [ Next ]  [ Cancel ]                                │  
   │                                                      │  

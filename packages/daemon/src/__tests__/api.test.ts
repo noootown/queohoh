@@ -3,6 +3,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +40,36 @@ const okRunResult: RunResult = {
 	stderr: "",
 	usage: { costUsd: 0, turns: 1, durationMs: 1 },
 };
+
+/** Writes a Claude Code on-disk transcript file with an explicit mtime, so
+ * `listSessions`'s recency ordering (Source A) is deterministic in tests.
+ * `mtimeMs` must be a multiple of 1000 — `utimesSync` takes whole-second Unix
+ * timestamps, and every filesystem this runs on preserves 1s resolution
+ * exactly (sub-second precision is not guaranteed everywhere). */
+function writeClaudeSessionFile(
+	dir: string,
+	sessionId: string,
+	mtimeMs: number,
+	lines: unknown[] = [{ type: "user", message: { content: "hi" } }],
+): void {
+	const path = join(dir, `${sessionId}.jsonl`);
+	writeFileSync(path, lines.map((l) => JSON.stringify(l)).join("\n"));
+	utimesSync(path, mtimeMs / 1000, mtimeMs / 1000);
+}
+
+/** Patches a run's persisted `started_at`/`finished_at` timestamps directly
+ * on disk. RunStore's public API always stamps real wall-clock time, so this
+ * is the only way to make `listSessions`'s recency ordering (Source B)
+ * deterministic in tests. */
+function patchRunTimestamps(
+	runStore: RunStore,
+	taskId: string,
+	overrides: { started_at?: string; finished_at?: string },
+): void {
+	const dataPath = join(runStore.runDir(taskId), "data.json");
+	const existing = JSON.parse(readFileSync(dataPath, "utf-8"));
+	writeFileSync(dataPath, JSON.stringify({ ...existing, ...overrides }));
+}
 
 async function setup(opts?: {
 	worktrees?: { name: string; path: string; branch: string }[];
@@ -1529,7 +1560,10 @@ describe("ApiServer", () => {
 			res.sessions.map((s) => [s.session_id, s.provider]),
 		);
 		expect(byProvider["sess-opus"]).toBe("claude");
-		expect(byProvider["sess-foreign"]).toBeUndefined();
+		// Every row now carries a provider tag (union spec §5): an on-disk
+		// session with no model and no lineage tag still defaults to "claude" —
+		// that's the only kind of session Claude Code's transcript dir holds.
+		expect(byProvider["sess-foreign"]).toBe("claude");
 	});
 
 	it("listSessions includes provider from lineage when model is unknown", async () => {
@@ -1564,6 +1598,333 @@ describe("ApiServer", () => {
 		await expect(
 			client.call("listSessions", { repo: "platform", worktree: "nope" }),
 		).rejects.toThrow();
+	});
+
+	it("listSessions unions claude on-disk sessions with the daemon's own run-store sessions across providers", async () => {
+		const projects = mkdtempSync(join(tmpdir(), "claude-projects-"));
+		const wtPath = "/wt/platform.wt-a";
+		const dir = join(projects, wtPath.replace(/[/.]/g, "-"));
+		mkdirSync(dir, { recursive: true });
+		// Manual claude run in this worktree — only visible via the on-disk scan.
+		writeClaudeSessionFile(dir, "sess-claude", 1_000_000);
+
+		const { client, store, runStore } = await setup({
+			claudeProjectsDir: projects,
+			worktrees: [{ name: "platform.wt-a", path: wtPath, branch: "wt-a" }],
+		});
+
+		// A daemon-launched grok run — grok never writes a claude on-disk
+		// transcript, so it's only visible via the run store.
+		const grokTask = store.create({
+			prompt: "grok task prompt",
+			repo: "platform",
+			ref: "worktree:platform.wt-a",
+			source: "mcp",
+		});
+		runStore.writeSnapshot(
+			grokTask.id,
+			{
+				task: grokTask,
+				definition: null,
+				resolvedWorktree: wtPath,
+				resolvedWorktreePath: wtPath,
+				prompt: grokTask.prompt,
+				model: "grok-4",
+				provider: "grok",
+			},
+			(s) => s,
+		);
+		runStore.finishRun(
+			grokTask.id,
+			{
+				result: { ...okRunResult, sessionId: "sess-grok" },
+				outcome: "done",
+				reason: null,
+			},
+			(s) => s,
+		);
+
+		// A daemon-launched codex run — same story.
+		const codexTask = store.create({
+			prompt: "codex task prompt",
+			repo: "platform",
+			ref: "worktree:platform.wt-a",
+			source: "mcp",
+		});
+		runStore.writeSnapshot(
+			codexTask.id,
+			{
+				task: codexTask,
+				definition: null,
+				resolvedWorktree: wtPath,
+				resolvedWorktreePath: wtPath,
+				prompt: codexTask.prompt,
+				model: "codex-1",
+				provider: "codex",
+			},
+			(s) => s,
+		);
+		runStore.finishRun(
+			codexTask.id,
+			{
+				result: { ...okRunResult, sessionId: "sess-codex" },
+				outcome: "done",
+				reason: null,
+			},
+			(s) => s,
+		);
+
+		const res = (await client.call("listSessions", {
+			repo: "platform",
+			worktree: "platform.wt-a",
+		})) as { sessions: { session_id: string; provider?: string }[] };
+		const byId = Object.fromEntries(
+			res.sessions.map((s) => [s.session_id, s.provider]),
+		);
+		expect(byId["sess-claude"]).toBe("claude");
+		expect(byId["sess-grok"]).toBe("grok");
+		expect(byId["sess-codex"]).toBe("codex");
+		expect(res.sessions).toHaveLength(3);
+	});
+
+	it("listSessions dedups a session id present in both sources, preferring run-store metadata but keeping the max mtime", async () => {
+		const projects = mkdtempSync(join(tmpdir(), "claude-projects-"));
+		const wtPath = "/wt/platform.wt-a";
+		const dir = join(projects, wtPath.replace(/[/.]/g, "-"));
+		mkdirSync(dir, { recursive: true });
+		const diskMtimeMs = 5_000_000; // NEWER than the run-store record below.
+		writeClaudeSessionFile(dir, "dup1", diskMtimeMs, [
+			{ type: "ai-title", aiTitle: "disk title", sessionId: "dup1" },
+		]);
+
+		const { client, store, runStore } = await setup({
+			claudeProjectsDir: projects,
+			worktrees: [{ name: "platform.wt-a", path: wtPath, branch: "wt-a" }],
+		});
+		const task = store.create({
+			prompt: "run-store prompt line",
+			repo: "platform",
+			ref: "worktree:platform.wt-a",
+			source: "mcp",
+		});
+		runStore.writeSnapshot(
+			task.id,
+			{
+				task,
+				definition: null,
+				resolvedWorktree: wtPath,
+				resolvedWorktreePath: wtPath,
+				prompt: task.prompt,
+				model: "sonnet",
+			},
+			(s) => s,
+		);
+		runStore.finishRun(
+			task.id,
+			{
+				result: { ...okRunResult, sessionId: "dup1" },
+				outcome: "done",
+				reason: null,
+			},
+			(s) => s,
+		);
+		// Older than the on-disk transcript's mtime.
+		patchRunTimestamps(runStore, task.id, {
+			finished_at: new Date(1_000_000).toISOString(),
+		});
+
+		const res = (await client.call("listSessions", {
+			repo: "platform",
+			worktree: "platform.wt-a",
+		})) as { sessions: { session_id: string; mtime_ms: number; label: string }[] };
+		const dup1 = res.sessions.filter((s) => s.session_id === "dup1");
+		expect(dup1).toHaveLength(1); // appears once, not twice
+		expect(dup1[0]?.label).toBe("run-store prompt line"); // run-store metadata wins
+		expect(dup1[0]?.mtime_ms).toBe(diskMtimeMs); // max of the two mtimes survives
+	});
+
+	it("listSessions caps a provider at 5 sessions while another provider's sessions still appear", async () => {
+		const wtPath = "/wt/platform.wt-a";
+		const { client, store, runStore } = await setup({
+			claudeProjectsDir: mkdtempSync(join(tmpdir(), "claude-projects-")),
+			worktrees: [{ name: "platform.wt-a", path: wtPath, branch: "wt-a" }],
+		});
+		// 7 grok sessions — only the 5 most recent should survive.
+		for (let i = 0; i < 7; i++) {
+			const task = store.create({
+				prompt: `grok run ${i}`,
+				repo: "platform",
+				ref: "worktree:platform.wt-a",
+				source: "mcp",
+			});
+			runStore.writeSnapshot(
+				task.id,
+				{
+					task,
+					definition: null,
+					resolvedWorktree: wtPath,
+					resolvedWorktreePath: wtPath,
+					prompt: task.prompt,
+					model: "grok-4",
+					provider: "grok",
+				},
+				(s) => s,
+			);
+			runStore.finishRun(
+				task.id,
+				{
+					result: { ...okRunResult, sessionId: `sess-grok-${i}` },
+					outcome: "done",
+					reason: null,
+				},
+				(s) => s,
+			);
+			patchRunTimestamps(runStore, task.id, {
+				finished_at: new Date(1_000_000 + i * 1000).toISOString(),
+			});
+		}
+		// One codex session — must survive alongside grok's capped set.
+		const codexTask = store.create({
+			prompt: "codex run",
+			repo: "platform",
+			ref: "worktree:platform.wt-a",
+			source: "mcp",
+		});
+		runStore.writeSnapshot(
+			codexTask.id,
+			{
+				task: codexTask,
+				definition: null,
+				resolvedWorktree: wtPath,
+				resolvedWorktreePath: wtPath,
+				prompt: codexTask.prompt,
+				model: "codex-1",
+				provider: "codex",
+			},
+			(s) => s,
+		);
+		runStore.finishRun(
+			codexTask.id,
+			{
+				result: { ...okRunResult, sessionId: "sess-codex" },
+				outcome: "done",
+				reason: null,
+			},
+			(s) => s,
+		);
+		patchRunTimestamps(runStore, codexTask.id, {
+			finished_at: new Date(500_000).toISOString(),
+		});
+
+		const res = (await client.call("listSessions", {
+			repo: "platform",
+			worktree: "platform.wt-a",
+		})) as { sessions: { session_id: string; provider?: string }[] };
+		const grokIds = res.sessions
+			.filter((s) => s.provider === "grok")
+			.map((s) => s.session_id);
+		expect(grokIds).toHaveLength(5);
+		// The 5 MOST RECENT grok sessions survive (i = 2..6, highest finished_at).
+		expect(new Set(grokIds)).toEqual(
+			new Set([
+				"sess-grok-6",
+				"sess-grok-5",
+				"sess-grok-4",
+				"sess-grok-3",
+				"sess-grok-2",
+			]),
+		);
+		expect(res.sessions.some((s) => s.session_id === "sess-codex")).toBe(true);
+	});
+
+	it("listSessions merges providers into one recency-sorted list, interleaved not grouped by provider", async () => {
+		const projects = mkdtempSync(join(tmpdir(), "claude-projects-"));
+		const wtPath = "/wt/platform.wt-a";
+		const dir = join(projects, wtPath.replace(/[/.]/g, "-"));
+		mkdirSync(dir, { recursive: true });
+		writeClaudeSessionFile(dir, "sess-claude", 3_000_000); // middle recency
+
+		const { client, store, runStore } = await setup({
+			claudeProjectsDir: projects,
+			worktrees: [{ name: "platform.wt-a", path: wtPath, branch: "wt-a" }],
+		});
+
+		const grokTask = store.create({
+			prompt: "grok",
+			repo: "platform",
+			ref: "worktree:platform.wt-a",
+			source: "mcp",
+		});
+		runStore.writeSnapshot(
+			grokTask.id,
+			{
+				task: grokTask,
+				definition: null,
+				resolvedWorktree: wtPath,
+				resolvedWorktreePath: wtPath,
+				prompt: grokTask.prompt,
+				model: "grok-4",
+				provider: "grok",
+			},
+			(s) => s,
+		);
+		runStore.finishRun(
+			grokTask.id,
+			{
+				result: { ...okRunResult, sessionId: "sess-grok" },
+				outcome: "done",
+				reason: null,
+			},
+			(s) => s,
+		);
+		patchRunTimestamps(runStore, grokTask.id, {
+			finished_at: new Date(4_000_000).toISOString(), // most recent overall
+		});
+
+		const codexTask = store.create({
+			prompt: "codex",
+			repo: "platform",
+			ref: "worktree:platform.wt-a",
+			source: "mcp",
+		});
+		runStore.writeSnapshot(
+			codexTask.id,
+			{
+				task: codexTask,
+				definition: null,
+				resolvedWorktree: wtPath,
+				resolvedWorktreePath: wtPath,
+				prompt: codexTask.prompt,
+				model: "codex-1",
+				provider: "codex",
+			},
+			(s) => s,
+		);
+		runStore.finishRun(
+			codexTask.id,
+			{
+				result: { ...okRunResult, sessionId: "sess-codex" },
+				outcome: "done",
+				reason: null,
+			},
+			(s) => s,
+		);
+		patchRunTimestamps(runStore, codexTask.id, {
+			finished_at: new Date(2_000_000).toISOString(), // oldest overall
+		});
+
+		const res = (await client.call("listSessions", {
+			repo: "platform",
+			worktree: "platform.wt-a",
+		})) as { sessions: { session_id: string }[] };
+		// grok (4,000,000) > claude (3,000,000) > codex (2,000,000): sorted by
+		// recency across all three providers, interleaved — not grouped by
+		// provider (claude sits between the two run-store providers).
+		expect(res.sessions.map((s) => s.session_id)).toEqual([
+			"sess-grok",
+			"sess-claude",
+			"sess-codex",
+		]);
 	});
 
 	it("subscribe pushes state on broadcast", async () => {

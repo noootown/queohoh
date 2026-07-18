@@ -93,8 +93,9 @@ fn queue_c_opens_adhoc_form_with_four_fields() {
             assert_eq!(state.fields[adhoc_field::MODEL].label, "model");
             assert_eq!(state.fields[adhoc_field::PROMPT].label, "prompt");
             assert!(state.fields[adhoc_field::PROMPT].required);
-            // Focus starts on the target combobox (first non-readonly field).
-            assert_eq!(state.focus, adhoc_field::TARGET);
+            // Focus starts on the model dropdown (field 0, the first
+            // non-readonly field under the app-wide model-first ordering).
+            assert_eq!(state.focus, adhoc_field::MODEL);
         }
         other => panic!("expected adhoc Form, got {other:?}"),
     }
@@ -128,6 +129,27 @@ fn adhoc_existing_worktree_target_sends_worktree_ref() {
     // The model dropdown is left on its head option (value "" = leave unset), so
     // no `model` param is sent — the daemon resolves the default chain.
     assert!(p.get("model").is_none());
+    assert!(p.get("model_pinned").is_none(), "unset model has nothing to pin");
+}
+
+#[test]
+fn adhoc_picked_model_is_pinned() {
+    // Picking a concrete catalog model (not the head "" default) is an
+    // explicit dialog choice: it must be sent with `model_pinned: true` so
+    // the worker runs it exactly — no active-provider re-head, no fallback.
+    let mut a = app();
+    a.update(ch('c'));
+    focus_field(&mut a, adhoc_field::MODEL);
+    // Same catalog order as the new-session picker: Down opens the list
+    // (highlight = head idx 0), two more Downs reach `claude/opus`.
+    a.update(keyc(KeyCode::Down)); // open
+    a.update(keyc(KeyCode::Down)); // → claude/fable
+    a.update(keyc(KeyCode::Down)); // → claude/opus
+    a.update(enter()); // pick
+    let up = fill_prompt_and_submit(&mut a, "run it");
+    let p = enqueue_params(&up);
+    assert_eq!(p["model"], "claude/opus");
+    assert_eq!(p["model_pinned"], true);
 }
 
 #[test]

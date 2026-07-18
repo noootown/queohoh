@@ -399,13 +399,17 @@ fn launcher_new_session_form_enqueues_picked_model_ref_and_prompt() {
     assert_eq!(params["repo"], "platform");
     assert_eq!(params["worktree"], "platform.wt-a");
     assert_eq!(params["model"], "claude/opus");
+    // A concrete pick is an explicit dialog choice: pinned so the worker runs
+    // it exactly (no active-provider re-head, no fallback).
+    assert_eq!(params["model_pinned"], true);
     assert!(params.get("resume_session_id").is_none());
 }
 
 #[test]
 fn launcher_new_session_head_option_omits_the_model_param() {
     // Leaving the model dropdown on its head option (value "") must send NO
-    // `model` param — the daemon then resolves the default chain.
+    // `model` param — the daemon then resolves the default chain. No pin
+    // either: an unset model has nothing to pin.
     let mut app = launcher_app();
     app.update(enter()); // → form; head "" preselected, untouched
     app.update(key(KeyCode::Tab)); // → prompt
@@ -417,6 +421,10 @@ fn launcher_new_session_head_option_omits_the_model_param() {
     let params = enqueue_params(&up);
     assert_eq!(params["prompt"], "leave it");
     assert!(params.get("model").is_none(), "head option leaves model unset");
+    assert!(
+        params.get("model_pinned").is_none(),
+        "head option sends no model_pinned either"
+    );
 }
 
 #[test]
@@ -452,9 +460,10 @@ fn launcher_create_worktree_opens_three_field_form() {
     match &app.mode {
         Mode::Form { state, action } => {
             assert_eq!(state.fields.len(), 3);
-            assert_eq!(state.fields[0].label, "branch / worktree name");
-            assert!(state.fields[0].required);
-            assert_eq!(state.fields[1].label, "model");
+            // Model first (initial focus), then the branch name + prompt.
+            assert_eq!(state.fields[0].label, "model");
+            assert_eq!(state.fields[1].label, "branch / worktree name");
+            assert!(state.fields[1].required);
             assert_eq!(state.fields[2].label, "prompt");
             assert!(state.fields[2].required);
             assert!(matches!(action, FormAction::CreateWorktree { repo } if repo == "platform"));
@@ -465,27 +474,27 @@ fn launcher_create_worktree_opens_three_field_form() {
 
 fn open_create_worktree_form(app: &mut App) {
     app.update(key(KeyCode::Down)); // → Create Worktree row
-    app.update(enter()); // → form (focus on name input)
+    app.update(enter()); // → form (focus on the leading model dropdown)
 }
 
 #[test]
 fn create_worktree_invalid_branch_keeps_form_open_with_name_error() {
     let mut app = launcher_app();
     open_create_worktree_form(&mut app);
+    app.update(key(KeyCode::Tab)); // model → branch name (field 1)
     for c in "bad name".chars() {
         app.update(ch(c)); // a space is an invalid branch char
     }
     // Fill the prompt so the only failure is the branch syntax.
-    app.update(key(KeyCode::Tab)); // model
-    app.update(key(KeyCode::Tab)); // prompt
+    app.update(key(KeyCode::Tab)); // → prompt
     app.update(ch('p'));
-    app.update(key(KeyCode::Tab)); // Primary
+    app.update(key(KeyCode::Tab)); // → Primary
     let up = app.update(enter());
     assert!(up.cmds.is_empty());
     match &app.mode {
         Mode::Form { state, action: FormAction::CreateWorktree { .. } } => {
-            assert_eq!(state.error, Some(0)); // name field flagged
-            assert_eq!(state.focus_kind(), FocusKind::Field(0));
+            assert_eq!(state.error, Some(1)); // name field flagged
+            assert_eq!(state.focus_kind(), FocusKind::Field(1));
         }
         other => panic!("expected Form still open, got {other:?}"),
     }
@@ -496,15 +505,15 @@ fn create_worktree_valid_fires_create_then_enqueue() {
     use crate::event::EnqueueAfter;
     let mut app = launcher_app();
     open_create_worktree_form(&mut app);
+    app.update(key(KeyCode::Tab)); // model (head "" default — left as-is) → name
     for c in "feat-x".chars() {
         app.update(ch(c)); // valid branch name
     }
-    app.update(key(KeyCode::Tab)); // model (head "" default — left as-is)
-    app.update(key(KeyCode::Tab)); // prompt
+    app.update(key(KeyCode::Tab)); // → prompt
     for c in "build it".chars() {
         app.update(ch(c));
     }
-    app.update(key(KeyCode::Tab)); // Primary
+    app.update(key(KeyCode::Tab)); // → Primary
     let up = app.update(enter());
     assert!(matches!(app.mode, Mode::List));
     match &up.cmds[..] {
@@ -524,9 +533,10 @@ fn create_worktree_valid_fires_create_then_enqueue() {
 fn paste_into_input_field_collapses_control_chars() {
     // Single-line input: a multiline paste can't smuggle a newline in.
     let mut app = launcher_app();
-    open_create_worktree_form(&mut app); // focus on the name Input field (0)
+    open_create_worktree_form(&mut app); // focus on the model dropdown (0)
+    app.update(key(KeyCode::Tab)); // → name Input field (1)
     app.update(Event::Paste("do a\nthen b".into()));
-    assert_eq!(field_value(&app, 0), "do a then b");
+    assert_eq!(field_value(&app, 1), "do a then b");
 }
 
 #[test]
@@ -575,7 +585,6 @@ fn catalog_settings() -> SettingsPayload {
             SettingsProvider { name: "grok".into(), enabled: true, bin: None },
             SettingsProvider { name: "codex".into(), enabled: false, bin: None },
         ],
-        ..Default::default()
     }
 }
 
@@ -593,7 +602,9 @@ fn model_option_values(app: &App, repo: &str) -> Vec<String> {
 #[test]
 fn model_option_values_fall_back_to_builtin_catalog_when_settings_absent() {
     // Stale/absent settings → the built-in mirror (claude + grok groups; codex is
-    // omitted from the mirror). Head "" first, then one `provider/label` per entry.
+    // omitted from the mirror). Head "" first, then one `provider/label` per
+    // VISIBLE entry — grok/composer is hidden, so the grok group shows only
+    // grok-4.5.
     let app = launcher_app();
     assert_eq!(app.settings, None);
     assert_eq!(
@@ -605,7 +616,6 @@ fn model_option_values_fall_back_to_builtin_catalog_when_settings_absent() {
             "claude/sonnet",
             "claude/haiku",
             "grok/grok-4.5",
-            "grok/composer",
         ]
     );
 }
@@ -651,11 +661,13 @@ fn model_field_head_option_labels_from_repo_default_models() {
     assert_eq!(field.value, "", "head option preselected");
     match &field.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
-            // Head first: value "", display from platform's override (grok/grok-4.5).
+            // Head first: value "", label = the single model the platform default
+            // (grok/grok-4.5) RESOLVES to under the active provider (claude) —
+            // the claude group head is prepended, so it resolves to claude/opus.
             assert_eq!(options[0].value, "");
-            assert_eq!(options[0].label, "default (grok/grok-4.5)");
-            // Then the visible catalog entries: value `provider/label`, display
-            // `label (provider)`.
+            assert_eq!(options[0].label, "default (opus)");
+            // Then the provider-first catalog (active=claude leads): value
+            // `provider/label`, display `label (provider)`.
             assert_eq!(options[1].value, "claude/opus");
             assert_eq!(options[1].label, "opus (claude)");
             assert_eq!(options[3].value, "grok/grok-4.5");
@@ -663,11 +675,12 @@ fn model_field_head_option_labels_from_repo_default_models() {
         }
         other => panic!("expected a labeled Dropdown, got {other:?}"),
     }
-    // A repo with no project override falls back to the global chain.
+    // A repo with no project override falls back to the global chain — the head
+    // shows only the resolved head, not the whole `→` chain.
     let global = app.model_field("other");
     match &global.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
-            assert_eq!(options[0].label, "default (claude/opus → grok/grok-4.5)");
+            assert_eq!(options[0].label, "default (opus)");
         }
         other => panic!("expected a labeled Dropdown, got {other:?}"),
     }
@@ -704,7 +717,7 @@ fn app_with_active_grok() -> App {
     app
 }
 
-/// Option VALUES of a def-run model field (no empty head).
+/// Option VALUES of a def-run model field (leads with the empty "" head).
 fn def_model_option_values(field: &Field) -> Vec<String> {
     match &field.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
@@ -715,9 +728,11 @@ fn def_model_option_values(field: &Field) -> Vec<String> {
 }
 
 #[test]
-fn def_model_field_list_spec_reheads_under_active_provider() {
-    // Def `model: [claude/opus, grok/grok-4.5]`, active=grok → effective order
-    // is grok first; preselect chain[0]; NO empty "" head.
+fn def_model_field_leads_with_default_head_then_full_catalog() {
+    // Def `model: [claude/opus, grok/grok-4.5]`, active=grok → the picker leads
+    // with an EMPTY "" head labeled with the resolved head (grok/grok-4.5,
+    // label-only) so a plain Run leaves the def's authored chain to the daemon;
+    // the FULL visible catalog follows in provider-first order.
     let app = app_with_active_grok();
     let spec = crate::ipc::types::ModelRef::Many(vec![
         "claude/opus".into(),
@@ -726,39 +741,42 @@ fn def_model_field_list_spec_reheads_under_active_provider() {
     let field = app.def_model_field("platform", Some(&spec));
     assert_eq!(
         def_model_option_values(&field),
-        vec!["grok/grok-4.5", "claude/opus"]
+        vec!["", "grok/grok-4.5", "claude/opus", "claude/sonnet"]
     );
-    assert_eq!(field.value, "grok/grok-4.5", "preselect chain[0]");
-    assert!(
-        !def_model_option_values(&field).iter().any(|v| v.is_empty()),
-        "no empty default head on def-run picker"
-    );
+    assert_eq!(field.value, "", "the default head is preselected → unpinned");
     match &field.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
-            assert_eq!(options[0].label, "grok-4.5 (grok)");
-            assert_eq!(options[1].label, "opus (claude)");
+            assert_eq!(options[0].label, "default (grok-4.5)");
+            assert_eq!(options[1].label, "grok-4.5 (grok)");
+            assert_eq!(options[2].label, "opus (claude)");
+            assert_eq!(options[3].label, "sonnet (claude)");
         }
         other => panic!("expected labeled Dropdown, got {other:?}"),
     }
 }
 
 #[test]
-fn def_model_field_single_spec_prepends_active_group_head() {
-    // Def `model: claude/opus` only, active=grok → group-head prepend mirrors
-    // resolve_model_chain (grok/grok-4.5 then claude/opus).
+fn def_model_field_head_labels_the_resolved_single_spec() {
+    // Def `model: claude/opus` only, active=grok → resolve_model_chain prepends
+    // the grok group head, so the resolved head is grok/grok-4.5. The empty head
+    // is labeled with it (label-only) and preselected (unpinned).
     let app = app_with_active_grok();
     let spec = crate::ipc::types::ModelRef::One("claude/opus".into());
     let field = app.def_model_field("platform", Some(&spec));
-    assert_eq!(
-        def_model_option_values(&field),
-        vec!["grok/grok-4.5", "claude/opus"]
-    );
-    assert_eq!(field.value, "grok/grok-4.5");
+    assert_eq!(field.value, "");
+    match &field.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert_eq!(options[0].value, "");
+            assert_eq!(options[0].label, "default (grok-4.5)");
+        }
+        other => panic!("expected labeled Dropdown, got {other:?}"),
+    }
 }
 
 #[test]
 fn adhoc_model_field_still_has_default_head_and_catalog() {
-    // Ad-hoc create is UNCHANGED: empty "" head + full visible catalog.
+    // Ad-hoc create keeps the empty "" head + full visible catalog; the head
+    // label now shows only the resolved default head under the active provider.
     let mut app = launcher_app();
     app.settings = Some(Some(catalog_settings()));
     let field = app.model_field("platform");
@@ -769,7 +787,30 @@ fn adhoc_model_field_still_has_default_head_and_catalog() {
     assert!(values.contains(&"grok/grok-4.5".into()));
     match &field.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
-            assert_eq!(options[0].label, "default (grok/grok-4.5)");
+            assert_eq!(options[0].label, "default (opus)");
+        }
+        other => panic!("expected labeled Dropdown, got {other:?}"),
+    }
+}
+
+#[test]
+fn model_field_floats_active_provider_group_to_top_under_grok() {
+    // New-session picker with grok active (the team's screenshot case): head =
+    // the resolved default head, rendered label-only as `default (grok-4.5)`
+    // (platform default is grok/grok-4.5, no re-head needed), then the grok
+    // group floats above the claude group.
+    let app = app_with_active_grok();
+    let field = app.model_field("platform");
+    assert_eq!(field.value, "");
+    assert_eq!(
+        model_option_values(&app, "platform"),
+        vec!["", "grok/grok-4.5", "claude/opus", "claude/sonnet"]
+    );
+    match &field.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert_eq!(options[0].label, "default (grok-4.5)");
+            assert_eq!(options[1].label, "grok-4.5 (grok)");
+            assert_eq!(options[2].label, "opus (claude)");
         }
         other => panic!("expected labeled Dropdown, got {other:?}"),
     }

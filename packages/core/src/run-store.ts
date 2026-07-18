@@ -335,17 +335,27 @@ export class RunStore {
 	/**
 	 * Lenient read of a run's data.json for reverse session lookup: the
 	 * `session_id` (stamped by finishRun), the resolved `model` that run used,
-	 * and the originating task's `prompt` matter to callers. Untyped fields are
-	 * ignored; malformed files → null.
+	 * the `provider` adapter that produced it, the absolute worktree path the
+	 * run executed in, its `started_at`/`finished_at` timestamps (for session
+	 * recency), and the originating task's `prompt` matter to callers. Untyped
+	 * fields are ignored; malformed files → null.
 	 */
 	readRunData(taskId: string): {
 		session_id?: string | null;
 		model?: string | null;
+		provider?: string | null;
+		resolved_worktree_path?: string | null;
+		started_at?: string | null;
+		finished_at?: string | null;
 		task?: { prompt?: string };
 	} | null {
 		return this.readRunMeta(taskId) as {
 			session_id?: string | null;
 			model?: string | null;
+			provider?: string | null;
+			resolved_worktree_path?: string | null;
+			started_at?: string | null;
+			finished_at?: string | null;
 			task?: { prompt?: string };
 		} | null;
 	}

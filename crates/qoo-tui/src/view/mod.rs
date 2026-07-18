@@ -257,12 +257,11 @@ pub fn render(app: &mut App, frame: &mut ratatui::Frame) -> HitMap {
                 let title =
                     format!("{repo} · {}", crate::selectors::strip_repo_prefix(worktree, repo));
                 let now_ms = app.now_epoch_s.saturating_mul(1000);
+                let active_provider = app.active_provider().unwrap_or_default();
                 menu::render_session_pick(
                     frame, &mut hits, &title, items, *loading, *index, query, now_ms, *focus,
+                    &active_provider,
                 );
-            }
-            crate::app::Mode::ProviderPick { choices, index, .. } => {
-                modal::render_provider_pick(frame, &mut hits, choices, *index);
             }
             crate::app::Mode::Form { .. } | crate::app::Mode::DefArgs { .. } => {
                 unreachable!("handled by the `if let` chain above")
@@ -751,7 +750,6 @@ mod tests {
                     source: "acme/vars.yaml".into(),
                 }],
             },
-            ..Default::default()
         }));
         let (terminal, hits) = render_at(&app, 80, 24);
         insta::assert_snapshot!("view_settings_overlay", terminal.backend());

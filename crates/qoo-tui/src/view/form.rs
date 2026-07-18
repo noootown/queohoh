@@ -947,9 +947,12 @@ mod tests {
         )
     }
 
-    /// Symbols of every REVERSED cell in a rendered form (the focused-button
-    /// highlight uses REVERSED+BOLD; a text caret also reverses one cell).
-    fn reversed_symbols(state: &mut FormState) -> String {
+    /// Symbols of every cell painted with the selection BACKGROUND (the
+    /// focused-button highlight is `fg(selection_fg).bg(selection_bg)+BOLD`;
+    /// plain buttons and text carry no bg, and a text caret uses REVERSED — a
+    /// modifier, not a bg — so a `bg`-set cell uniquely marks the focused button).
+    fn selected_symbols(state: &mut FormState) -> String {
+        let sel_bg = crate::view::theme::Palette::default().selection_bg;
         let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
         let mut hit = HitMap::default();
         term.draw(|f| render_form(f, &mut hit, state)).unwrap();
@@ -958,7 +961,7 @@ mod tests {
         for y in 0..30 {
             for x in 0..80 {
                 let c = &buf[(x, y)];
-                if c.modifier.contains(Modifier::REVERSED) {
+                if c.bg == sel_bg {
                     out.push_str(c.symbol());
                 }
             }
@@ -968,20 +971,20 @@ mod tests {
 
     #[test]
     fn field_focus_highlights_no_button() {
-        // With a field focused, NEITHER button renders as the focused (reversed)
-        // button — otherwise the field box and a button both look focused.
+        // With a field focused, NEITHER button renders with the selected style —
+        // otherwise the field box and a button both look focused.
         let mut f = sample(); // focus starts on field 0 (an input)
-        let rev = reversed_symbols(&mut f);
-        assert!(!rev.contains("Create"), "primary must not be focused while a field is: {rev:?}");
-        assert!(!rev.contains("Cancel"), "cancel must not be focused while a field is: {rev:?}");
-        // Focus the Primary button → now it (and only it) reverses.
+        let sel = selected_symbols(&mut f);
+        assert!(!sel.contains("Create"), "primary must not be focused while a field is: {sel:?}");
+        assert!(!sel.contains("Cancel"), "cancel must not be focused while a field is: {sel:?}");
+        // Focus the Primary button → now it (and only it) takes the selected style.
         f.focus = f.fields.len();
-        assert!(reversed_symbols(&mut f).contains("Create"), "primary reverses when focused");
-        // Focus Cancel → it reverses, primary does not.
+        assert!(selected_symbols(&mut f).contains("Create"), "primary highlights when focused");
+        // Focus Cancel → it highlights, primary does not.
         f.focus = f.fields.len() + 1;
-        let rev = reversed_symbols(&mut f);
-        assert!(rev.contains("Cancel"));
-        assert!(!rev.contains("Create"));
+        let sel = selected_symbols(&mut f);
+        assert!(sel.contains("Cancel"));
+        assert!(!sel.contains("Create"));
     }
 
     #[test]

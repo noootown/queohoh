@@ -221,7 +221,7 @@ fn status_glyph(task: &TaskInstance) -> char {
         TaskStatus::Failed => match task.error.as_deref() {
             Some(SESSION_LIMIT_REASON) => '⊠',
             Some(TIMED_OUT_REASON) => '⧗',
-            Some(OUT_OF_BUDGET_REASON) => '¤',
+            Some(OUT_OF_BUDGET_REASON) => '$',
             Some(PROVIDER_UNAVAILABLE_REASON) => '⊟',
             _ => '✗',
         },
@@ -1425,6 +1425,8 @@ pub fn def_desc_text(def: &DefinitionSummary) -> String {
 pub fn def_model_text(def: &DefinitionSummary, ctx: &ModelResolveCtx<'_>) -> String {
     let defaults = ctx.default_models.refs_for(&def.repo);
     let enabled = ctx.enabled_refs();
+    // The effective head is a `provider/label` ref; render it label-only (the
+    // provider prefix is redundant) via the shared display helper.
     effective_model_head(
         def.model.as_ref(),
         ctx.catalog,
@@ -1432,6 +1434,7 @@ pub fn def_model_text(def: &DefinitionSummary, ctx: &ModelResolveCtx<'_>) -> Str
         &defaults,
         ctx.active_provider,
     )
+    .map(|head| crate::chain::model_ref_display(ctx.catalog, &head))
     .unwrap_or_default()
 }
 
@@ -2065,7 +2068,7 @@ mod tests {
         assert_eq!(glyph_for("t2"), '⊠');
         assert_eq!(glyph_for("t3"), '✗');
         assert_eq!(glyph_for("t4"), '✗');
-        assert_eq!(glyph_for("t5"), '¤');
+        assert_eq!(glyph_for("t5"), '$');
         assert_eq!(glyph_for("t6"), '⊟');
     }
 
@@ -3287,7 +3290,7 @@ mod tests {
         s.worktrees = platform_worktrees();
         let rows = worktree_rows(&s, "platform");
         let c = rows.iter().find(|r| r.name == "wt-a").unwrap();
-        assert_eq!(c.last.as_ref().unwrap().0, '¤');
+        assert_eq!(c.last.as_ref().unwrap().0, '$');
 
         let mut provider_unavailable =
             task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-c"));
@@ -3750,26 +3753,27 @@ mod tests {
     #[test]
     fn def_model_text_shows_effective_head_under_active_provider() {
         // Def authored `claude/opus`, active grok, catalog with both groups →
-        // displays the group-head prepend `grok/grok-4.5`, not the authored ref.
+        // displays the group-head prepend, rendered label-only as `grok-4.5`
+        // (the provider prefix is dropped), not the authored ref.
         let m = resolve_owned("grok");
         let one = DefinitionSummary {
             model: Some(ModelRef::One("claude/opus".into())),
             ..Default::default()
         };
-        assert_eq!(def_model_text(&one, &m.ctx()), "grok/grok-4.5");
+        assert_eq!(def_model_text(&one, &m.ctx()), "grok-4.5");
 
         // List that already includes the active provider: stable-partition puts
-        // the grok entry first → head is still grok/grok-4.5 (not the full arrow
+        // the grok entry first → head is still grok-4.5 (not the full arrow
         // chain — the column shows the effective head only).
         let list = DefinitionSummary {
             model: Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()])),
             ..Default::default()
         };
-        assert_eq!(def_model_text(&list, &m.ctx()), "grok/grok-4.5");
+        assert_eq!(def_model_text(&list, &m.ctx()), "grok-4.5");
 
-        // Same authored ref under active claude → no re-head; shows claude/opus.
+        // Same authored ref under active claude → no re-head; shows label `opus`.
         let m_claude = resolve_owned("claude");
-        assert_eq!(def_model_text(&one, &m_claude.ctx()), "claude/opus");
+        assert_eq!(def_model_text(&one, &m_claude.ctx()), "opus");
 
         // Absent model + empty defaults + no active → blank (pane-gate).
         let empty = empty_model_owned();
@@ -3778,15 +3782,16 @@ mod tests {
         // Absent model + empty defaults + active grok enabled → group-head prepend.
         assert_eq!(
             def_model_text(&DefinitionSummary::default(), &m.ctx()),
-            "grok/grok-4.5"
+            "grok-4.5"
         );
     }
 
     #[test]
     fn def_col_layout_model_sizes_and_degrades_before_name() {
-        // active=grok so both defs resolve to effective head "grok/grok-4.5"(13):
-        // pr-review's authored claude/opus is re-headed via group-head prepend;
-        // lint already authors grok/grok-4.5. Widest cell stays 13.
+        // active=grok so both defs resolve to effective head "grok-4.5"(8, the
+        // provider prefix is dropped in the column): pr-review's authored
+        // claude/opus is re-headed via group-head prepend; lint already authors
+        // grok/grok-4.5. Widest model cell = 8.
         // cron→"Everyday 1:30pm"(15 cells), plus a 2-cell front discovery-marker
         // slot (pr-review has_discovery), description present. Schedule
         // footprint = 15; marker footprint = 2.
@@ -3806,21 +3811,21 @@ mod tests {
                 ..Default::default()
             },
         ];
-        // Wide: model sized to the widest cell (13), desc is the fill remainder.
-        // used_wo_desc = marker(2) + name(9) + (2+13) + (2+15) = 43; desc = 120 - 43 - 2 = 75.
+        // Wide: model sized to the widest cell (8), desc is the fill remainder.
+        // used_wo_desc = marker(2) + name(9) + (2+8) + (2+15) = 38; desc = 120 - 38 - 2 = 80.
         let wide = def_col_layout(&defs, 120, &m.ctx());
-        assert_eq!((wide.name_w, wide.model_w, wide.sched_w, wide.marker_w), (9, 13, 15, 2));
-        assert_eq!(wide.desc_w, 75, "description is the fill remainder after the model column");
-        // Kept: name+model+schedule+marker (43) still fit in 50; the fill takes the rest.
+        assert_eq!((wide.name_w, wide.model_w, wide.sched_w, wide.marker_w), (9, 8, 15, 2));
+        assert_eq!(wide.desc_w, 80, "description is the fill remainder after the model column");
+        // Kept: name+model+schedule+marker (38) still fit in 50; the fill takes the rest.
         let kept = def_col_layout(&defs, 50, &m.ctx());
-        assert_eq!(kept.model_w, 13, "model kept while the fixed columns fit");
-        assert_eq!(kept.desc_w, 5, "fill absorbs only what's left: 50 - 43 - 2");
-        // Tighter (40): the model column drops (before the name shrinks).
+        assert_eq!(kept.model_w, 8, "model kept while the fixed columns fit");
+        assert_eq!(kept.desc_w, 10, "fill absorbs only what's left: 50 - 38 - 2");
+        // Tighter (34): the model column drops (before the name shrinks) — 38 > 34.
         // used_wo_desc without model = marker(2) + name(9) + (2+15) = 28.
-        let narrow = def_col_layout(&defs, 40, &m.ctx());
+        let narrow = def_col_layout(&defs, 34, &m.ctx());
         assert_eq!(narrow.model_w, 0);
         assert_eq!(narrow.name_w, 9, "name still fits; schedule/marker kept");
-        assert_eq!(narrow.desc_w, 10, "fill absorbs the rest: 40 - 28 - 2");
+        assert_eq!(narrow.desc_w, 4, "fill absorbs the rest: 34 - 28 - 2");
         assert_eq!(narrow.marker_w, 2, "marker slot survives model drop");
         // Narrowest (25): model gone AND the name shrinks (28 - 25 = 3 → 9-3=6).
         let tightest = def_col_layout(&defs, 25, &m.ctx());

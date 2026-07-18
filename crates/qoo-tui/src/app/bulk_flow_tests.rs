@@ -200,7 +200,7 @@ fn worktrees_bulk_range_refuses_run_goto_and_tasks_menu() {
     assert!(matches!(a.mode, Mode::List));
     assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
     assert!(!u.cmds.iter().any(|c| matches!(c, Cmd::Goto { .. })));
-    assert!(!matches!(a.mode, Mode::ProviderPick { .. }));
+    assert!(!matches!(a.mode, Mode::Form { .. }));
 
     a.status_line = None;
     a.update(key('t'));

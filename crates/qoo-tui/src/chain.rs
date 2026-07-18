@@ -41,6 +41,26 @@ pub fn group_head<'a>(catalog: &'a [CatalogEntry], provider: &str) -> Option<&'a
     catalog.iter().find(|e| e.provider == provider)
 }
 
+/// Display form for a `provider/label` model ref: just the `label`, since the
+/// provider prefix is redundant (`grok/grok-4.5` → `grok-4.5`). The single
+/// source of truth for rendering a ref anywhere in the TUI. Falls back to the
+/// full `provider/label` ONLY when the same label exists under two or more
+/// providers in `catalog` (so the render stays unambiguous — catalog labels are
+/// guaranteed unique only within a provider). A ref with no `/` is returned
+/// unchanged.
+pub fn model_ref_display(catalog: &[CatalogEntry], r#ref: &str) -> String {
+    let Some(slash) = r#ref.find('/') else {
+        return r#ref.to_string();
+    };
+    let label = &r#ref[slash + 1..];
+    let ambiguous = catalog.iter().filter(|e| e.label == label).count() >= 2;
+    if ambiguous {
+        r#ref.to_string()
+    } else {
+        label.to_string()
+    }
+}
+
 /// Build the `unknown model: <ref>` error, with a `did you mean
 /// provider/label?` suggestion when the part after `/` (or the whole ref
 /// when there is no `/`) matches some entry's label or id. Mirrors
@@ -196,6 +216,28 @@ mod tests {
             model_id: model_id.into(),
             model_ref: model_ref.into(),
         }
+    }
+
+    #[test]
+    fn model_ref_display_drops_provider_prefix_unless_ambiguous() {
+        let cat = builtin_catalog();
+        // Unique label → label-only.
+        assert_eq!(model_ref_display(&cat, "grok/grok-4.5"), "grok-4.5");
+        assert_eq!(model_ref_display(&cat, "claude/opus"), "opus");
+        // No `/` → returned unchanged.
+        assert_eq!(model_ref_display(&cat, "opus"), "opus");
+        // Same label under two providers → keep the qualified form for it only.
+        let mut ambiguous = builtin_catalog();
+        ambiguous.push(CatalogEntry {
+            provider: "grok".into(),
+            id: "grok-opus".into(),
+            label: "opus".into(),
+            hidden: false,
+        });
+        assert_eq!(model_ref_display(&ambiguous, "claude/opus"), "claude/opus");
+        assert_eq!(model_ref_display(&ambiguous, "grok/opus"), "grok/opus");
+        // A non-colliding label in the same catalog still strips.
+        assert_eq!(model_ref_display(&ambiguous, "grok/grok-4.5"), "grok-4.5");
     }
 
     #[test]

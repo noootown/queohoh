@@ -45,12 +45,24 @@ fn format_duration(ms: u64) -> String {
 }
 
 /// `(key, value)` rows for the config sub-tab. The model row shows the def's
-/// authored `model:` — a `provider/label` ref, or a fallback list joined with
-/// ` → ` — falling back to a dash when the def has no `model:` (it resolves
-/// against `default_models` at run time). `modelResolved` was removed from the
-/// wire in Task 5 (the flat catalog replaced the alias table).
-fn config_rows(def: &TaskDefinition) -> Vec<(&'static str, String)> {
-    let model = def.model.as_ref().map(|m| m.display()).unwrap_or_else(|| EM_DASH.to_string());
+/// authored `model:` — a label, or a fallback list of labels joined with ` → `
+/// — falling back to a dash when the def has no `model:` (it resolves against
+/// `default_models` at run time). Each `provider/label` ref renders label-only
+/// (provider prefix dropped) via the shared display helper. `modelResolved`
+/// was removed from the wire in Task 5 (the flat catalog replaced the alias
+/// table).
+fn config_rows(def: &TaskDefinition, catalog: &[CatalogEntry]) -> Vec<(&'static str, String)> {
+    let model = def
+        .model
+        .as_ref()
+        .map(|m| {
+            m.refs()
+                .iter()
+                .map(|r| crate::chain::model_ref_display(catalog, r))
+                .collect::<Vec<_>>()
+                .join(" → ")
+        })
+        .unwrap_or_else(|| EM_DASH.to_string());
     vec![
         ("args", if def.args.is_empty() { EM_DASH.to_string() } else { arg_summary(&def.args) }),
         ("worktree", def.worktree.clone()),
@@ -78,8 +90,8 @@ fn align_kv(rows: &[(&str, String)]) -> (Vec<String>, usize) {
 }
 
 /// Aligned config lines + the value column (see [`align_kv`]).
-fn config_view(def: &TaskDefinition) -> (Vec<String>, usize) {
-    align_kv(&config_rows(def))
+fn config_view(def: &TaskDefinition, catalog: &[CatalogEntry]) -> (Vec<String>, usize) {
+    align_kv(&config_rows(def, catalog))
 }
 
 /// `(key, value)` rows for the worktree detail info block: identity (path,
@@ -416,7 +428,7 @@ pub(crate) fn content_for(
         DetailContext::Definition { .. } => match def {
             None => (Vec::new(), Vec::new(), "(loading definition…)"),
             Some(d) if sub_tab == 1 => {
-                let (lines, key_col) = config_view(d);
+                let (lines, key_col) = config_view(d, catalog);
                 let ctxs = vec![LineCtx::Config { key_col }; lines.len()];
                 (lines, ctxs, "")
             }
@@ -1481,7 +1493,18 @@ mod tests {
 
     #[test]
     fn config_view_aligns_keys_and_shows_model_refs() {
-        use crate::ipc::types::ModelRef;
+        use crate::ipc::types::{CatalogEntry, ModelRef};
+        let entry = |provider: &str, id: &str, label: &str| CatalogEntry {
+            provider: provider.into(),
+            id: id.into(),
+            label: label.into(),
+            hidden: false,
+        };
+        // Unique labels → each ref renders label-only (provider prefix dropped).
+        let catalog = vec![
+            entry("claude", "claude-opus-4-8", "opus"),
+            entry("grok", "grok-4.5", "grok-4.5"),
+        ];
         let mut def = TaskDefinition {
             model: Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()])),
             timeout_ms: 1_800_000,
@@ -1490,24 +1513,24 @@ mod tests {
             priority: "normal".to_string(),
             ..Default::default()
         };
-        let (lines, key_col) = config_view(&def);
+        let (lines, key_col) = config_view(&def, &catalog);
         // Longest key is "discovery" (9) + 2-gap → value column at char 11.
         assert_eq!(key_col, 11);
         // Every line's key column is padded to the same width.
         for line in &lines {
             assert!(line.chars().count() >= key_col, "{line:?} shorter than key column");
         }
-        // A fallback list joins with the ` → ` arrow.
-        assert!(lines.iter().any(|l| l == "model      claude/opus → grok/grok-4.5"));
+        // A fallback list joins label-only refs with the ` → ` arrow.
+        assert!(lines.iter().any(|l| l == "model      opus → grok-4.5"));
         assert!(lines.iter().any(|l| l == "timeout    30m"));
         assert!(lines.iter().any(|l| l == "discovery  —"));
-        // A single ref shows verbatim.
+        // A single ref shows its label only.
         def.model = Some(ModelRef::One("claude/opus".into()));
-        let (lines, _) = config_view(&def);
-        assert!(lines.iter().any(|l| l == "model      claude/opus"));
+        let (lines, _) = config_view(&def, &catalog);
+        assert!(lines.iter().any(|l| l == "model      opus"));
         // No `model:` (an old daemon, or a model-less def) → a dash.
         def.model = None;
-        let (lines, _) = config_view(&def);
+        let (lines, _) = config_view(&def, &catalog);
         assert!(lines.iter().any(|l| l == "model      —"));
     }
 

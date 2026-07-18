@@ -275,26 +275,6 @@ impl App {
                     }
                 };
             }
-            // Worktree-goto provider picker owns every click: a MenuItem picks
-            // that provider, a click inside the modal body is inert, outside
-            // dismisses.
-            K::Down(MouseButton::Left) if matches!(self.mode, Mode::ProviderPick { .. }) => {
-                return match target {
-                    Some(HitTarget::MenuItem(i)) => {
-                        if let Mode::ProviderPick { index, choices, .. } = &mut self.mode
-                            && i < choices.len()
-                        {
-                            *index = i;
-                        }
-                        self.provider_pick_confirm()
-                    }
-                    Some(HitTarget::Modal) => Update { dirty: false, cmds: vec![] },
-                    _ => {
-                        self.mode = Mode::List;
-                        Update { dirty: true, cmds: vec![] }
-                    }
-                };
-            }
             // The unified confirm dialog owns every click: the Confirm button
             // fires the frozen action, the Cancel button and any outside click
             // dismiss, a click inside the body is inert. Both buttons act

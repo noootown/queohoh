@@ -837,32 +837,31 @@ fn with_providers(a: &mut App, providers: Vec<crate::ipc::types::SettingsProvide
     }));
 }
 
+/// Two enabled providers (`claude` with no configured bin — falls back to its
+/// name — and `grok` with an explicit bin) shared by the Goto-provider form
+/// tests below.
+fn two_providers() -> Vec<crate::ipc::types::SettingsProvider> {
+    vec![
+        crate::ipc::types::SettingsProvider { name: "claude".into(), enabled: true, bin: None },
+        crate::ipc::types::SettingsProvider {
+            name: "grok".into(),
+            enabled: true,
+            bin: Some("/opt/grok".into()),
+        },
+    ]
+}
+
 #[test]
-fn g_on_worktree_row_opens_provider_pick_when_inside_tmux() {
+fn g_on_worktree_row_opens_goto_provider_form_when_inside_tmux() {
     let mut a = app_with(worktree_snapshot());
     a.inside_tmux = true;
-    with_providers(
-        &mut a,
-        vec![
-            crate::ipc::types::SettingsProvider {
-                name: "claude".into(),
-                enabled: true,
-                bin: None,
-            },
-            crate::ipc::types::SettingsProvider {
-                name: "grok".into(),
-                enabled: true,
-                bin: Some("/opt/grok".into()),
-            },
-        ],
-    );
+    with_providers(&mut a, two_providers());
     focus_worktrees(&mut a);
     let up = a.update(key('g'));
-    assert!(up.cmds.is_empty(), "picker opens, no Goto yet: {:?}", up.cmds);
+    assert!(up.cmds.is_empty(), "form opens, no Goto yet: {:?}", up.cmds);
     match &a.mode {
-        Mode::ProviderPick { path, choices, index } => {
+        Mode::Form { state, action: FormAction::GotoProvider { path, choices } } => {
             assert_eq!(path, "/wt/wt-a");
-            assert_eq!(*index, 0);
             assert_eq!(
                 choices,
                 &vec![
@@ -870,38 +869,101 @@ fn g_on_worktree_row_opens_provider_pick_when_inside_tmux() {
                     ("grok".into(), "/opt/grok".into()),
                 ]
             );
+            assert_eq!(state.title, "Goto — provider");
+            assert_eq!(state.primary_label, "Go");
+            assert_eq!(state.fields.len(), 1, "a single provider dropdown, nothing else");
+            let field = &state.fields[0];
+            assert_eq!(field.label, "provider");
+            // No active provider on the snapshot/settings → the dropdown
+            // defaults to the first enabled choice.
+            assert_eq!(field.value, "claude");
+            match &field.kind {
+                crate::view::form::FieldKind::Dropdown { options } => {
+                    let names: Vec<&str> = options.iter().map(|o| o.value.as_str()).collect();
+                    assert_eq!(names, vec!["claude", "grok"], "options are the enabled provider names");
+                }
+                other => panic!("expected a Dropdown field, got {other:?}"),
+            }
         }
-        other => panic!("expected ProviderPick, got {other:?}"),
+        other => panic!("expected Mode::Form/GotoProvider, got {other:?}"),
     }
 }
 
 #[test]
-fn g_on_worktree_provider_pick_enter_emits_goto_with_bin() {
-    let mut a = app_with(worktree_snapshot());
+fn g_on_worktree_goto_provider_form_defaults_to_the_active_provider() {
+    // active_provider echoed on the snapshot names a choice other than the
+    // first — the dropdown must default to IT, not to choices[0].
+    let mut snap = worktree_snapshot();
+    snap.active_provider = Some("grok".into());
+    let mut a = app_with(snap);
     a.inside_tmux = true;
-    with_providers(
-        &mut a,
-        vec![
-            crate::ipc::types::SettingsProvider {
-                name: "claude".into(),
-                enabled: true,
-                bin: None,
-            },
-            crate::ipc::types::SettingsProvider {
-                name: "grok".into(),
-                enabled: true,
-                bin: Some("/opt/grok".into()),
-            },
-        ],
-    );
+    with_providers(&mut a, two_providers());
     focus_worktrees(&mut a);
     a.update(key('g'));
-    a.update(down()); // highlight grok
+    match &a.mode {
+        Mode::Form { state, .. } => assert_eq!(state.fields[0].value, "grok"),
+        other => panic!("expected Mode::Form, got {other:?}"),
+    }
+}
+
+#[test]
+fn g_on_worktree_goto_provider_form_submit_emits_goto_with_default_bin() {
+    // Submitting without touching the dropdown fires Cmd::Goto for whatever
+    // it defaulted to (here: the first choice, "claude" — same as its name,
+    // since it has no configured bin).
+    let mut a = app_with(worktree_snapshot());
+    a.inside_tmux = true;
+    with_providers(&mut a, two_providers());
+    focus_worktrees(&mut a);
+    a.update(key('g'));
+    tab(&mut a); // field -> Primary
+    let up = a.update(enter());
+    assert!(matches!(a.mode, Mode::List));
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+        if path == "/wt/wt-a" && cmd == "claude"),
+        "cmds: {:?}", up.cmds);
+}
+
+#[test]
+fn g_on_worktree_goto_provider_form_pick_non_default_emits_its_bin() {
+    // Open the dropdown, move off the default onto "grok", pick it, then
+    // submit — Cmd::Goto must carry grok's resolved bin, not claude's.
+    let mut a = app_with(worktree_snapshot());
+    a.inside_tmux = true;
+    with_providers(&mut a, two_providers());
+    focus_worktrees(&mut a);
+    a.update(key('g'));
+    a.update(down()); // opens the dropdown, highlight lands on the current value (claude)
+    a.update(down()); // move highlight to grok
+    a.update(enter()); // dropdown_pick: field value -> "grok", dropdown closes
+    assert!(matches!(&a.mode, Mode::Form { state, .. } if state.fields[0].value == "grok"));
+    tab(&mut a); // field -> Primary
     let up = a.update(enter());
     assert!(matches!(a.mode, Mode::List));
     assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
         if path == "/wt/wt-a" && cmd == "/opt/grok"),
         "cmds: {:?}", up.cmds);
+}
+
+#[test]
+fn g_on_worktree_row_no_enabled_providers_shows_status_and_opens_no_form() {
+    // All providers disabled -> the empty-choices guard fires: a status line,
+    // no Mode::Form.
+    let mut a = app_with(worktree_snapshot());
+    a.inside_tmux = true;
+    with_providers(
+        &mut a,
+        vec![crate::ipc::types::SettingsProvider {
+            name: "claude".into(),
+            enabled: false,
+            bin: None,
+        }],
+    );
+    focus_worktrees(&mut a);
+    let up = a.update(key('g'));
+    assert!(up.cmds.is_empty());
+    assert!(matches!(a.mode, Mode::List));
+    assert_eq!(a.status_line.as_deref(), Some("no enabled providers"));
 }
 
 #[test]
@@ -956,7 +1018,7 @@ fn r_and_x_are_noops_on_session_rows_but_g_works() {
     assert!(xu.cmds.is_empty());
     assert!(a.status_line.is_some(), "x sets a status line on a session row");
 
-    // `g`: opens the provider picker at the session's cwd (works for session rows too).
+    // `g`: opens the Goto-provider form at the session's cwd (works for session rows too).
     with_providers(
         &mut a,
         vec![crate::ipc::types::SettingsProvider {
@@ -967,7 +1029,8 @@ fn r_and_x_are_noops_on_session_rows_but_g_works() {
     );
     let gu = a.update(key('g'));
     assert!(gu.cmds.is_empty());
-    assert!(matches!(&a.mode, Mode::ProviderPick { path, .. } if path == "/wt/wt-a/nested"));
+    assert!(matches!(&a.mode,
+        Mode::Form { action: FormAction::GotoProvider { path, .. }, .. } if path == "/wt/wt-a/nested"));
 }
 
 #[test]

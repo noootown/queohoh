@@ -7,7 +7,11 @@ import {
 import { DEFAULT_PROVIDERS, type ProviderConfig } from "./config.js";
 import type { TaskDefinition } from "./definition.js";
 import { execHook } from "./hooks.js";
-import { type ChainEntry, resolveModelChain } from "./models.js";
+import {
+	type ChainEntry,
+	resolveModelChain,
+	resolvePinnedModel,
+} from "./models.js";
 import { getAdapter } from "./providers/index.js";
 import type { Redactor } from "./redact.js";
 import type { Exec } from "./resolver-io.js";
@@ -205,13 +209,23 @@ async function resolveRunContext(
 	// Without a stamp, fall through to def.model, then default_models.
 	const providers: ProviderConfig[] = deps.providers ?? DEFAULT_PROVIDERS;
 	const modelSpec = task.model ?? def?.model ?? null;
-	const chainResult = resolveModelChain(
-		modelSpec,
-		deps.catalog,
-		providers,
-		deps.defaultModels,
-		deps.activeProvider,
-	);
+	// `model_pinned` (an explicit TUI dialog pick) bypasses resolveModelChain
+	// entirely: it must run EXACTLY the stamped ref, with no active-provider
+	// re-head and no fallback chain. Def-authored `model:` chains and
+	// default_models keep today's re-heading behavior — only a stamped pin
+	// skips it. A pin with a non-string `task.model` (a fallback LIST) can't
+	// happen from the TUI wire (it always stamps a single ref), but falls
+	// through to the normal chain resolution defensively rather than crashing.
+	const chainResult =
+		task.modelPinned === true && typeof task.model === "string"
+			? resolvePinnedModel(task.model, deps.catalog, providers)
+			: resolveModelChain(
+					modelSpec,
+					deps.catalog,
+					providers,
+					deps.defaultModels,
+					deps.activeProvider,
+				);
 	if (!chainResult.ok) return { fail: chainResult.error };
 
 	// Drop entries already attempted for this task, so a retry (or an adopted

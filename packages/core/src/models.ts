@@ -106,3 +106,30 @@ export function resolveModelChain(
 
 	return { ok: true, chain };
 }
+
+/**
+ * Resolve an explicit TUI model pick (`task.model_pinned`) into an EXACT
+ * 1-entry chain — no active-provider re-head, no fallback. Unlike
+ * `resolveModelChain`, which prepends the active provider's group head when
+ * `ref` names a different provider (step 5 above), a pinned pick must run
+ * exactly what the operator selected in the dialog. `ok: false` when `ref` is
+ * unknown or its provider is disabled — the caller fails the task fast
+ * rather than silently substituting something else.
+ */
+export function resolvePinnedModel(
+	ref: string,
+	catalog: CatalogEntry[],
+	providers: ProviderConfig[],
+): ChainResult {
+	const entry = findModel(catalog, ref);
+	if (entry === undefined) {
+		return { ok: false, error: unknownModelError(catalog, ref) };
+	}
+	if (!isEnabled(providers, entry.provider)) {
+		return {
+			ok: false,
+			error: `pinned model ${modelRef(entry)} is on a disabled provider: ${entry.provider}`,
+		};
+	}
+	return { ok: true, chain: [toChainEntry(entry)] };
+}

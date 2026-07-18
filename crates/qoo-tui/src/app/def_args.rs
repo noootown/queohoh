@@ -130,11 +130,12 @@ impl App {
         def_model: Option<ModelRef>,
     ) -> Vec<Cmd> {
         let cmds = self.ensure_full_def(&repo, &name);
-        // Arg fields first (declaration order = positional `args` on submit),
-        // then the effective-chain model picker. Building the list before
-        // `FormState::new` keeps focus on the first non-readonly field (which
-        // may be the model when every arg is fixed / the def is zero-arg).
-        let mut fields = self
+        // Model picker FIRST (always field 0), then the arg fields in
+        // declaration order (their positional order on submit is unchanged —
+        // `submit_def_args` peels the leading model off before reading args).
+        // Because the model dropdown is never readonly, `FormState::new` always
+        // lands initial focus on it.
+        let arg_fields = self
             .form_from_args(
                 &name,
                 &args,
@@ -145,7 +146,8 @@ impl App {
                 worktree.as_deref(),
             )
             .fields;
-        fields.push(self.def_model_field(&repo, def_model.as_ref()));
+        let mut fields = vec![self.def_model_field(&repo, def_model.as_ref())];
+        fields.extend(arg_fields);
         let state = FormState::new(&name, "Run", fields);
         self.mode = Mode::DefArgs {
             state,
@@ -431,11 +433,21 @@ impl App {
         };
         match state.validate() {
             Ok(values) => {
-                // Positional args are the first `args.len()` fields; the trailing
-                // model picker (when present) sits at index `args.len()`.
+                // `open_def_args` builds the form as `[model, args…]`, so the
+                // model picker is field 0 and the positional args follow it. A
+                // hand-built `Mode::DefArgs` test fixture may omit the model
+                // field entirely; detect that by the presence of the extra
+                // leading field (`values.len() > n_args`) rather than assuming a
+                // fixed index, so both layouts read args correctly.
                 let n_args = args.len();
-                let arg_values: Vec<String> = values.iter().take(n_args).cloned().collect();
-                let model = values.get(n_args).cloned().filter(|m| !m.is_empty());
+                let has_model = values.len() > n_args;
+                let arg_start = usize::from(has_model);
+                let arg_values: Vec<String> =
+                    values.iter().skip(arg_start).take(n_args).cloned().collect();
+                let model = has_model
+                    .then(|| values.first().cloned())
+                    .flatten()
+                    .filter(|m| !m.is_empty());
                 // A worktree-typed arg's value → canonical ref; no such arg keeps
                 // the old positional-only behavior (target_ref None).
                 let target_ref = args

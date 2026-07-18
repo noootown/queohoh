@@ -31,7 +31,10 @@ export const BUILTIN_CATALOG: CatalogEntry[] = [
 	{ provider: "claude", id: "claude-sonnet-5", label: "sonnet" },
 	{ provider: "claude", id: "claude-haiku-4-5", label: "haiku" },
 	{ provider: "grok", id: "grok-4.5", label: "grok-4.5" },
-	{ provider: "grok", id: "grok-composer-2.5-fast", label: "composer" },
+	// Hidden from pickers (the grok group offers only grok-4.5) but still
+	// resolvable when referenced explicitly by `grok/composer` — `hidden` is
+	// picker-only, so existing tasks/config keep running.
+	{ provider: "grok", id: "grok-composer-2.5-fast", label: "composer", hidden: true },
 	{ provider: "codex", id: "gpt-5.6-sol", label: "sol" },
 	{ provider: "codex", id: "gpt-5.6-terra", label: "terra" },
 	{ provider: "codex", id: "gpt-5.6-luna", label: "luna" },

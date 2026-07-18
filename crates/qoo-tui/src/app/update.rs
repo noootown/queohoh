@@ -154,12 +154,6 @@ impl App {
             {
                 self.form_key(&k)
             }
-            // Worktree-goto provider picker owns keys while open.
-            Event::Key(k)
-                if k.kind == KeyEventKind::Press && matches!(self.mode, Mode::ProviderPick { .. }) =>
-            {
-                self.provider_pick_key(&k)
-            }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     return Update { dirty: false, cmds: vec![] };

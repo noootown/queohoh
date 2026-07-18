@@ -975,7 +975,11 @@ impl App {
     /// daemon honors the ref (create-or-reuse) instead of the legacy worktree
     /// hint. `worktree` (the launch context) is sent only when there is no ref.
     /// `model` is the operator's 1-entry exact pick from the def-run effective
-    /// chain (omit / empty → daemon keeps the def's authored chain).
+    /// chain (omit / empty → daemon keeps the def's authored chain). The
+    /// def-run picker never offers an empty "default" option (see
+    /// `def_model_field`), so a present `model` is always sent with
+    /// `model_pinned: true` — the daemon runs it exactly, no active-provider
+    /// re-head, no fallback.
     pub(super) fn run_definition_cmd(
         repo: &str,
         name: &str,
@@ -993,6 +997,7 @@ impl App {
             params["worktree"] = serde_json::Value::String(wt.to_string());
         }
         if let Some(m) = model.filter(|m| !m.is_empty()) {
+            params["model_pinned"] = serde_json::Value::Bool(true);
             params["model"] = serde_json::Value::String(m.to_string());
         }
         Cmd::Rpc {
@@ -1129,9 +1134,9 @@ impl App {
         Update { dirty: true, cmds: vec![Cmd::FetchSessions { repo, worktree }] }
     }
 
-    /// `g` on WORKTREES (and the `[g]oto` chip): open a provider picker, then
-    /// launch a first-class tmux split (left bare shell | right = provider bin)
-    /// at the selected worktree (or session) cwd. Inert with a status line
+    /// `g` on WORKTREES (and the `[g]oto` chip): open the Goto-provider form,
+    /// then launch a first-class tmux split (left bare shell | right = provider
+    /// bin) at the selected worktree (or session) cwd. Inert with a status line
     /// outside tmux. Session rows resolve to their cwd path.
     pub(super) fn goto_worktree(&mut self) -> Update {
         // A bulk range isn't in the doable set (only `Remove` is) — refuse
@@ -1148,11 +1153,11 @@ impl App {
             return Update { dirty: true, cmds: vec![] };
         };
         let path = row.path.clone();
-        // Enabled providers + resolved bins, frozen into the picker so a
+        // Enabled providers + resolved bins, frozen into the form so a
         // settings push mid-dialog cannot retarget the launch.
         let Some(payload) = self.settings.as_ref().and_then(|s| s.as_ref()) else {
             // Settings not cached yet (or a failed fetch). Kick a fetch so the
-            // next `g` can open the picker; don't invent a default provider.
+            // next `g` can open the form; don't invent a default provider.
             let mut cmds = Vec::new();
             if self.settings.is_none() {
                 cmds.push(Cmd::FetchSettings);
@@ -1179,26 +1184,20 @@ impl App {
             self.status_line = Some("no enabled providers".into());
             return Update { dirty: true, cmds: vec![] };
         }
-        self.mode = Mode::ProviderPick { path, choices, index: 0 };
+        // Default the dropdown to the current active provider when it's among
+        // the enabled choices, else the first choice.
+        let names: Vec<String> = choices.iter().map(|(name, _)| name.clone()).collect();
+        let default = self
+            .active_provider()
+            .filter(|p| names.iter().any(|n| n == p))
+            .unwrap_or_else(|| names[0].clone());
+        let state = crate::view::form::FormState::new(
+            "Goto — provider",
+            "Go",
+            vec![crate::view::form::Field::dropdown("provider", names, &default)],
+        );
+        self.mode = Mode::Form { state, action: FormAction::GotoProvider { path, choices } };
         Update { dirty: true, cmds: vec![] }
-    }
-
-    /// Confirm a [`Mode::ProviderPick`] selection: fire `Cmd::Goto` with the
-    /// frozen path and the chosen provider's resolved bin (fresh interactive —
-    /// no resume). Shared by Enter and a MenuItem click.
-    pub(super) fn provider_pick_confirm(&mut self) -> Update {
-        let (path, cmd) = match &self.mode {
-            Mode::ProviderPick { path, choices, index } => {
-                let Some((_, bin)) = choices.get(*index) else {
-                    self.mode = Mode::List;
-                    return Update { dirty: true, cmds: vec![] };
-                };
-                (path.clone(), bin.clone())
-            }
-            _ => return Update::default(),
-        };
-        self.mode = Mode::List;
-        Update { dirty: true, cmds: vec![Cmd::Goto { path, cmd }] }
     }
 
     /// `g` on QUEUE (and the `[g]oto` chip): resume the selected task's session

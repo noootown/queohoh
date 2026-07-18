@@ -284,17 +284,6 @@ pub enum Mode {
         state: crate::view::form::FormState,
         action: FormAction,
     },
-    /// Worktree `g` provider picker: pick which interactive agent bin to launch
-    /// in the right pane of a first-class tmux split. `path` is the frozen
-    /// worktree cwd; `choices` are `(name, resolved_bin)` pairs for ENABLED
-    /// providers only, frozen at open so a settings push mid-dialog cannot
-    /// retarget the launch; `index` is the highlighted row. Enter/click picks;
-    /// Esc dismisses. Lightest list pattern (no preview/search/buttons).
-    ProviderPick {
-        path: String,
-        choices: Vec<(String, String)>,
-        index: usize,
-    },
 }
 
 /// What a validated [`Mode::Form`] fires on its Primary button. Each variant
@@ -311,11 +300,11 @@ pub enum FormAction {
         resume_session_id: Option<String>,
     },
     /// Create a new worktree in `repo`, then enqueue a first task into it.
-    /// Fields: `[branch/name input, model dropdown, prompt textarea]`.
+    /// Fields: `[model dropdown, branch/name input, prompt textarea]`.
     CreateWorktree { repo: String },
     /// Adhoc task (`c` / Create). The unified target-picking create form —
-    /// Fields, in order (see `adhoc_field`): `[target combobox, session picker,
-    /// model dropdown, prompt textarea]`. The `target` combobox resolves to a
+    /// Fields, in order (see `adhoc_field`): `[model dropdown, target combobox,
+    /// session picker, prompt textarea]`. The `target` combobox resolves to a
     /// canonical ref on submit (`resolve_target_ref`); an EMPTY target enqueues
     /// into a fresh temp worktree (the legacy adhoc behavior). `resume_*` pins a
     /// session to CONTINUE (only valid — and only sent — when the resolved
@@ -329,15 +318,26 @@ pub enum FormAction {
         /// on submit when the resolved target names this same worktree.
         resume_worktree: Option<String>,
     },
+    /// Worktree `g` provider picker: pick which interactive agent bin to launch
+    /// in the right pane of a first-class tmux split. Fields: `[provider
+    /// dropdown]`, its options the ENABLED provider names, defaulting to the
+    /// current active provider (else the first choice). `path` is the frozen
+    /// worktree cwd; `choices` are `(name, resolved_bin)` pairs for ENABLED
+    /// providers only, frozen at open so a settings push mid-dialog cannot
+    /// retarget the launch. On submit, fires `Cmd::Goto` with the picked
+    /// provider's resolved bin (fresh interactive — no resume). This is a
+    /// DIFFERENT flow from the `p`-key active-provider switch
+    /// ([`ConfirmAction::SwitchProvider`]), which stays a `Mode::Confirm`.
+    GotoProvider { path: String, choices: Vec<(String, String)> },
 }
 
 /// Which stop each adhoc-create form field occupies (the positional layout the
 /// `AdhocTask` action reads back). Kept as a single source of truth so the
 /// builder, the submit reader, and the session round-trip stay in lockstep.
 pub mod adhoc_field {
-    pub const TARGET: usize = 0;
-    pub const SESSION: usize = 1;
-    pub const MODEL: usize = 2;
+    pub const MODEL: usize = 0;
+    pub const TARGET: usize = 1;
+    pub const SESSION: usize = 2;
     pub const PROMPT: usize = 3;
 }
 

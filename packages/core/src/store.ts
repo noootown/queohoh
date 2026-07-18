@@ -29,6 +29,10 @@ export interface NewTaskInput {
 	/** Requested model(s): a single `provider/label` ref or an ordered fallback
 	 * list (see `TaskInstance.model` / `resolveModelChain`). */
 	model?: string | string[];
+	/** True when `model` is an explicit TUI dialog pick that must run EXACTLY
+	 * that ref (see `TaskInstance.modelPinned` / `resolvePinnedModel`).
+	 * Defaults to false — absent on legacy/MCP callers. */
+	modelPinned?: boolean;
 	/** Per-task hard wall-clock ceiling override, in ms (from the MCP `timeout`
 	 * param); a definition task's own `timeout:` still wins at run time
 	 * (unlike `model`, which is task-first so operator overrides win). */
@@ -109,6 +113,7 @@ export class QueueStore {
 			session: input.session ?? "fresh",
 			resumeSessionId: input.resumeSessionId ?? null,
 			model: input.model ?? null,
+			modelPinned: input.modelPinned ?? false,
 			timeoutMs: input.timeoutMs ?? null,
 			prompt: input.prompt,
 			chainId: null,

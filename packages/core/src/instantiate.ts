@@ -60,6 +60,11 @@ export interface InstantiateDeps {
 	 * override) beats the definition's authored list when set. Absent → task
 	 * keeps `model: null` and the def's list (or `default_models`) applies. */
 	model?: string | string[];
+	/** True when `model` is an explicit TUI dialog pick that must run EXACTLY
+	 * that ref — no active-provider re-head, no fallback chain (see
+	 * `TaskInstance.modelPinned`). Absent/false keeps today's re-heading
+	 * behavior. */
+	modelPinned?: boolean;
 }
 
 export async function instantiateDefinition(
@@ -125,6 +130,7 @@ export async function instantiateDefinition(
 			// Operator/TUI override only — do not copy def.model here; leaving
 			// task.model null lets worker fall through to the def's authored list.
 			model: deps.model,
+			modelPinned: deps.modelPinned ?? false,
 			lane: def.lane ?? undefined,
 		}),
 	);

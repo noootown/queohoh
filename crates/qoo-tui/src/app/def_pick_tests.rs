@@ -197,11 +197,13 @@ fn tasks_pane_r_with_args_opens_run_form_with_ambient_overlay() {
     let update = app.update(key(KeyCode::Char('r')));
     match &app.mode {
         Mode::DefArgs { state, args, initial_worktree, .. } => {
+            // Field 0 is always the model picker; the source arg follows it.
+            assert_eq!(state.fields[0].label, "model");
             // The ambient overlay injects the worktree branch as the source arg's
-            // only option → field 0 is a seeded Dropdown, prefilled from the row.
+            // only option → field 1 is a seeded Dropdown, prefilled from the row.
             assert_eq!(args[0].options.as_deref(), Some(&["jus-9-x".to_string()][..]));
-            assert!(matches!(&state.fields[0].kind, crate::view::form::FieldKind::Dropdown { .. }));
-            assert_eq!(state.fields[0].value, "jus-9-x");
+            assert!(matches!(&state.fields[1].kind, crate::view::form::FieldKind::Dropdown { .. }));
+            assert_eq!(state.fields[1].value, "jus-9-x");
             assert_eq!(*initial_worktree, None);
         }
         other => panic!("expected DefArgs, got {other:?}"),
@@ -467,13 +469,15 @@ fn def_pick_enter_with_args_opens_def_args_with_fixed_context() {
     app.update(key(KeyCode::Enter));
     match &app.mode {
         Mode::DefArgs { state, initial_worktree, .. } => {
+            // Field 0 is the model picker (non-readonly → initial focus).
+            assert_eq!(state.fields[0].label, "model");
             // `source` is fixed from the worktree branch → a read-only field
             // prefilled with the branch; `target` is editable from its default.
-            assert!(state.fields[0].readonly);
-            assert_eq!(state.fields[0].value, "jus-9-x");
-            assert!(!state.fields[1].readonly);
-            assert_eq!(state.fields[1].value, "main"); // target from default (editable)
-            assert_eq!(state.focus, 1); // focus starts past the read-only source
+            assert!(state.fields[1].readonly);
+            assert_eq!(state.fields[1].value, "jus-9-x");
+            assert!(!state.fields[2].readonly);
+            assert_eq!(state.fields[2].value, "main"); // target from default (editable)
+            assert_eq!(state.focus, 0); // focus starts on the model picker
             assert_eq!(initial_worktree.as_deref(), Some("platform.wt-a"));
         }
         other => panic!("expected DefArgs, got {other:?}"),
@@ -500,8 +504,12 @@ fn open_def_args_builds_formstate_fields() {
     );
     match &app.mode {
         Mode::DefArgs { state, .. } => {
+            // Field 0 is the model dropdown (first, non-readonly → initial focus);
+            // the `review` enum arg follows it at field 1.
+            assert_eq!(state.fields[0].label, "model");
             assert!(matches!(state.fields[0].kind, crate::view::form::FieldKind::Dropdown { .. }));
-            assert_eq!(state.focus, 0); // first (non-readonly) field
+            assert!(matches!(state.fields[1].kind, crate::view::form::FieldKind::Dropdown { .. }));
+            assert_eq!(state.focus, 0); // first (non-readonly) field = model
         }
         other => panic!("expected DefArgs, got {other:?}"),
     }
@@ -627,6 +635,109 @@ fn def_args_fill_text_and_submit_positional_with_fixed_and_worktree() {
         other => panic!("expected runDefinition, got {other:?}"),
     }
     assert!(matches!(app.mode, Mode::List));
+}
+
+#[test]
+fn def_args_submit_peels_leading_model_from_positional_args() {
+    use crate::view::form::{Field, FormState};
+    use crossterm::event::KeyCode::*;
+    // Mirror the production layout `open_def_args` builds: the model dropdown is
+    // field 0, the positional args follow it. On submit the leading model must
+    // ride out as `params.model` while `params.args` stays the arg values only.
+    let mut app = fixture_app_one_project("platform");
+    let state = FormState::new(
+        "deploy",
+        "Run",
+        vec![
+            Field::dropdown("model", vec!["claude/opus".into()], "claude/opus"),
+            Field::readonly("source", "wt-a"),
+            Field::input("target", "dev", false),
+        ],
+    );
+    app.mode = Mode::DefArgs {
+        state,
+        repo: "platform".into(),
+        def_name: "deploy".into(),
+        args: vec![arg("source"), arg("target")],
+        initial_worktree: None,
+        preview_scroll: 0,
+    };
+    // Move focus onto the Primary button (index == field count) and submit.
+    if let Mode::DefArgs { state, .. } = &mut app.mode {
+        state.focus = state.fields.len();
+    }
+    let update = app.update(key(Enter));
+    match &update.cmds[0] {
+        Cmd::Rpc { call, .. } => {
+            assert_eq!(call.method, "runDefinition");
+            assert_eq!(call.params["args"], serde_json::json!(["wt-a", "dev"]), "model excluded from args");
+            assert_eq!(call.params["model"], "claude/opus", "leading model sent as params.model");
+            // The def-run picker never has an empty "default" option — a
+            // concrete pick is always sent pinned so the worker runs it
+            // exactly (no active-provider re-head, no fallback).
+            assert_eq!(call.params["model_pinned"], true);
+        }
+        other => panic!("expected runDefinition, got {other:?}"),
+    }
+    assert!(matches!(app.mode, Mode::List));
+}
+
+#[test]
+fn def_args_untouched_default_head_is_unpinned() {
+    use crate::view::form::{DropdownOption, Field, FormState};
+    use crossterm::event::KeyCode::*;
+    // A def-run picker like `def_model_field` builds: an empty "" head (labeled
+    // with the resolved default) followed by a concrete catalog entry.
+    let mk = |value: &str| {
+        let model = Field::dropdown_labeled(
+            "model",
+            vec![
+                DropdownOption { value: String::new(), label: "default (grok-4.5)".into() },
+                DropdownOption { value: "claude/opus".into(), label: "opus (claude)".into() },
+            ],
+            value,
+        );
+        let mut app = fixture_app_one_project("platform");
+        app.mode = Mode::DefArgs {
+            state: FormState::new("deploy", "Run", vec![model]),
+            repo: "platform".into(),
+            def_name: "deploy".into(),
+            args: vec![],
+            initial_worktree: None,
+            preview_scroll: 0,
+        };
+        app
+    };
+    // Untouched default head (value ""): submit sends NO model and NO
+    // model_pinned → the daemon runs the def's authored chain (today's behavior),
+    // never a silent single-model pin.
+    let mut app = mk("");
+    if let Mode::DefArgs { state, .. } = &mut app.mode {
+        state.focus = state.fields.len();
+    }
+    match &app.update(key(Enter)).cmds[0] {
+        Cmd::Rpc { call, .. } => {
+            assert_eq!(call.method, "runDefinition");
+            assert!(call.params.get("model").is_none(), "untouched default sends no model");
+            assert!(
+                call.params.get("model_pinned").is_none(),
+                "untouched default must not pin"
+            );
+        }
+        other => panic!("expected runDefinition, got {other:?}"),
+    }
+    // Actively selecting a concrete entry: submit sends the exact ref AND pins it.
+    let mut app = mk("claude/opus");
+    if let Mode::DefArgs { state, .. } = &mut app.mode {
+        state.focus = state.fields.len();
+    }
+    match &app.update(key(Enter)).cmds[0] {
+        Cmd::Rpc { call, .. } => {
+            assert_eq!(call.params["model"], "claude/opus");
+            assert_eq!(call.params["model_pinned"], true);
+        }
+        other => panic!("expected runDefinition, got {other:?}"),
+    }
 }
 
 #[test]

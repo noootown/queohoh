@@ -36,14 +36,14 @@ pub const GLYPH_SESSION_LIMIT: char = '⊠';
 /// generic worker `✗` so a wedged/slow task reads apart from an outright
 /// error, but the same red because it's still a failure needing attention.
 pub const GLYPH_TIMED_OUT: char = '⧗';
-/// Out-of-budget — `¤` (currency sign), single-width, in error red. A `failed`
+/// Out-of-budget — `$` (dollar sign), single-width, in error red. A `failed`
 /// run whose result text reported Anthropic's credit-balance/out-of-credits
 /// billing error (`worker.ts`'s `OUT_OF_BUDGET_RE`) — distinct from a session
 /// limit (`⊠`, which resets on a timer) because this needs an account top-up
 /// before a rerun can succeed. Same red because it's still a failure needing
 /// attention; the money glyph lets a "rerun the out-of-budget ones after I've
 /// topped up" sweep pick them out at a glance.
-pub const GLYPH_OUT_OF_BUDGET: char = '¤';
+pub const GLYPH_OUT_OF_BUDGET: char = '$';
 /// Provider-unavailable — `⊟` (squared minus), single-width, in error red. A
 /// `failed` run whose configured provider/model (a non-claude adapter) was
 /// unavailable — disabled in settings, missing credentials, or otherwise unable
@@ -163,7 +163,7 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
 /// | `fg`             | prose / summaries      | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
-/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⊠ ⧗ ¤ ⊟`)                                    |
+/// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⊠ ⧗ $ ⊟`)                                    |
 ///
 /// `info` is deliberately reserved for timestamp-related text (user request);
 /// every other informational column reads in `meta`.

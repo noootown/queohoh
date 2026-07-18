@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BUILTIN_CATALOG, unknownModelError } from "../catalog.js";
 import type { ProviderConfig } from "../config.js";
-import { resolveModelChain } from "../models.js";
+import { resolveModelChain, resolvePinnedModel } from "../models.js";
 
 const PROVIDERS: ProviderConfig[] = [
 	{ name: "claude", enabled: true },
@@ -192,5 +192,47 @@ describe("resolveModelChain", () => {
 			error:
 				"no runnable model: all configured models are on disabled providers",
 		});
+	});
+});
+
+describe("resolvePinnedModel", () => {
+	it("resolves to an exact 1-entry chain — no active-provider re-head", () => {
+		// Active provider is grok, but a pinned pick names claude — unlike
+		// resolveModelChain, no grok head is prepended.
+		expect(resolvePinnedModel("claude/opus", BUILTIN_CATALOG, PROVIDERS)).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
+		});
+	});
+
+	it("canonicalizes a provider/id-form ref to provider/label", () => {
+		expect(
+			resolvePinnedModel("claude/claude-opus-4-8", BUILTIN_CATALOG, PROVIDERS),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+			],
+		});
+	});
+
+	it("unknown ref fails fast with the catalog's unknown-model error", () => {
+		expect(
+			resolvePinnedModel("claude/nonexistent", BUILTIN_CATALOG, PROVIDERS),
+		).toEqual({
+			ok: false,
+			error: unknownModelError(BUILTIN_CATALOG, "claude/nonexistent"),
+		});
+	});
+
+	it("disabled-provider ref fails fast — no fallback to another provider", () => {
+		const result = resolvePinnedModel("codex/sol", BUILTIN_CATALOG, PROVIDERS);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("codex/sol");
+			expect(result.error).toContain("codex");
+		}
 	});
 });

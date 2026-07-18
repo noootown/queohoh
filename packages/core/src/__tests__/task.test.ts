@@ -19,6 +19,7 @@ const sample: TaskInstance = {
 	session: "fresh",
 	resumeSessionId: null,
 	model: null,
+	modelPinned: false,
 	timeoutMs: null,
 	prompt: "Reply to review comments on PR #1423.\n",
 	chainId: null,

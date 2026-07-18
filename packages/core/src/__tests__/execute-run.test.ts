@@ -27,6 +27,22 @@ function paths() {
 	};
 }
 
+/** Poll `check` until it returns true or `timeoutMs` elapses. Used instead of
+ * a fixed sleep to observe transcript.md mid-run without guessing exactly how
+ * long process spawn + the fake bin's own delay will take. */
+async function waitFor(
+	check: () => boolean,
+	timeoutMs: number,
+	intervalMs = 15,
+): Promise<boolean> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		if (check()) return true;
+		await new Promise((r) => setTimeout(r, intervalMs));
+	}
+	return check();
+}
+
 // Contract under test: argv comes from `adapter.buildArgs(...)` first, then
 // `opts.claudeArgs` trailing — identical to today's claude ordering. The fake
 // CLI echoes its full argv back so the ordering (and the adapter-produced
@@ -125,10 +141,11 @@ process.stdout.write(JSON.stringify({ type: "result", text: contents }) + "\\n")
 	});
 
 	// grok's streaming-json carries no full-text result: the runner accumulates
-	// `thought`/`text` deltas and flushes one transcript section on the `end`
-	// event. Driven through the real grokAdapter with a fake bin emitting the
+	// `thought`/`text` deltas into resultText, AND streams them into
+	// transcript.md line-by-line as they arrive (not just once at the end).
+	// Driven through the real grokAdapter with a fake bin emitting the
 	// live-verified event shape.
-	it("accumulates grok token deltas into the result text and flushes one transcript section", async () => {
+	it("accumulates grok token deltas into the result text and streams the same content into transcript.md", async () => {
 		const { dir, eventsPath, transcriptPath } = paths();
 		const script = fakeBin(
 			dir,
@@ -154,9 +171,112 @@ emit({ type: "end", stopReason: "EndTurn", sessionId: "gsess-1", num_turns: 1, u
 		expect(res.resultText).toBe("pong");
 		expect(res.sessionId).toBe("gsess-1");
 		expect(res.usage).toEqual({ costUsd: null, turns: 1, durationMs: null });
-		// One flush, mirroring formatEventToMarkdown's shape.
+		// This particular delta shape (no embedded newlines until the section
+		// switch/end) happens to land byte-identical to the old one-shot flush,
+		// mirroring formatEventToMarkdown's shape.
 		expect(readFileSync(transcriptPath, "utf-8")).toBe(
 			"### Thinking\nAnswer with pong.\n\npong\n\n",
 		);
+	});
+
+	// Live-view proof: a complete line (delta containing "\n") must land in
+	// transcript.md WHILE the run is still going, not only after the terminal
+	// `end` event. The fake bin pauses before the final text/end so the test
+	// can observe the file mid-run; a `finished` flag (rather than a guessed
+	// sleep duration) proves the observation really happened before the run
+	// settled, independent of process-spawn jitter.
+	it("streams a complete line into transcript.md before the run ends, then flushes the remainder at the end", async () => {
+		const { dir, eventsPath, transcriptPath } = paths();
+		const script = fakeBin(
+			dir,
+			`const emit = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+emit({ type: "thought", data: "First thought.\\n" });
+setTimeout(() => {
+  emit({ type: "text", data: "final answer" });
+  emit({ type: "end", stopReason: "EndTurn", sessionId: "gsess-live", num_turns: 1 });
+}, 400);
+`,
+		);
+		let finished = false;
+		const runPromise = executeRun(grokAdapter, {
+			prompt: "ping",
+			model: "grok-4.5",
+			cwd: dir,
+			timeoutMs: 5000,
+			claudeBin: script,
+			eventsPath,
+			transcriptPath,
+			redact: (s) => s,
+		});
+		runPromise.then(() => {
+			finished = true;
+		});
+
+		const landed = await waitFor(
+			() => readFileSync(transcriptPath, "utf-8") !== "",
+			350,
+		);
+		expect(landed).toBe(true);
+		expect(finished).toBe(false); // proves this was observed mid-run, not after
+		const midRun = readFileSync(transcriptPath, "utf-8");
+		expect(midRun).toBe("### Thinking\nFirst thought.\n");
+
+		const res = await runPromise;
+		expect(res.exitCode).toBe(0);
+		expect(res.resultText).toBe("final answer");
+
+		const final = readFileSync(transcriptPath, "utf-8");
+		// The mid-run content is untouched, and the trailing partial line (no
+		// newline in the source delta) plus the closing blank line land at `end`.
+		expect(final.startsWith(midRun)).toBe(true);
+		expect(final).toContain("final answer");
+	});
+
+	// Redaction safety: a secret split across two token deltas but landing
+	// within the SAME line must never appear unredacted in transcript.md, even
+	// transiently mid-run — proving the line-buffered flush never redacts a
+	// still-open partial line (it simply never flushes it until the line
+	// completes).
+	it("redacts a secret that arrives split across two deltas within one line", async () => {
+		const { dir, eventsPath, transcriptPath } = paths();
+		const script = fakeBin(
+			dir,
+			`const emit = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+emit({ type: "text", data: "before SECRET_" });
+setTimeout(() => {
+  emit({ type: "text", data: "TOKEN_ABC after\\n" });
+  emit({ type: "end", stopReason: "EndTurn", sessionId: "gsess-sec", num_turns: 1 });
+}, 400);
+`,
+		);
+		const redact = (s: string) => s.replaceAll("SECRET_TOKEN_ABC", "[REDACTED:X]");
+		let finished = false;
+		const runPromise = executeRun(grokAdapter, {
+			prompt: "ping",
+			model: "grok-4.5",
+			cwd: dir,
+			timeoutMs: 5000,
+			claudeBin: script,
+			eventsPath,
+			transcriptPath,
+			redact,
+		});
+		runPromise.then(() => {
+			finished = true;
+		});
+
+		// Mid-run: the first half of the secret has arrived but the line isn't
+		// complete yet, so nothing should have been flushed — neither the raw
+		// secret nor a premature (and therefore impossible) redaction. Poll for
+		// a while to prove this holds throughout the pre-end window, not just at
+		// one sampled instant.
+		await waitFor(() => finished, 250);
+		expect(finished).toBe(false);
+		expect(readFileSync(transcriptPath, "utf-8")).toBe("");
+
+		await runPromise;
+		const final = readFileSync(transcriptPath, "utf-8");
+		expect(final).toContain("[REDACTED:X]");
+		expect(final).not.toContain("SECRET_TOKEN_ABC");
 	});
 });

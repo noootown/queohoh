@@ -70,7 +70,13 @@ pub(crate) fn render_button_row(
     let cancel_w = cancel_btn.chars().count() as u16;
 
     // `focus == None` (a field owns focus in the form) highlights NEITHER button.
-    let focused = Style::default().fg(base).add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    // Unified selected style: near-black text (`selection_fg`) on the button's
+    // `base`-colored bar (accent-blue for normal dialogs, `warn` for a
+    // destructive confirm — the bar keeps its semantic color, the text stays
+    // readable). Explicit fg+bg, not REVERSED, so the text color is deterministic
+    // and matches list/dropdown selections instead of leaking the terminal's
+    // default foreground.
+    let focused = Style::default().fg(p.selection_fg).bg(base).add_modifier(Modifier::BOLD);
     let primary_style =
         if matches!(focus, Some(ButtonKind::Confirm)) { focused } else { Style::default().fg(base) };
     let cancel_style =
@@ -96,7 +102,7 @@ pub(crate) fn render_button_row(
 /// overlay's `Modal` region so the click lands on the button, not the body.
 pub(crate) fn render_back_button(frame: &mut ratatui::Frame, hit: &mut HitMap, row: Rect, p: &Palette) {
     let btn = "[ Back ]";
-    let style = Style::default().fg(p.accent).add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let style = Style::default().fg(p.selection_fg).bg(p.accent).add_modifier(Modifier::BOLD);
     let rect = Rect { x: row.x, y: row.y, width: btn.chars().count() as u16, height: 1 };
     frame.render_widget(Paragraph::new(Line::from(Span::styled(btn, style))), rect);
     hit.push(rect, HitTarget::Button(ButtonKind::Confirm));
@@ -183,71 +189,6 @@ pub fn render_confirm(
     );
 }
 
-/// Small provider-pick list for worktree `g`: accent-bordered modal titled
-/// "Goto — provider", one row per enabled provider name (highlighted row
-/// reversed+bold), no buttons (Enter/Esc are the established picker
-/// convention). Registers the body as `Modal` and each row as `MenuItem(i)`.
-pub fn render_provider_pick(
-    frame: &mut ratatui::Frame,
-    hit: &mut HitMap,
-    choices: &[(String, String)],
-    index: usize,
-) {
-    let p = Palette::default();
-    let title = "Goto — provider";
-    let names: Vec<&str> = choices.iter().map(|(n, _)| n.as_str()).collect();
-    let inner_w = names
-        .iter()
-        .map(|n| n.chars().count())
-        .chain([title.chars().count() + 2])
-        .max()
-        .unwrap_or(12)
-        .max(12);
-    let area = frame.area();
-    // border ring (2) + horizontal padding (4).
-    let width = (inner_w as u16 + 6).clamp(20, 48).min(area.width);
-    // one row per choice, plus border ring (2) and vertical padding (2).
-    let height = ((names.len() as u16).max(1) + 4).min(area.height);
-    let x = area.x + area.width.saturating_sub(width) / 2;
-    let y = area.y + area.height.saturating_sub(height) / 2;
-    let rect = Rect { x, y, width, height };
-
-    frame.render_widget(Clear, rect);
-    hit.push(rect, HitTarget::Modal);
-
-    let block = Block::default()
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(p.accent))
-        .padding(MODAL_PADDING);
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-
-    let selected = Style::default().fg(p.accent).add_modifier(Modifier::REVERSED | Modifier::BOLD);
-    let plain = Style::default().fg(p.fg);
-    for (i, name) in names.iter().enumerate() {
-        if i as u16 >= inner.height {
-            break;
-        }
-        let row = Rect {
-            x: inner.x,
-            y: inner.y + i as u16,
-            width: inner.width,
-            height: 1,
-        };
-        let style = if i == index { selected } else { plain };
-        // Leading space matches list-picker row padding so the highlight reads
-        // as a full-width selection bar.
-        let label = format!(" {name}");
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), row);
-        hit.push(row, HitTarget::MenuItem(i));
-    }
-}
-
 #[cfg(test)]
 mod modal_view_tests {
     use super::*;
@@ -275,7 +216,7 @@ mod modal_view_tests {
 mod button_row_view_tests {
     use super::*;
     use crate::hit::{ButtonKind, HitMap, HitTarget};
-    use ratatui::{backend::TestBackend, layout::Rect, style::Modifier, Terminal};
+    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
     fn draw(
         primary: &str,
@@ -319,23 +260,26 @@ mod button_row_view_tests {
     }
 
     #[test]
-    fn focus_reverses_the_focused_button_only() {
-        let reversed = |focus| {
+    fn focus_highlights_the_focused_button_only() {
+        // The focused button now carries the selection background (base color,
+        // here accent) instead of a REVERSED modifier — plain buttons have no bg.
+        let selected = |focus| {
             let (_s, _h, buf) = draw("Next", focus, Palette::default().accent);
+            let base = Palette::default().accent;
             let mut out = String::new();
             for y in 0..3 {
                 for x in 0..40 {
-                    if buf[(x, y)].modifier.contains(Modifier::REVERSED) {
+                    if buf[(x, y)].bg == base {
                         out.push_str(buf[(x, y)].symbol());
                     }
                 }
             }
             out
         };
-        assert!(reversed(ButtonKind::Confirm).contains("Next"));
-        assert!(!reversed(ButtonKind::Confirm).contains("Cancel"));
-        assert!(reversed(ButtonKind::Cancel).contains("Cancel"));
-        assert!(!reversed(ButtonKind::Cancel).contains("Next"));
+        assert!(selected(ButtonKind::Confirm).contains("Next"));
+        assert!(!selected(ButtonKind::Confirm).contains("Cancel"));
+        assert!(selected(ButtonKind::Cancel).contains("Cancel"));
+        assert!(!selected(ButtonKind::Cancel).contains("Next"));
     }
 }
 
@@ -394,13 +338,14 @@ mod confirm_view_tests {
     }
 
     #[test]
-    fn focused_button_is_reversed_and_bold() {
-        use ratatui::style::Modifier;
-        // Render the confirm dialog and locate the reversed+bold run — it must
-        // sit on the FOCUSED button. Confirm-focus reverses `[ Remove ]`;
-        // Cancel-focus reverses `[ Cancel ]`.
+    fn focused_button_uses_the_selection_style() {
+        use ratatui::style::Color;
+        // Render the confirm dialog and locate the run painted with a selection
+        // background (the focused button is `fg(selection_fg).bg(base)+BOLD`;
+        // nothing else in the dialog sets a bg). Confirm-focus highlights
+        // `[ Remove ]`; Cancel-focus highlights `[ Cancel ]`.
         let body = vec![" body".to_string()];
-        let reversed_run = |title: &str, focus: ButtonKind| -> String {
+        let selected_run = |title: &str, focus: ButtonKind| -> String {
             let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
             let mut hit = HitMap::default();
             term.draw(|f| render_confirm(f, &mut hit, title, &body, "Remove", focus)).unwrap();
@@ -409,17 +354,17 @@ mod confirm_view_tests {
             for y in 0..12 {
                 for x in 0..80 {
                     let cell = &buf[(x, y)];
-                    if cell.modifier.contains(Modifier::REVERSED) {
+                    if cell.bg != Color::Reset {
                         out.push_str(cell.symbol());
                     }
                 }
             }
             out
         };
-        assert!(reversed_run("t", ButtonKind::Confirm).contains("Remove"));
-        assert!(!reversed_run("t", ButtonKind::Confirm).contains("Cancel"));
-        assert!(reversed_run("t", ButtonKind::Cancel).contains("Cancel"));
-        assert!(!reversed_run("t", ButtonKind::Cancel).contains("Remove"));
+        assert!(selected_run("t", ButtonKind::Confirm).contains("Remove"));
+        assert!(!selected_run("t", ButtonKind::Confirm).contains("Cancel"));
+        assert!(selected_run("t", ButtonKind::Cancel).contains("Cancel"));
+        assert!(!selected_run("t", ButtonKind::Cancel).contains("Remove"));
     }
 
     #[test]
