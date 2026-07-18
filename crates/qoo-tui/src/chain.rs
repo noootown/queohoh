@@ -3,10 +3,11 @@
 //! `findModel` / `groupHead` / `unknownModelError` helpers from
 //! `packages/core/src/catalog.ts` it depends on).
 //!
-//! The TASKS Model column shows the **effective head** of this chain under
-//! the operator's `active_provider` (stable re-head + default-model prepend),
-//! not the authored yaml list — so switching the active provider flips the
-//! column without rewriting every definition.
+//! TUI model display under the operator's `active_provider` (stable re-head +
+//! default-model prepend), not the authored yaml list: the TASKS Model column
+//! shows the **effective head** only; the definition config row shows the
+//! **full resolved chain** — so switching the active provider reorders /
+//! re-heads without rewriting every definition.
 
 use crate::ipc::types::{CatalogEntry, ModelRef};
 
@@ -23,16 +24,41 @@ pub struct ChainEntry {
 /// Look up a `provider/label` (or `provider/id` exact-match fallback) ref
 /// within its named provider group only. Hidden entries still match — hidden
 /// is picker-only. Mirrors `findModel` in packages/core/src/catalog.ts.
+///
+/// After exact label/id miss, two short-form fallbacks keep pre-versioned
+/// refs resolvable so a catalog label rename does not blank the TASKS Model
+/// column for configs still using the older form:
+/// 1. `label.ends_with("-" + rest)` — e.g. `claude/sonnet-5` → `claude-sonnet-5`
+/// 2. pure-alphabetic `rest` matching a hyphen segment of a label — e.g.
+///    `claude/opus` → `claude-opus-4.8`, `claude/sonnet` → `claude-sonnet-5`
+/// Group order is most→least powerful, so the first match is the current top
+/// of that family. Never crosses provider groups.
 pub fn find_model<'a>(catalog: &'a [CatalogEntry], r#ref: &str) -> Option<&'a CatalogEntry> {
     let slash = r#ref.find('/')?;
     let provider = &r#ref[..slash];
     let rest = &r#ref[slash + 1..];
     let group: Vec<&CatalogEntry> = catalog.iter().filter(|e| e.provider == provider).collect();
-    group
-        .iter()
-        .copied()
-        .find(|e| e.label == rest)
-        .or_else(|| group.into_iter().find(|e| e.id == rest))
+    if let Some(e) = group.iter().copied().find(|e| e.label == rest) {
+        return Some(e);
+    }
+    if let Some(e) = group.iter().copied().find(|e| e.id == rest) {
+        return Some(e);
+    }
+    // Suffix form: rest is a trailing portion of a versioned label (must
+    // contain a letter so pure-digit tails like "5" do not accidental-match).
+    if rest.chars().any(|c| c.is_ascii_alphabetic()) {
+        let suffix = format!("-{rest}");
+        if let Some(e) = group.iter().copied().find(|e| e.label.ends_with(&suffix)) {
+            return Some(e);
+        }
+    }
+    // Family-token form: pure alphabetic short name (opus/sonnet/haiku/…).
+    if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphabetic()) {
+        return group
+            .into_iter()
+            .find(|e| e.label.split('-').any(|seg| seg == rest));
+    }
+    None
 }
 
 /// First entry of a provider's group ("a provider's most powerful model"),
@@ -175,8 +201,9 @@ pub fn resolve_model_chain(
 }
 
 /// The first chain entry's canonical `provider/label` ref, or `None` when
-/// resolution fails (unknown model / nothing runnable). The TASKS Model
-/// column renders this — the effective head under `active_provider`.
+/// resolution fails (unknown model / nothing runnable). Used by pickers and
+/// the TASKS Model column (head-only); the detail config row uses
+/// [`resolved_model_chain_display`] for the full ordered chain.
 pub fn effective_model_head(
     spec: Option<&ModelRef>,
     catalog: &[CatalogEntry],
@@ -188,6 +215,35 @@ pub fn effective_model_head(
         .ok()
         .and_then(|c| c.into_iter().next())
         .map(|e| e.model_ref)
+}
+
+/// Format a resolved chain for TUI display: each entry label-only via
+/// [`model_ref_display`], joined with ` → ` (the fallback-order arrow used by
+/// settings default-models and [`ModelRef::display`]). Single-entry chains
+/// render as one label with no arrow.
+pub fn format_chain_display(catalog: &[CatalogEntry], chain: &[ChainEntry]) -> String {
+    chain
+        .iter()
+        .map(|e| model_ref_display(catalog, &e.model_ref))
+        .collect::<Vec<_>>()
+        .join(" → ")
+}
+
+/// Full resolved-chain display under `active_provider` (active-provider
+/// entries first, then the rest, labels versioned via the catalog), or
+/// `None` when resolution fails. Unlike [`effective_model_head`], returns
+/// every walk-order entry — not just the head.
+pub fn resolved_model_chain_display(
+    spec: Option<&ModelRef>,
+    catalog: &[CatalogEntry],
+    enabled_providers: &[&str],
+    default_models: &[String],
+    active_provider: &str,
+) -> Option<String> {
+    resolve_model_chain(spec, catalog, enabled_providers, default_models, active_provider)
+        .ok()
+        .filter(|c| !c.is_empty())
+        .map(|c| format_chain_display(catalog, &c))
 }
 
 #[cfg(test)]
@@ -204,15 +260,15 @@ mod tests {
             hidden: false,
         };
         vec![
-            e("claude", "claude-fable-5", "fable"),
-            e("claude", "claude-opus-4-8", "opus"),
-            e("claude", "claude-sonnet-5", "sonnet"),
-            e("claude", "claude-haiku-4-5", "haiku"),
+            e("claude", "claude-fable-5", "claude-fable-5"),
+            e("claude", "claude-opus-4-8", "claude-opus-4.8"),
+            e("claude", "claude-sonnet-5", "claude-sonnet-5"),
+            e("claude", "claude-haiku-4-5", "claude-haiku-4.5"),
             e("grok", "grok-4.5", "grok-4.5"),
-            e("grok", "grok-composer-2.5-fast", "composer"),
-            e("codex", "gpt-5.6-sol", "sol"),
-            e("codex", "gpt-5.6-terra", "terra"),
-            e("codex", "gpt-5.6-luna", "luna"),
+            e("grok", "grok-composer-2.5-fast", "grok-composer-2.5-fast"),
+            e("codex", "gpt-5.6-sol", "gpt-5.6-sol"),
+            e("codex", "gpt-5.6-terra", "gpt-5.6-terra"),
+            e("codex", "gpt-5.6-luna", "gpt-5.6-luna"),
         ]
     }
 
@@ -232,52 +288,109 @@ mod tests {
         let cat = builtin_catalog();
         // Unique label → label-only.
         assert_eq!(model_ref_display(&cat, "grok/grok-4.5"), "grok-4.5");
-        assert_eq!(model_ref_display(&cat, "claude/opus"), "opus");
+        assert_eq!(model_ref_display(&cat, "claude/claude-opus-4.8"), "claude-opus-4.8");
         // No `/` → returned unchanged.
-        assert_eq!(model_ref_display(&cat, "opus"), "opus");
+        assert_eq!(model_ref_display(&cat, "claude-opus-4.8"), "claude-opus-4.8");
         // Same label under two providers → keep the qualified form for it only.
         let mut ambiguous = builtin_catalog();
         ambiguous.push(CatalogEntry {
             provider: "grok".into(),
             id: "grok-opus".into(),
-            label: "opus".into(),
+            label: "claude-opus-4.8".into(),
             hidden: false,
         });
-        assert_eq!(model_ref_display(&ambiguous, "claude/opus"), "claude/opus");
-        assert_eq!(model_ref_display(&ambiguous, "grok/opus"), "grok/opus");
+        assert_eq!(model_ref_display(&ambiguous, "claude/claude-opus-4.8"), "claude/claude-opus-4.8");
+        assert_eq!(model_ref_display(&ambiguous, "grok/claude-opus-4.8"), "grok/claude-opus-4.8");
         // A non-colliding label in the same catalog still strips.
         assert_eq!(model_ref_display(&ambiguous, "grok/grok-4.5"), "grok-4.5");
     }
 
     #[test]
+    fn find_model_resolves_short_family_tokens_and_suffix_forms() {
+        let cat = builtin_catalog();
+        // Pure-alphabetic family tokens from the pre-versioned label era.
+        assert_eq!(
+            find_model(&cat, "claude/opus").map(|e| e.label.as_str()),
+            Some("claude-opus-4.8")
+        );
+        assert_eq!(
+            find_model(&cat, "claude/sonnet").map(|e| e.label.as_str()),
+            Some("claude-sonnet-5")
+        );
+        assert_eq!(
+            find_model(&cat, "claude/haiku").map(|e| e.label.as_str()),
+            Some("claude-haiku-4.5")
+        );
+        // Intermediate suffix form (label gained a provider prefix).
+        assert_eq!(
+            find_model(&cat, "claude/sonnet-5").map(|e| e.label.as_str()),
+            Some("claude-sonnet-5")
+        );
+        assert_eq!(
+            find_model(&cat, "claude/opus-4.8").map(|e| e.label.as_str()),
+            Some("claude-opus-4.8")
+        );
+        // Still provider-scoped; pure digit must not accidental-match.
+        assert!(find_model(&cat, "grok/opus").is_none());
+        assert!(find_model(&cat, "claude/5").is_none());
+        assert!(find_model(&cat, "claude/nonexistent").is_none());
+    }
+
+    #[test]
+    fn short_family_token_chain_displays_versioned_label() {
+        // Def authored `claude/sonnet` (stale short form) + active claude →
+        // full chain uses the CANONICAL versioned labels (not bare `sonnet`).
+        let cat = builtin_catalog();
+        let spec = ModelRef::Many(vec!["claude/sonnet".into(), "grok/grok-4.5".into()]);
+        assert_eq!(
+            effective_model_head(Some(&spec), &cat, ENABLED, &[], "claude").as_deref(),
+            Some("claude/claude-sonnet-5")
+        );
+        assert_eq!(
+            resolved_model_chain_display(Some(&spec), &cat, ENABLED, &[], "claude").as_deref(),
+            Some("claude-sonnet-5 → grok-4.5")
+        );
+        // Stale default_models: [claude/opus, grok/grok-4.5] still resolve.
+        let defaults = vec!["claude/opus".to_string(), "grok/grok-4.5".to_string()];
+        assert_eq!(
+            effective_model_head(None, &cat, ENABLED, &defaults, "claude").as_deref(),
+            Some("claude/claude-opus-4.8")
+        );
+        assert_eq!(
+            resolved_model_chain_display(None, &cat, ENABLED, &defaults, "claude").as_deref(),
+            Some("claude-opus-4.8 → grok-4.5")
+        );
+    }
+
+    #[test]
     fn null_spec_uses_default_models() {
         let cat = builtin_catalog();
-        let defaults = vec!["claude/sonnet".to_string()];
+        let defaults = vec!["claude/claude-sonnet-5".to_string()];
         assert_eq!(
             resolve_model_chain(None, &cat, ENABLED, &defaults, "claude").unwrap(),
-            vec![entry("claude", "claude-sonnet-5", "claude/sonnet")]
+            vec![entry("claude", "claude-sonnet-5", "claude/claude-sonnet-5")]
         );
     }
 
     #[test]
     fn string_spec_resolves_to_one_entry_chain() {
         let cat = builtin_catalog();
-        let spec = ModelRef::One("claude/opus".into());
+        let spec = ModelRef::One("claude/claude-opus-4.8".into());
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "claude").unwrap(),
-            vec![entry("claude", "claude-opus-4-8", "claude/opus")]
+            vec![entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8")]
         );
     }
 
     #[test]
     fn list_spec_keeps_given_order_when_already_active() {
         let cat = builtin_catalog();
-        let spec = ModelRef::Many(vec!["claude/sonnet".into(), "claude/haiku".into()]);
+        let spec = ModelRef::Many(vec!["claude/claude-sonnet-5".into(), "claude/claude-haiku-4.5".into()]);
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "claude").unwrap(),
             vec![
-                entry("claude", "claude-sonnet-5", "claude/sonnet"),
-                entry("claude", "claude-haiku-4-5", "claude/haiku"),
+                entry("claude", "claude-sonnet-5", "claude/claude-sonnet-5"),
+                entry("claude", "claude-haiku-4-5", "claude/claude-haiku-4.5"),
             ]
         );
     }
@@ -288,7 +401,7 @@ mod tests {
         let spec = ModelRef::One("claude/claude-opus-4-8".into());
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "claude").unwrap(),
-            vec![entry("claude", "claude-opus-4-8", "claude/opus")]
+            vec![entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8")]
         );
     }
 
@@ -305,23 +418,23 @@ mod tests {
     #[test]
     fn drops_entries_whose_provider_is_disabled() {
         let cat = builtin_catalog();
-        let spec = ModelRef::Many(vec!["codex/sol".into(), "claude/opus".into()]);
+        let spec = ModelRef::Many(vec!["codex/gpt-5.6-sol".into(), "claude/claude-opus-4.8".into()]);
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "claude").unwrap(),
-            vec![entry("claude", "claude-opus-4-8", "claude/opus")]
+            vec![entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8")]
         );
     }
 
     #[test]
     fn stable_partitions_active_provider_entries_first() {
-        // [claude/opus, grok/grok-4.5] + active grok → head grok/grok-4.5
+        // [claude/claude-opus-4.8, grok/grok-4.5] + active grok → head grok/grok-4.5
         let cat = builtin_catalog();
-        let spec = ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()]);
+        let spec = ModelRef::Many(vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()]);
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "grok").unwrap(),
             vec![
                 entry("grok", "grok-4.5", "grok/grok-4.5"),
-                entry("claude", "claude-opus-4-8", "claude/opus"),
+                entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8"),
             ]
         );
         assert_eq!(
@@ -332,15 +445,15 @@ mod tests {
 
     #[test]
     fn switch_miss_injects_active_provider_default_not_group_head() {
-        // [grok/grok-4.5] + active claude, pool = [claude/opus, grok/grok-4.5] →
+        // [grok/grok-4.5] + active claude, pool = [claude/claude-opus-4.8, grok/grok-4.5] →
         // inject claude's DEFAULT (opus), not claude's group head (fable).
         let cat = builtin_catalog();
         let spec = ModelRef::One("grok/grok-4.5".into());
-        let defaults = vec!["claude/opus".to_string(), "grok/grok-4.5".to_string()];
+        let defaults = vec!["claude/claude-opus-4.8".to_string(), "grok/grok-4.5".to_string()];
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &defaults, "claude").unwrap(),
             vec![
-                entry("claude", "claude-opus-4-8", "claude/opus"),
+                entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8"),
                 entry("grok", "grok-4.5", "grok/grok-4.5"),
             ]
         );
@@ -356,7 +469,7 @@ mod tests {
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &defaults, "claude").unwrap(),
             vec![
-                entry("claude", "claude-fable-5", "claude/fable"),
+                entry("claude", "claude-fable-5", "claude/claude-fable-5"),
                 entry("grok", "grok-4.5", "grok/grok-4.5"),
             ]
         );
@@ -364,14 +477,14 @@ mod tests {
 
     #[test]
     fn switch_miss_empty_defaults_falls_back_to_group_head() {
-        // [claude/opus] + active grok, empty pool → group-head fallback grok-4.5.
+        // [claude/claude-opus-4.8] + active grok, empty pool → group-head fallback grok-4.5.
         let cat = builtin_catalog();
-        let spec = ModelRef::One("claude/opus".into());
+        let spec = ModelRef::One("claude/claude-opus-4.8".into());
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "grok").unwrap(),
             vec![
                 entry("grok", "grok-4.5", "grok/grok-4.5"),
-                entry("claude", "claude-opus-4-8", "claude/opus"),
+                entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8"),
             ]
         );
         assert_eq!(
@@ -383,27 +496,27 @@ mod tests {
     #[test]
     fn switch_miss_does_not_prepend_when_active_provider_disabled() {
         let cat = builtin_catalog();
-        let spec = ModelRef::One("claude/opus".into());
+        let spec = ModelRef::One("claude/claude-opus-4.8".into());
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "codex").unwrap(),
-            vec![entry("claude", "claude-opus-4-8", "claude/opus")]
+            vec![entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8")]
         );
     }
 
     #[test]
     fn dedups_by_provider_id_keeping_first() {
         let cat = builtin_catalog();
-        let spec = ModelRef::Many(vec!["claude/opus".into(), "claude/opus".into()]);
+        let spec = ModelRef::Many(vec!["claude/claude-opus-4.8".into(), "claude/claude-opus-4.8".into()]);
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "claude").unwrap(),
-            vec![entry("claude", "claude-opus-4-8", "claude/opus")]
+            vec![entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8")]
         );
     }
 
     #[test]
     fn all_disabled_yields_no_runnable_model_error() {
         let cat = builtin_catalog();
-        let spec = ModelRef::One("codex/sol".into());
+        let spec = ModelRef::One("codex/gpt-5.6-sol".into());
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "codex").unwrap_err(),
             "no runnable model: all configured models are on disabled providers"
@@ -416,13 +529,40 @@ mod tests {
 
     #[test]
     fn null_spec_reheads_defaults_under_active_provider() {
-        // defaults = [claude/opus] (no grok entry), active = grok → group-head
+        // defaults = [claude/claude-opus-4.8] (no grok entry), active = grok → group-head
         // fallback grok/grok-4.5.
         let cat = builtin_catalog();
-        let defaults = vec!["claude/opus".to_string()];
+        let defaults = vec!["claude/claude-opus-4.8".to_string()];
         assert_eq!(
             effective_model_head(None, &cat, ENABLED, &defaults, "grok").as_deref(),
             Some("grok/grok-4.5")
+        );
+        // Full-chain display lists every entry (re-headed), not head alone.
+        assert_eq!(
+            resolved_model_chain_display(None, &cat, ENABLED, &defaults, "grok").as_deref(),
+            Some("grok-4.5 → claude-opus-4.8")
+        );
+    }
+
+    #[test]
+    fn resolved_model_chain_display_lists_full_reheaded_chain() {
+        let cat = builtin_catalog();
+        let spec = ModelRef::Many(vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()]);
+        // Active grok → grok first, then claude; versioned labels, no bare `opus`.
+        assert_eq!(
+            resolved_model_chain_display(Some(&spec), &cat, ENABLED, &[], "grok").as_deref(),
+            Some("grok-4.5 → claude-opus-4.8")
+        );
+        // Active claude → authored order preserved (already active-first).
+        assert_eq!(
+            resolved_model_chain_display(Some(&spec), &cat, ENABLED, &[], "claude").as_deref(),
+            Some("claude-opus-4.8 → grok-4.5")
+        );
+        // Single authored model under matching active → one label, no arrow.
+        let one = ModelRef::One("claude/claude-opus-4.8".into());
+        assert_eq!(
+            resolved_model_chain_display(Some(&one), &cat, ENABLED, &[], "claude").as_deref(),
+            Some("claude-opus-4.8")
         );
     }
 }

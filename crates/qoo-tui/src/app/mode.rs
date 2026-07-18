@@ -327,8 +327,18 @@ pub enum FormAction {
     /// retarget the launch. On submit, fires `Cmd::Goto` with the picked
     /// provider's resolved bin (fresh interactive — no resume). This is a
     /// DIFFERENT flow from the `p`-key active-provider switch
-    /// ([`ConfirmAction::SwitchProvider`]), which stays a `Mode::Confirm`.
+    /// ([`FormAction::SwitchProvider`]), which only mutates the operator's
+    /// active provider via `set_active_provider`.
     GotoProvider { path: String, choices: Vec<(String, String)> },
+    /// Active-provider switch (`p` / top-bar ↯ click). Fields: `[provider
+    /// dropdown]` of ENABLED providers in settings-precedence order, defaulting
+    /// to the current active provider (else the first choice). Options are
+    /// frozen into the form field at open so a settings push mid-dialog cannot
+    /// change the list under the user. On submit: optimistic update + one
+    /// `set_active_provider` RPC when the pick differs from current; same-
+    /// selection is a silent no-op (no RPC). Distinct from worktree `g`
+    /// ([`FormAction::GotoProvider`]), which launches an interactive agent.
+    SwitchProvider,
 }
 
 /// Which stop each adhoc-create form field occupies (the positional layout the
@@ -377,12 +387,6 @@ pub enum ConfirmAction {
     /// clears the QUEUE range first. Mirror of [`Self::CancelTasks`] for the
     /// QUEUE re-queue (`r`) verb.
     RequeueTasks { calls: Vec<crate::event::RpcCall> },
-    /// Switch the active provider to `target` (the `p` key / provider-indicator
-    /// click). `target` is the next-enabled provider computed and frozen when
-    /// the dialog opened, so confirm applies exactly what the body showed even
-    /// if settings changed in between. On confirm: optimistic update (snapshot +
-    /// cached settings) + one `set_active_provider` `Cmd::Rpc`.
-    SwitchProvider { target: String },
     /// Run discovery for def `name` in `repo` (TASKS `d` / `[d]iscover` chip).
     /// Repo + name are frozen when the dialog opens so confirm fires exactly
     /// the def the body named. On confirm: optimistic `App::discovering` insert

@@ -131,16 +131,16 @@ describe("model field accepts a list", () => {
 	it("round-trips an ordered model fallback list", () => {
 		const withList: TaskInstance = {
 			...sample,
-			model: ["claude/opus", "grok/grok-4.5"],
+			model: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 		};
 		const reparsed = parseTaskFile(serializeTaskFile(withList));
-		expect(reparsed.model).toEqual(["claude/opus", "grok/grok-4.5"]);
+		expect(reparsed.model).toEqual(["claude/claude-opus-4.8", "grok/grok-4.5"]);
 	});
 
 	it("still round-trips a single string model (no rotation)", () => {
-		const withString: TaskInstance = { ...sample, model: "claude/opus" };
+		const withString: TaskInstance = { ...sample, model: "claude/claude-opus-4.8" };
 		const reparsed = parseTaskFile(serializeTaskFile(withString));
-		expect(reparsed.model).toBe("claude/opus");
+		expect(reparsed.model).toBe("claude/claude-opus-4.8");
 	});
 });
 

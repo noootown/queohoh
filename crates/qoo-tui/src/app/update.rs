@@ -32,10 +32,10 @@ impl App {
                 cmds.extend(self.heal_on_snapshot());
                 // Fetch the settings payload once on connect so the provider
                 // switch (`p` / the ↯ indicator click) has the enabled-providers
-                // list to cycle over — the always-visible indicator itself reads
-                // the snapshot's `active_provider`, but cycling needs the ordered
-                // provider set, which lives only in the settings payload. Same
-                // `is_none()` guard the `s` overlay uses (a cached Some(None)
+                // list for its dropdown — the always-visible indicator itself
+                // reads the snapshot's `active_provider`, but the form needs the
+                // ordered enabled set, which lives only in the settings payload.
+                // Same `is_none()` guard the `s` overlay uses (a cached Some(None)
                 // failure never re-fetches); mirrors the lazy `reconcile_defs`
                 // pattern.
                 if self.settings.is_none() {
@@ -423,24 +423,6 @@ impl App {
             ConfirmAction::RequeueTasks { calls } => {
                 self.clear_range_and_marks(ListPane::Queue);
                 vec![Cmd::RpcSeq { verb: "reran".into(), calls, invalidate_defs_for: None }]
-            }
-            ConfirmAction::SwitchProvider { target } => {
-                // Optimistic: write the new value into BOTH the live snapshot (the
-                // indicator's reconcile source, so it flips instantly) and the
-                // cached settings payload (so the `s` overlay agrees). The daemon's
-                // next state broadcast overwrites the snapshot field authoritatively.
-                if let Some(snap) = self.snapshot.as_mut() {
-                    snap.active_provider = Some(target.clone());
-                }
-                if let Some(Some(p)) = self.settings.as_mut() {
-                    p.active_provider = target.clone();
-                }
-                vec![self.dispatch_rpc(
-                    "switch provider",
-                    "set_active_provider",
-                    serde_json::json!({ "provider": target }),
-                    RpcOpts::default(),
-                )]
             }
             ConfirmAction::DiscoverDef { repo, name } => {
                 // Optimistic in-flight marker: the def row's `⌕` animates

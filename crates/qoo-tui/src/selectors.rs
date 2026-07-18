@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::chain::effective_model_head;
+use crate::chain::{effective_model_head, model_ref_display};
 use crate::ipc::types::{
     ArgSpec, CatalogEntry, DefaultModels, DefinitionSummary, StateSnapshot, TaskInstance,
     TaskStatus,
@@ -9,9 +9,12 @@ use crate::ipc::types::{
 
 /// Resolution context for the TASKS Model column: catalog + enabled providers +
 /// default_models + active_provider. Layout and render share the same ctx so
-/// the column width tracks the **effective head** (re-headed under the active
-/// provider), not the authored yaml list. Built once per frame from
-/// `App` settings/snapshot (see [`ModelResolveOwned`] / `App::model_resolve_owned`).
+/// the column width tracks the **effective head** under the active provider
+/// (one label via [`crate::chain::effective_model_head`] +
+/// [`crate::chain::model_ref_display`]), not the authored yaml list and not the
+/// full fallback chain. The detail config pane still shows the full chain
+/// separately. Built once per frame from `App` settings/snapshot (see
+/// [`ModelResolveOwned`] / `App::model_resolve_owned`).
 #[derive(Debug, Clone, Copy)]
 pub struct ModelResolveCtx<'a> {
     pub catalog: &'a [CatalogEntry],
@@ -350,9 +353,10 @@ pub fn active_count_for(snapshot: &StateSnapshot, project: &str) -> usize {
 }
 
 pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> Vec<QueueRow> {
-    // Live rows plus the last 10 archived rows (dimmed by the view via
+    // Live rows plus ALL project-filtered archived rows (dimmed by the view via
     // `archived: true`; archived rows whose worktree was deleted are hidden
-    // outright — see the filter below), then sorted into an ACTIVE section
+    // outright — see the filter below). Full history is intentional (user wants
+    // the archive visible, not a recent tail). Sorted into an ACTIVE section
     // (running/needs-input/queued) followed by a FINISHED section
     // (done/failed/cancelled/skipped/unknown + archived).
     // The per-lane queue position (`#N in lane`) is computed in snapshot order
@@ -402,10 +406,10 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
     // daemon, or the cache hasn't populated) hides nothing, mirroring the
     // daemon sweep's cold-cache guard. `null`/`@repo` targets have no worktree
     // to delete and keep the dimmed display, as do age-swept rows whose
-    // worktree still exists. Filtered BEFORE the last-10 cap so hidden rows
-    // never consume display slots.
+    // worktree still exists. No display cap: every surviving archived row for
+    // this project is shown (daemon also sends the full archive list).
     let repo_worktrees = snapshot.worktrees.get(project);
-    let archived: Vec<&TaskInstance> = snapshot
+    for task in snapshot
         .archived_recent
         .iter()
         .filter(|t| t.target.repo == project)
@@ -413,9 +417,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
             (Some(wt), Some(list)) if wt != REPO_SENTINEL => list.iter().any(|w| w.name == wt),
             _ => true,
         })
-        .collect();
-    let start = archived.len().saturating_sub(10);
-    for task in &archived[start..] {
+    {
         rows.push(QueueRow {
             task_id: task.id.clone(),
             glyph: status_glyph(task),
@@ -616,7 +618,7 @@ fn lane_task_display_name(task: &TaskInstance, cap: usize) -> (String, bool) {
     }
 }
 
-/// Clip width for the head-of-lane (`next:`) task name in the worktree pane —
+/// Clip width for the head-of-lane (`→`) task name in the worktree pane —
 /// its column is a fixed 30-cell slot, so the name is trimmed to keep the
 /// `next:` lead visible. The last-finished cell is deliberately NOT
 /// pre-clipped (it is the pane's FILL column; the render clips to the row).
@@ -1207,8 +1209,9 @@ pub const NAME_CAP: usize = 48;
 /// fallback longer than this is clipped with `…` rather than blowing out the
 /// row.
 pub const SCHED_CAP: usize = 20;
-/// Max width of the model cell in the TASKS pane (a `provider/label` ref such as
-/// `claude/opus`, or a joined fallback list). Clipped with `…` if longer.
+/// Max width of the model cell in the TASKS pane (effective head label only,
+/// e.g. `claude-opus-4.8` / `grok-4.5`). Clipped with `…` if longer; the column
+/// still degrades (drops) before the name shrinks.
 pub const MODEL_CAP: usize = 20;
 pub const SUMMARY_MIN: usize = 10;
 /// Gutter between adjacent field columns (glyph/chain markers keep single
@@ -1239,15 +1242,12 @@ pub const PR_W: usize = 6;
 /// Shared QUEUE live slot: `⏱ 99h59m` (8) or `#N in lane` (`#9 in lane` = 10);
 /// `#10 in lane` and beyond clip.
 pub const QUEUE_LIVE_W: usize = 10;
-/// Fill floor for the worktrees `next:` column: the minimum width that
-/// keeps it "present" (below this the ladder drops it before dirty/live). It is
-/// a flex column — this is only its minimum, not a reserved fixed width.
-/// Fixed reserved width of the worktrees `next: <name>` column (always a
-/// candidate, blank when nothing is queued — data-independent so a queued task
-/// appearing never shifts columns). The queued count is NOT shown here — the
-/// leading indicator digit already carries it. Fits "next: " plus a ~24-char
-/// name; longer names clip with `…`.
-const WT_QUEUED_W: usize = 30;
+/// Fixed reserved width of the worktrees combined Next/Live activity column.
+/// One trailing slot holds either `⏱ <elapsed>`, `→ <name>`, or both
+/// (`⏱ … → …`). The queued COUNT is not shown here — the leading indicator
+/// digit already carries it. Static 20 cells (user request) so the column never
+/// grows/shrinks with content; longer names clip with `…`.
+const WT_ACTIVITY_W: usize = 20;
 /// Floor of the worktrees last-task FILL column (the pane's flex column — it
 /// absorbs remaining width like the queue pane's summary, per user request).
 const WT_LAST_MIN: usize = 12;
@@ -1414,28 +1414,30 @@ pub fn def_desc_text(def: &DefinitionSummary) -> String {
     def.description.clone().unwrap_or_default()
 }
 
-/// The model cell text for a def: the **effective head** of its resolved
-/// fallback chain under `ctx.active_provider` (stable re-head + group-head
-/// prepend — see [`crate::chain::resolve_model_chain`]), not the authored yaml
-/// list. `None` model uses the repo's `default_models`. Empty string when
-/// resolution fails (unknown model / nothing runnable) so the pane-gate can
-/// drop the column when every visible def is blank. Layout
-/// ([`def_col_layout`]) and render ([`crate::view::panes`]) share this so
-/// widths track the displayed head.
+/// The model cell text for a def in the TASKS list: the **effective head**
+/// under `ctx.active_provider` only (stable re-head + default-model /
+/// group-head prepend — see [`crate::chain::resolve_model_chain`] /
+/// [`crate::chain::effective_model_head`]), label-only via
+/// [`crate::chain::model_ref_display`]. Not the authored yaml list and not the
+/// full `a → b → c` fallback chain (that stays on the detail config pane via
+/// [`crate::chain::resolved_model_chain_display`]). `None` model uses the
+/// repo's `default_models`. Empty string when resolution fails (unknown model /
+/// nothing runnable) so the pane-gate can drop the column when every visible
+/// def is blank. Layout ([`def_col_layout`]) and render
+/// ([`crate::view::panes`]) share this so widths track the displayed head.
 pub fn def_model_text(def: &DefinitionSummary, ctx: &ModelResolveCtx<'_>) -> String {
     let defaults = ctx.default_models.refs_for(&def.repo);
     let enabled = ctx.enabled_refs();
-    // The effective head is a `provider/label` ref; render it label-only (the
-    // provider prefix is redundant) via the shared display helper.
-    effective_model_head(
+    match effective_model_head(
         def.model.as_ref(),
         ctx.catalog,
         &enabled,
         &defaults,
         ctx.active_provider,
-    )
-    .map(|head| crate::chain::model_ref_display(ctx.catalog, &head))
-    .unwrap_or_default()
+    ) {
+        Some(head) => model_ref_display(ctx.catalog, &head),
+        None => String::new(),
+    }
 }
 
 /// Trailing schedule-cell text for a def row: the humanized cron schedule, or
@@ -1467,8 +1469,8 @@ pub fn def_col_layout(
     // The desc FILL is present only when some visible def actually has a
     // description (else the schedule keeps its today-position, no layout shift).
     let has_desc = rows.iter().any(|d| d.description.as_deref().is_some_and(|s| !s.is_empty()));
-    // Model column: fixed, pane-gated on whole-pane data (widest *effective*
-    // head cell, 0 pane-wide when every visible def resolves to blank).
+    // Model column: fixed, pane-gated on whole-pane data (widest *effective
+    // head* cell, 0 pane-wide when every visible def resolves to blank).
     let model_w0 = rows
         .iter()
         .map(|d| cw(&def_model_text(d, ctx)))
@@ -1545,31 +1547,29 @@ pub fn wt_merge_marker(row: &WorktreeRow) -> Option<WtMergeMarker> {
 /// Resolved per-frame column widths for the WORKTREES pane. A width of `0` means
 /// the column is omitted this frame.
 ///
-/// Columns, left→right (identity → content → time → live):
+/// Columns, left→right (identity → content → time → activity):
 ///   `● ± ⛨ ↣ name` (anchor; the `±` dirty, `⛨` protected and `↣` merged-back
 ///   markers are single-cell front slots after the dot, per user request),
 ///   last-finished (FILL), PR `#<n>` (fixed `PR_W`), last-commit author
 ///   (fixed `AUTHOR_W`), last-commit age (fixed `COMMIT_AGE_W`),
-///   `next: <name>` (fixed `WT_QUEUED_W`), live `⏱` (fixed `TIMER_W`,
-///   right-pinned by the fill). The PR column sits immediately LEFT of the
-///   author (between the fill and author) so the open-PR chip reads before the
-///   who·when pair; the author sits right before the commit-age so the pair
-///   reads `koshea  3d ago` = who · when.
+///   combined Next/Live activity (fixed `WT_ACTIVITY_W` — `⏱ …` and/or
+///   `→ <name>`, right-pinned by the fill). The PR column sits immediately
+///   LEFT of the author (between the fill and author) so the open-PR chip
+///   reads before the who·when pair; the author sits right before the
+///   commit-age so the pair reads `koshea  3d ago` = who · when.
 ///
-/// The marker/time columns (`dirty`, `protected`, `pr`, `queued`, `author`,
-/// `commit_age`, `elapsed`) are FIXED widths — never sized from row data — so a
+/// The marker/time columns (`dirty`, `protected`, `pr`, `author`,
+/// `commit_age`, `activity`) are FIXED widths — never sized from row data — so a
 /// row gaining a value never shifts any column; `name_w` stays content-capped
 /// and `last_w` is the FILL column (absorbs the remaining width, like the queue
 /// pane's summary — per user request the last task's description gets the
-/// slack). The front `±`/`⛨`/`↣` marker slots and the live timer are ALWAYS
-/// reserved when the ladder keeps them (per user request — data-gated slots
-/// made the name column shift as scroll/data changed); pr/queued/author/
-/// commit-age stay pane-gated (reserved only while some visible row carries
-/// the value).
+/// slack). The front `±`/`⛨`/`↣` marker slots and the Live activity column are
+/// ALWAYS reserved when the ladder keeps them (per user request — data-gated
+/// slots made columns shift as scroll/data changed); pr/author/commit-age stay
+/// pane-gated (reserved only while some visible row carries the value).
 /// Degradation drop priority (first dropped first): commit-age → author → PR
-/// → queued·next → merged → protected → dirty → last-finished → live; only
-/// after all of those drop does `name_w` shrink. PR outlives author/commit-age
-/// dropping.
+/// → merged → protected → dirty → last-finished → activity; only after all of
+/// those drop does `name_w` shrink. PR outlives author/commit-age dropping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WtColLayout {
     pub name_w: usize,
@@ -1582,8 +1582,9 @@ pub struct WtColLayout {
     /// embedded separator) statically reserved like the other two, marking a
     /// worktree whose committed work is merged into the default branch.
     pub merged_w: usize,
-    pub elapsed_w: usize,
-    pub queued_w: usize,
+    /// Combined Next/Live activity column (`WT_ACTIVITY_W` when kept, else 0).
+    /// Renders the running `⏱` timer and/or the head-of-lane `→ <name>`.
+    pub activity_w: usize,
     pub last_w: usize,
     /// PR `#<n>` column (`PR_W` when some visible row has an open PR, else 0).
     /// Positioned between the last-task fill and the author column.
@@ -1612,14 +1613,14 @@ impl WtColLayout {
 }
 
 /// Fit the WORKTREES columns into `avail` inner cells (see [`WtColLayout`] for the
-/// column order, fixed-width model, and drop priority). The live `⏱` column and
-/// the last-task fill are always candidates; the dirty/pr/queued/author/
-/// commit-age columns stay gated on whole-pane data availability.
+/// column order, fixed-width model, and drop priority). The last-task fill and
+/// the Live activity column are always candidates; dirty is static too;
+/// pr/author/commit-age stay gated on whole-pane data availability.
 pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     let name_w0 = capped_max(rows.iter().map(|r| r.name.as_str()), NAME_CAP);
-    // Fixed marker/time widths. The `±` front slot and the live timer are
-    // statically reserved (blank when a row has no value); queued/author/
-    // commit-age stay gated on whole-pane data availability.
+    // Fixed marker/time widths. The `±` front slot is statically reserved
+    // (blank when a row has no value); author/commit-age/activity stay gated
+    // on whole-pane data availability.
     // STATICALLY reserved (user request): gating this slot on visible-row data
     // made the name column shift whenever a dirty flag flipped or scrolling
     // changed which rows were visible. The width ladder may still drop it under
@@ -1632,13 +1633,12 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     // The `↣` merged-back marker gets the third single-cell front slot (same
     // treatment as `±`/`⛨`), statically reserved for the same no-shift reason.
     let merged_w0 = if rows.is_empty() { 0 } else { 1 };
-    let elapsed_w0 = TIMER_W; // live timer: always reserved when the ladder keeps it
-    // Queued·next is pane-gated like dirty/author/commit-age: its fixed slot is
-    // reserved only while some visible row actually has a queued task. Always
-    // reserving it burned 30 blank cells that the last-task FILL should be
-    // stretching into (user feedback); rows shift only on the slot's first-ever
-    // pane-wide appearance, same accepted tradeoff as the others.
-    let queued_w0 = if rows.iter().any(|r| r.queued > 0) { WT_QUEUED_W } else { 0 };
+    // Combined Next/Live activity column: STATICALLY reserved at fixed
+    // `WT_ACTIVITY_W` whenever the pane has rows (blank when a row has no
+    // timer/next). User request: the Live column is always there so columns
+    // never shift when a lane starts or queues work. The width ladder may still
+    // drop it under geometry pressure (last optional before name shrinks).
+    let activity_w0 = if rows.is_empty() { 0 } else { WT_ACTIVITY_W };
     let author_w0 = if rows.iter().any(|r| wt_author_text(r).is_some()) { AUTHOR_W } else { 0 };
     let commit_w0 = if rows.iter().any(|r| r.last_commit_epoch.is_some()) { COMMIT_AGE_W } else { 0 };
     // PR is pane-gated like author/commit-age: reserved only while some visible
@@ -1658,9 +1658,17 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
     };
     // Used cells for a set of column widths and whether the last-task FILL is
     // reserved (at its `WT_LAST_MIN` floor — the actual fill absorbs the slack).
-    // cols = [queued, author, commit]; `pr` is the fixed PR column and `elapsed`
-    // the trailing fixed live column (both position-independent in the total).
-    let used = |name_w: usize, dirty: bool, protected: bool, merged: bool, cols: [usize; 3], pr_w: usize, elapsed_w: usize, last: bool| -> usize {
+    // cols = [author, commit]; `pr` is the fixed PR column and `activity` the
+    // trailing combined Next/Live column.
+    let used = |name_w: usize,
+                dirty: bool,
+                protected: bool,
+                merged: bool,
+                cols: [usize; 2],
+                pr_w: usize,
+                activity_w: usize,
+                last: bool|
+     -> usize {
         let mut u = anchor(name_w, dirty, protected, merged);
         for w in cols {
             if w > 0 {
@@ -1673,23 +1681,23 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         if last {
             u += COL_GAP + WT_LAST_MIN;
         }
-        if elapsed_w > 0 {
-            u += COL_GAP + elapsed_w;
+        if activity_w > 0 {
+            u += COL_GAP + activity_w;
         }
         u
     };
 
-    // Degrade in drop order: commit → author → pr → queued → merged →
-    // protected → dirty → last → elapsed. cols = [queued(0), author(1),
-    // commit(2)]; PR drops after author (so it outlives the who·when pair) but
-    // before queued·next; among the three front slots merged drops first (a
-    // cleanup hint), then protected, then dirty (the most actionable).
-    let mut cols = [queued_w0, author_w0, commit_w0];
+    // Degrade in drop order: commit → author → pr → merged → protected → dirty
+    // → last → activity. cols = [author(0), commit(1)]; PR drops after author
+    // (so it outlives the who·when pair); among the three front slots merged
+    // drops first (a cleanup hint), then protected, then dirty (the most
+    // actionable). Activity (fixed WT_ACTIVITY_W) is the last optional to go.
+    let mut cols = [author_w0, commit_w0];
     let mut pr_w = pr_w0;
     let mut dirty = dirty_w0 > 0;
     let mut protected = protected_w0 > 0;
     let mut merged = merged_w0 > 0;
-    let mut elapsed_w = elapsed_w0;
+    let mut activity_w = activity_w0;
     let mut last = true;
     #[derive(Clone, Copy)]
     enum Drop {
@@ -1699,20 +1707,19 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         Protected,
         Dirty,
         Last,
-        Elapsed,
+        Activity,
     }
     for op in [
-        Drop::Col(2),
         Drop::Col(1),
-        Drop::Pr,
         Drop::Col(0),
+        Drop::Pr,
         Drop::Merged,
         Drop::Protected,
         Drop::Dirty,
         Drop::Last,
-        Drop::Elapsed,
+        Drop::Activity,
     ] {
-        if used(name_w0, dirty, protected, merged, cols, pr_w, elapsed_w, last) <= avail {
+        if used(name_w0, dirty, protected, merged, cols, pr_w, activity_w, last) <= avail {
             break;
         }
         match op {
@@ -1722,22 +1729,22 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
             Drop::Protected => protected = false,
             Drop::Dirty => dirty = false,
             Drop::Last => last = false,
-            Drop::Elapsed => elapsed_w = 0,
+            Drop::Activity => activity_w = 0,
         }
     }
     // Still too wide with only `● ± ⛨ ↣ name` left → shrink the name column.
     let mut name_w = name_w0;
-    let u = used(name_w, dirty, protected, merged, cols, pr_w, elapsed_w, last);
+    let u = used(name_w, dirty, protected, merged, cols, pr_w, activity_w, last);
     if u > avail {
         name_w = name_w.saturating_sub(u - avail);
     }
     // The last-task column is the FILL: the remainder after every reserved column
     // (≥ WT_LAST_MIN by construction, 0 when dropped). Its width is data-
     // independent — a lane finishing its first task changes only its own cell,
-    // never any other column's offset — and the trailing live timer stays
+    // never any other column's offset — and the trailing activity column stays
     // right-pinned at the row edge.
     let last_w = if last {
-        let base = used(name_w, dirty, protected, merged, cols, pr_w, elapsed_w, false);
+        let base = used(name_w, dirty, protected, merged, cols, pr_w, activity_w, false);
         avail.saturating_sub(base + COL_GAP)
     } else {
         0
@@ -1748,12 +1755,11 @@ pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
         dirty_w: if dirty { 1 } else { 0 },
         protected_w: if protected { 1 } else { 0 },
         merged_w: if merged { 1 } else { 0 },
-        elapsed_w,
-        queued_w: cols[0],
+        activity_w,
         last_w,
         pr_w,
-        author_w: cols[1],
-        commit_age_w: cols[2],
+        author_w: cols[0],
+        commit_age_w: cols[1],
     }
 }
 
@@ -1783,12 +1789,12 @@ mod tests {
         };
         ModelResolveOwned {
             catalog: vec![
-                e("claude", "claude-fable-5", "fable"),
-                e("claude", "claude-opus-4-8", "opus"),
-                e("claude", "claude-sonnet-5", "sonnet"),
-                e("claude", "claude-haiku-4-5", "haiku"),
+                e("claude", "claude-fable-5", "claude-fable-5"),
+                e("claude", "claude-opus-4-8", "claude-opus-4.8"),
+                e("claude", "claude-sonnet-5", "claude-sonnet-5"),
+                e("claude", "claude-haiku-4-5", "claude-haiku-4.5"),
                 e("grok", "grok-4.5", "grok-4.5"),
-                e("grok", "grok-composer-2.5-fast", "composer"),
+                e("grok", "grok-composer-2.5-fast", "grok-composer-2.5-fast"),
             ],
             enabled_providers: vec!["claude".into(), "grok".into()],
             default_models: DefaultModels::default(),
@@ -2092,16 +2098,18 @@ mod tests {
     }
 
     #[test]
-    fn queue_rows_cap_archived_at_last_10() {
+    fn queue_rows_shows_all_archived_for_project() {
+        // Full archive history for the project tab — no last-N tail.
         let archived: Vec<TaskInstance> = (0..15)
             .map(|i| task_on(TaskStatus::Done, &format!("t{i:02}"), "platform", Some("wt-a")))
             .collect();
         let rows = queue_rows(&snap(vec![], archived), "platform", now());
-        assert_eq!(rows.len(), 10);
-        // Cap keeps the last 10 archived (t05..t14); with no finishedAt the
-        // FINISHED section falls back to id-desc, so the newest (t14) leads.
+        assert_eq!(rows.len(), 15);
+        // With no finishedAt the FINISHED section falls back to id-desc, so
+        // the newest (t14) leads and the oldest (t00) is last.
         assert_eq!(rows[0].task_id, "t14");
-        assert_eq!(rows[9].task_id, "t05");
+        assert_eq!(rows[14].task_id, "t00");
+        assert!(rows.iter().all(|r| r.archived));
     }
 
     #[test]
@@ -2154,20 +2162,20 @@ mod tests {
     }
 
     #[test]
-    fn queue_rows_hidden_archived_do_not_consume_the_last_10_cap() {
-        // 5 archived on a deleted worktree + 10 on a live one: the deleted ones
-        // are filtered BEFORE the cap, so all 10 survivors still show.
+    fn queue_rows_hidden_deleted_worktree_archived_do_not_block_survivors() {
+        // 5 archived on a deleted worktree + 12 on a live one: deleted-lane
+        // noise is filtered out, and every survivor still shows (no display cap).
         let mut archived: Vec<TaskInstance> = (0..5)
             .map(|i| task_on(TaskStatus::Done, &format!("gone{i:02}"), "platform", Some("wt-gone")))
             .collect();
         archived.extend(
-            (0..10).map(|i| task_on(TaskStatus::Done, &format!("kept{i:02}"), "platform", Some("wt-a"))),
+            (0..12).map(|i| task_on(TaskStatus::Done, &format!("kept{i:02}"), "platform", Some("wt-a"))),
         );
         let mut s = snap(vec![], archived);
         s.worktrees = platform_worktrees();
         let rows = queue_rows(&s, "platform", now());
-        assert_eq!(rows.len(), 10);
-        assert!(rows.iter().all(|r| r.task_id.starts_with("kept")), "cap spent on survivors only");
+        assert_eq!(rows.len(), 12);
+        assert!(rows.iter().all(|r| r.task_id.starts_with("kept")), "only survivors shown");
     }
 
     #[test]
@@ -3325,9 +3333,9 @@ mod tests {
     fn wt_col_layout_degrades_columns_from_the_right() {
         // One fully-loaded row: every optional column populated.
         // Fixed widths: dirty=1, protected=1, merged=1, last-min=12,
-        // author=AUTHOR_W(14), commit=8, live=8; anchor = `● ± ⛨ ↣ name` =
-        // 2+2+2+2+9 = 17. Full reserved = anchor(17) + queued(2+30) +
-        // author(2+14) + commit(2+8) + last-min(2+12) + live(2+8) = 99.
+        // author=AUTHOR_W(14), commit=8, activity=20; anchor = `● ± ⛨ ↣ name` =
+        // 2+2+2+2+9 = 17. Full reserved = anchor(17) + author(2+14) +
+        // commit(2+8) + last-min(2+12) + activity(2+20) = 79.
         let row = WorktreeRow {
             name: "feature-x".into(), // 9 cells
             raw_name: "feature-x".into(),
@@ -3344,40 +3352,38 @@ mod tests {
             ..Default::default()
         };
         let rows = [row];
-        // (dirty, protected, merged, live, queued, last, author, commit) presence.
+        // (dirty, protected, merged, activity, last, author, commit) presence.
         let present = |a: usize| {
             let l = wt_col_layout(&rows, a);
             (
                 l.dirty_w > 0,
                 l.protected_w > 0,
                 l.merged_w > 0,
-                l.elapsed_w > 0,
-                l.queued_w > 0,
+                l.activity_w > 0,
                 l.last_w > 0,
                 l.author_w > 0,
                 l.commit_age_w > 0,
             )
         };
         // Wide: everything shown, name at full width. All reserved widths sum to
-        // 99; at 120 the last-task FILL absorbs the slack.
-        assert_eq!(present(99), (true, true, true, true, true, true, true, true));
+        // 79; at 120 the last-task FILL absorbs the slack.
+        assert_eq!(present(79), (true, true, true, true, true, true, true));
         assert_eq!(wt_col_layout(&rows, 120).name_w, 9);
-        assert_eq!(wt_col_layout(&rows, 120).last_w, 33, "last-task fill absorbs the slack");
-        assert_eq!(wt_col_layout(&rows, 120).queued_w, 30, "queued is a fixed slot");
-        // Drop in ladder order: commit → author → queued → merged → protected →
-        // dirty → last → live. The last-task fill outlives queued/merged/
-        // protected/dirty (it is the summary-equivalent), the live timer is the
-        // last optional to go, and only after everything drops does the name
-        // column shrink.
-        assert_eq!(present(98), (true, true, true, true, true, true, true, false)); // commit dropped (< 99)
-        assert_eq!(present(88), (true, true, true, true, true, true, false, false)); // author dropped (< 89)
-        assert_eq!(present(72), (true, true, true, true, false, true, false, false)); // queued dropped (< 73)
-        assert_eq!(present(40), (true, true, false, true, false, true, false, false)); // merged dropped (< 41)
-        assert_eq!(present(38), (true, false, false, true, false, true, false, false)); // protected dropped (< 39)
-        assert_eq!(present(36), (false, false, false, true, false, true, false, false)); // dirty dropped (< 37)
-        assert_eq!(present(34), (false, false, false, true, false, false, false, false)); // last dropped (< 35)
-        // Only ⏱ + `● name` remain; the timer is the last optional to go.
-        assert_eq!(present(20), (false, false, false, false, false, false, false, false)); // live dropped (< 21)
+        assert_eq!(wt_col_layout(&rows, 120).last_w, 53, "last-task fill absorbs the slack");
+        assert_eq!(wt_col_layout(&rows, 120).activity_w, 20, "activity is a fixed 20-cell slot");
+        // Drop in ladder order: commit → author → merged → protected →
+        // dirty → last → activity. Thresholds from used() after each drop:
+        // full 79, -commit 69, -author 53, -merged 51, -prot 49, -dirty 47,
+        // -last 33, -activity 11.
+        assert_eq!(present(78), (true, true, true, true, true, true, false)); // commit
+        assert_eq!(present(68), (true, true, true, true, true, false, false)); // author
+        assert_eq!(present(51), (true, true, false, true, true, false, false)); // merged
+        assert_eq!(present(49), (true, false, false, true, true, false, false)); // protected
+        assert_eq!(present(47), (false, false, false, true, true, false, false)); // dirty
+        assert_eq!(present(33), (false, false, false, true, false, false, false)); // last
+        assert_eq!(wt_col_layout(&rows, 33).activity_w, 20);
+        // Activity is the last optional to go.
+        assert_eq!(present(32), (false, false, false, false, false, false, false));
         assert_eq!(wt_col_layout(&rows, 20).name_w, 9);
         // Below that, the name column shrinks (anchor `● name` = 2 + name_w).
         assert_eq!(wt_col_layout(&rows, 10).name_w, 8);
@@ -3550,17 +3556,22 @@ mod tests {
             state: WtState::Free,
             ..Default::default()
         };
-        // Pair 1: one row gains a running timer. The live column is always a
-        // candidate (fixed TIMER_W), so the layout is unchanged.
-        let with_timer = WorktreeRow { running_elapsed: Some(now() - 100), ..base.clone() };
+        // Pair 1: activity is statically reserved (fixed WT_ACTIVITY_W) for any
+        // non-empty pane. Gaining a timer or a queued task does not re-size.
+        let with_timer = WorktreeRow {
+            running_elapsed: Some(now() - 100),
+            ..base.clone()
+        };
+        assert_eq!(
+            wt_col_layout(std::slice::from_ref(&base), 120).activity_w,
+            20,
+            "idle pane still reserves the Live column"
+        );
         assert_eq!(
             wt_col_layout(std::slice::from_ref(&base), 120),
             wt_col_layout(std::slice::from_ref(&with_timer), 120)
         );
-        // Pair 2: the queued slot is pane-gated (reserved while ANY visible row
-        // has a queued task — always reserving its fixed WT_QUEUED_W burned 30
-        // blank cells the fill should stretch into). So: with one row already
-        // queued, ANOTHER row gaining a queued task changes nothing.
+        // Pair 2: another row gaining a queued task changes nothing either.
         let other_queued = WorktreeRow {
             name: "other".into(),
             raw_name: "other".into(),
@@ -3752,28 +3763,28 @@ mod tests {
 
     #[test]
     fn def_model_text_shows_effective_head_under_active_provider() {
-        // Def authored `claude/opus`, active grok, catalog with both groups →
-        // displays the group-head prepend, rendered label-only as `grok-4.5`
-        // (the provider prefix is dropped), not the authored ref.
+        // Def authored `claude/claude-opus-4.8`, active grok, catalog with both
+        // groups → effective head is the re-headed grok group head only
+        // (`grok-4.5`), not the full `grok-4.5 → claude-opus-4.8` chain (that
+        // stays on the detail config pane).
         let m = resolve_owned("grok");
         let one = DefinitionSummary {
-            model: Some(ModelRef::One("claude/opus".into())),
+            model: Some(ModelRef::One("claude/claude-opus-4.8".into())),
             ..Default::default()
         };
         assert_eq!(def_model_text(&one, &m.ctx()), "grok-4.5");
 
         // List that already includes the active provider: stable-partition puts
-        // the grok entry first → head is still grok-4.5 (not the full arrow
-        // chain — the column shows the effective head only).
+        // the grok entry first; the column still shows only that head.
         let list = DefinitionSummary {
-            model: Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()])),
+            model: Some(ModelRef::Many(vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()])),
             ..Default::default()
         };
         assert_eq!(def_model_text(&list, &m.ctx()), "grok-4.5");
 
-        // Same authored ref under active claude → no re-head; shows label `opus`.
+        // Same authored ref under active claude → single versioned label.
         let m_claude = resolve_owned("claude");
-        assert_eq!(def_model_text(&one, &m_claude.ctx()), "opus");
+        assert_eq!(def_model_text(&one, &m_claude.ctx()), "claude-opus-4.8");
 
         // Absent model + empty defaults + no active → blank (pane-gate).
         let empty = empty_model_owned();
@@ -3788,10 +3799,8 @@ mod tests {
 
     #[test]
     fn def_col_layout_model_sizes_and_degrades_before_name() {
-        // active=grok so both defs resolve to effective head "grok-4.5"(8, the
-        // provider prefix is dropped in the column): pr-review's authored
-        // claude/opus is re-headed via group-head prepend; lint already authors
-        // grok/grok-4.5. Widest model cell = 8.
+        // active=grok: both defs resolve to head `grok-4.5` (8 cells) — the
+        // full fallback chain is not shown in the TASKS column.
         // cron→"Everyday 1:30pm"(15 cells), plus a 2-cell front discovery-marker
         // slot (pr-review has_discovery), description present. Schedule
         // footprint = 15; marker footprint = 2.
@@ -3799,7 +3808,7 @@ mod tests {
         let defs = vec![
             DefinitionSummary {
                 name: "pr-review".into(),
-                model: Some(ModelRef::One("claude/opus".into())),
+                model: Some(ModelRef::One("claude/claude-opus-4.8".into())),
                 cron: Some("30 13 * * *".into()),
                 has_discovery: true,
                 description: Some("Review an open PR end to end.".into()),
@@ -3811,21 +3820,22 @@ mod tests {
                 ..Default::default()
             },
         ];
-        // Wide: model sized to the widest cell (8), desc is the fill remainder.
+        let head_w = cw("grok-4.5"); // 8 display cells
+        // Wide: model sized to the widest head (8), desc is the fill remainder.
         // used_wo_desc = marker(2) + name(9) + (2+8) + (2+15) = 38; desc = 120 - 38 - 2 = 80.
         let wide = def_col_layout(&defs, 120, &m.ctx());
-        assert_eq!((wide.name_w, wide.model_w, wide.sched_w, wide.marker_w), (9, 8, 15, 2));
+        assert_eq!((wide.name_w, wide.model_w, wide.sched_w, wide.marker_w), (9, head_w, 15, 2));
         assert_eq!(wide.desc_w, 80, "description is the fill remainder after the model column");
         // Kept: name+model+schedule+marker (38) still fit in 50; the fill takes the rest.
         let kept = def_col_layout(&defs, 50, &m.ctx());
-        assert_eq!(kept.model_w, 8, "model kept while the fixed columns fit");
+        assert_eq!(kept.model_w, head_w, "model kept while the fixed columns fit");
         assert_eq!(kept.desc_w, 10, "fill absorbs only what's left: 50 - 38 - 2");
-        // Tighter (34): the model column drops (before the name shrinks) — 38 > 34.
+        // Tighter (35): the model column drops (before the name shrinks) — 38 > 35.
         // used_wo_desc without model = marker(2) + name(9) + (2+15) = 28.
-        let narrow = def_col_layout(&defs, 34, &m.ctx());
+        let narrow = def_col_layout(&defs, 35, &m.ctx());
         assert_eq!(narrow.model_w, 0);
         assert_eq!(narrow.name_w, 9, "name still fits; schedule/marker kept");
-        assert_eq!(narrow.desc_w, 4, "fill absorbs the rest: 34 - 28 - 2");
+        assert_eq!(narrow.desc_w, 5, "fill absorbs the rest: 35 - 28 - 2");
         assert_eq!(narrow.marker_w, 2, "marker slot survives model drop");
         // Narrowest (25): model gone AND the name shrinks (28 - 25 = 3 → 9-3=6).
         let tightest = def_col_layout(&defs, 25, &m.ctx());
@@ -3834,5 +3844,60 @@ mod tests {
         let empty = empty_model_owned();
         let no_model = vec![DefinitionSummary { name: "lint".into(), ..Default::default() }];
         assert_eq!(def_col_layout(&no_model, 120, &empty.ctx()).model_w, 0);
+    }
+
+    #[test]
+    fn def_model_text_and_layout_resolve_short_family_token_refs() {
+        // Real-world regression: workspace defs author `claude/sonnet` /
+        // `claude/opus` (pre-versioned labels). Without short-form find_model
+        // fallback every cell blanks → model_w=0 and the Model column vanishes
+        // even on a wide pane. After the fix the column shows the effective
+        // head's versioned label (`claude-sonnet-5`) and model_w is non-zero.
+        let m = resolve_owned("claude");
+        let defs = vec![
+            DefinitionSummary {
+                name: "sanitize-project".into(),
+                model: Some(ModelRef::Many(vec![
+                    "claude/sonnet".into(),
+                    "grok/grok-4.5".into(),
+                ])),
+                description: Some("Remove stale worktrees".into()),
+                ..Default::default()
+            },
+            DefinitionSummary {
+                name: "squash-merge".into(),
+                model: Some(ModelRef::Many(vec![
+                    "claude/sonnet".into(),
+                    "grok/grok-4.5".into(),
+                ])),
+                description: Some("Squash a branch".into()),
+                ..Default::default()
+            },
+        ];
+        let head = "claude-sonnet-5";
+        assert_eq!(def_model_text(&defs[0], &m.ctx()), head);
+        assert_eq!(def_model_text(&defs[1], &m.ctx()), head);
+        let wide = def_col_layout(&defs, 120, &m.ctx());
+        assert_eq!(wide.model_w, cw(head));
+        assert!(wide.model_w > 0, "Model column must stay pane-gated on when short refs resolve");
+
+        // Stale default_models alone (no def model:) also keep the column —
+        // effective default head under active claude.
+        let mut m_defaults = resolve_owned("claude");
+        m_defaults.default_models = DefaultModels {
+            global: vec!["claude/opus".into(), "grok/grok-4.5".into()],
+            projects: vec![],
+        };
+        let bare = DefinitionSummary {
+            name: "adhoc-shaped".into(),
+            model: None,
+            ..Default::default()
+        };
+        let defaults_head = "claude-opus-4.8";
+        assert_eq!(def_model_text(&bare, &m_defaults.ctx()), defaults_head);
+        assert_eq!(
+            def_col_layout(&[bare], 80, &m_defaults.ctx()).model_w,
+            cw(defaults_head)
+        );
     }
 }

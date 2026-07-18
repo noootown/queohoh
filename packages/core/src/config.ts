@@ -107,7 +107,7 @@ const CatalogEntrySchema = z.object({
 /** Global config's `default_models:` fallback list when unset — the initial
  * value from the design spec (Section 2): claude's precedence-head model,
  * then grok's. */
-const DEFAULT_MODELS: string[] = ["claude/opus", "grok/grok-4.5"];
+const DEFAULT_MODELS: string[] = ["claude/claude-opus-4.8", "grok/grok-4.5"];
 
 const GlobalConfigSchema = z
 	.object({

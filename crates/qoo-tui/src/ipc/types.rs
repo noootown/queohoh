@@ -27,6 +27,9 @@ fn default_true() -> bool {
 pub struct StateSnapshot {
     #[serde(deserialize_with = "nullable_default")]
     pub tasks: Vec<TaskInstance>,
+    /// Full archived list from the daemon (wire name `archivedRecent` kept for
+    /// compat; content is no longer a recent tail). TUI project-filters and
+    /// shows all surviving archived rows in QUEUE.
     #[serde(deserialize_with = "nullable_default")]
     pub archived_recent: Vec<TaskInstance>,
     #[serde(deserialize_with = "nullable_default")]
@@ -51,6 +54,12 @@ pub struct StateSnapshot {
     // workspace init-tab overrides are gone; interactive goto uses provider `bin`
     // instead. A stale daemon that still sends the key is silently ignored (no
     // `deny_unknown_fields`).
+    /// Enabled provider names in config-precedence order (daemon
+    /// `config.providers` with `enabled: true` only). The top-bar chip cluster
+    /// renders exactly this list — disabled providers never appear. Optional —
+    /// old daemons omit (`None` via container `default`); the header then falls
+    /// back to the settings payload's enabled providers, then the active name.
+    pub enabled_providers: Option<Vec<String>>,
     /// Active provider usage chip (optional; old daemons / single-chip era).
     /// Kept for wire compat: a modern daemon still publishes the active entry
     /// here alongside `provider_usages`. Prefer `provider_usages` for multi-chip
@@ -304,11 +313,13 @@ pub struct DefinitionSummary {
     /// The def's authored `model:` — a single `provider/label` ref, an ordered
     /// fallback list of them, or `None` (no `model:` → resolves against
     /// `default_models` at run time; also the old-daemon default). The TASKS
-    /// Model column shows the **effective head** of
-    /// [`crate::chain::resolve_model_chain`] under the active provider, not this
-    /// list verbatim. Was a resolved model id before Task 5; the flat catalog
-    /// replaced the per-provider alias table, so the daemon now forwards the
-    /// authored ref(s) (`string | string[] | null` on the wire).
+    /// Model column shows only the **effective head** of
+    /// [`crate::chain::resolve_model_chain`] under the active provider (one
+    /// label via [`crate::chain::effective_model_head`]), not this list
+    /// verbatim and not the full fallback chain. Was a resolved model id
+    /// before Task 5; the flat catalog replaced the per-provider alias table,
+    /// so the daemon now forwards the authored ref(s) (`string | string[] |
+    /// null` on the wire).
     pub model: Option<ModelRef>,
     /// The def's `worktree:` setting (`"repo"`, `"temp"`, `"auto"`, or a
     /// `pr:{{…}}`-style template; schema default `"temp"`). `None` on an old
@@ -335,10 +346,14 @@ pub struct TaskDefinition {
     pub post_run: Option<String>,
     /// The def's authored `model:` — a single `provider/label` ref, an ordered
     /// fallback list of them, or `None` (no `model:` → resolves against
-    /// `default_models` at run time). Was a resolved-id string paired with a
-    /// sibling `modelResolved` before Task 5; the flat catalog replaced the alias
-    /// table, so `modelResolved` was REMOVED from the wire and the authored ref(s)
-    /// (`string | string[] | null`) are rendered directly.
+    /// `default_models` at run time). The definition config row renders the
+    /// **full** resolved chain under the active provider (see
+    /// [`crate::chain::resolved_model_chain_display`]); the TASKS list column
+    /// shows only the effective head. Not this list verbatim.
+    /// Was a resolved-id string paired with a sibling `modelResolved` before
+    /// Task 5; the flat catalog replaced the alias table, so `modelResolved`
+    /// was REMOVED from the wire and the authored ref(s) (`string | string[] |
+    /// null`) are what the daemon forwards.
     pub model: Option<ModelRef>,
     pub timeout_ms: u64,
     pub priority: String,
@@ -539,7 +554,7 @@ mod tests {
             "error": null,
             "session": "main",
             "resumeSessionId": "sess-1",
-            "model": "opus",
+            "model": "claude/claude-opus-4.8",
             "prompt": "do the thing\n",
             "verify": "gh pr view --json labels -q '.labels[].name' | grep -qx ready-for-review",
             "verified": false,
@@ -578,7 +593,7 @@ mod tests {
         assert!(!t.ephemeral_worktree);
         assert_eq!(t.session, "main");
         assert_eq!(t.resume_session_id.as_deref(), Some("sess-1"));
-        assert_eq!(t.model.as_deref(), Some("opus"));
+        assert_eq!(t.model.as_deref(), Some("claude/claude-opus-4.8"));
         assert_eq!(t.prompt, "do the thing\n");
         assert_eq!(t.started_at.as_deref(), Some("2026-07-08T10:00:30.000Z"));
         assert_eq!(t.finished_at.as_deref(), Some("2026-07-08T10:05:00.000Z"));
@@ -697,6 +712,20 @@ mod tests {
         let old: StateSnapshot = serde_json::from_str(r#"{}"#).unwrap();
         assert!(old.provider_usage.is_none());
         assert!(old.provider_usages.is_none());
+    }
+
+    #[test]
+    fn enabled_providers_present_and_absent() {
+        let s: StateSnapshot = serde_json::from_str(
+            r#"{"enabledProviders":["claude","grok"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.enabled_providers.as_deref(),
+            Some(&["claude".to_string(), "grok".to_string()][..])
+        );
+        let old: StateSnapshot = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(old.enabled_providers.is_none());
     }
 
     #[test]
@@ -830,12 +859,12 @@ mod tests {
         let with: DefinitionSummary = serde_json::from_str(
             r#"{"repo": "platform", "name": "pr-review", "scope": "project",
                 "args": [], "hasDiscovery": true, "cron": "30 13 * * *",
-                "description": "Review an open PR.", "model": "claude/fable"}"#,
+                "description": "Review an open PR.", "model": "claude/claude-fable-5"}"#,
         )
         .unwrap();
         assert_eq!(with.cron.as_deref(), Some("30 13 * * *"));
         assert_eq!(with.description.as_deref(), Some("Review an open PR."));
-        assert_eq!(with.model, Some(ModelRef::One("claude/fable".into())));
+        assert_eq!(with.model, Some(ModelRef::One("claude/claude-fable-5".into())));
         // No `cronEnabled` in the payload → field-level `default_true` → armed.
         assert!(with.cron_enabled);
         // ...and an old daemon that omits them defaults to None (container `default`).
@@ -869,21 +898,21 @@ mod tests {
     fn task_definition_model_is_ref_string_list_or_null() {
         // Post-Task-5: `model` is a `provider/label` ref (single)...
         let one: TaskDefinition = serde_json::from_str(
-            r#"{"name": "pr-ready", "repo": "acme", "model": "claude/opus", "timeoutMs": 1800000}"#,
+            r#"{"name": "pr-ready", "repo": "acme", "model": "claude/claude-opus-4.8", "timeoutMs": 1800000}"#,
         )
         .unwrap();
-        assert_eq!(one.model, Some(ModelRef::One("claude/opus".into())));
+        assert_eq!(one.model, Some(ModelRef::One("claude/claude-opus-4.8".into())));
         // ...an ordered fallback LIST...
         let many: TaskDefinition = serde_json::from_str(
             r#"{"name": "pr-ready", "repo": "acme",
-                "model": ["claude/opus", "grok/grok-4.5"], "timeoutMs": 1800000}"#,
+                "model": ["claude/claude-opus-4.8", "grok/grok-4.5"], "timeoutMs": 1800000}"#,
         )
         .unwrap();
         assert_eq!(
             many.model,
-            Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()]))
+            Some(ModelRef::Many(vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()]))
         );
-        assert_eq!(many.model.as_ref().unwrap().display(), "claude/opus → grok/grok-4.5");
+        assert_eq!(many.model.as_ref().unwrap().display(), "claude/claude-opus-4.8 → grok/grok-4.5");
         // ...or `null`/absent → None (no `model:`; also the old-daemon default).
         // `modelResolved` was removed from the wire — a stale daemon that still
         // sends it is silently ignored (no deny_unknown_fields).
@@ -946,14 +975,14 @@ mod tests {
         let s: SettingsPayload = serde_json::from_str(
             r#"{
               "catalog": [
-                {"provider": "claude", "id": "claude-fable-5", "label": "fable"},
-                {"provider": "claude", "id": "claude-opus-4-8", "label": "opus"},
+                {"provider": "claude", "id": "claude-fable-5", "label": "claude-fable-5"},
+                {"provider": "claude", "id": "claude-opus-4-8", "label": "claude-opus-4.8"},
                 {"provider": "grok", "id": "grok-4.5", "label": "grok-4.5"},
                 {"provider": "grok", "id": "grok-legacy", "label": "legacy", "hidden": true}
               ],
               "active_provider": "grok",
               "default_models": {
-                "global": ["claude/opus", "grok/grok-4.5"],
+                "global": ["claude/claude-opus-4.8", "grok/grok-4.5"],
                 "projects": [
                   {"name": "acme", "default_models": ["grok/grok-4.5"],
                    "source": "/repos/acme/vars.yaml"}
@@ -969,16 +998,16 @@ mod tests {
         .unwrap();
         assert_eq!(s.catalog.len(), 4);
         assert_eq!(s.catalog[0].provider, "claude");
-        assert_eq!(s.catalog[0].model_ref(), "claude/fable");
-        assert_eq!(s.catalog[0].model_display(), "fable (claude)");
+        assert_eq!(s.catalog[0].model_ref(), "claude/claude-fable-5");
+        assert_eq!(s.catalog[0].model_display(), "claude-fable-5 (claude)");
         assert!(!s.catalog[0].hidden);
         // The hidden flag rides through so the picker can filter it.
         assert!(s.catalog[3].hidden);
         assert_eq!(s.active_provider, "grok");
         // default_models: project override wins, global otherwise.
-        assert_eq!(s.default_models.global, vec!["claude/opus", "grok/grok-4.5"]);
+        assert_eq!(s.default_models.global, vec!["claude/claude-opus-4.8", "grok/grok-4.5"]);
         assert_eq!(s.default_models.refs_for("acme"), vec!["grok/grok-4.5"]);
-        assert_eq!(s.default_models.refs_for("other"), vec!["claude/opus", "grok/grok-4.5"]);
+        assert_eq!(s.default_models.refs_for("other"), vec!["claude/claude-opus-4.8", "grok/grok-4.5"]);
         // providers reduced to name/enabled; a stale per-provider `models` key
         // would be silently ignored (no deny_unknown_fields).
         assert_eq!(s.providers.len(), 3);

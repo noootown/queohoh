@@ -6,5 +6,5 @@ args:
     default: main
 dedup: none
 worktree: repo
-model: opus
+model: claude/claude-opus-4.8
 timeout: 30m

@@ -797,11 +797,11 @@ mod goto_plan_tests {
         // known from model ref / lineage; omitted → None via field default.
         let with: SessionChoice = serde_json::from_str(
             r#"{"session_id":"s1","label":"fix login","mtime_ms":1000,
-                "model":"claude/opus","provider":"claude"}"#,
+                "model":"claude/claude-opus-4.8","provider":"claude"}"#,
         )
         .unwrap();
         assert_eq!(with.provider.as_deref(), Some("claude"));
-        assert_eq!(with.model.as_deref(), Some("claude/opus"));
+        assert_eq!(with.model.as_deref(), Some("claude/claude-opus-4.8"));
         let without: SessionChoice = serde_json::from_str(
             r#"{"session_id":"s2","label":"old sess","mtime_ms":0}"#,
         )

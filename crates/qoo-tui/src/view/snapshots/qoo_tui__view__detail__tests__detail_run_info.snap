@@ -2,7 +2,7 @@
 source: crates/qoo-tui/src/view/detail.rs
 expression: terminal.backend()
 ---
-" 1:acme                                                    ● running 0/3  ↯ grok"
+" 1:acme                                          ● running 0/3  ↯ claude  ↯ grok"
 "╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
@@ -20,19 +20,19 @@ expression: terminal.backend()
 "│                         ││  Details                                          │"
 "╰─────────────────────────╯│    worktree     /repos/acme.feature               │"
 "╭⚡TASKS [r] [d] [o] · [c]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
-"│                         ││    model        opus (claude) · claude-opus-4-8   │"
-"│ 🔍 [/]filter            ││    exit code    0                                 │" Hidden by multi-width symbols: [(3, " ")]
-"│                         ││    cost         $0.42                             │"
-"│ no task definitions     ││    tokens       199k in / 22k out                 │"
+"│                         ││    model claude-opus-4.8 (claude) ·               │"
+"│ 🔍 [/]filter            ││  claude-opus-4-8                                  │" Hidden by multi-width symbols: [(3, " ")]
+"│                         ││    exit code    0                                 │"
+"│ no task definitions     ││    cost         $0.42                             │"
+"│                         ││    tokens       199k in / 22k out                 │"
 "│                         ││    turns        37                                │"
-"│                         ││                                                   │"
-"╰─────────────────────────╯│  Config                                           │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│    description  Squash-merge the branch.          │" Hidden by multi-width symbols: [(2, " ")]
-"│                         ││    worktree     auto                              │"
-"│ 🔍 [/]filter            ││    dedup        none                              │" Hidden by multi-width symbols: [(3, " ")]
-"│   Name     Live         ││    timeout      30m                               │"
-"│ ● feature               ││    priority     normal                            │"
-"│ ● hotfix                ││    cron         30 13 * * *                       │"
-"│ ● feature               ││                                                   │"
+"╰─────────────────────────╯│                                                   │"
+"╭🌲 WORKTREES─ [r] [g] [x]╮│  Config                                           │" Hidden by multi-width symbols: [(2, " ")]
+"│                         ││    description  Squash-merge the branch.          │"
+"│ 🔍 [/]filter            ││    worktree     auto                              │" Hidden by multi-width symbols: [(3, " ")]
+"│   Name                  ││    dedup        none                              │"
+"│ ● feature               ││    timeout      30m                               │"
+"│ ● hotfix                ││    priority     normal                            │"
+"│ ● feature               ││    cron         30 13 * * *                       │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
 "[1-9/0 · ctrl+s n/p]tab · [ctrl+x/z]sub-tab · [?]help · [q]uit                  "

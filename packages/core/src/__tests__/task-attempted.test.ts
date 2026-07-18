@@ -22,9 +22,9 @@ describe("attempted_models field", () => {
 
 	it("prefers attempted_models over the legacy key when both are present", () => {
 		const both = parseTaskFile(
-			`---\nid: t1\nstatus: queued\ntarget:\n  repo: r\n  ref: temp\ncreated: "2026-07-15"\nsource: mcp\nattempted_providers:\n  - grok\nattempted_models:\n  - claude/opus\n---\nhi`,
+			`---\nid: t1\nstatus: queued\ntarget:\n  repo: r\n  ref: temp\ncreated: "2026-07-15"\nsource: mcp\nattempted_providers:\n  - grok\nattempted_models:\n  - claude/claude-opus-4.8\n---\nhi`,
 		);
-		expect(both.attemptedModels).toEqual(["claude/opus"]);
+		expect(both.attemptedModels).toEqual(["claude/claude-opus-4.8"]);
 	});
 
 	it("writes emit only attempted_models, never the legacy key", () => {

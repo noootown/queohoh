@@ -4,7 +4,7 @@
 //! `catalog` plus an `active_provider` and `default_models` block, so this
 //! overlay reads THOSE (the legacy `models` block a modern daemon no longer
 //! sends would render empty). It surfaces: the configured providers with their
-//! enabled state (the active one marked — `p` cycles it), the merged model
+//! enabled state (the active one marked — `p` switches it), the merged model
 //! catalog (`label (provider)` → concrete id, hidden entries marked), and the
 //! effective default-model chains (global + per-project overrides).
 //!
@@ -35,7 +35,7 @@ pub(crate) fn settings_rows(p: &SettingsPayload) -> Vec<(String, String)> {
     let mut rows = Vec::new();
 
     // Providers, in the payload's precedence order, with enabled state; the
-    // active provider (what `p` cycles) is flagged so the overlay names it.
+    // active provider (what `p` switches) is flagged so the overlay names it.
     rows.push(("providers".into(), String::new()));
     for pr in &p.providers {
         let mut state = if pr.enabled { "enabled".to_string() } else { "disabled".to_string() };
@@ -212,7 +212,7 @@ mod tests {
     fn catalog_section_shows_ref_display_and_marks_hidden_entries() {
         let p = SettingsPayload {
             catalog: vec![
-                entry("claude", "claude-opus-4-8", "opus", false),
+                entry("claude", "claude-opus-4-8", "claude-opus-4.8", false),
                 entry("grok", "grok-legacy", "legacy", true),
             ],
             ..Default::default()
@@ -220,7 +220,7 @@ mod tests {
         let rows = settings_rows(&p);
         // The catalog header follows the (empty) providers section header.
         let cat = rows.iter().position(|(l, _)| l == "catalog").unwrap();
-        assert_eq!(rows[cat + 1], ("  opus (claude)".to_string(), "claude-opus-4-8".to_string()));
+        assert_eq!(rows[cat + 1], ("  claude-opus-4.8 (claude)".to_string(), "claude-opus-4-8".to_string()));
         // Hidden entries are listed and flagged.
         assert_eq!(rows[cat + 2], ("  legacy (grok)".to_string(), "grok-legacy · hidden".to_string()));
     }
@@ -229,7 +229,7 @@ mod tests {
     fn default_models_shows_global_chain_then_project_overrides() {
         let p = SettingsPayload {
             default_models: DefaultModels {
-                global: vec!["claude/opus".into(), "grok/grok-4.5".into()],
+                global: vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()],
                 projects: vec![DefaultModelsProject {
                     name: "acme".into(),
                     default_models: vec!["grok/grok-4.5".into()],
@@ -241,7 +241,7 @@ mod tests {
         let rows = settings_rows(&p);
         let g = rows.iter().position(|(l, _)| l == "default models (global)").unwrap();
         // Global chain joined with the fallback arrow.
-        assert_eq!(rows[g + 1], ("  claude/opus → grok/grok-4.5".to_string(), String::new()));
+        assert_eq!(rows[g + 1], ("  claude/claude-opus-4.8 → grok/grok-4.5".to_string(), String::new()));
         // Project override: labeled header with source path, then its chain.
         assert_eq!(
             rows[g + 2],

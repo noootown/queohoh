@@ -20,20 +20,20 @@ describe("PROVIDER_PRECEDENCE", () => {
 describe("BUILTIN_CATALOG", () => {
 	it("is grouped by provider in precedence order, each group most->least powerful", () => {
 		expect(BUILTIN_CATALOG).toEqual([
-			{ provider: "claude", id: "claude-fable-5", label: "fable" },
-			{ provider: "claude", id: "claude-opus-4-8", label: "opus" },
-			{ provider: "claude", id: "claude-sonnet-5", label: "sonnet" },
-			{ provider: "claude", id: "claude-haiku-4-5", label: "haiku" },
+			{ provider: "claude", id: "claude-fable-5", label: "claude-fable-5" },
+			{ provider: "claude", id: "claude-opus-4-8", label: "claude-opus-4.8" },
+			{ provider: "claude", id: "claude-sonnet-5", label: "claude-sonnet-5" },
+			{ provider: "claude", id: "claude-haiku-4-5", label: "claude-haiku-4.5" },
 			{ provider: "grok", id: "grok-4.5", label: "grok-4.5" },
 			{
 				provider: "grok",
 				id: "grok-composer-2.5-fast",
-				label: "composer",
+				label: "grok-composer-2.5-fast",
 				hidden: true,
 			},
-			{ provider: "codex", id: "gpt-5.6-sol", label: "sol" },
-			{ provider: "codex", id: "gpt-5.6-terra", label: "terra" },
-			{ provider: "codex", id: "gpt-5.6-luna", label: "luna" },
+			{ provider: "codex", id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+			{ provider: "codex", id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
+			{ provider: "codex", id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
 		]);
 	});
 });
@@ -74,7 +74,7 @@ describe("effectiveCatalog", () => {
 		const grokGroup = result.filter((e) => e.provider === "grok");
 		expect(grokGroup.map((e) => e.label)).toEqual([
 			"grok-4.5",
-			"composer",
+			"grok-composer-2.5-fast",
 			"grok-new",
 		]);
 	});
@@ -84,12 +84,12 @@ describe("effectiveCatalog", () => {
 			{
 				provider: "claude",
 				id: "claude-haiku-4-5",
-				label: "haiku",
+				label: "claude-haiku-4.5",
 				hidden: true,
 			},
 		];
 		const result = effectiveCatalog(overlay) as CatalogEntry[];
-		const haiku = findModel(result, "claude/haiku");
+		const haiku = findModel(result, "claude/claude-haiku-4.5");
 		expect(haiku?.hidden).toBe(true);
 	});
 
@@ -134,20 +134,20 @@ describe("effectiveCatalog", () => {
 
 	it("errors on a duplicate label within one provider", () => {
 		const overlay: CatalogEntry[] = [
-			{ provider: "claude", id: "claude-new-model", label: "opus" },
+			{ provider: "claude", id: "claude-new-model", label: "claude-opus-4.8" },
 		];
 		expect(effectiveCatalog(overlay)).toEqual({
-			error: "catalog: duplicate label opus in provider claude",
+			error: "catalog: duplicate label claude-opus-4.8 in provider claude",
 		});
 	});
 });
 
 describe("findModel", () => {
 	it("matches by label within the referenced provider", () => {
-		expect(findModel(BUILTIN_CATALOG, "claude/opus")).toEqual({
+		expect(findModel(BUILTIN_CATALOG, "claude/claude-opus-4.8")).toEqual({
 			provider: "claude",
 			id: "claude-opus-4-8",
-			label: "opus",
+			label: "claude-opus-4.8",
 		});
 	});
 
@@ -155,7 +155,7 @@ describe("findModel", () => {
 		expect(findModel(BUILTIN_CATALOG, "claude/claude-opus-4-8")).toEqual({
 			provider: "claude",
 			id: "claude-opus-4-8",
-			label: "opus",
+			label: "claude-opus-4.8",
 		});
 	});
 
@@ -164,11 +164,11 @@ describe("findModel", () => {
 			{
 				provider: "claude",
 				id: "claude-opus-4-8",
-				label: "opus",
+				label: "claude-opus-4.8",
 				hidden: true,
 			},
 		];
-		expect(findModel(catalog, "claude/opus")).toEqual(catalog[0]);
+		expect(findModel(catalog, "claude/claude-opus-4.8")).toEqual(catalog[0]);
 	});
 
 	it("returns undefined for an unknown ref", () => {
@@ -176,20 +176,67 @@ describe("findModel", () => {
 	});
 
 	it("does not match across provider groups", () => {
+		// Family-token fallback is provider-scoped: grok has no "opus" segment.
 		expect(findModel(BUILTIN_CATALOG, "grok/opus")).toBeUndefined();
+	});
+
+	it("resolves pure-alphabetic short family tokens to the current versioned label", () => {
+		// Pre-versioned configs still write `claude/opus` / `claude/sonnet`;
+		// without this fallback the TASKS Model column blanks (every def fails
+		// resolveModelChain → model_w=0).
+		expect(findModel(BUILTIN_CATALOG, "claude/opus")).toEqual({
+			provider: "claude",
+			id: "claude-opus-4-8",
+			label: "claude-opus-4.8",
+		});
+		expect(findModel(BUILTIN_CATALOG, "claude/sonnet")).toEqual({
+			provider: "claude",
+			id: "claude-sonnet-5",
+			label: "claude-sonnet-5",
+		});
+		expect(findModel(BUILTIN_CATALOG, "claude/haiku")).toEqual({
+			provider: "claude",
+			id: "claude-haiku-4-5",
+			label: "claude-haiku-4.5",
+		});
+		expect(findModel(BUILTIN_CATALOG, "claude/fable")).toEqual({
+			provider: "claude",
+			id: "claude-fable-5",
+			label: "claude-fable-5",
+		});
+	});
+
+	it("resolves intermediate suffix short-forms (label gained a provider prefix)", () => {
+		// e.g. label was `sonnet-5`, then became `claude-sonnet-5` — a ref of
+		// `claude/sonnet-5` still lands on the current entry.
+		expect(findModel(BUILTIN_CATALOG, "claude/sonnet-5")).toEqual({
+			provider: "claude",
+			id: "claude-sonnet-5",
+			label: "claude-sonnet-5",
+		});
+		expect(findModel(BUILTIN_CATALOG, "claude/opus-4.8")).toEqual({
+			provider: "claude",
+			id: "claude-opus-4-8",
+			label: "claude-opus-4.8",
+		});
+	});
+
+	it("does not treat a pure-digit rest as a short-form", () => {
+		// `claude/5` must not land on `claude-fable-5` via endsWith("-5").
+		expect(findModel(BUILTIN_CATALOG, "claude/5")).toBeUndefined();
 	});
 });
 
 describe("unknownModelError", () => {
 	it("suggests provider/label when the bare ref matches a label in some provider", () => {
-		expect(unknownModelError(BUILTIN_CATALOG, "opus")).toBe(
-			"unknown model: opus (did you mean claude/opus?)",
+		expect(unknownModelError(BUILTIN_CATALOG, "claude-opus-4.8")).toBe(
+			"unknown model: claude-opus-4.8 (did you mean claude/claude-opus-4.8?)",
 		);
 	});
 
 	it("suggests provider/label when the part after / matches a label or id", () => {
-		expect(unknownModelError(BUILTIN_CATALOG, "grok/opus")).toBe(
-			"unknown model: grok/opus (did you mean claude/opus?)",
+		expect(unknownModelError(BUILTIN_CATALOG, "grok/claude-opus-4.8")).toBe(
+			"unknown model: grok/claude-opus-4.8 (did you mean claude/claude-opus-4.8?)",
 		);
 	});
 
@@ -205,7 +252,7 @@ describe("groupHead", () => {
 		expect(groupHead(BUILTIN_CATALOG, "claude")).toEqual({
 			provider: "claude",
 			id: "claude-fable-5",
-			label: "fable",
+			label: "claude-fable-5",
 		});
 	});
 
@@ -218,14 +265,14 @@ describe("formatModel / modelRef", () => {
 	const entry: CatalogEntry = {
 		provider: "claude",
 		id: "claude-opus-4-8",
-		label: "opus",
+		label: "claude-opus-4.8",
 	};
 
 	it("formatModel renders 'label (provider)'", () => {
-		expect(formatModel(entry)).toBe("opus (claude)");
+		expect(formatModel(entry)).toBe("claude-opus-4.8 (claude)");
 	});
 
 	it("modelRef renders 'provider/label'", () => {
-		expect(modelRef(entry)).toBe("claude/opus");
+		expect(modelRef(entry)).toBe("claude/claude-opus-4.8");
 	});
 });

@@ -59,49 +59,36 @@ fn format_duration(ms: u64) -> String {
     if rem_min == 0 { format!("{hours}h") } else { format!("{hours}h {rem_min}m") }
 }
 
-/// `(key, value)` rows for the config sub-tab. The model row shows the RESOLVED
-/// chain this def runs under the operator's active provider — the same
-/// `resolveModelChain` output the run-dialog default uses, so display and
-/// behavior can't drift. It reads `<head> · fallback <rest…>` (head first, then
-/// the remaining chain entries in walk order joined by ` → `); a single-entry
-/// chain drops the `· fallback …` suffix. Each ref renders label-only (provider
-/// prefix dropped) via the shared display helper. A dash when the def has no
-/// `model:`; on resolve failure it falls back to the authored refs.
+/// `(key, value)` rows for the config sub-tab. The model row shows the FULL
+/// RESOLVED chain this def runs under the operator's active provider — the
+/// same `resolveModelChain` output the run-dialog default uses, so display and
+/// behavior can't drift. Entries are re-headed (active provider first) and
+/// joined with ` → ` (versioned catalog labels, label-only). A single-entry
+/// chain is just that label. `null` model resolves the repo's `default_models`
+/// under the active provider (group-head prepend when the pool has no active
+/// entry) and lists that chain; only a hard resolve miss renders a dash. On
+/// resolve failure of an authored spec it falls back to the authored refs.
 fn config_rows(
     def: &TaskDefinition,
     owned: &crate::selectors::ModelResolveOwned,
 ) -> Vec<(&'static str, String)> {
     let disp = |r: &str| crate::chain::model_ref_display(&owned.catalog, r);
-    let model = match &def.model {
-        None => EM_DASH.to_string(),
-        Some(m) => {
-            let defaults = owned.default_models.refs_for(&def.repo);
-            let enabled: Vec<&str> = owned.enabled_providers.iter().map(String::as_str).collect();
-            match crate::chain::resolve_model_chain(
-                Some(m),
-                &owned.catalog,
-                &enabled,
-                &defaults,
-                &owned.active_provider,
-            ) {
-                Ok(chain) if !chain.is_empty() => {
-                    let head = disp(&chain[0].model_ref);
-                    if chain.len() == 1 {
-                        head
-                    } else {
-                        let fallback = chain[1..]
-                            .iter()
-                            .map(|e| disp(&e.model_ref))
-                            .collect::<Vec<_>>()
-                            .join(" → ");
-                        format!("{head} · fallback {fallback}")
-                    }
-                }
-                // Unknown model / nothing runnable → show the authored refs so the
-                // operator still sees what the def asked for.
-                _ => m.refs().iter().map(|r| disp(r)).collect::<Vec<_>>().join(" → "),
-            }
-        }
+    let defaults = owned.default_models.refs_for(&def.repo);
+    let enabled: Vec<&str> = owned.enabled_providers.iter().map(String::as_str).collect();
+    let model = match crate::chain::resolved_model_chain_display(
+        def.model.as_ref(),
+        &owned.catalog,
+        &enabled,
+        &defaults,
+        &owned.active_provider,
+    ) {
+        Some(s) => s,
+        // Authored but unresolvable → show the authored refs so the operator
+        // still sees what the def asked for. No model + nothing runnable → dash.
+        None => match &def.model {
+            Some(m) => m.refs().iter().map(|r| disp(r)).collect::<Vec<_>>().join(" → "),
+            None => EM_DASH.to_string(),
+        },
     };
     vec![
         ("args", if def.args.is_empty() { EM_DASH.to_string() } else { arg_summary(&def.args) }),
@@ -199,12 +186,19 @@ fn run_info_lines(
     let dash = || EM_DASH.to_string();
     let or_dash = |v: Option<String>| v.filter(|s| !s.is_empty()).unwrap_or_else(dash);
     // The recorded model is the raw resolved id (e.g. `claude-opus-4-8`), not a
-    // `provider/label` ref. Resolve it against the catalog for `label
-    // (provider) · <id>` (spec §4) when the id is a known entry; fall back to
-    // the bare id alone when it isn't (unknown provider, or a stale/removed
-    // catalog entry — the raw id is still the ground truth either way).
+    // `provider/label` ref. Resolve it against the catalog for `label (provider)`
+    // when the id is a known entry; append ` · <id>` only when the raw id
+    // differs from the catalog label (pins / CLI ids that aren't the short
+    // versioned label). Fall back to the bare id alone when it isn't known
+    // (unknown provider, or a stale/removed catalog entry — the raw id is
+    // still the ground truth either way). Catalog labels are now versioned
+    // (`claude-sonnet-5`, `grok-4.5`) so label often equals id — showing both
+    // was redundant (`claude-sonnet-5 (claude) · claude-sonnet-5`).
     let model_display = |id: &str| match catalog.iter().find(|e| e.id == id) {
-        Some(entry) => format!("{} · {id}", entry.model_display()),
+        Some(entry) if entry.id != entry.label => {
+            format!("{} · {id}", entry.model_display())
+        }
+        Some(entry) => entry.model_display(),
         None => id.to_string(),
     };
     // "MM/DD HH:MM (Nd ago)" from an ISO stamp; dim `—` when absent.
@@ -1034,8 +1028,9 @@ mod tests {
 
     /// Detail pane focused on the definition config sub-tab: a def summary makes
     /// the Tasks pane selectable (→ Definition context) and a full def in
-    /// `full_defs` supplies the config rows. `opus`/`claude-opus-4-8` exercises
-    /// the resolved-model arrow, and the `discovery: —` row the dim placeholder.
+    /// `full_defs` supplies the config rows. Authored `claude/claude-opus-4.8`
+    /// under active=grok exercises the re-headed full chain display, and the
+    /// `discovery: —` row the dim placeholder.
     fn detail_def_config_app() -> App {
         use crate::ipc::types::{ArgSpec, DefinitionSummary};
         let mut app = fixture_app();
@@ -1061,7 +1056,7 @@ mod tests {
                 worktree: "auto".to_string(),
                 pre_run: None,
                 post_run: None,
-                model: Some("claude/opus".into()),
+                model: Some("claude/claude-opus-4.8".into()),
                 timeout_ms: 1_800_000,
                 priority: "normal".to_string(),
                 prompt: "do the thing".to_string(),
@@ -1078,7 +1073,7 @@ mod tests {
     #[test]
     fn snapshot_detail_definition_config() {
         // The config tab renders aligned key/value rows: keys in accent, the
-        // resolved-model arrow dimmed with the id emphasized, and the empty
+        // full re-headed model chain with dim arrows, and the empty
         // `discovery` value as a dim `—`.
         let (terminal, hits) = render_at(&detail_def_config_app(), 60, 16);
         insta::assert_snapshot!("detail_definition_config", terminal.backend());
@@ -1177,7 +1172,7 @@ mod tests {
                         description: Some("Squash-merge the branch.".to_string()),
                         dedup: "none".to_string(),
                         worktree: "auto".to_string(),
-                        model: Some("claude/opus".into()),
+                        model: Some("claude/claude-opus-4.8".into()),
                         timeout_ms: 1_800_000,
                         priority: "normal".to_string(),
                         cron: Some("30 13 * * *".to_string()),
@@ -1393,27 +1388,67 @@ mod tests {
         );
     }
 
-    /// Spec §4: the `model` row shows `label (provider) · <raw id>` when the
-    /// recorded id resolves against the catalog, and the bare raw id alone
-    /// when it doesn't (unknown provider, or a stale/removed catalog entry —
-    /// the recorded id is still ground truth either way).
+    /// The `model` row shows `label (provider)` when the recorded id resolves
+    /// against the catalog, and appends ` · <raw id>` only when raw id ≠ label
+    /// (so pins that differ from the short/versioned label still surface the
+    /// true CLI id). Falls back to the bare raw id alone when the id isn't in
+    /// the catalog (unknown provider, or a stale/removed catalog entry — the
+    /// recorded id is still ground truth either way).
     #[test]
     fn run_info_lines_model_row_resolves_via_catalog_or_falls_back_to_raw_id() {
         let task = info_task(TaskStatus::Done);
-        let catalog = vec![CatalogEntry {
-            provider: "claude".to_string(),
-            id: "claude-opus-4-8".to_string(),
-            label: "opus".to_string(),
-            hidden: false,
-        }];
+        // id ≠ label → keep the ` · <raw id>` disambiguator.
+        let catalog = vec![
+            CatalogEntry {
+                provider: "claude".to_string(),
+                id: "claude-opus-4-8".to_string(),
+                label: "claude-opus-4.8".to_string(),
+                hidden: false,
+            },
+            // id == label (versioned label) → omit the redundant suffix.
+            CatalogEntry {
+                provider: "claude".to_string(),
+                id: "claude-sonnet-5".to_string(),
+                label: "claude-sonnet-5".to_string(),
+                hidden: false,
+            },
+            CatalogEntry {
+                provider: "grok".to_string(),
+                id: "grok-4.5".to_string(),
+                label: "grok-4.5".to_string(),
+                hidden: false,
+            },
+        ];
         let known = RunMeta { model: Some("claude-opus-4-8".to_string()), ..Default::default() };
         let (lines, _) = run_info_lines(&task, &known, &catalog, INFO_NOW, INFO_TZ);
         assert!(
             lines
                 .iter()
                 .any(|l| l.trim_start().starts_with("model")
-                    && l.contains("opus (claude) · claude-opus-4-8")),
-            "known id resolves to label (provider) · raw id: {lines:?}"
+                    && l.contains("claude-opus-4.8 (claude) · claude-opus-4-8")),
+            "id ≠ label keeps label (provider) · raw id: {lines:?}"
+        );
+
+        // Versioned label equals the CLI id → just `label (provider)`.
+        let equal = RunMeta { model: Some("claude-sonnet-5".to_string()), ..Default::default() };
+        let (lines, _) = run_info_lines(&task, &equal, &catalog, INFO_NOW, INFO_TZ);
+        assert!(
+            lines.iter().any(|l| {
+                let trimmed = l.trim_start();
+                trimmed.starts_with("model")
+                    && l.contains("claude-sonnet-5 (claude)")
+                    && !l.contains('·')
+            }),
+            "id == label drops the · raw id suffix: {lines:?}"
+        );
+        let grok = RunMeta { model: Some("grok-4.5".to_string()), ..Default::default() };
+        let (lines, _) = run_info_lines(&task, &grok, &catalog, INFO_NOW, INFO_TZ);
+        assert!(
+            lines.iter().any(|l| {
+                let trimmed = l.trim_start();
+                trimmed.starts_with("model") && l.contains("grok-4.5 (grok)") && !l.contains('·')
+            }),
+            "grok equal id/label also drops · raw id: {lines:?}"
         );
 
         // A stale/unknown id (not in the catalog) falls back to the bare id —
@@ -1638,13 +1673,13 @@ mod tests {
         // Unique labels → each ref renders label-only (provider prefix dropped).
         let owned = owned_ctx(
             vec![
-                entry("claude", "claude-opus-4-8", "opus"),
+                entry("claude", "claude-opus-4-8", "claude-opus-4.8"),
                 entry("grok", "grok-4.5", "grok-4.5"),
             ],
             "claude",
         );
         let mut def = TaskDefinition {
-            model: Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()])),
+            model: Some(ModelRef::Many(vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()])),
             timeout_ms: 1_800_000,
             worktree: "auto".to_string(),
             dedup: "none".to_string(),
@@ -1658,18 +1693,25 @@ mod tests {
         for line in &lines {
             assert!(line.chars().count() >= key_col, "{line:?} shorter than key column");
         }
-        // Resolved chain (active=claude, both in the pool) → head opus, then the
-        // fallback tail; label-only refs.
-        assert!(lines.iter().any(|l| l == "model      opus · fallback grok-4.5"));
+        // Full resolved chain (active=claude, both in the pool) joined by ` → `;
+        // label-only refs, versioned catalog labels.
+        assert!(lines.iter().any(|l| l == "model      claude-opus-4.8 → grok-4.5"));
         assert!(lines.iter().any(|l| l == "timeout    30m"));
         assert!(lines.iter().any(|l| l == "discovery  —"));
-        // A single-entry resolved chain drops the `· fallback …` suffix.
-        def.model = Some(ModelRef::One("claude/opus".into()));
+        // A single-entry resolved chain is just that label (no arrow).
+        def.model = Some(ModelRef::One("claude/claude-opus-4.8".into()));
         let (lines, _) = config_view(&def, &owned);
-        assert!(lines.iter().any(|l| l == "model      opus"));
-        // No `model:` (an old daemon, or a model-less def) → a dash.
+        assert!(lines.iter().any(|l| l == "model      claude-opus-4.8"));
+        // No `model:` + catalog/active present → resolves defaults/group-head
+        // under the active provider (claude group head here).
         def.model = None;
         let (lines, _) = config_view(&def, &owned);
+        assert!(
+            lines.iter().any(|l| l == "model      claude-opus-4.8"),
+            "null model resolves under active provider: {lines:?}"
+        );
+        // No model + empty resolve context → dash.
+        let (lines, _) = config_view(&def, &empty_owned());
         assert!(lines.iter().any(|l| l == "model      —"));
     }
 
@@ -1682,24 +1724,24 @@ mod tests {
             label: label.into(),
             hidden: false,
         };
-        // Def authors claude/opus, but the operator is on grok → the resolved
-        // chain re-heads onto grok (grok-4.5), with opus as the fallback. This is
-        // the RESOLVED chain, not the authored `opus → grok-4.5` remap arrow.
+        // Def authors claude/claude-opus-4.8, but the operator is on grok → the
+        // full resolved chain re-heads onto grok: `grok-4.5 → claude-opus-4.8`.
+        // Not an authored remap (`opus → grok-4.5`) and not head-only.
         let owned = owned_ctx(
             vec![
-                entry("claude", "claude-opus-4-8", "opus"),
+                entry("claude", "claude-opus-4-8", "claude-opus-4.8"),
                 entry("grok", "grok-4.5", "grok-4.5"),
             ],
             "grok",
         );
         let def = TaskDefinition {
-            model: Some(ModelRef::One("claude/opus".into())),
+            model: Some(ModelRef::One("claude/claude-opus-4.8".into())),
             ..Default::default()
         };
         let (lines, _) = config_view(&def, &owned);
         assert!(
-            lines.iter().any(|l| l == "model      grok-4.5 · fallback opus"),
-            "resolved chain re-heads onto grok: {lines:?}"
+            lines.iter().any(|l| l == "model      grok-4.5 → claude-opus-4.8"),
+            "full re-headed chain: {lines:?}"
         );
     }
 

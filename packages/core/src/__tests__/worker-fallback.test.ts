@@ -124,7 +124,7 @@ function makeFallbackDeps(opts: {
 		catalog: BUILTIN_CATALOG,
 		// Two-entry default chain — the claude → grok shape the design spec's
 		// worked example walks. A model-less task heads onto claude, falls to grok.
-		defaultModels: opts.defaultModels ?? ["claude/sonnet", "grok/grok-4.5"],
+		defaultModels: opts.defaultModels ?? ["claude/claude-sonnet-5", "grok/grok-4.5"],
 		activeProvider: opts.activeProvider ?? "claude",
 	};
 	const t = store.create({
@@ -160,12 +160,12 @@ describe("runTask provider fallback", () => {
 
 		// The hop is rendered into THIS attempt's report.md "## Attempts" trail
 		// with the "→ falling back" suffix. The trail names the head entry's
-		// `provider/label` REF (claude/sonnet), not the bare provider name that
+		// `provider/label` REF (claude/claude-sonnet-5), not the bare provider name that
 		// `attemptedModels` records for the group skip.
 		const firstReport = reportOf(runStore, taskId);
 		expect(firstReport).toContain("## Attempts");
 		expect(firstReport).toContain(
-			"attempt 1: claude/sonnet — session limit → falling back",
+			"attempt 1: claude/claude-sonnet-5 — session limit → falling back",
 		);
 
 		// The engine (Task 10) would re-drive automatically; the in-process
@@ -239,7 +239,7 @@ describe("runTask provider fallback", () => {
 			worktreePath: async () => "/wt/path",
 			defaults: { timeoutMs: 60_000 },
 			catalog: BUILTIN_CATALOG,
-			defaultModels: ["claude/sonnet", "grok/grok-4.5"],
+			defaultModels: ["claude/claude-sonnet-5", "grok/grok-4.5"],
 			activeProvider: "claude",
 		};
 		const t = store.create({
@@ -274,7 +274,7 @@ describe("runTask provider fallback", () => {
 		// terminal line, which has no "→ falling back" suffix (finding 5).
 		const report = reportOf(runStore, t.id);
 		expect(report).toContain(
-			"attempt 1: claude/sonnet — session limit → falling back",
+			"attempt 1: claude/claude-sonnet-5 — session limit → falling back",
 		);
 		expect(report).toContain("attempt 2: grok/grok-4.5 — provider unavailable");
 		expect(report).not.toContain(
@@ -287,7 +287,7 @@ describe("runTask chain rotation + provider-group skip", () => {
 	it("two-entry list rotates claude → grok on a session limit", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: sessionLimitResult,
-			model: ["claude/opus", "grok/grok-4.5"],
+			model: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 		});
 		const first = await runTask(taskId, { ...deps, providers });
 		expect(first.status).toBe("queued");
@@ -301,7 +301,7 @@ describe("runTask chain rotation + provider-group skip", () => {
 	it("single-entry list settles terminal (no retry) on an availability failure", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: sessionLimitResult,
-			model: ["claude/opus"],
+			model: ["claude/claude-opus-4.8"],
 		});
 		const out = await runTask(taskId, { ...deps, providers });
 		// One entry, nowhere to hop → the availability failure settles terminal.
@@ -316,22 +316,22 @@ describe("runTask chain rotation + provider-group skip", () => {
 	it("provider-group skip: a failed claude entry skips ALL claude entries, hops to grok", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: sessionLimitResult,
-			model: ["claude/opus", "claude/sonnet", "grok/grok-4.5"],
+			model: ["claude/claude-opus-4.8", "claude/claude-sonnet-5", "grok/grok-4.5"],
 		});
 		const first = await runTask(taskId, { ...deps, providers });
 		expect(first.status).toBe("queued");
 		expect(first.attemptedModels).toEqual(["claude"]);
 		const second = await runTask(taskId, { ...deps, providers });
 		expect(second.status).toBe("done");
-		// claude/opus availability-failed → the whole claude group is attempted,
-		// so claude/sonnet is never tried; the next hop is grok.
+		// claude/claude-opus-4.8 availability-failed → the whole claude group is attempted,
+		// so claude/claude-sonnet-5 is never tried; the next hop is grok.
 		expect(seenProviders).toEqual(["claude", "grok"]);
 	});
 
 	it("legacy attemptedProviders:['claude'] (surfaced as attemptedModels) skips every claude entry", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: okResult,
-			model: ["claude/opus", "claude/sonnet", "grok/grok-4.5"],
+			model: ["claude/claude-opus-4.8", "claude/claude-sonnet-5", "grok/grok-4.5"],
 		});
 		// A pre-catalog task file's `attempted_providers: [claude]` surfaces as
 		// attemptedModels via task.ts read-compat (covered in task-attempted.test.ts);
@@ -356,13 +356,13 @@ describe("runTask activeProvider vs resume pin", () => {
 	});
 
 	it("a non-pinned task.model naming another provider still re-heads onto active (today's behavior)", async () => {
-		// task.model explicitly names claude/opus, but no model_pinned stamp —
+		// task.model explicitly names claude/claude-opus-4.8, but no model_pinned stamp —
 		// resolveModelChain still injects the active provider's (grok) default
 		// from the pool (grok/grok-4.5), exactly like the model-less case above.
 		// Contrast with the next test, where model_pinned suppresses the re-head.
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: okResult,
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			activeProvider: "grok",
 		});
 		const out = await runTask(taskId, { ...deps, providers });
@@ -373,7 +373,7 @@ describe("runTask activeProvider vs resume pin", () => {
 	it("model_pinned suppresses the active-provider re-head — runs exactly the pinned ref", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: okResult,
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			modelPinned: true,
 			activeProvider: "grok",
 		});
@@ -437,7 +437,7 @@ describe("runTask pinned resume — pin absent from resolved chain", () => {
 				// A single string ref naming only claude — resolveModelChain never
 				// puts a grok entry in the chain, so the pin (grok) is absent and
 				// the else-branch has to derive it straight from the catalog.
-				model: "claude/opus",
+				model: "claude/claude-opus-4.8",
 			});
 		const out = await runTask(taskId, { ...deps, providers, lineage });
 		expect(out.status).toBe("done");
@@ -461,9 +461,9 @@ describe("runTask pinned resume — pin absent from resolved chain", () => {
 				// group head (grok-4.5) — resolving to composer is the only way to
 				// prove this took the ref-match path rather than groupHead, which
 				// would also happen to land on a grok model but the wrong one.
-				model: "grok/composer",
+				model: "grok/grok-composer-2.5-fast",
 			});
-		// If left alone, resolveModelChain would put `grok/composer` right into
+		// If left alone, resolveModelChain would put `grok/grok-composer-2.5-fast` right into
 		// the chain (findModel resolves it, grok is enabled) — the initial
 		// `chain.find(pinnedProvider)` would find it directly, hitting the
 		// `pinnedEntry`-found branch instead of the one under test. Marking it
@@ -471,7 +471,7 @@ describe("runTask pinned resume — pin absent from resolved chain", () => {
 		// line 221's filter) while `modelSpec` — read straight off the task, not
 		// off `chain` — still names grok: this is the sole reachable path into
 		// the ref-match sub-path (worker.ts:259-264).
-		deps.store.update(taskId, { attemptedModels: ["grok/composer"] });
+		deps.store.update(taskId, { attemptedModels: ["grok/grok-composer-2.5-fast"] });
 		const out = await runTask(taskId, { ...deps, providers, lineage });
 		expect(out.status).toBe("done");
 		expect(seenProviders).toEqual(["grok"]);
@@ -486,7 +486,7 @@ describe("runTask pinned resume — pin absent from resolved chain", () => {
 		const { deps, taskId } = makeFallbackDeps({
 			firstResult: okResult,
 			resumeSessionId: "s1",
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 		});
 		const providers: ProviderConfig[] = [
 			{ name: "claude", enabled: true },

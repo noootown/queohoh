@@ -324,9 +324,9 @@ impl App {
                     return self.apply_action(crate::keymap::AppAction::SwitchTab(i));
                 }
                 // The top-right provider chip cluster (`↯ <name> …`): a click
-                // cycles the active provider, exactly like the `p` key.
+                // opens the Switch-provider form, exactly like the `p` key.
                 Some(HitTarget::ProviderIndicator) => {
-                    return self.apply_action(crate::keymap::AppAction::CycleProvider);
+                    return self.apply_action(crate::keymap::AppAction::SwitchProvider);
                 }
                 Some(HitTarget::SubTab(i)) => self.set_sub_tab_clamped(i, &mut cmds),
                 Some(HitTarget::DetailLaneTask(i)) => {

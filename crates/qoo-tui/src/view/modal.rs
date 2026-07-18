@@ -402,15 +402,4 @@ mod confirm_view_tests {
         insta::assert_snapshot!("confirm_bulk_remove", s);
     }
 
-    #[test]
-    fn switch_provider_variant_shows_current_and_next() {
-        // The provider-switch dialog reuses this generic render; its single body
-        // line names the current → next provider and the Switch button verb.
-        let body = vec!["claude → grok".to_string()];
-        let (s, _hit) = draw(80, 12, "Switch provider", &body, "Switch");
-        assert!(s.contains("Switch provider"));
-        assert!(s.contains("claude → grok"));
-        assert!(s.contains("[ Switch ]"));
-        insta::assert_snapshot!("confirm_switch_provider", s);
-    }
 }

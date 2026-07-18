@@ -28,7 +28,7 @@ cron: "30 13 * * *"
 args: [number]
 worktree: "pr:{{number}}"
 pre_run: mise run setup
-model: opus
+model: claude/claude-opus-4.8
 timeout: 45m
 priority: high
 `;
@@ -58,7 +58,7 @@ describe("loadDefinition", () => {
 			preRun: "mise run setup",
 			postRun: null,
 			verify: null,
-			model: "opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 2_700_000,
 			priority: "high",
 			prompt: "Review PR {{number}}.\n",

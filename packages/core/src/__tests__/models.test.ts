@@ -16,13 +16,13 @@ describe("resolveModelChain", () => {
 				null,
 				BUILTIN_CATALOG,
 				PROVIDERS,
-				["claude/sonnet"],
+				["claude/claude-sonnet-5"],
 				"claude",
 			),
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-sonnet-5", ref: "claude/sonnet" },
+				{ provider: "claude", model: "claude-sonnet-5", ref: "claude/claude-sonnet-5" },
 			],
 		});
 	});
@@ -30,7 +30,7 @@ describe("resolveModelChain", () => {
 	it("string spec resolves to a 1-entry chain", () => {
 		expect(
 			resolveModelChain(
-				"claude/opus",
+				"claude/claude-opus-4.8",
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -39,7 +39,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 			],
 		});
 	});
@@ -47,7 +47,7 @@ describe("resolveModelChain", () => {
 	it("list spec keeps its given order (already active provider)", () => {
 		expect(
 			resolveModelChain(
-				["claude/sonnet", "claude/haiku"],
+				["claude/claude-sonnet-5", "claude/claude-haiku-4.5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -56,8 +56,8 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-sonnet-5", ref: "claude/sonnet" },
-				{ provider: "claude", model: "claude-haiku-4-5", ref: "claude/haiku" },
+				{ provider: "claude", model: "claude-sonnet-5", ref: "claude/claude-sonnet-5" },
+				{ provider: "claude", model: "claude-haiku-4-5", ref: "claude/claude-haiku-4.5" },
 			],
 		});
 	});
@@ -77,7 +77,42 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+			],
+		});
+	});
+
+	it("canonicalizes pre-versioned short family tokens to the current label", () => {
+		// Workspace defs still author `claude/sonnet` / `claude/opus`; findModel's
+		// family-token fallback maps them, and the chain ref is the versioned form.
+		expect(
+			resolveModelChain(
+				["claude/sonnet", "grok/grok-4.5"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				[],
+				"claude",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-sonnet-5", ref: "claude/claude-sonnet-5" },
+				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
+			],
+		});
+		expect(
+			resolveModelChain(
+				null,
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				["claude/opus", "grok/grok-4.5"],
+				"claude",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
 			],
 		});
 	});
@@ -100,7 +135,7 @@ describe("resolveModelChain", () => {
 	it("drops entries whose provider is disabled", () => {
 		expect(
 			resolveModelChain(
-				["codex/sol", "claude/opus"],
+				["codex/gpt-5.6-sol", "claude/claude-opus-4.8"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -109,7 +144,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 			],
 		});
 	});
@@ -117,7 +152,7 @@ describe("resolveModelChain", () => {
 	it("stable-partitions active-provider entries first", () => {
 		expect(
 			resolveModelChain(
-				["claude/opus", "grok/grok-4.5"],
+				["claude/claude-opus-4.8", "grok/grok-4.5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -127,7 +162,7 @@ describe("resolveModelChain", () => {
 			ok: true,
 			chain: [
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 			],
 		});
 	});
@@ -141,13 +176,13 @@ describe("resolveModelChain", () => {
 				["grok/grok-4.5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
-				["claude/opus", "grok/grok-4.5"],
+				["claude/claude-opus-4.8", "grok/grok-4.5"],
 				"claude",
 			),
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
 			],
 		});
@@ -167,7 +202,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-fable-5", ref: "claude/fable" },
+				{ provider: "claude", model: "claude-fable-5", ref: "claude/claude-fable-5" },
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
 			],
 		});
@@ -177,7 +212,7 @@ describe("resolveModelChain", () => {
 		// No pool at all → group-head fallback (grok's most powerful, grok-4.5).
 		expect(
 			resolveModelChain(
-				["claude/opus"],
+				["claude/claude-opus-4.8"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -187,7 +222,7 @@ describe("resolveModelChain", () => {
 			ok: true,
 			chain: [
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 			],
 		});
 	});
@@ -195,7 +230,7 @@ describe("resolveModelChain", () => {
 	it("switch-miss does NOT prepend when the active provider is disabled", () => {
 		expect(
 			resolveModelChain(
-				["claude/opus"],
+				["claude/claude-opus-4.8"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -204,7 +239,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 			],
 		});
 	});
@@ -212,7 +247,7 @@ describe("resolveModelChain", () => {
 	it("dedups by provider/id, keeping the first occurrence", () => {
 		expect(
 			resolveModelChain(
-				["claude/opus", "claude/opus"],
+				["claude/claude-opus-4.8", "claude/claude-opus-4.8"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -221,14 +256,14 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 			],
 		});
 	});
 
 	it("all-disabled (and disabled active provider) yields the no-runnable-model error", () => {
 		expect(
-			resolveModelChain(["codex/sol"], BUILTIN_CATALOG, PROVIDERS, [], "codex"),
+			resolveModelChain(["codex/gpt-5.6-sol"], BUILTIN_CATALOG, PROVIDERS, [], "codex"),
 		).toEqual({
 			ok: false,
 			error:
@@ -242,11 +277,11 @@ describe("resolvePinnedModel", () => {
 		// Active provider is grok, but a pinned pick names claude — unlike
 		// resolveModelChain, no grok head is prepended.
 		expect(
-			resolvePinnedModel("claude/opus", BUILTIN_CATALOG, PROVIDERS),
+			resolvePinnedModel("claude/claude-opus-4.8", BUILTIN_CATALOG, PROVIDERS),
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 			],
 		});
 	});
@@ -257,7 +292,7 @@ describe("resolvePinnedModel", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/opus" },
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
 			],
 		});
 	});
@@ -272,10 +307,10 @@ describe("resolvePinnedModel", () => {
 	});
 
 	it("disabled-provider ref fails fast — no fallback to another provider", () => {
-		const result = resolvePinnedModel("codex/sol", BUILTIN_CATALOG, PROVIDERS);
+		const result = resolvePinnedModel("codex/gpt-5.6-sol", BUILTIN_CATALOG, PROVIDERS);
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
-			expect(result.error).toContain("codex/sol");
+			expect(result.error).toContain("codex/gpt-5.6-sol");
 			expect(result.error).toContain("codex");
 		}
 	});

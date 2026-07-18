@@ -32,7 +32,7 @@ function workspaceWith(cronExpr: string) {
 	mkdirSync(taskDir, { recursive: true });
 	writeFileSync(
 		join(taskDir, "config.yaml"),
-		`description: ping\ncron: "${cronExpr}"\nworktree: repo\ndedup: none\nmodel: sonnet\n`,
+		`description: ping\ncron: "${cronExpr}"\nworktree: repo\ndedup: none\nmodel: claude/claude-sonnet-5\n`,
 	);
 	writeFileSync(join(taskDir, "prompt.md"), "ping\n");
 	const config: GlobalConfig = {
@@ -42,7 +42,7 @@ function workspaceWith(cronExpr: string) {
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/opus", "grok/grok-4.5"],
+		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 		providers: DEFAULT_PROVIDERS,
 	};
 	return { workspace, config };

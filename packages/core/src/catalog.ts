@@ -9,10 +9,12 @@
  */
 
 /** One concrete model in the catalog. `id` is the provider-specific model
- * id passed to the CLI; `label` is the short reference used in `model:`
- * fields and pickers (`provider/label`, e.g. `claude/opus`). `hidden`
- * affects pickers only — a hidden entry still resolves when referenced
- * explicitly. */
+ * id passed to the CLI; `label` is the reference used in `model:` fields and
+ * pickers (`provider/label`). Labels follow `provider-family-version` with
+ * hyphens between segments and dots inside the version (e.g.
+ * `claude-opus-4.8`, `grok-4.5`) so the version is visible in the TUI without
+ * a separate short alias. `hidden` affects pickers only — a hidden entry
+ * still resolves when referenced explicitly. */
 export interface CatalogEntry {
 	provider: string;
 	id: string;
@@ -24,25 +26,26 @@ export interface CatalogEntry {
 export const PROVIDER_PRECEDENCE: string[] = ["claude", "grok", "codex"];
 
 /** Shipped defaults (design spec Section 1). Grouped by
- * `PROVIDER_PRECEDENCE`; each group ordered most->least powerful. */
+ * `PROVIDER_PRECEDENCE`; each group ordered most->least powerful.
+ * Labels are versioned ids (`provider-family-version`); `id` is what the CLI
+ * receives (may still use the provider's native hyphenated form). */
 export const BUILTIN_CATALOG: CatalogEntry[] = [
-	{ provider: "claude", id: "claude-fable-5", label: "fable" },
-	{ provider: "claude", id: "claude-opus-4-8", label: "opus" },
-	{ provider: "claude", id: "claude-sonnet-5", label: "sonnet" },
-	{ provider: "claude", id: "claude-haiku-4-5", label: "haiku" },
+	{ provider: "claude", id: "claude-fable-5", label: "claude-fable-5" },
+	{ provider: "claude", id: "claude-opus-4-8", label: "claude-opus-4.8" },
+	{ provider: "claude", id: "claude-sonnet-5", label: "claude-sonnet-5" },
+	{ provider: "claude", id: "claude-haiku-4-5", label: "claude-haiku-4.5" },
 	{ provider: "grok", id: "grok-4.5", label: "grok-4.5" },
 	// Hidden from pickers (the grok group offers only grok-4.5) but still
-	// resolvable when referenced explicitly by `grok/composer` — `hidden` is
-	// picker-only, so existing tasks/config keep running.
+	// resolvable when referenced explicitly — `hidden` is picker-only.
 	{
 		provider: "grok",
 		id: "grok-composer-2.5-fast",
-		label: "composer",
+		label: "grok-composer-2.5-fast",
 		hidden: true,
 	},
-	{ provider: "codex", id: "gpt-5.6-sol", label: "sol" },
-	{ provider: "codex", id: "gpt-5.6-terra", label: "terra" },
-	{ provider: "codex", id: "gpt-5.6-luna", label: "luna" },
+	{ provider: "codex", id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+	{ provider: "codex", id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
+	{ provider: "codex", id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
 ];
 
 /**
@@ -117,7 +120,18 @@ export function effectiveCatalog(
 
 /** Look up a `provider/label` (or `provider/id` exact-match fallback) ref
  * within its named provider group only. Hidden entries still match — hidden
- * is picker-only. */
+ * is picker-only.
+ *
+ * After exact label/id miss, two short-form fallbacks keep pre-versioned
+ * refs resolvable so a catalog label rename does not blank the TASKS Model
+ * column (or fail every run) for configs still using the older form:
+ * 1. `label.endsWith("-" + rest)` — e.g. `claude/sonnet-5` → `claude-sonnet-5`
+ *    (intermediate label that gained a provider prefix).
+ * 2. pure-alphabetic `rest` matching a hyphen segment of a label — e.g.
+ *    `claude/opus` → `claude-opus-4.8`, `claude/sonnet` → `claude-sonnet-5`
+ *    (short family tokens from the tier-alias era). Group order is
+ *    most→least powerful, so the first match is the current top of that
+ *    family. Never crosses provider groups. */
 export function findModel(
 	catalog: CatalogEntry[],
 	ref: string,
@@ -127,9 +141,19 @@ export function findModel(
 	const provider = ref.slice(0, slashIndex);
 	const rest = ref.slice(slashIndex + 1);
 	const group = catalog.filter((e) => e.provider === provider);
-	return (
-		group.find((e) => e.label === rest) ?? group.find((e) => e.id === rest)
-	);
+	const exact =
+		group.find((e) => e.label === rest) ?? group.find((e) => e.id === rest);
+	if (exact !== undefined) return exact;
+	// Suffix form: rest is a trailing portion of a versioned label.
+	if (/[A-Za-z]/.test(rest)) {
+		const bySuffix = group.find((e) => e.label.endsWith(`-${rest}`));
+		if (bySuffix !== undefined) return bySuffix;
+	}
+	// Family-token form: pure alphabetic short name (opus/sonnet/haiku/…).
+	if (/^[A-Za-z]+$/.test(rest)) {
+		return group.find((e) => e.label.split("-").includes(rest));
+	}
+	return undefined;
 }
 
 /** Build the `unknown model: <ref>` error, with a `did you mean

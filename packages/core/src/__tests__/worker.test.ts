@@ -53,9 +53,9 @@ function makeDeps(overrides: Partial<WorkerDeps> = {}) {
 		worktreePath: async () => "/wt/path",
 		defaults: { timeoutMs: 60_000 },
 		// A model-less task resolves against `defaultModels`; the built-in catalog
-		// maps `claude/sonnet` → `claude-sonnet-5` (the id these tests assert on).
+		// maps `claude/claude-sonnet-5` → `claude-sonnet-5` (the id these tests assert on).
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/sonnet"],
+		defaultModels: ["claude/claude-sonnet-5"],
 		activeProvider: "claude",
 		...overrides,
 	};
@@ -117,7 +117,7 @@ describe("runTask", () => {
 		expect(result.error).toBeNull();
 		const meta = runStore.readRunMeta(t.id);
 		expect(meta?.outcome).toBe("done");
-		// A model-less task resolves against `defaultModels` (["claude/sonnet"])
+		// A model-less task resolves against `defaultModels` (["claude/claude-sonnet-5"])
 		// through the built-in catalog → the concrete `claude-sonnet-5` id.
 		expect(meta?.model).toBe("claude-sonnet-5");
 		expect(runStore.readWorkerPid(t.id)).toBe(process.pid);
@@ -334,7 +334,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "mise run setup",
 			postRun: "echo done",
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 120_000,
 			priority: "normal",
 			prompt: "review {{number}}",
@@ -351,7 +351,7 @@ describe("runTask", () => {
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("done");
-		// def.model "claude/opus" resolves through the catalog → claude-opus-4-8.
+		// def.model "claude/claude-opus-4.8" resolves through the catalog → claude-opus-4-8.
 		expect(claudeModel).toBe("claude-opus-4-8");
 		expect(hookCalls).toEqual(["mise run setup", "echo done"]);
 		expect(runStore.readRunMeta(t.id)?.model).toBe("claude-opus-4-8");
@@ -371,7 +371,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "setup.sh {{number}} {{repo_slug}}",
 			postRun: null,
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 120_000,
 			priority: "normal",
 			prompt: "review {{number}}",
@@ -409,7 +409,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "bad-setup",
 			postRun: "cleanup",
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -532,7 +532,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "run {{ticket}} {{branch}} {{worktree}}",
 			postRun: null,
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -575,7 +575,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: null,
 			postRun: "cleanup",
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -618,7 +618,7 @@ describe("runTask model-ref resolution", () => {
 			repo: "platform",
 			ref: "temp",
 			source: "mcp",
-			model: "claude/sonnet",
+			model: "claude/claude-sonnet-5",
 		});
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
@@ -653,10 +653,10 @@ describe("runTask model-ref resolution", () => {
 
 describe("runTask model_pinned (explicit TUI pick)", () => {
 	it("pinned ref runs EXACTLY as picked — no active-provider re-head", async () => {
-		// Active provider is grok, but the task is pinned to claude/opus (an
+		// Active provider is grok, but the task is pinned to claude/claude-opus-4.8 (an
 		// explicit TUI dialog pick). Unlike an unpinned task (which would
 		// prepend grok's group head, see the next test), the run must go to
-		// claude/opus exactly.
+		// claude/claude-opus-4.8 exactly.
 		let seenModel = "";
 		const { deps, store } = makeDeps({
 			activeProvider: "grok",
@@ -670,7 +670,7 @@ describe("runTask model_pinned (explicit TUI pick)", () => {
 			repo: "platform",
 			ref: "temp",
 			source: "tui",
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			modelPinned: true,
 		});
 		withWorktree(store, t.id);
@@ -695,13 +695,13 @@ describe("runTask model_pinned (explicit TUI pick)", () => {
 			repo: "platform",
 			ref: "temp",
 			source: "tui",
-			model: "codex/sol",
+			model: "codex/gpt-5.6-sol",
 			modelPinned: true,
 		});
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("failed");
-		expect(result.error).toContain("codex/sol");
+		expect(result.error).toContain("codex/gpt-5.6-sol");
 		expect(executed).toBe(false);
 	});
 
@@ -843,7 +843,7 @@ describe("runTask pinned resume model resolution", () => {
 				return okResult;
 			},
 		});
-		const t = enqueuePinned(store, "claude/fable");
+		const t = enqueuePinned(store, "claude/claude-fable-5");
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
 		expect(seenModel).toBe("claude-fable-5");
@@ -866,7 +866,7 @@ describe("runTask pinned resume model resolution", () => {
 			verify: null,
 			preRun: null,
 			postRun: null,
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -887,11 +887,11 @@ describe("runTask pinned resume model resolution", () => {
 			definition: "platform/d",
 			item: {},
 			itemKey: "adhoc",
-			model: "claude/fable",
+			model: "claude/claude-fable-5",
 		});
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
-		// task.model "claude/fable" wins over def.model "claude/opus".
+		// task.model "claude/claude-fable-5" wins over def.model "claude/claude-opus-4.8".
 		expect(seenModel).toBe("claude-fable-5");
 	});
 });
@@ -945,7 +945,7 @@ describe("runTask timeout precedence", () => {
 			verify: null,
 			preRun: null,
 			postRun: null,
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 45_000,
 			priority: "normal",
 			prompt: "p",
@@ -1105,7 +1105,7 @@ describe("runTask verify (done-condition)", () => {
 			preRun: null,
 			postRun: null,
 			verify: "check {{ticket}} {{worktree}}",
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
 			prompt: "p",
@@ -1155,7 +1155,7 @@ describe("startRun / finalizeRun split", () => {
 		const s = await startRun(t.id, deps);
 		expect(s.kind).toBe("spawn");
 		if (s.kind !== "spawn") throw new Error("expected spawn");
-		// No model on the task → `defaultModels` (["claude/sonnet"]) heads it.
+		// No model on the task → `defaultModels` (["claude/claude-sonnet-5"]) heads it.
 		expect(s.spec.model).toBe("claude-sonnet-5");
 		expect(s.spec.prompt).toBe("do it\n");
 		expect(store.get(t.id)?.status).toBe("running");

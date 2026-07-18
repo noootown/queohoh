@@ -500,15 +500,20 @@ fn style_config_value(value: &str, base: Style, p: &Palette) -> Vec<Span<'static
     if value.trim() == "—" {
         return vec![Span::styled(value.to_string(), p.dim_style())];
     }
-    if let Some(idx) = value.find(" → ") {
-        let arrow = " → ";
-        let before = &value[..idx];
-        let after = &value[idx + arrow.len()..];
-        return vec![
-            Span::styled(before.to_string(), base),
-            Span::styled(arrow.to_string(), p.dim_style()),
-            Span::styled(after.to_string(), base.add_modifier(Modifier::BOLD)),
-        ];
+    // Fallback-chain display (`a → b → c`): every label uses the concept color
+    // equally; arrows stay dim. No bold "current head" — the chain is ordered
+    // walk order, not a remap of old → new.
+    if value.contains(" → ") {
+        let mut spans = Vec::new();
+        let mut first = true;
+        for part in value.split(" → ") {
+            if !first {
+                spans.push(Span::styled(" → ".to_string(), p.dim_style()));
+            }
+            first = false;
+            spans.push(Span::styled(part.to_string(), base));
+        }
+        return spans;
     }
     vec![Span::styled(value.to_string(), base)]
 }
@@ -1721,16 +1726,28 @@ mod tests {
     #[test]
     fn config_model_value_is_meta_gold_with_dim_arrow() {
         // `model` reads in the metadata gold (matches the TASKS model column);
-        // the ` → ` arrow stays dim and the resolved id is bold.
+        // every chain entry is equal meta gold; arrows stay dim (no bold head).
         let p = Palette::default();
         let meta = Style::default().fg(p.meta);
         assert_eq!(
-            config("model      opus → claude-opus-4-8", 11, &p),
+            config("model      grok-4.5 → claude-opus-4.8", 11, &p),
             vec![
                 ("model      ".into(), accent(&p)),
-                ("opus".into(), meta),
+                ("grok-4.5".into(), meta),
                 (" → ".into(), p.dim_style()),
-                ("claude-opus-4-8".into(), meta.add_modifier(Modifier::BOLD)),
+                ("claude-opus-4.8".into(), meta),
+            ]
+        );
+        // Three-entry chain: every label equal, every arrow dim.
+        assert_eq!(
+            config("model      a → b → c", 11, &p),
+            vec![
+                ("model      ".into(), accent(&p)),
+                ("a".into(), meta),
+                (" → ".into(), p.dim_style()),
+                ("b".into(), meta),
+                (" → ".into(), p.dim_style()),
+                ("c".into(), meta),
             ]
         );
     }

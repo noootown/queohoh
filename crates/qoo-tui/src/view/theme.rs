@@ -99,6 +99,12 @@ pub const GLYPH_CHEVRON_DOWN: char = '▾';
 /// session-continuation field, which opens the session picker.
 pub const GLYPH_CHEVRON_RIGHT: char = '▸';
 
+/// Head-of-lane next-queued task in the WORKTREES activity column — replaces the
+/// old `next: ` text lead. Single-width rightwards arrow (U+2192): "what comes
+/// next". Distinct from `▶` (running status), `↣` (merged-back), and `▸`
+/// (picker affordance) so the three rightward marks stay readable apart.
+pub const GLYPH_NEXT: char = '→';
+
 /// Horizontal-rule glyph. Matches the pane-border char so transcript code-fence
 /// rules and the pane borders read as one system.
 pub const RULE_CHAR: char = '─';
@@ -157,11 +163,11 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 ///
 /// | Color            | Concept                | Surfaces                                                                                   |
 /// |------------------|------------------------|--------------------------------------------------------------------------------------------|
-/// | `mauve`          | task / definition NAME | QUEUE def column; TASKS name column; WORKTREES `next: <name>` and last-task name WHEN a def |
+/// | `mauve`          | task / definition NAME | QUEUE def column; TASKS name column; WORKTREES activity `→ <name>` and last-task name WHEN a def |
 /// | `worktree`       | worktree IDENTITY NAME | QUEUE worktree column; WORKTREES name column                                                |
 /// | `accent`         | generic UI accent      | selection bar; focused borders; active tab; dialog/menu borders; filter `>`; footer keys    |
 /// | `info` (teal)    | TIMESTAMPS only        | QUEUE timestamp + age; TASKS Cron schedule text; WORKTREES commit-age, last-task age        |
-/// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `next:` lead; search query; settings values |
+/// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `→` next lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
 /// | `fg`             | prose / summaries      | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
 /// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⧗ $ ⊟`)                                    |

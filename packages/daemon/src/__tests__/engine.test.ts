@@ -62,7 +62,7 @@ function setup(
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/opus", "grok/grok-4.5"],
+		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 		providers: DEFAULT_PROVIDERS,
 		...overrides.config,
 	};
@@ -281,7 +281,7 @@ describe("Engine.tick", () => {
 			archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
-			defaultModels: ["claude/opus", "grok/grok-4.5"],
+			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 			providers: DEFAULT_PROVIDERS,
 		};
 		let claudeRan = false;
@@ -341,7 +341,7 @@ describe("Engine.tick", () => {
 			source: "tui",
 			// A `provider/label` ref resolves against the catalog to its concrete
 			// provider-specific id (there is no alias table anymore).
-			model: "claude/sonnet",
+			model: "claude/claude-sonnet-5",
 		});
 		await engine.tick(); // resolve
 		await engine.tick(); // start
@@ -457,7 +457,7 @@ describe("Engine.tick", () => {
 			archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
-			defaultModels: ["claude/opus", "grok/grok-4.5"],
+			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 			providers: DEFAULT_PROVIDERS,
 		};
 		const lineage = new SessionLineageStore(join(base, "session-lineage.json"));

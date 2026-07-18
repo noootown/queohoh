@@ -2,7 +2,7 @@
 source: crates/qoo-tui/src/view/detail.rs
 expression: terminal.backend()
 ---
-" 1:acme (1)                                                ● running 0/3  ↯ grok"
+" 1:acme (1)                                      ● running 0/3  ↯ claude  ↯ grok"
 "╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
@@ -20,12 +20,12 @@ expression: terminal.backend()
 "╭⚡TASKS [r] [d] [o] · [c]╮│  Details                                          │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││    worktree    acme.feature                       │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││    session     —                                  │"
-"│                         ││    model       opus (claude) · claude-opus-4-8    │"
-"│                         ││    exit code   —                                  │"
-"╰─────────────────────────╯│    cost        —                                  │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│    tokens      —                                  │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]filter            ││    turns       —                                  │" Hidden by multi-width symbols: [(3, " ")]
-"│ 1 feature               ││                                                   │"
+"│                         ││    model claude-opus-4.8 (claude) ·               │"
+"│                         ││  claude-opus-4-8                                  │"
+"╰─────────────────────────╯│    exit code   —                                  │"
+"╭🌲 WORKTREES─ [r] [g] [x]╮│    cost        —                                  │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]filter            ││    tokens      —                                  │" Hidden by multi-width symbols: [(3, " ")]
+"│ 1 feature               ││    turns       —                                  │"
 "│ ● hotfix                ││                                                   │"
 "│ ● feature               ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"

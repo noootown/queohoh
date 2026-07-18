@@ -141,14 +141,14 @@ fn adhoc_picked_model_is_pinned() {
     a.update(ch('c'));
     focus_field(&mut a, adhoc_field::MODEL);
     // Same catalog order as the new-session picker: Down opens the list
-    // (highlight = head idx 0), two more Downs reach `claude/opus`.
+    // (highlight = head idx 0), two more Downs reach `claude/claude-opus-4.8`.
     a.update(keyc(KeyCode::Down)); // open
-    a.update(keyc(KeyCode::Down)); // → claude/fable
-    a.update(keyc(KeyCode::Down)); // → claude/opus
+    a.update(keyc(KeyCode::Down)); // → claude/claude-fable-5
+    a.update(keyc(KeyCode::Down)); // → claude/claude-opus-4.8
     a.update(enter()); // pick
     let up = fill_prompt_and_submit(&mut a, "run it");
     let p = enqueue_params(&up);
-    assert_eq!(p["model"], "claude/opus");
+    assert_eq!(p["model"], "claude/claude-opus-4.8");
     assert_eq!(p["model_pinned"], true);
 }
 

@@ -126,7 +126,7 @@ async function setup(opts?: {
 		archiveAfterDays: 7,
 		vars: opts?.vars ?? {},
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/opus", "grok/grok-4.5"],
+		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 		providers: opts?.providers ?? DEFAULT_PROVIDERS,
 	};
 	const stateDir = join(base, "state");
@@ -729,7 +729,7 @@ describe("ApiServer", () => {
 			// No settings.json seeded → precedence-first enabled provider (claude).
 			expect(settings.active_provider).toBe("claude");
 			expect(settings.default_models.global).toEqual([
-				"claude/opus",
+				"claude/claude-opus-4.8",
 				"grok/grok-4.5",
 			]);
 			expect(settings.default_models.projects).toEqual([]);
@@ -763,7 +763,7 @@ describe("ApiServer", () => {
 			const { client, workspace } = await setup();
 			writeFileSync(
 				join(workspace, "platform", "vars.yaml"),
-				"default_models:\n  - grok/grok-4.5\n  - claude/opus\n",
+				"default_models:\n  - grok/grok-4.5\n  - claude/claude-opus-4.8\n",
 			);
 			const settings = (await client.call("settings")) as {
 				default_models: {
@@ -778,7 +778,7 @@ describe("ApiServer", () => {
 			expect(settings.default_models.projects).toEqual([
 				{
 					name: "platform",
-					default_models: ["grok/grok-4.5", "claude/opus"],
+					default_models: ["grok/grok-4.5", "claude/claude-opus-4.8"],
 					source: join(workspace, "platform", "vars.yaml"),
 				},
 			]);
@@ -942,13 +942,17 @@ describe("ApiServer", () => {
 	describe("enqueue model validation", () => {
 		it("rejects a bare label with a did-you-mean provider/label suggestion", async () => {
 			const { client } = await setup();
+			// Bare short aliases like `opus` no longer match any catalog entry;
+			// a versioned label still does and yields the provider/label hint.
 			await expect(
 				client.call("enqueue", {
 					repo: "platform",
 					prompt: "p",
-					model: "opus",
+					model: "claude-opus-4.8",
 				}),
-			).rejects.toThrow(/unknown model: opus \(did you mean claude\/opus\?\)/);
+			).rejects.toThrow(
+				/unknown model: claude-opus-4\.8 \(did you mean claude\/claude-opus-4\.8\?\)/,
+			);
 		});
 
 		it("rejects a well-formed ref that names no catalog entry", async () => {
@@ -967,9 +971,9 @@ describe("ApiServer", () => {
 			const task = (await client.call("enqueue", {
 				repo: "platform",
 				prompt: "p",
-				model: "claude/opus",
+				model: "claude/claude-opus-4.8",
 			})) as { model: string | string[] | null };
-			expect(task.model).toBe("claude/opus");
+			expect(task.model).toBe("claude/claude-opus-4.8");
 		});
 
 		it("accepts an ordered fallback list of refs", async () => {
@@ -977,9 +981,9 @@ describe("ApiServer", () => {
 			const task = (await client.call("enqueue", {
 				repo: "platform",
 				prompt: "p",
-				model: ["claude/opus", "grok/grok-4.5"],
+				model: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 			})) as { model: string | string[] | null };
-			expect(task.model).toEqual(["claude/opus", "grok/grok-4.5"]);
+			expect(task.model).toEqual(["claude/claude-opus-4.8", "grok/grok-4.5"]);
 		});
 
 		it("rejects a list containing one unknown ref", async () => {
@@ -988,7 +992,7 @@ describe("ApiServer", () => {
 				client.call("enqueue", {
 					repo: "platform",
 					prompt: "p",
-					model: ["claude/opus", "grok/nope"],
+					model: ["claude/claude-opus-4.8", "grok/nope"],
 				}),
 			).rejects.toThrow(/unknown model: grok\/nope/);
 		});
@@ -1010,7 +1014,7 @@ describe("ApiServer", () => {
 				client.call("enqueue", {
 					repo: "platform",
 					prompt: "p",
-					model: ["claude/opus", ""],
+					model: ["claude/claude-opus-4.8", ""],
 				}),
 			).rejects.toThrow(/invalid model list entry/);
 		});
@@ -1181,10 +1185,10 @@ describe("ApiServer", () => {
 			repo: "platform",
 			name: "greet",
 			args: ["world"],
-			model: "claude/opus",
+			model: "claude/claude-opus-4.8",
 		})) as { model: string | string[] | null }[];
 		expect(created).toHaveLength(1);
-		expect(created[0]?.model).toBe("claude/opus");
+		expect(created[0]?.model).toBe("claude/claude-opus-4.8");
 	});
 
 	it("runDefinition without model leaves task.model null so def.model applies at spawn", async () => {
@@ -1242,13 +1246,13 @@ describe("ApiServer", () => {
 		// A single `provider/label` ref is forwarded verbatim.
 		const opusDir = join(workspace, "platform", "tasks", "opusdef");
 		mkdirSync(opusDir, { recursive: true });
-		writeFileSync(join(opusDir, "config.yaml"), "model: claude/opus\n");
+		writeFileSync(join(opusDir, "config.yaml"), "model: claude/claude-opus-4.8\n");
 		writeFileSync(join(opusDir, "prompt.md"), "hi\n");
 		const opus = (await client.call("definition", {
 			repo: "platform",
 			name: "opusdef",
 		})) as { model: string | string[] | null; modelResolved?: unknown };
-		expect(opus.model).toBe("claude/opus");
+		expect(opus.model).toBe("claude/claude-opus-4.8");
 		// There is no alias resolution anymore — the field is gone.
 		expect(opus.modelResolved).toBeUndefined();
 
@@ -1257,14 +1261,14 @@ describe("ApiServer", () => {
 		mkdirSync(listDir, { recursive: true });
 		writeFileSync(
 			join(listDir, "config.yaml"),
-			"model:\n  - claude/opus\n  - grok/grok-4.5\n",
+			"model:\n  - claude/claude-opus-4.8\n  - grok/grok-4.5\n",
 		);
 		writeFileSync(join(listDir, "prompt.md"), "hi\n");
 		const list = (await client.call("definition", {
 			repo: "platform",
 			name: "listdef",
 		})) as { model: string | string[] | null };
-		expect(list.model).toEqual(["claude/opus", "grok/grok-4.5"]);
+		expect(list.model).toEqual(["claude/claude-opus-4.8", "grok/grok-4.5"]);
 	});
 
 	it("definition rejects unknown repo", async () => {
@@ -1655,9 +1659,9 @@ describe("ApiServer", () => {
 		const byModel = Object.fromEntries(
 			res.sessions.map((s) => [s.session_id, s.model]),
 		);
-		expect(byModel["sess-opus"]).toBe("claude/opus"); // id maps back to its provider/label ref
+		expect(byModel["sess-opus"]).toBe("claude/claude-opus-4.8"); // id maps back to its provider/label ref
 		expect(byModel["sess-foreign"]).toBeUndefined(); // no run data -> no model
-		// Provider segment of the mapped model ref (claude/opus → claude).
+		// Provider segment of the mapped model ref (claude/claude-opus-4.8 → claude).
 		const byProvider = Object.fromEntries(
 			res.sessions.map((s) => [s.session_id, s.provider]),
 		);
@@ -2159,7 +2163,7 @@ describe("ApiServer", () => {
 				prompt: "continue",
 				cwd: "/wt/repo.fix-x/src/deep",
 				resume_session_id: "sess-1",
-				model: "claude/fable",
+				model: "claude/claude-fable-5",
 			})) as {
 				target: { repo: string; ref: string };
 				resumeSessionId: string;
@@ -2168,7 +2172,7 @@ describe("ApiServer", () => {
 			expect(task.target.repo).toBe("platform");
 			expect(task.target.ref).toBe("worktree:repo.fix-x");
 			expect(task.resumeSessionId).toBe("sess-1");
-			expect(task.model).toBe("claude/fable");
+			expect(task.model).toBe("claude/claude-fable-5");
 		});
 
 		it("prefers the longest matching worktree path", async () => {

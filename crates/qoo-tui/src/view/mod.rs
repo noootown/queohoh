@@ -477,7 +477,7 @@ mod tests {
         // ↯ is a plain width-1 glyph, so icon + single space + name is exact.
         assert!(row0.contains("↯ grok"), "no ↯ grok in header: {row0:?}");
         assert!(row0.trim_end().ends_with("grok"), "provider name missing at right edge: {row0:?}");
-        // The indicator's rect is registered so a click cycles the provider.
+        // The indicator's rect is registered so a click opens the Switch form.
         assert!(
             hits.iter().any(|(_, t)| matches!(t, crate::hit::HitTarget::ProviderIndicator)),
             "no ProviderIndicator hit target registered"
@@ -486,13 +486,14 @@ mod tests {
 
     #[test]
     fn header_shows_usage_next_to_active_provider() {
-        // Active grok + matching usage → `↯ grok 42% mo` at the right edge.
+        // Only grok enabled + matching usage → `↯ grok 42% mo` at the right edge.
         // ProviderIndicator hit covers the whole provider+usage cluster (click
         // cycles, same as `p`).
         use crate::ipc::types::{ProviderUsage, UsageSeverity};
         use ratatui::text::Span;
 
         let mut app = fixture_app();
+        app.snapshot.as_mut().unwrap().enabled_providers = Some(vec!["grok".into()]);
         app.snapshot.as_mut().unwrap().provider_usages = Some(vec![ProviderUsage {
             provider: "grok".into(),
             text: "42% mo".into(),
@@ -527,35 +528,16 @@ mod tests {
 
     #[test]
     fn header_shows_all_enabled_providers_with_usage() {
-        // Settings lists claude + grok; both have samples; active is grok.
-        // Both chips render; order follows settings precedence.
-        use crate::ipc::types::{
-            ProviderUsage, SettingsPayload, SettingsProvider, UsageSeverity,
-        };
+        // Snapshot lists claude + grok as enabled; both have samples; active
+        // is grok. Both chips render; order follows enabled_providers. Codex
+        // is absent from the list so it must not render even if a stale sample
+        // arrived.
+        use crate::ipc::types::{ProviderUsage, UsageSeverity};
         use ratatui::text::Span;
 
         let mut app = fixture_app();
-        app.settings = Some(Some(SettingsPayload {
-            active_provider: "grok".into(),
-            providers: vec![
-                SettingsProvider {
-                    name: "claude".into(),
-                    enabled: true,
-                    bin: None,
-                },
-                SettingsProvider {
-                    name: "grok".into(),
-                    enabled: true,
-                    bin: None,
-                },
-                SettingsProvider {
-                    name: "codex".into(),
-                    enabled: false,
-                    bin: None,
-                },
-            ],
-            ..Default::default()
-        }));
+        app.snapshot.as_mut().unwrap().enabled_providers =
+            Some(vec!["claude".into(), "grok".into()]);
         app.snapshot.as_mut().unwrap().provider_usages = Some(vec![
             ProviderUsage {
                 provider: "claude".into(),
@@ -569,6 +551,13 @@ mod tests {
                 text: "42% mo".into(),
                 severity: UsageSeverity::Warn,
                 fetched_at: 2,
+                stale: false,
+            },
+            ProviderUsage {
+                provider: "codex".into(),
+                text: "n/a".into(),
+                severity: UsageSeverity::Unknown,
+                fetched_at: 3,
                 stale: false,
             },
         ]);
@@ -587,10 +576,10 @@ mod tests {
             "active grok+usage shown: {row0:?}"
         );
         assert!(
-            !row0.contains("codex"),
-            "disabled codex must not render: {row0:?}"
+            !row0.contains("codex") && !row0.contains("n/a"),
+            "disabled/unlisted provider must not render: {row0:?}"
         );
-        // claude before grok (settings precedence).
+        // claude before grok (config precedence).
         let c = row0.find("↯ claude").expect("claude chip");
         let g = row0.find("↯ grok").expect("grok chip");
         assert!(c < g, "claude precedes grok: {row0:?}");
@@ -605,12 +594,46 @@ mod tests {
     }
 
     #[test]
+    fn header_omits_disabled_providers_even_when_settings_lists_them() {
+        // Snapshot is authoritative: only grok enabled. Settings still lists
+        // claude as enabled — must NOT re-introduce it.
+        let mut app = fixture_app();
+        app.snapshot.as_mut().unwrap().enabled_providers = Some(vec!["grok".into()]);
+        app.snapshot.as_mut().unwrap().active_provider = Some("grok".into());
+        app.settings = Some(Some(crate::ipc::types::SettingsPayload {
+            active_provider: "grok".into(),
+            providers: vec![
+                crate::ipc::types::SettingsProvider {
+                    name: "claude".into(),
+                    enabled: true,
+                    bin: None,
+                },
+                crate::ipc::types::SettingsProvider {
+                    name: "grok".into(),
+                    enabled: true,
+                    bin: None,
+                },
+            ],
+            ..Default::default()
+        }));
+        let (terminal, _hits) = render_at(&app, 120, 40);
+        let buf = terminal.backend().buffer().clone();
+        let mut row0 = String::new();
+        for x in 0..120 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        assert!(row0.contains("↯ grok"), "enabled grok shown: {row0:?}");
+        assert!(!row0.contains("claude"), "snapshot-disabled claude omitted: {row0:?}");
+    }
+
+    #[test]
     fn header_hides_usage_when_sample_provider_not_shown() {
-        // No settings (only active grok shown); single-chip sample is for
-        // claude → do not attach claude's text to the grok chip.
+        // Only grok is enabled; single-chip sample is for claude → do not
+        // show claude's chip or attach its text to the grok chip.
         use crate::ipc::types::{ProviderUsage, UsageSeverity};
 
         let mut app = fixture_app();
+        app.snapshot.as_mut().unwrap().enabled_providers = Some(vec!["grok".into()]);
         app.snapshot.as_mut().unwrap().provider_usage = Some(ProviderUsage {
             provider: "claude".into(),
             text: "100%".into(),
@@ -626,8 +649,8 @@ mod tests {
         }
         assert!(row0.contains("↯ grok"), "provider still shown: {row0:?}");
         assert!(
-            !row0.contains("100%"),
-            "mismatched usage text must not render: {row0:?}"
+            !row0.contains("100%") && !row0.contains("claude"),
+            "unlisted provider/usage must not render: {row0:?}"
         );
         let prov_w = ratatui::text::Span::raw("  ↯ grok").width() as u16;
         let (rect, _) = hits
@@ -818,7 +841,7 @@ mod tests {
                     cron: Some("30 13 * * *".into()),
                     cron_enabled: true,
                     description: Some("Review an open PR end to end.".into()),
-                    model: Some("claude/opus".into()),
+                    model: Some("claude/claude-opus-4.8".into()),
                     worktree: None,
                 },
                 crate::ipc::types::DefinitionSummary {
@@ -831,7 +854,7 @@ mod tests {
                     // `sched_cell_style` unit test for the styling assertion.
                     cron_enabled: false,
                     description: Some("Nightly repo tidy sweep.".into()),
-                    model: Some("claude/sonnet".into()),
+                    model: Some("claude/claude-sonnet-5".into()),
                     ..Default::default()
                 },
                 crate::ipc::types::DefinitionSummary {
@@ -839,14 +862,14 @@ mod tests {
                     name: "deploy".into(),
                     scope: "project".into(),
                     has_discovery: true,
-                    model: Some("claude/fable".into()),
+                    model: Some("claude/claude-fable-5".into()),
                     ..Default::default()
                 },
                 crate::ipc::types::DefinitionSummary {
                     repo: "acme".into(),
                     name: "lint".into(),
                     scope: "project".into(),
-                    model: Some("claude/haiku".into()),
+                    model: Some("claude/claude-haiku-4.5".into()),
                     ..Default::default()
                 },
             ],
@@ -914,12 +937,12 @@ mod tests {
             active_provider: "grok".into(),
             providers: vec![prov("claude", true), prov("grok", true), prov("codex", false)],
             catalog: vec![
-                cat("claude", "claude-opus-4-8", "opus", false),
+                cat("claude", "claude-opus-4-8", "claude-opus-4.8", false),
                 cat("grok", "grok-4.5", "grok-4.5", false),
                 cat("grok", "grok-legacy", "legacy", true),
             ],
             default_models: DefaultModels {
-                global: vec!["claude/opus".into(), "grok/grok-4.5".into()],
+                global: vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()],
                 projects: vec![DefaultModelsProject {
                     name: "acme".into(),
                     default_models: vec!["grok/grok-4.5".into()],

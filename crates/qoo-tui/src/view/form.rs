@@ -21,7 +21,7 @@ use crate::view::theme::{GLYPH_CHEVRON_DOWN, GLYPH_CHEVRON_RIGHT, Palette};
 /// One selectable dropdown option: the `value` is what gets stored on the field
 /// and submitted (e.g. a `provider/label` model ref, or `""` for a "leave unset"
 /// head option); the `label` is what the closed field and the open list render
-/// (e.g. `opus (claude)` or `default (…)`). For a plain dropdown the two are
+/// (e.g. `claude-opus-4.8 (claude)` or `default (…)`). For a plain dropdown the two are
 /// equal — see [`Field::dropdown`]; the model picker uses distinct display via
 /// [`Field::dropdown_labeled`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -939,8 +939,8 @@ mod tests {
                 Field::input("branch / worktree name", "", true),
                 Field::dropdown(
                     "model",
-                    vec!["fable".into(), "opus".into(), "sonnet".into(), "haiku".into()],
-                    "opus",
+                    vec!["claude-fable-5".into(), "claude-opus-4.8".into(), "claude-sonnet-5".into(), "claude-haiku-4.5".into()],
+                    "claude-opus-4.8",
                 ),
                 Field::textarea("prompt", "", true),
             ],
@@ -1036,14 +1036,14 @@ mod tests {
         assert!(f.is_dropdown_focused());
         f.open_dropdown();
         assert!(f.dropdown_open);
-        assert_eq!(f.dropdown_index, 1); // "opus" is index 1
-        f.dropdown_move(1); // → sonnet
+        assert_eq!(f.dropdown_index, 1); // "claude-opus-4.8" is index 1
+        f.dropdown_move(1); // → claude-sonnet-5
         f.dropdown_pick();
-        assert_eq!(f.fields[1].value, "sonnet");
+        assert_eq!(f.fields[1].value, "claude-sonnet-5");
         assert!(!f.dropdown_open);
         // Wrap: Up past the first option lands on the last, Down past the last
         // lands on the first.
-        f.open_dropdown(); // value "sonnet" → index 2
+        f.open_dropdown(); // value "claude-sonnet-5" → index 2
         f.dropdown_move(-1); // 2 → 1
         f.dropdown_move(-1); // 1 → 0 (first)
         assert_eq!(f.dropdown_index, 0);
@@ -1173,7 +1173,7 @@ mod tests {
         for c in "do it".chars() {
             f.insert_char(c);
         }
-        assert_eq!(f.validate(), Ok(vec!["feat/x".into(), "opus".into(), "do it".into()]));
+        assert_eq!(f.validate(), Ok(vec!["feat/x".into(), "claude-opus-4.8".into(), "do it".into()]));
     }
 
     fn render(f: &mut FormState, cols: u16, rows: u16) -> (String, HitMap) {
@@ -1200,7 +1200,7 @@ mod tests {
         assert!(s.contains("model"));
         assert!(s.contains("prompt"));
         assert!(s.contains('▾'), "dropdown chevron renders");
-        assert!(s.contains("opus"), "dropdown shows its current value");
+        assert!(s.contains("claude-opus-4.8"), "dropdown shows its current value");
         assert!(s.contains("[ Create ]") && s.contains("[ Cancel ]"));
         let (mut f0, mut f1, mut f2, mut modal) = (false, false, false, false);
         for y in 0..24 {
@@ -1223,9 +1223,9 @@ mod tests {
         f.focus = 1;
         f.open_dropdown();
         let (s, hit) = render(&mut f, 70, 24);
-        assert!(s.contains("fable"));
-        assert!(s.contains("sonnet"));
-        assert!(s.contains("haiku"));
+        assert!(s.contains("claude-fable-5"));
+        assert!(s.contains("claude-sonnet-5"));
+        assert!(s.contains("claude-haiku-4.5"));
         let mut items = 0;
         for y in 0..24 {
             for x in 0..70 {
@@ -1246,6 +1246,44 @@ mod tests {
         }
         let (s, _hit) = render(&mut f, 64, 22);
         insta::assert_snapshot!("form_create_worktree", s);
+    }
+
+    #[test]
+    fn form_switch_provider_snapshot() {
+        // The `p` / ↯ Switch-provider form: single dropdown of enabled providers,
+        // defaulting to the current active one, Switch primary button. Width must
+        // clear DIALOG_WIDTH's clamp floor (≥50) so the layout doesn't panic.
+        let mut f = FormState::new(
+            "Switch provider",
+            "Switch",
+            vec![Field::dropdown(
+                "provider",
+                vec!["claude".into(), "grok".into(), "codex".into()],
+                "claude",
+            )],
+        );
+        let (s, _hit) = render(&mut f, 64, 12);
+        assert!(s.contains("Switch provider"));
+        assert!(s.contains("claude"));
+        assert!(s.contains("[ Switch ]") && s.contains("[ Cancel ]"));
+        insta::assert_snapshot!("form_switch_provider", s);
+    }
+
+    #[test]
+    fn form_switch_provider_open_dropdown_snapshot() {
+        let mut f = FormState::new(
+            "Switch provider",
+            "Switch",
+            vec![Field::dropdown(
+                "provider",
+                vec!["claude".into(), "grok".into(), "codex".into()],
+                "claude",
+            )],
+        );
+        f.open_dropdown();
+        let (s, _hit) = render(&mut f, 64, 16);
+        assert!(s.contains("grok") && s.contains("codex"));
+        insta::assert_snapshot!("form_switch_provider_open", s);
     }
 
     #[test]

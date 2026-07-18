@@ -107,31 +107,20 @@ impl App {
         })
     }
 
-    /// The provider `p` (cycle) switches TO: the next ENABLED provider after the
-    /// current one, in the settings payload's provider-precedence order, cyclic.
-    /// `None` (a no-op, no RPC) when settings aren't fetched, fewer than two
-    /// providers are enabled, or the result would equal the current provider.
-    /// A current provider that is absent/disabled lands on the first enabled one.
-    fn next_enabled_provider(&self) -> Option<String> {
+    /// ENABLED provider names from the cached settings payload, in precedence
+    /// order. `None` when settings aren't fetched (or the fetch failed) — the
+    /// switch dialog has no list to show then. An empty `Some` means every
+    /// provider is disabled.
+    fn enabled_provider_names(&self) -> Option<Vec<String>> {
         let payload = self.settings.as_ref().and_then(|s| s.as_ref())?;
-        let enabled: Vec<&str> = payload
-            .providers
-            .iter()
-            .filter(|p| p.enabled)
-            .map(|p| p.name.as_str())
-            .collect();
-        // A single enabled provider (or none) has nothing to cycle to.
-        if enabled.len() < 2 {
-            return None;
-        }
-        let current = self.active_provider();
-        let cur = current.as_deref().unwrap_or("");
-        let next = match enabled.iter().position(|&n| n == cur) {
-            Some(i) => enabled[(i + 1) % enabled.len()],
-            // Current isn't among the enabled providers → start at the first.
-            None => enabled[0],
-        };
-        (next != cur).then(|| next.to_string())
+        Some(
+            payload
+                .providers
+                .iter()
+                .filter(|p| p.enabled)
+                .map(|p| p.name.clone())
+                .collect(),
+        )
     }
 
     /// `Space`: toggle the focused pane's cursor row in/out of its marked set.
@@ -177,31 +166,38 @@ impl App {
                 }
                 true
             }
-            A::CycleProvider => {
-                // Compute the next enabled provider (settings-payload order,
-                // skipping disabled, cyclic from the current). `None` = strict
-                // no-op (NO dialog, NO RPC): settings not fetched, fewer than two
-                // enabled providers, or the current is already the only enabled
-                // one — there is nothing to switch to.
-                match self.next_enabled_provider() {
-                    Some(next) => {
-                        // Open a confirm dialog instead of switching immediately.
-                        // The target is FROZEN into the action here so confirm
-                        // applies exactly what the body shows, even if settings
-                        // change while the dialog is open. The optimistic update +
-                        // RPC live in `run_confirm_action` (fired on confirm).
-                        let current =
-                            self.active_provider().unwrap_or_else(|| "none".into());
-                        self.mode = Mode::Confirm {
-                            title: "Switch provider".into(),
-                            body: vec![format!("{current} → {next}")],
-                            confirm_label: "Switch".into(),
-                            action: ConfirmAction::SwitchProvider { target: next },
-                            focus: crate::hit::ButtonKind::Confirm,
+            A::SwitchProvider => {
+                // Open a one-field form: dropdown of ENABLED providers in
+                // settings-precedence order, defaulting to the current active
+                // provider (else the first choice). Replaces the old cycle-to-
+                // next confirm (`claude → grok`) — circulating was a bad idea
+                // once more than two providers were common; the operator picks
+                // explicitly. Options freeze into the field at open so a
+                // settings push mid-dialog cannot change the list under the
+                // user. Strict no-op (NO form, NO RPC) when settings aren't
+                // fetched or no provider is enabled — nothing useful to show.
+                match self.enabled_provider_names() {
+                    Some(names) if !names.is_empty() => {
+                        let default = self
+                            .active_provider()
+                            .filter(|p| names.iter().any(|n| n == p))
+                            .unwrap_or_else(|| names[0].clone());
+                        let state = crate::view::form::FormState::new(
+                            "Switch provider",
+                            "Switch",
+                            vec![crate::view::form::Field::dropdown(
+                                "provider",
+                                names,
+                                &default,
+                            )],
+                        );
+                        self.mode = Mode::Form {
+                            state,
+                            action: FormAction::SwitchProvider,
                         };
                         true
                     }
-                    None => false,
+                    _ => false,
                 }
             }
             A::SwitchTab(i) => {
@@ -869,8 +865,8 @@ impl App {
             return Update { dirty: true, cmds: vec![] };
         }
         // Freeze repo/name into the action so confirm runs exactly the def the
-        // body names (same SwitchProvider freeze pattern). Spinner + RPC wait
-        // until confirm — cancel must leave no in-flight marker.
+        // body names (payload frozen at open, not re-derived on confirm).
+        // Spinner + RPC wait until confirm — cancel must leave no in-flight marker.
         let repo = def.repo.clone();
         let name = def.name.clone();
         self.mode = Mode::Confirm {

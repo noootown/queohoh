@@ -659,7 +659,7 @@ fn def_args_submit_peels_leading_model_from_positional_args() {
         "deploy",
         "Run",
         vec![
-            Field::dropdown("model", vec!["claude/opus".into()], "claude/opus"),
+            Field::dropdown("model", vec!["claude/claude-opus-4.8".into()], "claude/claude-opus-4.8"),
             Field::readonly("source", "wt-a"),
             Field::input("target", "dev", false),
         ],
@@ -681,7 +681,7 @@ fn def_args_submit_peels_leading_model_from_positional_args() {
         Cmd::Rpc { call, .. } => {
             assert_eq!(call.method, "runDefinition");
             assert_eq!(call.params["args"], serde_json::json!(["wt-a", "dev"]), "model excluded from args");
-            assert_eq!(call.params["model"], "claude/opus", "leading model sent as params.model");
+            assert_eq!(call.params["model"], "claude/claude-opus-4.8", "leading model sent as params.model");
             // The def-run picker never has an empty "default" option — a
             // concrete pick is always sent pinned so the worker runs it
             // exactly (no active-provider re-head, no fallback).
@@ -703,7 +703,7 @@ fn def_args_untouched_default_head_is_unpinned() {
             "model",
             vec![
                 DropdownOption { value: String::new(), label: "default (grok-4.5)".into() },
-                DropdownOption { value: "claude/opus".into(), label: "opus (claude)".into() },
+                DropdownOption { value: "claude/claude-opus-4.8".into(), label: "claude-opus-4.8 (claude)".into() },
             ],
             value,
         );
@@ -744,13 +744,13 @@ fn def_args_untouched_default_head_is_unpinned() {
         app.status_line
     );
     // Actively selecting a concrete entry: submit sends the exact ref AND pins it.
-    let mut app = mk("claude/opus");
+    let mut app = mk("claude/claude-opus-4.8");
     if let Mode::DefArgs { state, .. } = &mut app.mode {
         state.focus = state.fields.len();
     }
     match &app.update(key(Enter)).cmds[0] {
         Cmd::Rpc { call, .. } => {
-            assert_eq!(call.params["model"], "claude/opus");
+            assert_eq!(call.params["model"], "claude/claude-opus-4.8");
             assert_eq!(call.params["model_pinned"], true);
         }
         other => panic!("expected runDefinition, got {other:?}"),

@@ -23,8 +23,8 @@ fn shift(code: KeyCode) -> Event {
 fn model_dropdown() -> Field {
     Field::dropdown(
         "model",
-        vec!["fable".into(), "opus".into(), "sonnet".into(), "haiku".into()],
-        "opus",
+        vec!["claude-fable-5".into(), "claude-opus-4.8".into(), "claude-sonnet-5".into(), "claude-haiku-4.5".into()],
+        "claude-opus-4.8",
     )
 }
 
@@ -164,19 +164,19 @@ fn plain_enter_in_single_line_input_advances_focus_and_never_submits() {
 #[test]
 fn dropdown_down_opens_then_moves_and_enter_picks() {
     let mut app = form_app();
-    // Focus starts on the model dropdown. Down opens it (highlighting "opus").
+    // Focus starts on the model dropdown. Down opens it (highlighting "claude-opus-4.8").
     app.update(key(KeyCode::Down));
     match &app.mode {
         Mode::Form { state, .. } => {
             assert!(state.dropdown_open);
-            assert_eq!(state.dropdown_index, 1); // opus
+            assert_eq!(state.dropdown_index, 1); // claude-opus-4.8
         }
         other => panic!("expected Form, got {other:?}"),
     }
     // Down again moves the open highlight; Enter commits it.
     app.update(key(KeyCode::Down));
     app.update(key(KeyCode::Enter));
-    assert_eq!(field_value(&app, 0), "sonnet");
+    assert_eq!(field_value(&app, 0), "claude-sonnet-5");
     match &app.mode {
         Mode::Form { state, .. } => assert!(!state.dropdown_open),
         other => panic!("expected Form, got {other:?}"),
@@ -190,13 +190,14 @@ fn dropdown_index(app: &App) -> usize {
     }
 }
 
-// Options: fable(0) opus(1) sonnet(2) haiku(3), default "opus" so open → idx 1.
+// Options: claude-fable-5(0) claude-opus-4.8(1) claude-sonnet-5(2) claude-haiku-4.5(3),
+// default "claude-opus-4.8" so open → idx 1.
 #[test]
 fn dropdown_down_wraps_from_last_to_first() {
     let mut app = form_app();
-    app.update(key(KeyCode::Down)); // open → opus (1)
-    app.update(key(KeyCode::Down)); // → sonnet (2)
-    app.update(key(KeyCode::Down)); // → haiku (3), the last option
+    app.update(key(KeyCode::Down)); // open → claude-opus-4.8 (1)
+    app.update(key(KeyCode::Down)); // → claude-sonnet-5 (2)
+    app.update(key(KeyCode::Down)); // → claude-haiku-4.5 (3), the last option
     assert_eq!(dropdown_index(&app), 3);
     app.update(key(KeyCode::Down)); // Down on last wraps to first
     assert_eq!(dropdown_index(&app), 0);
@@ -205,8 +206,8 @@ fn dropdown_down_wraps_from_last_to_first() {
 #[test]
 fn dropdown_up_wraps_from_first_to_last() {
     let mut app = form_app();
-    app.update(key(KeyCode::Down)); // open → opus (1)
-    app.update(key(KeyCode::Up)); // → fable (0), the first option
+    app.update(key(KeyCode::Down)); // open → claude-opus-4.8 (1)
+    app.update(key(KeyCode::Up)); // → claude-fable-5 (0), the first option
     assert_eq!(dropdown_index(&app), 0);
     app.update(key(KeyCode::Up)); // Up on first wraps to last
     assert_eq!(dropdown_index(&app), 3);
@@ -296,8 +297,8 @@ fn click_form_field_focuses_and_dropdown_field_opens() {
 fn click_dropdown_item_picks_it() {
     let mut app = form_app();
     app.form_click(&HitTarget::FormField(0)); // open the dropdown
-    app.form_click(&HitTarget::DropdownItem(3)); // haiku
-    assert_eq!(field_value(&app, 0), "haiku");
+    app.form_click(&HitTarget::DropdownItem(3)); // claude-haiku-4.5
+    assert_eq!(field_value(&app, 0), "claude-haiku-4.5");
 }
 
 #[test]
@@ -381,11 +382,12 @@ fn launcher_new_session_form_enqueues_picked_model_ref_and_prompt() {
     let mut app = launcher_app();
     app.update(enter()); // → form (focus on model dropdown, head "" preselected)
     // Pick a concrete catalog model: Down opens the list (highlight = head idx 0),
-    // two more Downs reach `claude/opus` (built-in fallback order: head, fable,
-    // opus, …), Enter commits its VALUE `claude/opus` (display `opus (claude)`).
+    // two more Downs reach `claude/claude-opus-4.8` (built-in fallback order: head,
+    // fable, opus, …), Enter commits its VALUE `claude/claude-opus-4.8`
+    // (display `claude-opus-4.8 (claude)`).
     app.update(key(KeyCode::Down)); // open
-    app.update(key(KeyCode::Down)); // → claude/fable
-    app.update(key(KeyCode::Down)); // → claude/opus
+    app.update(key(KeyCode::Down)); // → claude/claude-fable-5
+    app.update(key(KeyCode::Down)); // → claude/claude-opus-4.8
     app.update(enter()); // pick
     app.update(key(KeyCode::Tab)); // → prompt textarea
     for c in "do the thing".chars() {
@@ -398,7 +400,7 @@ fn launcher_new_session_form_enqueues_picked_model_ref_and_prompt() {
     assert_eq!(params["prompt"], "do the thing");
     assert_eq!(params["repo"], "platform");
     assert_eq!(params["worktree"], "platform.wt-a");
-    assert_eq!(params["model"], "claude/opus");
+    assert_eq!(params["model"], "claude/claude-opus-4.8");
     // A concrete pick is an explicit dialog choice: pinned so the worker runs
     // it exactly (no active-provider re-head, no fallback).
     assert_eq!(params["model_pinned"], true);
@@ -565,15 +567,15 @@ fn catalog_settings() -> SettingsPayload {
     };
     SettingsPayload {
         catalog: vec![
-            e("claude", "claude-opus-4-8", "opus", false),
-            e("claude", "claude-sonnet-5", "sonnet", false),
+            e("claude", "claude-opus-4-8", "claude-opus-4.8", false),
+            e("claude", "claude-sonnet-5", "claude-sonnet-5", false),
             e("grok", "grok-4.5", "grok-4.5", false),
             e("grok", "grok-legacy", "legacy", true), // hidden → filtered
-            e("codex", "gpt-5.6-sol", "sol", false), // codex disabled → filtered
+            e("codex", "gpt-5.6-sol", "gpt-5.6-sol", false), // codex disabled → filtered
         ],
         active_provider: "claude".into(),
         default_models: DefaultModels {
-            global: vec!["claude/opus".into(), "grok/grok-4.5".into()],
+            global: vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()],
             projects: vec![DefaultModelsProject {
                 name: "platform".into(),
                 default_models: vec!["grok/grok-4.5".into()],
@@ -603,7 +605,7 @@ fn model_option_values(app: &App, repo: &str) -> Vec<String> {
 fn model_option_values_fall_back_to_builtin_catalog_when_settings_absent() {
     // Stale/absent settings → the built-in mirror (claude + grok groups; codex is
     // omitted from the mirror). Head "" first, then one `provider/label` per
-    // VISIBLE entry — grok/composer is hidden, so the grok group shows only
+    // VISIBLE entry — grok/grok-composer-2.5-fast is hidden, so the grok group shows only
     // grok-4.5.
     let app = launcher_app();
     assert_eq!(app.settings, None);
@@ -611,10 +613,10 @@ fn model_option_values_fall_back_to_builtin_catalog_when_settings_absent() {
         model_option_values(&app, "platform"),
         vec![
             "",
-            "claude/fable",
-            "claude/opus",
-            "claude/sonnet",
-            "claude/haiku",
+            "claude/claude-fable-5",
+            "claude/claude-opus-4.8",
+            "claude/claude-sonnet-5",
+            "claude/claude-haiku-4.5",
             "grok/grok-4.5",
         ]
     );
@@ -625,28 +627,28 @@ fn model_option_values_use_payload_catalog_in_order_filtering_hidden_and_disable
     let mut app = launcher_app();
     app.settings = Some(Some(catalog_settings()));
     // Head "" + visible entries in catalog order; the hidden grok/legacy and the
-    // disabled-provider codex/sol are both filtered out.
+    // disabled-provider codex/gpt-5.6-sol are both filtered out.
     let values = model_option_values(&app, "platform");
-    assert_eq!(values, vec!["", "claude/opus", "claude/sonnet", "grok/grok-4.5"]);
+    assert_eq!(values, vec!["", "claude/claude-opus-4.8", "claude/claude-sonnet-5", "grok/grok-4.5"]);
     assert!(!values.iter().any(|v| v == "grok/legacy"), "hidden entry filtered");
-    assert!(!values.iter().any(|v| v == "codex/sol"), "disabled provider filtered");
+    assert!(!values.iter().any(|v| v == "codex/gpt-5.6-sol"), "disabled provider filtered");
 }
 
 #[test]
 fn model_display_is_label_paren_provider_and_head_label_shows_refs() {
     // model_display: `label (provider)`.
-    let opus = CatalogEntry { provider: "claude".into(), id: "claude-opus-4-8".into(), label: "opus".into(), hidden: false };
-    assert_eq!(opus.model_display(), "opus (claude)");
+    let opus = CatalogEntry { provider: "claude".into(), id: "claude-opus-4-8".into(), label: "claude-opus-4.8".into(), hidden: false };
+    assert_eq!(opus.model_display(), "claude-opus-4.8 (claude)");
     // Head label: repo default_models (no marker), a def's list (a `def:` marker),
     // and the bare `default` when there are no refs.
-    let refs = vec!["claude/opus".to_string(), "grok/grok-4.5".to_string()];
+    let refs = vec!["claude/claude-opus-4.8".to_string(), "grok/grok-4.5".to_string()];
     assert_eq!(
         crate::app::form::default_head_label(&refs, false),
-        "default (claude/opus → grok/grok-4.5)"
+        "default (claude/claude-opus-4.8 → grok/grok-4.5)"
     );
     assert_eq!(
         crate::app::form::default_head_label(&refs, true),
-        "default (def: claude/opus → grok/grok-4.5)"
+        "default (def: claude/claude-opus-4.8 → grok/grok-4.5)"
     );
     assert_eq!(crate::app::form::default_head_label(&[], false), "default");
 }
@@ -663,13 +665,13 @@ fn model_field_head_option_labels_from_repo_default_models() {
         crate::view::form::FieldKind::Dropdown { options } => {
             // Head first: value "", label = the single model the platform default
             // (grok/grok-4.5) RESOLVES to under the active provider (claude) —
-            // the claude group head is prepended, so it resolves to claude/opus.
+            // the claude group head is prepended, so it resolves to claude/claude-opus-4.8.
             assert_eq!(options[0].value, "");
-            assert_eq!(options[0].label, "default (opus)");
+            assert_eq!(options[0].label, "default (claude-opus-4.8)");
             // Then the provider-first catalog (active=claude leads): value
             // `provider/label`, display `label (provider)`.
-            assert_eq!(options[1].value, "claude/opus");
-            assert_eq!(options[1].label, "opus (claude)");
+            assert_eq!(options[1].value, "claude/claude-opus-4.8");
+            assert_eq!(options[1].label, "claude-opus-4.8 (claude)");
             assert_eq!(options[3].value, "grok/grok-4.5");
             assert_eq!(options[3].label, "grok-4.5 (grok)");
         }
@@ -680,7 +682,7 @@ fn model_field_head_option_labels_from_repo_default_models() {
     let global = app.model_field("other");
     match &global.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
-            assert_eq!(options[0].label, "default (opus)");
+            assert_eq!(options[0].label, "default (claude-opus-4.8)");
         }
         other => panic!("expected a labeled Dropdown, got {other:?}"),
     }
@@ -729,27 +731,27 @@ fn def_model_option_values(field: &Field) -> Vec<String> {
 
 #[test]
 fn def_model_field_leads_with_default_head_then_full_catalog() {
-    // Def `model: [claude/opus, grok/grok-4.5]`, active=grok → the picker leads
+    // Def `model: [claude/claude-opus-4.8, grok/grok-4.5]`, active=grok → the picker leads
     // with an EMPTY "" head labeled with the resolved head (grok/grok-4.5,
     // label-only) so a plain Run leaves the def's authored chain to the daemon;
     // the FULL visible catalog follows in provider-first order.
     let app = app_with_active_grok();
     let spec = crate::ipc::types::ModelRef::Many(vec![
-        "claude/opus".into(),
+        "claude/claude-opus-4.8".into(),
         "grok/grok-4.5".into(),
     ]);
     let field = app.def_model_field("platform", Some(&spec));
     assert_eq!(
         def_model_option_values(&field),
-        vec!["", "grok/grok-4.5", "claude/opus", "claude/sonnet"]
+        vec!["", "grok/grok-4.5", "claude/claude-opus-4.8", "claude/claude-sonnet-5"]
     );
     assert_eq!(field.value, "", "the default head is preselected → unpinned");
     match &field.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
             assert_eq!(options[0].label, "default (grok-4.5)");
             assert_eq!(options[1].label, "grok-4.5 (grok)");
-            assert_eq!(options[2].label, "opus (claude)");
-            assert_eq!(options[3].label, "sonnet (claude)");
+            assert_eq!(options[2].label, "claude-opus-4.8 (claude)");
+            assert_eq!(options[3].label, "claude-sonnet-5 (claude)");
         }
         other => panic!("expected labeled Dropdown, got {other:?}"),
     }
@@ -757,11 +759,11 @@ fn def_model_field_leads_with_default_head_then_full_catalog() {
 
 #[test]
 fn def_model_field_head_labels_the_resolved_single_spec() {
-    // Def `model: claude/opus` only, active=grok → resolve_model_chain prepends
+    // Def `model: claude/claude-opus-4.8` only, active=grok → resolve_model_chain prepends
     // the grok group head, so the resolved head is grok/grok-4.5. The empty head
     // is labeled with it (label-only) and preselected (unpinned).
     let app = app_with_active_grok();
-    let spec = crate::ipc::types::ModelRef::One("claude/opus".into());
+    let spec = crate::ipc::types::ModelRef::One("claude/claude-opus-4.8".into());
     let field = app.def_model_field("platform", Some(&spec));
     assert_eq!(field.value, "");
     match &field.kind {
@@ -783,11 +785,11 @@ fn adhoc_model_field_still_has_default_head_and_catalog() {
     assert_eq!(field.value, "");
     let values = model_option_values(&app, "platform");
     assert_eq!(values[0], "");
-    assert!(values.contains(&"claude/opus".into()));
+    assert!(values.contains(&"claude/claude-opus-4.8".into()));
     assert!(values.contains(&"grok/grok-4.5".into()));
     match &field.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
-            assert_eq!(options[0].label, "default (opus)");
+            assert_eq!(options[0].label, "default (claude-opus-4.8)");
         }
         other => panic!("expected labeled Dropdown, got {other:?}"),
     }
@@ -804,13 +806,13 @@ fn model_field_floats_active_provider_group_to_top_under_grok() {
     assert_eq!(field.value, "");
     assert_eq!(
         model_option_values(&app, "platform"),
-        vec!["", "grok/grok-4.5", "claude/opus", "claude/sonnet"]
+        vec!["", "grok/grok-4.5", "claude/claude-opus-4.8", "claude/claude-sonnet-5"]
     );
     match &field.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
             assert_eq!(options[0].label, "default (grok-4.5)");
             assert_eq!(options[1].label, "grok-4.5 (grok)");
-            assert_eq!(options[2].label, "opus (claude)");
+            assert_eq!(options[2].label, "claude-opus-4.8 (claude)");
         }
         other => panic!("expected labeled Dropdown, got {other:?}"),
     }

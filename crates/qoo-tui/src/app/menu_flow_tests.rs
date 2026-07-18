@@ -576,7 +576,7 @@ fn queue_g_prefers_run_meta_provider_over_bare_model_id() {
     // separate `provider` field. Prefer that field so resume doesn't fall
     // through to `claude` when the task model is null / a different provider.
     let mut snap = failed_task_snapshot();
-    snap.tasks[0].model = Some("claude/opus".into());
+    snap.tasks[0].model = Some("claude/claude-opus-4.8".into());
     let mut a = app_with(snap);
     a.inside_tmux = true;
     a.run_files = Some((
@@ -664,7 +664,7 @@ fn loaded(worktree: &str) -> Event {
     Event::SessionsLoaded {
         worktree: worktree.into(),
         result: Ok(vec![
-            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000, model: Some("claude/sonnet".into()), provider: None },
+            SessionChoice { session_id: "sess-1".into(), label: "Fix the parser".into(), mtime_ms: 2_000, model: Some("claude/claude-sonnet-5".into()), provider: None },
             SessionChoice { session_id: "sess-2".into(), label: "Redesign TUI".into(), mtime_ms: 1_000, model: None, provider: None },
         ]),
     }
@@ -713,7 +713,7 @@ fn picking_a_session_pins_it() {
         Mode::Form { state, action: FormAction::NewSession { resume_session_id: Some(s), .. } } => {
             assert_eq!(s, "sess-1");
             assert!(state.title.contains("Fix the parser"), "title: {}", state.title);
-            assert_eq!(state.fields[0].value, "claude/sonnet", "model defaults to the resumed session's `provider/label` ref");
+            assert_eq!(state.fields[0].value, "claude/claude-sonnet-5", "model defaults to the resumed session's `provider/label` ref");
         }
         other => panic!("expected NewSession resume form, got {other:?}"),
     }

@@ -67,7 +67,7 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.union([z.string(), z.array(z.string())])
 				.optional()
 				.describe(
-					"Model for the run, as a provider/label ref (e.g. claude/opus, grok/grok-4.5), or an ordered fallback list of such refs; defaults to the daemon default. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
+					"Model for the run, as a provider/label ref (e.g. claude/claude-opus-4.8, grok/grok-4.5), or an ordered fallback list of such refs; defaults to the daemon default. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
 				),
 			timeout: z
 				.string()
@@ -149,7 +149,7 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.union([z.string(), z.array(z.string())])
 				.optional()
 				.describe(
-					"Model stamped onto EVERY step (prompt and definition) as a provider/label ref (e.g. claude/opus) or an ordered fallback list; overrides a definition step's authored model (worker: task.model beats def.model). Omit to leave task.model null so definition steps use their own list / default_models. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
+					"Model stamped onto EVERY step (prompt and definition) as a provider/label ref (e.g. claude/claude-opus-4.8) or an ordered fallback list; overrides a definition step's authored model (worker: task.model beats def.model). Omit to leave task.model null so definition steps use their own list / default_models. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
 				),
 			timeout: z
 				.string()

@@ -37,10 +37,25 @@ fn usage_style(u: &ProviderUsage, p: &Palette) -> Style {
     style
 }
 
-/// Enabled provider names in settings-precedence order. Empty when settings
-/// aren't loaded yet (pre-connect / fetch pending) — the renderer then falls
-/// back to the single active provider so the header still shows something.
+/// Enabled provider names for the top-bar chips, in config-precedence order.
+///
+/// Source order (first hit wins):
+/// 1. Snapshot `enabled_providers` — the daemon's live `config.providers`
+///    with `enabled: true` only (authoritative; disabled names never appear).
+/// 2. Settings payload's enabled providers — old daemon that omits the
+///    snapshot field but still serves the settings RPC.
+/// 3. Empty — caller falls back to the single active provider so the header
+///    still shows something pre-connect / pre-settings.
 fn enabled_provider_names(app: &App) -> Vec<String> {
+    if let Some(names) = app
+        .snapshot
+        .as_ref()
+        .and_then(|s| s.enabled_providers.as_ref())
+    {
+        // Empty vec is intentional (every provider disabled) — do not fall
+        // through to settings and re-introduce a disabled name.
+        return names.clone();
+    }
     app.settings
         .as_ref()
         .and_then(|s| s.as_ref())
@@ -135,11 +150,12 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         Span::styled("daemon unreachable — retrying…", Style::default().fg(p.warn))
     };
 
-    // Provider chips: every ENABLED provider (settings precedence), each with
-    // its usage sample when the poller has one. Active = provider accent +
-    // severity-colored usage; inactive = grey (`p.dim`) for both name and
-    // usage so the active one pops. Click anywhere on the chip cluster cycles
-    // the active provider (mirrors the `p` key) — same hit target as before.
+    // Provider chips: every ENABLED provider from the workspace config
+    // (snapshot.enabled_providers), each with its usage sample when the
+    // poller has one. Disabled providers never appear. Active = provider
+    // accent + severity-colored usage; inactive = grey (`p.dim`) for both
+    // name and usage so the active one pops. Click the cluster to open the
+    // Switch-provider form (mirrors the `p` key).
     //
     // ↯ (U+21AF) rather than ⚡: the emoji bolt is width-ambiguous — buffer
     // and terminal fonts disagree on 1 vs 2 cells (phantom gap or clipped
@@ -193,7 +209,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         Rect { x: area.x, y: area.y, width, height: 1 },
     );
     // Right-aligned cluster ends at `area.right()`. One hit rect over the whole
-    // provider+usage strip so a click cycles the active provider (same as `p`).
+    // provider+usage strip so a click opens the Switch-provider form (same as `p`).
     if cluster_w > 0 && cluster_w <= area.width {
         hits.push(
             Rect {

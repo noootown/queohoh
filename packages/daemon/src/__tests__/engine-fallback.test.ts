@@ -99,7 +99,7 @@ function setup(overrides: {
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/opus", "grok/grok-4.5"],
+		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 		// Default table: claude + grok enabled (codex disabled), fallback order
 		// claude -> grok -> codex — exactly the chain this suite exercises.
 		providers: DEFAULT_PROVIDERS,

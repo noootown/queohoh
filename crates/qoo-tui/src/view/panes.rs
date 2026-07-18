@@ -23,9 +23,8 @@ use crate::view::theme::{
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
     BTN_LABEL_UNARCHIVE,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_APPROVED, GLYPH_CURSOR,
-    GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_PROTECTED, GLYPH_SEARCH, Palette,
-    RULE_CHAR,
-    SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
+    GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_NEXT, GLYPH_PROTECTED, GLYPH_SEARCH,
+    Palette, RULE_CHAR, SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
 
 // The per-pane chip SETS (and their order) are the single source of truth in
@@ -542,11 +541,10 @@ fn wt_header(layout: &WtColLayout, p: &Palette) -> Line<'static> {
     if layout.commit_age_w > 0 {
         header_col(&mut spans, "Commit", layout.commit_age_w, p);
     }
-    if layout.queued_w > 0 {
-        header_col(&mut spans, "Next", layout.queued_w, p);
-    }
-    if layout.elapsed_w > 0 {
-        header_col(&mut spans, "Live", layout.elapsed_w, p);
+    // Combined Next/Live activity column (header stays "Live" — covers the
+    // running timer and the head-of-lane next name).
+    if layout.activity_w > 0 {
+        header_col(&mut spans, "Live", layout.activity_w, p);
     }
     Line::from(spans)
 }
@@ -687,36 +685,52 @@ fn worktree_line(
             None => spans.push(Span::raw(pad_clip("", layout.commit_age_w))),
         }
     }
-    // `next: <name>` FILL column: the `next:` lead in meta, the def/prompt name
-    // mauve (def) or fg (prompt). The queued COUNT is deliberately absent — the
-    // leading indicator digit already carries it (user request). Blank-padded
-    // when the row has no named queued task — the fill still reserves the slack
-    // so the trailing live timer stays right-pinned.
-    if layout.queued_w > 0 {
-        spans.push(Span::raw(gap.clone()));
-        match (row.queued, &row.next_name) {
-            (0, _) | (_, None) => spans.push(Span::raw(pad_clip("", layout.queued_w))),
-            (_, Some(name)) => {
-                let lead = "next: ";
-                let name_budget = layout.queued_w.saturating_sub(lead.chars().count());
-                let shown = crate::selectors::clip(name, name_budget);
-                spans.push(Span::styled(lead, meta));
-                spans.push(Span::styled(shown.clone(), if row.next_is_def { mauve } else { fg }));
-                let used = lead.chars().count() + shown.chars().count();
-                if used < layout.queued_w {
-                    spans.push(Span::raw(" ".repeat(layout.queued_w - used)));
+    // Combined Next/Live activity column (one trailing slot, right-pinned by
+    // the last-task fill). Shows the running `⏱` timer and/or the head-of-lane
+    // `→ <name>` (user request: merge Next + Live; arrow replaces the old
+    // `next: ` text lead). The queued COUNT is deliberately absent — the
+    // leading indicator digit already carries it. Blank-padded when the row has
+    // neither signal. When both are present: `⏱ … → name` (timer first — live
+    // work is the louder signal; next drops if the remaining budget is too
+    // tight for `→ ` + one name cell).
+    if layout.activity_w > 0 {
+        spans.push(Span::raw(gap));
+        let mut used = 0usize;
+        if let Some(e) = row.running_elapsed {
+            let timer = elapsed_label(e, now_epoch_s);
+            let shown = crate::selectors::clip(&timer, layout.activity_w);
+            spans.push(Span::styled(shown.clone(), warn));
+            used = shown.chars().count();
+        }
+        if row.queued > 0 {
+            if let Some(name) = row.next_name.as_deref() {
+                // Glyph + space, same shape as `⏱ <elapsed>`.
+                let lead_w = 2; // `→ `
+                let remaining = layout.activity_w.saturating_sub(used);
+                // Need room for a separator (when a timer is already painted),
+                // the `→ ` lead, and at least one name cell.
+                let need = (if used > 0 { 1 } else { 0 }) + lead_w + 1;
+                if remaining >= need {
+                    if used > 0 {
+                        spans.push(Span::raw(" "));
+                        used += 1;
+                    }
+                    let name_budget = layout.activity_w.saturating_sub(used + lead_w);
+                    let shown = crate::selectors::clip(name, name_budget);
+                    spans.push(Span::styled(format!("{GLYPH_NEXT} "), meta));
+                    used += lead_w;
+                    spans.push(Span::styled(
+                        shown.clone(),
+                        if row.next_is_def { mauve } else { fg },
+                    ));
+                    used += shown.chars().count();
                 }
             }
         }
-    }
-    // `⏱` live timer of the task running on this lane (warn) — the trailing
-    // live/now slot, right-pinned by the queued fill.
-    if layout.elapsed_w > 0 {
-        spans.push(Span::raw(gap));
-        match row.running_elapsed {
-            Some(e) => spans
-                .push(Span::styled(pad_clip(&elapsed_label(e, now_epoch_s), layout.elapsed_w), warn)),
-            None => spans.push(Span::raw(pad_clip("", layout.elapsed_w))),
+        if used == 0 {
+            spans.push(Span::raw(pad_clip("", layout.activity_w)));
+        } else if used < layout.activity_w {
+            spans.push(Span::raw(" ".repeat(layout.activity_w - used)));
         }
     }
     Line::from(spans)
@@ -750,10 +764,11 @@ fn def_line(
     // Task/definition names read in mauve — the single semantic color for a def
     // name across QUEUE, TASKS, and the WORKTREES next/last cells.
     spans.push(Span::styled(pad_clip(&def.name, layout.name_w), Style::default().fg(p.mauve)));
-    // Model column: the effective head under the active provider (re-head +
-    // group-head prepend — not the authored yaml list). Padded to the reserved
-    // width so a def without a runnable model leaves it blank and the columns
-    // never slide; omitted entirely when every visible def resolves blank.
+    // Model column: the effective head under the active provider only (re-head
+    // + default/group-head prepend — not the authored yaml list, not the full
+    // fallback chain; detail config still shows the full chain). Padded to the
+    // reserved width so a def without a runnable model leaves it blank and the
+    // columns never slide; omitted entirely when every visible def resolves blank.
     if layout.model_w > 0 {
         spans.push(Span::raw(gap.clone()));
         spans.push(Span::styled(
@@ -1283,8 +1298,8 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             bulk,
         );
     } else {
-        // Shared effective-head resolution for layout + render (same head →
-        // same column width as the painted cell under active_provider).
+        // Shared head-only resolution for layout + render (same effective head
+        // → same column width as the painted cell under active_provider).
         let model_owned = app.model_resolve_owned();
         let model_ctx = model_owned.ctx();
         render_list_pane(

@@ -42,6 +42,12 @@ import type { SettingsStore } from "./settings-store.js";
 
 export interface StateSnapshot {
 	tasks: TaskInstance[];
+	/**
+	 * Full archived task list (not a recent tail). Wire name stays
+	 * `archivedRecent` for one-directional compat with older TUIs; the QUEUE
+	 * pane filters to the current project and shows every archived row so
+	 * full archive history is visible (user request).
+	 */
 	archivedRecent: TaskInstance[];
 	sessions: SessionEntry[];
 	running: string[];
@@ -69,6 +75,14 @@ export interface StateSnapshot {
 	 * TUIs ignore it.
 	 */
 	activeProvider?: string;
+	/**
+	 * Enabled provider names in config-precedence order (`config.providers`
+	 * after effectiveProviders, `enabled: true` only). The TUI top-bar chips
+	 * render exactly this list — disabled providers never appear. Optional/
+	 * additive so old daemons omit it; new TUIs then fall back to the settings
+	 * payload's providers.
+	 */
+	enabledProviders?: string[];
 	/**
 	 * Active provider usage sample (design: provider-usage-header, single-chip
 	 * era). Kept for wire compat with older TUIs that only know the one-chip
@@ -174,7 +188,8 @@ export class ApiServer {
 	snapshot(): StateSnapshot {
 		const snap: StateSnapshot = {
 			tasks: this.deps.store.list(),
-			archivedRecent: this.deps.store.listArchived().slice(-20),
+			// Full archive — name is historical (`archivedRecent`); do not re-cap.
+			archivedRecent: this.deps.store.listArchived(),
 			sessions: this.deps.registry.list(),
 			running: this.deps.engine.runningTaskIds(),
 			// Per-project cap (see GlobalConfig.maxConcurrentTasks) — not a global total.
@@ -188,10 +203,20 @@ export class ApiServer {
 			worktrees: this.deps.engine.worktreesByRepo(),
 			buildId: this.buildId,
 			activeProvider: this.deps.settings.activeProvider(),
+			// Same source the UsagePoller / settings RPC use — enabled only, in
+			// config precedence. Top-bar chips must not invent providers.
+			enabledProviders: this.deps.config.providers
+				.filter((p) => p.enabled)
+				.map((p) => p.name),
 		};
 		// Only set when a poller is wired so bare tests stay free of the fields.
 		if (this.deps.usagePoller) {
-			const usages = this.deps.usagePoller.snapshot();
+			const enabled = new Set(snap.enabledProviders ?? []);
+			// Never publish samples for a disabled provider (stale cache after
+			// a config flip that disabled it mid-process).
+			const usages = this.deps.usagePoller
+				.snapshot()
+				.filter((u) => enabled.has(u.provider));
 			snap.providerUsages = usages;
 			// Single-chip back-compat: active provider's sample (or null).
 			const active = this.deps.settings.activeProvider();

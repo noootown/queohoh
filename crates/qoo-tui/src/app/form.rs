@@ -28,21 +28,21 @@ pub(super) fn builtin_catalog() -> Vec<CatalogEntry> {
     };
     let e = |provider: &str, id: &str, label: &str| mk(provider, id, label, false);
     vec![
-        e("claude", "claude-fable-5", "fable"),
-        e("claude", "claude-opus-4-8", "opus"),
-        e("claude", "claude-sonnet-5", "sonnet"),
-        e("claude", "claude-haiku-4-5", "haiku"),
+        e("claude", "claude-fable-5", "claude-fable-5"),
+        e("claude", "claude-opus-4-8", "claude-opus-4.8"),
+        e("claude", "claude-sonnet-5", "claude-sonnet-5"),
+        e("claude", "claude-haiku-4-5", "claude-haiku-4.5"),
         e("grok", "grok-4.5", "grok-4.5"),
         // Hidden from pickers (grok group offers only grok-4.5); still resolves
         // when referenced explicitly. Mirrors catalog.ts's `hidden: true`.
-        mk("grok", "grok-composer-2.5-fast", "composer", true),
+        mk("grok", "grok-composer-2.5-fast", "grok-composer-2.5-fast", true),
     ]
 }
 
 /// The dropdown's head-option display label: `default (<refs joined with " → ">)`,
 /// or the bare `default` when there are no refs to show. Used by the ad-hoc /
 /// new-session catalog picker ([`App::model_field`]); refs come from the repo's
-/// `default_models` and carry no marker (`default (claude/opus)`). The head
+/// `default_models` and carry no marker (`default (claude/claude-opus-4.8)`). The head
 /// option's stored VALUE is always the empty string (= leave `model` unset →
 /// the daemon resolves the chain).
 ///
@@ -535,7 +535,8 @@ impl App {
             // always one of its own options, so it can't fail either.
             FormAction::NewSession { .. }
             | FormAction::AdhocTask { .. }
-            | FormAction::GotoProvider { .. } => None,
+            | FormAction::GotoProvider { .. }
+            | FormAction::SwitchProvider => None,
         }
     }
 
@@ -673,6 +674,32 @@ impl App {
                     Some(cmd) => Update { dirty: true, cmds: vec![Cmd::Goto { path, cmd }] },
                     None => Update { dirty: true, cmds: vec![] },
                 }
+            }
+            // Fields: [provider dropdown]. Apply only when the pick differs
+            // from the current active provider — same-selection is a silent
+            // close (no RPC, no optimistic write). Optimistic update writes
+            // BOTH the live snapshot (indicator source) and the cached
+            // settings payload (so the `s` overlay agrees); the daemon's next
+            // state broadcast overwrites the snapshot field authoritatively.
+            FormAction::SwitchProvider => {
+                let target = values.first().cloned().unwrap_or_default();
+                let current = self.active_provider().unwrap_or_default();
+                if target.is_empty() || target == current {
+                    return Update { dirty: true, cmds: vec![] };
+                }
+                if let Some(snap) = self.snapshot.as_mut() {
+                    snap.active_provider = Some(target.clone());
+                }
+                if let Some(Some(p)) = self.settings.as_mut() {
+                    p.active_provider = target.clone();
+                }
+                let cmd = self.dispatch_rpc(
+                    "switch provider",
+                    "set_active_provider",
+                    serde_json::json!({ "provider": target }),
+                    RpcOpts::default(),
+                );
+                Update { dirty: true, cmds: vec![cmd] }
             }
         }
     }

@@ -21,7 +21,7 @@ function def(overrides: Partial<TaskDefinition> = {}): TaskDefinition {
 		preRun: null,
 		postRun: null,
 		verify: null,
-		model: "opus",
+		model: "claude/claude-opus-4.8",
 		timeoutMs: 1_800_000,
 		priority: "high",
 		prompt: "Review PR {{number}} for {{github_user}}.\n",
@@ -165,18 +165,18 @@ describe("instantiateDefinition — args", () => {
 	it("stamps deps.model onto each created task when provided", async () => {
 		const store = freshStore();
 		const created = await instantiateDefinition(
-			def({ discovery: null, model: "claude/opus" }),
+			def({ discovery: null, model: "claude/claude-opus-4.8" }),
 			{ mode: "args", values: ["257"] },
-			{ ...deps(store, "[]"), model: "claude/fable" },
+			{ ...deps(store, "[]"), model: "claude/claude-fable-5" },
 		);
 		expect(created).toHaveLength(1);
-		expect(created[0]?.model).toBe("claude/fable");
+		expect(created[0]?.model).toBe("claude/claude-fable-5");
 	});
 
 	it("leaves task.model null when deps.model is absent (def applies at spawn)", async () => {
 		const store = freshStore();
 		const created = await instantiateDefinition(
-			def({ discovery: null, model: "claude/opus" }),
+			def({ discovery: null, model: "claude/claude-opus-4.8" }),
 			{ mode: "args", values: ["257"] },
 			deps(store, "[]"),
 		);
