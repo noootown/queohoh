@@ -43,6 +43,7 @@ export {
 } from "./definition.js";
 export { discoverItems } from "./discovery.js";
 export { parseDuration } from "./duration.js";
+export { parseEnvFile } from "./env-file.js";
 export { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
 export { execHook } from "./hooks.js";
 export type { InstantiateDeps, Trigger } from "./instantiate.js";

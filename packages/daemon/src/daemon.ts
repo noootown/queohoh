@@ -15,6 +15,7 @@ import {
 } from "@queohoh/core";
 import { ApiServer } from "./api.js";
 import { Engine } from "./engine.js";
+import { loadWorkspaceEnv } from "./env-loader.js";
 import { acquireLock, releaseLock } from "./lock.js";
 import { normalizeDaemonPath, probeGh } from "./path-env.js";
 import {
@@ -49,6 +50,16 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		console.log(`created starter config at ${cfgPath}`);
 	}
 	const config = loadGlobalConfig(cfgPath);
+
+	// Load workspace secrets into process.env BEFORE buildSecretMap so they are
+	// redacted like any other env secret, and BEFORE any run is spawned (runs
+	// inherit process.env). Under launchd the daemon env is otherwise minimal.
+	const loadedEnvKeys = loadWorkspaceEnv(config.workspace);
+	if (loadedEnvKeys.length > 0) {
+		console.log(
+			`loaded ${loadedEnvKeys.length} var(s) from ${config.workspace}/.env`,
+		);
+	}
 
 	// Widen PATH BEFORE anything shells out. A minimal-PATH launch (launchd, a
 	// bare execFile, a stripped test shell) leaves `gh` invisible to the daemon's
