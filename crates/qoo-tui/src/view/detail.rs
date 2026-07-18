@@ -59,25 +59,50 @@ fn format_duration(ms: u64) -> String {
     if rem_min == 0 { format!("{hours}h") } else { format!("{hours}h {rem_min}m") }
 }
 
-/// `(key, value)` rows for the config sub-tab. The model row shows the def's
-/// authored `model:` — a label, or a fallback list of labels joined with ` → `
-/// — falling back to a dash when the def has no `model:` (it resolves against
-/// `default_models` at run time). Each `provider/label` ref renders label-only
-/// (provider prefix dropped) via the shared display helper. `modelResolved`
-/// was removed from the wire in Task 5 (the flat catalog replaced the alias
-/// table).
-fn config_rows(def: &TaskDefinition, catalog: &[CatalogEntry]) -> Vec<(&'static str, String)> {
-    let model = def
-        .model
-        .as_ref()
-        .map(|m| {
-            m.refs()
-                .iter()
-                .map(|r| crate::chain::model_ref_display(catalog, r))
-                .collect::<Vec<_>>()
-                .join(" → ")
-        })
-        .unwrap_or_else(|| EM_DASH.to_string());
+/// `(key, value)` rows for the config sub-tab. The model row shows the RESOLVED
+/// chain this def runs under the operator's active provider — the same
+/// `resolveModelChain` output the run-dialog default uses, so display and
+/// behavior can't drift. It reads `<head> · fallback <rest…>` (head first, then
+/// the remaining chain entries in walk order joined by ` → `); a single-entry
+/// chain drops the `· fallback …` suffix. Each ref renders label-only (provider
+/// prefix dropped) via the shared display helper. A dash when the def has no
+/// `model:`; on resolve failure it falls back to the authored refs.
+fn config_rows(
+    def: &TaskDefinition,
+    owned: &crate::selectors::ModelResolveOwned,
+) -> Vec<(&'static str, String)> {
+    let disp = |r: &str| crate::chain::model_ref_display(&owned.catalog, r);
+    let model = match &def.model {
+        None => EM_DASH.to_string(),
+        Some(m) => {
+            let defaults = owned.default_models.refs_for(&def.repo);
+            let enabled: Vec<&str> = owned.enabled_providers.iter().map(String::as_str).collect();
+            match crate::chain::resolve_model_chain(
+                Some(m),
+                &owned.catalog,
+                &enabled,
+                &defaults,
+                &owned.active_provider,
+            ) {
+                Ok(chain) if !chain.is_empty() => {
+                    let head = disp(&chain[0].model_ref);
+                    if chain.len() == 1 {
+                        head
+                    } else {
+                        let fallback = chain[1..]
+                            .iter()
+                            .map(|e| disp(&e.model_ref))
+                            .collect::<Vec<_>>()
+                            .join(" → ");
+                        format!("{head} · fallback {fallback}")
+                    }
+                }
+                // Unknown model / nothing runnable → show the authored refs so the
+                // operator still sees what the def asked for.
+                _ => m.refs().iter().map(|r| disp(r)).collect::<Vec<_>>().join(" → "),
+            }
+        }
+    };
     vec![
         ("args", if def.args.is_empty() { EM_DASH.to_string() } else { arg_summary(&def.args) }),
         ("worktree", def.worktree.clone()),
@@ -105,8 +130,11 @@ fn align_kv(rows: &[(&str, String)]) -> (Vec<String>, usize) {
 }
 
 /// Aligned config lines + the value column (see [`align_kv`]).
-fn config_view(def: &TaskDefinition, catalog: &[CatalogEntry]) -> (Vec<String>, usize) {
-    align_kv(&config_rows(def, catalog))
+fn config_view(
+    def: &TaskDefinition,
+    owned: &crate::selectors::ModelResolveOwned,
+) -> (Vec<String>, usize) {
+    align_kv(&config_rows(def, owned))
 }
 
 /// `(key, value)` rows for the worktree detail info block: identity (path,
@@ -412,7 +440,7 @@ pub(crate) fn content_for(
     def: Option<&TaskDefinition>,
     run_files: Option<&crate::runfiles::RunFiles>,
     detail_row: usize,
-    catalog: &[CatalogEntry],
+    owned: &crate::selectors::ModelResolveOwned,
     now_epoch_s: u64,
     tz_offset_s: i32,
 ) -> (Vec<String>, Vec<LineCtx>, &'static str) {
@@ -443,7 +471,7 @@ pub(crate) fn content_for(
                 let empty = RunMeta::default();
                 let meta = run_files.and_then(|f| f.meta.as_ref()).unwrap_or(&empty);
                 let (lines, ctxs) =
-                    run_info_lines(task, meta, catalog, now_epoch_s, tz_offset_s);
+                    run_info_lines(task, meta, &owned.catalog, now_epoch_s, tz_offset_s);
                 (lines, ctxs, "")
             }
             _ => {
@@ -456,7 +484,7 @@ pub(crate) fn content_for(
         DetailContext::Definition { .. } => match def {
             None => (Vec::new(), Vec::new(), "(loading definition…)"),
             Some(d) if sub_tab == 1 => {
-                let (lines, key_col) = config_view(d, catalog);
+                let (lines, key_col) = config_view(d, owned);
                 let ctxs = vec![LineCtx::Config { key_col }; lines.len()];
                 (lines, ctxs, "")
             }
@@ -727,14 +755,14 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     // Timezone offset for the worktree info block's absolute `updated` stamp —
     // same source the queue pane's timestamps use.
     let tz_offset = chrono::Local::now().offset().local_minus_utc();
-    let catalog = app.model_catalog();
+    let owned = app.model_resolve_owned();
     let (lines, ctxs, placeholder) = content_for(
         &ctx,
         sub_tab,
         def.as_ref(),
         run_files,
         c.ui.detail_row,
-        &catalog,
+        &owned,
         app.now_epoch_s,
         tz_offset,
     );
@@ -892,9 +920,32 @@ mod tests {
     use crate::app::{DetailKind, ListPane, PaneId, TabUiState};
     use crate::hit::HitTarget;
     use crate::runfiles::RunFiles;
+    use crate::selectors::ModelResolveOwned;
     use crate::test_fixtures::fixture_app;
     use crate::view::render as render_frame;
     use ratatui::{Terminal, backend::TestBackend};
+
+    /// A `ModelResolveOwned` for detail tests: providers derived from `catalog`
+    /// (all enabled), empty default_models, the given active provider.
+    fn owned_ctx(catalog: Vec<CatalogEntry>, active: &str) -> ModelResolveOwned {
+        let mut enabled_providers: Vec<String> = Vec::new();
+        for e in &catalog {
+            if !enabled_providers.contains(&e.provider) {
+                enabled_providers.push(e.provider.clone());
+            }
+        }
+        ModelResolveOwned {
+            catalog,
+            enabled_providers,
+            default_models: crate::ipc::types::DefaultModels::default(),
+            active_provider: active.into(),
+        }
+    }
+
+    /// An empty resolve context for detail tests that don't exercise the model row.
+    fn empty_owned() -> ModelResolveOwned {
+        owned_ctx(Vec::new(), "")
+    }
 
     /// fixture_app focused on the detail pane over the queue selection, with a
     /// 40-line transcript loaded for the running task.
@@ -1585,10 +1636,13 @@ mod tests {
             hidden: false,
         };
         // Unique labels → each ref renders label-only (provider prefix dropped).
-        let catalog = vec![
-            entry("claude", "claude-opus-4-8", "opus"),
-            entry("grok", "grok-4.5", "grok-4.5"),
-        ];
+        let owned = owned_ctx(
+            vec![
+                entry("claude", "claude-opus-4-8", "opus"),
+                entry("grok", "grok-4.5", "grok-4.5"),
+            ],
+            "claude",
+        );
         let mut def = TaskDefinition {
             model: Some(ModelRef::Many(vec!["claude/opus".into(), "grok/grok-4.5".into()])),
             timeout_ms: 1_800_000,
@@ -1597,25 +1651,56 @@ mod tests {
             priority: "normal".to_string(),
             ..Default::default()
         };
-        let (lines, key_col) = config_view(&def, &catalog);
+        let (lines, key_col) = config_view(&def, &owned);
         // Longest key is "discovery" (9) + 2-gap → value column at char 11.
         assert_eq!(key_col, 11);
         // Every line's key column is padded to the same width.
         for line in &lines {
             assert!(line.chars().count() >= key_col, "{line:?} shorter than key column");
         }
-        // A fallback list joins label-only refs with the ` → ` arrow.
-        assert!(lines.iter().any(|l| l == "model      opus → grok-4.5"));
+        // Resolved chain (active=claude, both in the pool) → head opus, then the
+        // fallback tail; label-only refs.
+        assert!(lines.iter().any(|l| l == "model      opus · fallback grok-4.5"));
         assert!(lines.iter().any(|l| l == "timeout    30m"));
         assert!(lines.iter().any(|l| l == "discovery  —"));
-        // A single ref shows its label only.
+        // A single-entry resolved chain drops the `· fallback …` suffix.
         def.model = Some(ModelRef::One("claude/opus".into()));
-        let (lines, _) = config_view(&def, &catalog);
+        let (lines, _) = config_view(&def, &owned);
         assert!(lines.iter().any(|l| l == "model      opus"));
         // No `model:` (an old daemon, or a model-less def) → a dash.
         def.model = None;
-        let (lines, _) = config_view(&def, &catalog);
+        let (lines, _) = config_view(&def, &owned);
         assert!(lines.iter().any(|l| l == "model      —"));
+    }
+
+    #[test]
+    fn config_view_shows_resolved_chain_reheaded_under_active_provider() {
+        use crate::ipc::types::{CatalogEntry, ModelRef};
+        let entry = |provider: &str, id: &str, label: &str| CatalogEntry {
+            provider: provider.into(),
+            id: id.into(),
+            label: label.into(),
+            hidden: false,
+        };
+        // Def authors claude/opus, but the operator is on grok → the resolved
+        // chain re-heads onto grok (grok-4.5), with opus as the fallback. This is
+        // the RESOLVED chain, not the authored `opus → grok-4.5` remap arrow.
+        let owned = owned_ctx(
+            vec![
+                entry("claude", "claude-opus-4-8", "opus"),
+                entry("grok", "grok-4.5", "grok-4.5"),
+            ],
+            "grok",
+        );
+        let def = TaskDefinition {
+            model: Some(ModelRef::One("claude/opus".into())),
+            ..Default::default()
+        };
+        let (lines, _) = config_view(&def, &owned);
+        assert!(
+            lines.iter().any(|l| l == "model      grok-4.5 · fallback opus"),
+            "resolved chain re-heads onto grok: {lines:?}"
+        );
     }
 
     #[test]
@@ -1626,7 +1711,7 @@ mod tests {
             item_key: "{{url}}".to_string(),
         });
         let ctx = DetailContext::Definition { repo: "p".into(), name: "pr-review".into() };
-        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, &[], 0, 0);
+        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, &empty_owned(), 0, 0);
         assert_eq!(placeholder, "");
         assert!(lines.iter().any(|l| l == "gh pr list --json url"), "lines: {lines:?}");
         assert!(lines.iter().any(|l| l == "jq '.[]'"), "multi-line command preserved");
@@ -1637,7 +1722,7 @@ mod tests {
     fn definition_discovery_tab_placeholder_when_no_discovery() {
         let def = crate::ipc::types::TaskDefinition::default();
         let ctx = DetailContext::Definition { repo: "p".into(), name: "lint".into() };
-        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, &[], 0, 0);
+        let (lines, _, placeholder) = content_for(&ctx, 2, Some(&def), None, 0, &empty_owned(), 0, 0);
         assert!(lines.is_empty());
         assert_eq!(placeholder, "(no discovery)");
     }
@@ -1653,13 +1738,13 @@ mod tests {
             ..Default::default()
         };
         let ctx = DetailContext::Run { task: crate::ipc::types::TaskInstance::default() };
-        let (_lines, ctxs, _) = content_for(&ctx, 1, None, Some(&files), 0, &[], 0, 0);
+        let (_lines, ctxs, _) = content_for(&ctx, 1, None, Some(&files), 0, &empty_owned(), 0, 0);
         assert_eq!(ctxs[0], LineCtx::Fenced { lang: String::new() });
         assert_eq!(ctxs[1], LineCtx::Fenced { lang: String::new() });
 
         // Same lines WITHOUT the flag: the `###` line is a plain Text line.
         let files_flat = RunFiles { transcript_starts_in_fence: false, ..files };
-        let (_lines, ctxs_flat, _) = content_for(&ctx, 1, None, Some(&files_flat), 0, &[], 0, 0);
+        let (_lines, ctxs_flat, _) = content_for(&ctx, 1, None, Some(&files_flat), 0, &empty_owned(), 0, 0);
         assert_eq!(ctxs_flat[0], LineCtx::Text);
         assert_eq!(ctxs_flat[1], LineCtx::Text);
     }
