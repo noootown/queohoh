@@ -111,7 +111,8 @@ export async function instantiateDefinition(
 	// defaults / the static `adhoc` key), so `skip_seen` would drop every fire
 	// after the first. Fire-timing dedup is owned by the engine's cron cursor, so
 	// item dedup is meaningless here — force it off. Discovery-backed crons keep
-	// their configured dedup (hourly pr-review must still skip PRs already queued).
+	// their configured dedup (every-15m pr-fix-ci-conflicts must still skip PRs
+// already queued).
 	// An explicit TUI dialog def-run (`bypassDedup`) forces it off too: pressing
 	// Run is "run NOW" intent and must never silently create zero tasks.
 	const dedupMode =
