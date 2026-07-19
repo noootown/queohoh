@@ -213,6 +213,7 @@ impl App {
                 if is_adhoc_return {
                     self.cancel_adhoc_session_pick()
                 } else {
+                    self.note_esc_dismiss();
                     self.mode = Mode::List;
                     Update { dirty: true, cmds: vec![] }
                 }

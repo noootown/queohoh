@@ -1,6 +1,6 @@
-//! The unified adhoc-create form (`c` / Create) — target combobox, session
-//! picker, model dropdown, prompt textarea — reached from any list pane. Drives
-//! the real `Mode::Form { AdhocTask }` flow through `App::update`.
+//! The unified adhoc-create form (`s` / Schedule on QUEUE) — target combobox, session
+//! picker, model dropdown, prompt textarea — reached from the QUEUE `[s]chedule`
+//! chip. Drives the real `Mode::Form { AdhocTask }` flow through `App::update`.
 
 use super::*;
 use crate::app::mode::adhoc_field;
@@ -48,9 +48,17 @@ fn app() -> App {
 }
 
 fn type_str(a: &mut App, s: &str) {
+    let _ = type_str_cmds(a, s);
+}
+
+/// Like [`type_str`], but returns every `Cmd` produced while typing (so callers
+/// can assert a side-effect like the target-change sessions prefetch).
+fn type_str_cmds(a: &mut App, s: &str) -> Vec<Cmd> {
+    let mut cmds = Vec::new();
     for c in s.chars() {
-        a.update(ch(c));
+        cmds.extend(a.update(ch(c)).cmds);
     }
+    cmds
 }
 
 fn focus_field(a: &mut App, i: usize) {
@@ -80,22 +88,24 @@ fn fill_prompt_and_submit(a: &mut App, prompt: &str) -> Update {
 }
 
 #[test]
-fn queue_c_opens_adhoc_form_with_four_fields() {
+fn queue_s_opens_adhoc_form_with_four_fields() {
     let mut a = app(); // queue focused by default
-    a.update(ch('c'));
+    a.update(ch('s'));
     match &a.mode {
         Mode::Form { state, action } => {
             assert!(matches!(action, FormAction::AdhocTask { .. }));
             assert_eq!(state.fields.len(), 4);
+            // Order: target → session → model → prompt (model under session so
+            // a chosen session can filter models by provider).
             assert_eq!(state.fields[adhoc_field::TARGET].label, "worktree / PR / ticket");
             assert!(state.fields[adhoc_field::TARGET].value.is_empty());
+            assert_eq!(state.fields[adhoc_field::SESSION].label, "session");
             assert_eq!(state.fields[adhoc_field::SESSION].value, "New session");
             assert_eq!(state.fields[adhoc_field::MODEL].label, "model");
             assert_eq!(state.fields[adhoc_field::PROMPT].label, "prompt");
             assert!(state.fields[adhoc_field::PROMPT].required);
-            // Focus starts on the model dropdown (field 0, the first
-            // non-readonly field under the app-wide model-first ordering).
-            assert_eq!(state.focus, adhoc_field::MODEL);
+            // Focus starts on the target combobox (field 0).
+            assert_eq!(state.focus, adhoc_field::TARGET);
         }
         other => panic!("expected adhoc Form, got {other:?}"),
     }
@@ -104,7 +114,7 @@ fn queue_c_opens_adhoc_form_with_four_fields() {
 #[test]
 fn adhoc_empty_target_enqueues_temp_no_ref() {
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     let up = fill_prompt_and_submit(&mut a, "run this now");
     assert!(matches!(a.mode, Mode::List));
     let p = enqueue_params(&up);
@@ -117,7 +127,7 @@ fn adhoc_empty_target_enqueues_temp_no_ref() {
 #[test]
 fn adhoc_existing_worktree_target_sends_worktree_ref() {
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     focus_field(&mut a, adhoc_field::TARGET);
     type_str(&mut a, "platform.wt-a");
     let up = fill_prompt_and_submit(&mut a, "do it");
@@ -138,7 +148,7 @@ fn adhoc_picked_model_is_pinned() {
     // explicit dialog choice: it must be sent with `model_pinned: true` so
     // the worker runs it exactly — no active-provider re-head, no fallback.
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     focus_field(&mut a, adhoc_field::MODEL);
     // Same catalog order as the new-session picker: Down opens the list
     // (highlight = head idx 0), two more Downs reach `claude/claude-opus-4.8`.
@@ -155,7 +165,7 @@ fn adhoc_picked_model_is_pinned() {
 #[test]
 fn adhoc_pr_number_target_sends_pr_ref() {
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     focus_field(&mut a, adhoc_field::TARGET);
     type_str(&mut a, "45");
     let up = fill_prompt_and_submit(&mut a, "fix pr");
@@ -164,9 +174,9 @@ fn adhoc_pr_number_target_sends_pr_ref() {
 }
 
 #[test]
-fn adhoc_c_on_queue_pane_opens_blank_ignoring_selected_task() {
+fn adhoc_s_on_queue_pane_opens_blank_ignoring_selected_task() {
     // A new adhoc task has nothing to do with which past task is selected, so
-    // the QUEUE `c` never prefills the target from the cursor row's worktree.
+    // the QUEUE `s` never prefills the target from the cursor row's worktree.
     let mut a = App::new("/tmp/runs".into(), "/tmp/s.sock".into());
     a.size = (120, 40);
     let mut wts = HashMap::new();
@@ -191,34 +201,36 @@ fn adhoc_c_on_queue_pane_opens_blank_ignoring_selected_task() {
         ..Default::default()
     }));
     a.connected = true;
-    a.update(ch('c')); // queue focused by default, task row under the cursor
+    a.update(ch('s')); // queue focused by default, task row under the cursor
     match &a.mode {
         Mode::Form { state, .. } => {
-            assert!(state.fields[adhoc_field::TARGET].value.is_empty(), "queue create opens blank");
+            assert!(state.fields[adhoc_field::TARGET].value.is_empty(), "queue schedule opens blank");
         }
         other => panic!("expected adhoc Form, got {other:?}"),
     }
 }
 
 #[test]
-fn adhoc_c_on_worktrees_pane_prefills_target() {
+fn schedule_and_create_inert_on_worktrees_and_tasks() {
+    // Create/schedule chip lives on QUEUE only — `s`/`c` must not open the form
+    // from TASKS or WORKTREES (and `c` is cron on TASKS, not create).
     let mut a = app();
-    // Tab Queue → Tasks → Worktrees.
+    // Tab Queue → Tasks.
     a.update(keyc(KeyCode::Tab));
+    a.update(ch('s'));
+    assert!(matches!(a.mode, Mode::List), "s inert on TASKS");
+    // Tab Tasks → Worktrees.
     a.update(keyc(KeyCode::Tab));
+    a.update(ch('s'));
+    assert!(matches!(a.mode, Mode::List), "s inert on WORKTREES");
     a.update(ch('c'));
-    match &a.mode {
-        Mode::Form { state, .. } => {
-            assert_eq!(state.fields[adhoc_field::TARGET].value, "platform.wt-a");
-        }
-        other => panic!("expected adhoc Form, got {other:?}"),
-    }
+    assert!(matches!(a.mode, Mode::List), "c inert on WORKTREES (no create chip)");
 }
 
 #[test]
 fn adhoc_esc_cancels_without_cmd() {
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     let u = a.update(esc());
     assert!(matches!(a.mode, Mode::List));
     assert!(u.cmds.is_empty());
@@ -227,7 +239,7 @@ fn adhoc_esc_cancels_without_cmd() {
 #[test]
 fn shift_enter_inserts_newline_in_prompt() {
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     focus_field(&mut a, adhoc_field::PROMPT);
     a.update(ch('a'));
     a.update(shift_enter());
@@ -239,27 +251,34 @@ fn shift_enter_inserts_newline_in_prompt() {
 }
 
 #[test]
-fn session_field_opens_session_pick_for_existing_worktree() {
+fn session_field_opens_inline_dropdown_for_existing_worktree() {
+    // Adhoc session pick is an INLINE dropdown on the form (not Mode::SessionPick).
+    // Typing an existing worktree into the target already kicks `listSessions`
+    // (via `adhoc_on_target_changed`); Enter on session just opens the list.
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     focus_field(&mut a, adhoc_field::TARGET);
-    type_str(&mut a, "platform.wt-a");
+    let typed = type_str_cmds(&mut a, "platform.wt-a");
+    assert!(
+        typed.iter().any(|c| matches!(c, Cmd::FetchSessions { .. })),
+        "typing an existing worktree target prefetches sessions"
+    );
     focus_field(&mut a, adhoc_field::SESSION);
-    let u = a.update(enter());
+    a.update(enter());
     match &a.mode {
-        Mode::SessionPick { worktree, ret, .. } => {
-            assert_eq!(worktree, "platform.wt-a");
-            assert!(matches!(ret, SessionPickReturn::Adhoc { .. }));
+        Mode::Form { state, .. } => {
+            assert!(state.dropdown_open, "session field opens inline list");
+            assert_eq!(state.focus, adhoc_field::SESSION);
+            assert_eq!(state.sessions_for.as_deref(), Some("platform.wt-a"));
         }
-        other => panic!("expected SessionPick, got {other:?}"),
+        other => panic!("expected Form with open session dropdown, got {other:?}"),
     }
-    assert!(u.cmds.iter().any(|c| matches!(c, Cmd::FetchSessions { .. })));
 }
 
 #[test]
 fn session_field_is_noop_without_an_existing_worktree_target() {
     let mut a = app();
-    a.update(ch('c')); // empty target
+    a.update(ch('s')); // empty target
     focus_field(&mut a, adhoc_field::SESSION);
     a.update(enter());
     assert!(matches!(a.mode, Mode::Form { .. }), "stays on the form");
@@ -267,15 +286,15 @@ fn session_field_is_noop_without_an_existing_worktree_target() {
 }
 
 #[test]
-fn session_pick_resume_returns_pinned_and_preserves_prompt() {
+fn session_dropdown_resume_pins_and_preserves_prompt() {
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     focus_field(&mut a, adhoc_field::TARGET);
     type_str(&mut a, "platform.wt-a");
     focus_field(&mut a, adhoc_field::PROMPT);
     type_str(&mut a, "continue please");
     focus_field(&mut a, adhoc_field::SESSION);
-    a.update(enter()); // → SessionPick (loading)
+    a.update(enter()); // open inline session dropdown (loading)
     a.update(Event::SessionsLoaded {
         worktree: "platform.wt-a".into(),
         result: Ok(vec![SessionChoice {
@@ -286,12 +305,12 @@ fn session_pick_resume_returns_pinned_and_preserves_prompt() {
             provider: None,
         }]),
     });
-    // View rows: New(0), Create Worktree(1), session(2).
+    // Dropdown rows: New session (0), then sessions (1..). One Down → sess-1.
     a.update(keyc(KeyCode::Down));
-    a.update(keyc(KeyCode::Down));
-    a.update(enter()); // confirm the session → back to the adhoc form
+    a.update(enter()); // pick → pin on the form
     match &a.mode {
         Mode::Form { state, action } => {
+            assert!(!state.dropdown_open);
             assert_eq!(state.fields[adhoc_field::PROMPT].value, "continue please");
             assert_eq!(state.fields[adhoc_field::SESSION].value, "↻ Fix parser");
             match action {
@@ -302,7 +321,7 @@ fn session_pick_resume_returns_pinned_and_preserves_prompt() {
                 other => panic!("{other:?}"),
             }
         }
-        other => panic!("expected the restored adhoc Form, got {other:?}"),
+        other => panic!("expected the adhoc Form after pick, got {other:?}"),
     }
     // Submit carries both the ref and the pinned session.
     if let Mode::Form { state, .. } = &mut a.mode {
@@ -315,29 +334,132 @@ fn session_pick_resume_returns_pinned_and_preserves_prompt() {
 }
 
 #[test]
-fn session_pick_cancel_restores_the_form_unchanged() {
+fn session_pick_scopes_model_options_to_provider() {
+    // Claude session → only claude models; New session → full catalog again.
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
+    focus_field(&mut a, adhoc_field::TARGET);
+    type_str(&mut a, "platform.wt-a");
+    focus_field(&mut a, adhoc_field::SESSION);
+    a.update(enter());
+    a.update(Event::SessionsLoaded {
+        worktree: "platform.wt-a".into(),
+        result: Ok(vec![
+            SessionChoice {
+                session_id: "c1".into(),
+                label: "Claude work".into(),
+                mtime_ms: 3_000,
+                model: Some("claude/claude-sonnet-5".into()),
+                provider: Some("claude".into()),
+            },
+            SessionChoice {
+                session_id: "g1".into(),
+                label: "Grok work".into(),
+                mtime_ms: 2_000,
+                model: Some("grok/grok-4.5".into()),
+                provider: Some("grok".into()),
+            },
+        ]),
+    });
+    // Pick claude session (row 1).
+    a.update(keyc(KeyCode::Down));
+    a.update(enter());
+    match &a.mode {
+        Mode::Form { state, .. } => {
+            assert_eq!(state.fields[adhoc_field::SESSION].value, "↻ Claude work");
+            let opts = match &state.fields[adhoc_field::MODEL].kind {
+                crate::view::form::FieldKind::Dropdown { options } => options,
+                other => panic!("expected model Dropdown, got {other:?}"),
+            };
+            assert!(
+                opts.iter().all(|o| o.value.is_empty() || o.value.starts_with("claude/")),
+                "claude session must only offer claude models: {opts:?}"
+            );
+            assert!(
+                opts.iter().any(|o| o.value == "claude/claude-sonnet-5"),
+                "session model should be in the scoped list"
+            );
+            assert_eq!(
+                state.fields[adhoc_field::MODEL].value,
+                "claude/claude-sonnet-5",
+                "preselect the session's model"
+            );
+            assert!(
+                !opts.iter().any(|o| o.value.starts_with("grok/")),
+                "grok models must not appear under a claude session"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // Pick New session → full catalog restored.
+    focus_field(&mut a, adhoc_field::SESSION);
+    a.update(enter());
+    a.update(enter()); // row 0 = New session
+    match &a.mode {
+        Mode::Form { state, .. } => {
+            assert_eq!(state.fields[adhoc_field::SESSION].value, "New session");
+            let opts = match &state.fields[adhoc_field::MODEL].kind {
+                crate::view::form::FieldKind::Dropdown { options } => options,
+                other => panic!("{other:?}"),
+            };
+            assert!(
+                opts.iter().any(|o| o.value.starts_with("claude/")),
+                "new session offers claude"
+            );
+            assert!(
+                opts.iter().any(|o| o.value.starts_with("grok/")),
+                "new session offers grok"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // Grok session → only grok.
+    focus_field(&mut a, adhoc_field::SESSION);
+    a.update(enter());
+    a.update(keyc(KeyCode::Down));
+    a.update(keyc(KeyCode::Down)); // row 2 = grok session
+    a.update(enter());
+    match &a.mode {
+        Mode::Form { state, .. } => {
+            let opts = match &state.fields[adhoc_field::MODEL].kind {
+                crate::view::form::FieldKind::Dropdown { options } => options,
+                other => panic!("{other:?}"),
+            };
+            assert!(
+                opts.iter().all(|o| o.value.starts_with("grok/")),
+                "grok session must only offer grok models: {opts:?}"
+            );
+            assert_eq!(state.fields[adhoc_field::MODEL].value, "grok/grok-4.5");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn session_dropdown_esc_closes_list_leaving_form() {
+    let mut a = app();
+    a.update(ch('s'));
     focus_field(&mut a, adhoc_field::TARGET);
     type_str(&mut a, "platform.wt-a");
     focus_field(&mut a, adhoc_field::PROMPT);
     type_str(&mut a, "keep this");
     focus_field(&mut a, adhoc_field::SESSION);
-    a.update(enter()); // → SessionPick
-    a.update(esc()); // cancel
+    a.update(enter()); // open inline session dropdown
+    a.update(esc()); // closes the list only (form stays open)
     match &a.mode {
         Mode::Form { state, .. } => {
+            assert!(!state.dropdown_open);
             assert_eq!(state.fields[adhoc_field::PROMPT].value, "keep this");
             assert_eq!(state.fields[adhoc_field::SESSION].value, "New session");
         }
-        other => panic!("expected the restored adhoc Form, got {other:?}"),
+        other => panic!("expected Form after Esc-close of session list, got {other:?}"),
     }
 }
 
 #[test]
 fn editing_the_target_clears_a_stale_session_pin() {
     let mut a = app();
-    a.update(ch('c'));
+    a.update(ch('s'));
     // Simulate a prior pick: a pin + updated session label.
     if let Mode::Form { state, action } = &mut a.mode {
         if let FormAction::AdhocTask { resume_session_id, resume_label, resume_worktree, .. } = action {

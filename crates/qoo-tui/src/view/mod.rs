@@ -812,7 +812,7 @@ mod tests {
     fn snapshot_wide_140x30() {
         // A wide terminal with a widened left column (override) so the pane inner
         // width clears the labeled-chip threshold: chips render as
-        // `[c]reate  [a]ctions  [z]collapse`.
+        // `[s]chedule  [z]collapse` (queue) / `[c]ron` (tasks).
         let mut app = fixture_app();
         // Widened enough to clear the labeled-chip threshold AND leave the
         // WORKTREES pane room for the author + commit-age columns (they drop
@@ -849,7 +849,7 @@ mod tests {
                     name: "nightly-tidy".into(),
                     scope: "project".into(),
                     cron: Some("0 2 * * *".into()),
-                    // Paused: exercises the DIMMED schedule-column path (`[o]cron`
+                    // Paused: exercises the DIMMED schedule-column path (`[c]ron`
                     // toggled off). Not visible in the text-only snapshot — see the
                     // `sched_cell_style` unit test for the styling assertion.
                     cron_enabled: false,

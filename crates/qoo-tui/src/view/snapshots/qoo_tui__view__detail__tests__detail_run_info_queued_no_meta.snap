@@ -17,13 +17,13 @@ expression: terminal.backend()
 "│                         ││    finished    —                                  │"
 "│                         ││    duration    —                                  │"
 "╰─────────────────────────╯│                                                   │"
-"╭⚡TASKS [r] [d] [o] · [c]╮│  Details                                          │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] [c] · [z]╮│  Details                                          │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││    worktree    acme.feature                       │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││    session     —                                  │"
 "│                         ││    model claude-opus-4.8 (claude) ·               │"
 "│                         ││  claude-opus-4-8                                  │"
 "╰─────────────────────────╯│    exit code   —                                  │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│    cost        —                                  │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [g] [x] [t]╮│    cost        —                                  │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││    tokens      —                                  │" Hidden by multi-width symbols: [(3, " ")]
 "│ 1 feature               ││    turns       —                                  │"
 "│ ● hotfix                ││                                                   │"

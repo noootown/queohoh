@@ -7,7 +7,7 @@ use crate::hit::{HitMap, HitTarget};
 use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 24] = [
+const HELP_ROWS: [(&str, &str); 25] = [
     ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
     ("1–9 / 0", "switch project tab (0 = 10th)"),
     ("ctrl+s then n/p", "next / previous project tab"),
@@ -17,18 +17,19 @@ const HELP_ROWS: [(&str, &str); 24] = [
     ("h / l", "detail: previous / next sub-tab"),
     ("ctrl+x / ctrl+z", "detail sub-tab (alias of l / h)"),
     ("enter", "open selected lane task (worktrees)"),
-    ("r", "run: new task on worktree (worktrees) · rerun (queue) · run def (tasks)"),
+    ("r", "rerun (queue) · run def (tasks) — schedule new tasks via s on queue"),
     ("g", "goto: resume task's Claude session (queue) · open worktree in tmux (worktrees)"),
     ("x", "cancel (queue) · remove worktree (worktrees)"),
     ("a", "archive / unarchive selection (queue)"),
     ("d", "discover: fan out one task per discovered item (tasks)"),
-    ("c", "create (queue: adhoc task · worktrees: worktree)"),
+    ("c", "cron: pause / resume schedule (tasks)"),
+    ("s", "schedule adhoc task (queue)"),
     ("t", "task menu (worktrees)"),
     ("z", "collapse / expand focused list pane"),
     ("/", "filter focused pane"),
     ("esc", "clear range+marks → clear filter → close overlay"),
     ("Home/End", "detail pane top / bottom"),
-    ("s", "settings — model table"),
+    (",", "settings — model table"),
     ("p", "switch active provider"),
     ("?", "this help"),
     ("q", "quit"),

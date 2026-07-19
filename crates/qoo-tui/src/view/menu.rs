@@ -435,11 +435,18 @@ pub fn render_session_pick(
             )
         } else if let Some(&i) = filtered.get(index - 2) {
             let s = &items[i];
-            // Render the session time in the viewer's local zone, not UTC — mirrors
-            // the worktree detail block (see `view::detail`).
+            // Session id dim; datetime uses shared timestamp teal (`info`) —
+            // same slot as relative ages and pane commit-age columns.
             let tz_offset_s = chrono::Local::now().offset().local_minus_utc();
             let when = absolute_local_label(s.mtime_ms / 1000, tz_offset_s);
-            wrap_styled(&[(format!("{}  ·  {when}", s.session_id), p.dim_style())], inner_w)
+            wrap_styled(
+                &[
+                    (s.session_id.clone(), p.dim_style()),
+                    ("  ·  ".into(), p.dim_style()),
+                    (when, p.timestamp_style()),
+                ],
+                inner_w,
+            )
         } else {
             Vec::new()
         };
@@ -558,13 +565,15 @@ pub fn render_session_pick(
             let right_w = age_w + prov_w;
             let label = clip(&items[i].label, inner_w.saturating_sub(right_w + 2));
             let gap = inner_w.saturating_sub(label.chars().count() + right_w);
-            // Provider stays dim even under the selection bar (dim fg + selection
-            // bg when highlighted) so the tag reads as metadata, not body text.
-            let prov_style = if vix == index {
-                Style::default().fg(p.dim).bg(p.selection_bg)
-            } else {
-                p.dim_style()
-            };
+            // Provider: top-bar green. Age: shared timestamp teal (`info`).
+            // Selected rows keep concept colors on the selection bg.
+            let selected = vix == index;
+            let mut prov_style = p.provider_style(prov.unwrap_or(""));
+            let mut age_style = p.timestamp_style();
+            if selected {
+                prov_style = prov_style.bg(p.selection_bg);
+                age_style = age_style.bg(p.selection_bg);
+            }
             let mut spans = vec![
                 (label, base),
                 (" ".repeat(gap), base),
@@ -572,7 +581,7 @@ pub fn render_session_pick(
             if let Some(pr) = prov {
                 spans.push((format!("{pr} "), prov_style));
             }
-            spans.push((age, base));
+            spans.push((age, age_style));
             lines.push((Some(vix), spans));
         }
     }
@@ -585,8 +594,8 @@ pub fn render_session_pick(
         if let Some(vix) = menu_ix {
             hit.push(row_rect, HitTarget::MenuItem(*vix));
         }
-        // Pad the last span (or a trailing space of its style) so selection bars
-        // and single-style rows still fill the full row width.
+        // Pad with the row base style (not the last concept color — age/provider
+        // would leak teal/green into the trailing bar fill).
         let row_w = rows_area.width as usize;
         let used: usize = spans.iter().map(|(t, _)| t.chars().count()).sum();
         let mut out: Vec<Span> = spans
@@ -594,7 +603,8 @@ pub fn render_session_pick(
             .map(|(t, style)| Span::styled(t.clone(), *style))
             .collect();
         if used < row_w {
-            let pad_style = spans.last().map(|(_, s)| *s).unwrap_or_default();
+            let selected = menu_ix.is_some_and(|vix| vix == index);
+            let pad_style = if selected { p.selection() } else { Style::default() };
             out.push(Span::styled(" ".repeat(row_w - used), pad_style));
         } else if used > row_w {
             // Defensive: collapse to a single pad_clip when spans overshoot

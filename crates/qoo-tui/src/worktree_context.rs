@@ -3,6 +3,26 @@ use std::collections::HashMap;
 use crate::ipc::types::ArgSpec;
 use crate::selectors::WorktreeRow;
 
+/// Map classified refs (`pr:N`, `ticket:ID`) → existing worktree `raw_name` that
+/// already covers that PR/ticket. Used by the schedule/run combobox so typing
+/// `JUS-1924` or `1938` does not offer a synthetic "use ticket/PR (new worktree)"
+/// row when the operator can already pick `platform.JUS-1924` / the PR's branch
+/// worktree. First write wins when multiple worktrees share a ticket token.
+pub fn worktree_ref_aliases(rows: &[WorktreeRow]) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    for r in rows.iter().filter(|r| !r.is_session) {
+        if let Some(n) = r.pr_number {
+            m.entry(format!("pr:{n}")).or_insert_with(|| r.raw_name.clone());
+        }
+        for src in [&r.branch, &r.raw_name] {
+            if let Some(t) = extract_ticket(src) {
+                m.entry(format!("ticket:{t}")).or_insert_with(|| r.raw_name.clone());
+            }
+        }
+    }
+    m
+}
+
 /// First `[A-Za-z]+-\d+` token, uppercased; `None` when the branch carries no
 /// ticket-shaped token. Hand-rolled scan (no regex dep): greedy letter run,
 /// a single `-`, then one-or-more digits.
@@ -142,6 +162,21 @@ mod tests {
         assert_eq!(extract_ticket("feature/no-number"), None);
         assert_eq!(extract_ticket(""), None);
         assert_eq!(extract_ticket("jus-1008-then-abc-42").as_deref(), Some("JUS-1008"));
+    }
+
+    #[test]
+    fn worktree_ref_aliases_map_pr_and_ticket_to_raw_name() {
+        let rows = vec![
+            wt("platform.JUS-1924", "JUS-1924-fix-thing", false),
+            WorktreeRow {
+                pr_number: Some(1938),
+                ..wt("platform.feat-pr", "feat-pr", false)
+            },
+        ];
+        let a = worktree_ref_aliases(&rows);
+        assert_eq!(a.get("ticket:JUS-1924").map(String::as_str), Some("platform.JUS-1924"));
+        assert_eq!(a.get("pr:1938").map(String::as_str), Some("platform.feat-pr"));
+        assert!(a.get("ticket:OTHER-1").is_none());
     }
 
     #[test]

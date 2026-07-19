@@ -194,7 +194,7 @@ pub enum Mode {
     Search { pane: ListPane },
     /// Full-screen keymap overlay; any key returns to `List`.
     Help,
-    /// Read-only model-alias settings overlay (`s`). Any key returns to `List`,
+    /// Read-only model-alias settings overlay (`,`). Any key returns to `List`,
     /// exactly like `Help`. The data it shows lives in `App::settings`, fetched
     /// once on first open.
     Settings,
@@ -302,14 +302,16 @@ pub enum FormAction {
     /// Create a new worktree in `repo`, then enqueue a first task into it.
     /// Fields: `[model dropdown, branch/name input, prompt textarea]`.
     CreateWorktree { repo: String },
-    /// Adhoc task (`c` / Create). The unified target-picking create form —
-    /// Fields, in order (see `adhoc_field`): `[model dropdown, target combobox,
-    /// session picker, prompt textarea]`. The `target` combobox resolves to a
-    /// canonical ref on submit (`resolve_target_ref`); an EMPTY target enqueues
-    /// into a fresh temp worktree (the legacy adhoc behavior). `resume_*` pins a
-    /// session to CONTINUE (only valid — and only sent — when the resolved
+    /// Adhoc task (`s` / Schedule on QUEUE). The unified target-picking create form —
+    /// Fields, in order (see `adhoc_field`): `[target combobox, session picker,
+    /// model dropdown, prompt textarea]`. Model sits UNDER session so its options
+    /// can be scoped to the chosen session's provider (claude session → claude
+    /// models only; New session → full catalog). The `target` combobox resolves
+    /// to a canonical ref on submit (`resolve_target_ref`); an EMPTY target
+    /// enqueues into a fresh temp worktree (the legacy adhoc behavior). `resume_*`
+    /// pins a session to CONTINUE (only valid — and only sent — when the resolved
     /// target is `resume_worktree`, an existing worktree); the session picker
-    /// field sets them via a `Mode::SessionPick` round-trip.
+    /// field sets them via the inline session dropdown.
     AdhocTask {
         repo: String,
         resume_session_id: Option<String>,
@@ -344,10 +346,12 @@ pub enum FormAction {
 /// Which stop each adhoc-create form field occupies (the positional layout the
 /// `AdhocTask` action reads back). Kept as a single source of truth so the
 /// builder, the submit reader, and the session round-trip stay in lockstep.
+/// Order is target → session → model → prompt so the model list can filter by
+/// the chosen session's provider (see `adhoc_session_dropdown_pick`).
 pub mod adhoc_field {
-    pub const MODEL: usize = 0;
-    pub const TARGET: usize = 1;
-    pub const SESSION: usize = 2;
+    pub const TARGET: usize = 0;
+    pub const SESSION: usize = 1;
+    pub const MODEL: usize = 2;
     pub const PROMPT: usize = 3;
 }
 

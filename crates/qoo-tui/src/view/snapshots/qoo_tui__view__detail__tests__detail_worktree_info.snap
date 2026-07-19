@@ -15,12 +15,12 @@ expression: terminal.backend()
 "│                         ││                                                   │"
 "│                         ││    Task        Created      Age       Live        │"
 "╰─────────────────────────╯│  ▶ squash-me…  07/09 07:00  just now  ⏱ 0s        │"
-"╭⚡TASKS [r] [d] [o] · [c]╮│  ○ write doc…  07/09 07:04  just now  #1 in lane  │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] [c] · [z]╮│  ○ write doc…  07/09 07:04  just now  #1 in lane  │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [g] [x] [t]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│ 2 feature               ││                                                   │"
 "│ ● hotfix                ││                                                   │"

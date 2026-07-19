@@ -18,10 +18,10 @@ use crate::selectors::{
     wt_author_text, wt_col_layout, wt_merge_marker, WtMergeMarker,
 };
 use crate::view::theme::{
-    BTN_LABEL_ARCHIVE, BTN_LABEL_COLLAPSE, BTN_LABEL_CREATE, BTN_LABEL_CRON, BTN_LABEL_DISCOVER,
+    BTN_LABEL_ARCHIVE, BTN_LABEL_COLLAPSE, BTN_LABEL_CRON, BTN_LABEL_DISCOVER,
     BTN_LABEL_EXPAND,
-    BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_STOP, BTN_LABEL_TASKS,
-    BTN_LABEL_UNARCHIVE,
+    BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_SCHEDULE,
+    BTN_LABEL_STOP, BTN_LABEL_TASKS, BTN_LABEL_UNARCHIVE,
     FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_APPROVED, GLYPH_CURSOR,
     GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_NEXT, GLYPH_PROTECTED, GLYPH_SEARCH,
     Palette, RULE_CHAR, SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
@@ -31,15 +31,15 @@ use crate::view::theme::{
 // [`crate::hit::pane_buttons`], shared with the keymap so key gating tracks the
 // visible chips. Here we only carry the render-time SCOPE boundary: the first
 // `*_ROW_SCOPED` entries of a pane's set are the row-scoped verbs (they act on
-// the highlighted row), the rest are pane-scoped (create / collapse). A `·`
+// the highlighted row), the rest are pane-scoped (schedule / collapse). A `·`
 // divider is drawn between the two groups. Narrow panes drop chips from the
 // RIGHT (collapse first), so the row-scoped verbs survive longest; the divider
 // shows only while chips from BOTH groups remain (see [`build_header`]);
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
-const QUEUE_ROW_SCOPED: usize = 4; // [r]un [x]stop [g]oto [a]rchive · [c]reate [z]
-const TASKS_ROW_SCOPED: usize = 3; // [r]un [d]iscover [o]cron · [c]reate [z]
-const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [c]reate [z]
+const QUEUE_ROW_SCOPED: usize = 4; // [r]erun [x]stop [g]oto [a]rchive · [s]chedule [z]
+const TASKS_ROW_SCOPED: usize = 3; // [r]un [d]iscover [c]ron · [z]
+const WORKTREE_ROW_SCOPED: usize = 3; // [g]oto [x]remove [t]asks · [z]
 
 /// Scope divider drawn between the row-scoped and pane-scoped chip groups (the
 /// TUI's `·` separator convention). It REPLACES the normal single-space gap
@@ -75,7 +75,7 @@ fn pane_block(title_line: Line<'static>, focused: bool, p: &Palette) -> Block<'s
 
 /// The chip spans for one title-bar button plus its display width in CELLS.
 /// Labeled form is `[{key}]{label}` (`[k]` accent+bold, then the lowercase
-/// label word in fg, no gap — fused to `[c]reate` when the key is the label's
+/// label word in fg, no gap — fused to `[s]chedule` when the key is the label's
 /// first letter, `[z]collapse` when it isn't); the compact form drops the
 /// label, leaving `[{key}]`. Hotkeys always render in square brackets — the
 /// global convention across chips, hint rows, footer, and help. Width is
@@ -101,18 +101,18 @@ fn button_chip(
     // row is already archived (the direction `a` will take — see
     // [`render_list_pane`]). Ignored by every non-Archive chip.
     archive_unarchive: bool,
-    // The TASKS `[o]cron` chip renders DIMMED (like a bulk-disabled chip) when the
+    // The TASKS `[c]ron` chip renders DIMMED (like a bulk-disabled chip) when the
     // selected def has no `cron:` — the toggle is inert for that row, so the chip
     // reflects it. Ignored by every non-Cron chip. See [`render_list_pane`].
     cron_missing: bool,
     p: &Palette,
 ) -> (Vec<Span<'static>>, u16) {
     let (key, label) = match b {
-        PaneButton::Create => ('c', BTN_LABEL_CREATE),
+        PaneButton::Schedule => ('s', BTN_LABEL_SCHEDULE),
         PaneButton::Tasks => ('t', BTN_LABEL_TASKS),
         PaneButton::Run => ('r', if pane == PaneId::Queue { BTN_LABEL_RERUN } else { BTN_LABEL_RUN }),
         PaneButton::Discover => ('d', BTN_LABEL_DISCOVER),
-        PaneButton::Cron => ('o', BTN_LABEL_CRON),
+        PaneButton::Cron => ('c', BTN_LABEL_CRON),
         PaneButton::Goto => ('g', BTN_LABEL_GOTO),
         PaneButton::Cancel => ('x', BTN_LABEL_STOP),
         PaneButton::Archive => {
@@ -133,7 +133,7 @@ fn button_chip(
     let label_style = if disabled { p.dim_style() } else { Style::default().fg(p.fg) };
     let mut spans = vec![Span::styled(format!("[{key}]"), key_style)];
     if labeled {
-        // `[c]reate` / `[g]oto` when the key is the label's first letter
+        // `[s]chedule` / `[g]oto` when the key is the label's first letter
         // (the footer's `[q]uit` pattern); otherwise `[z]collapse`.
         match label.strip_prefix(key) {
             Some(rest) => spans.push(Span::styled(rest.to_string(), label_style)),
@@ -202,7 +202,7 @@ fn build_header(
     bulk: bool,
     // Flips the QUEUE `[a]rchive` chip to `[a]unarchive` (see `button_chip`).
     archive_unarchive: bool,
-    // Dims the TASKS `[o]cron` chip when the selected def has no cron (see
+    // Dims the TASKS `[c]ron` chip when the selected def has no cron (see
     // `button_chip`).
     cron_missing: bool,
     p: &Palette,
@@ -642,22 +642,24 @@ fn worktree_line(
             None => spans.push(Span::raw(pad_clip("", layout.last_w))),
         }
     }
-    // Open PR `#<n>` (meta) — the fixed PR column, immediately left of the
-    // author. Only the cell layout lives here; the clickable hit rect is
-    // registered in `render_rows` (which knows the row's on-screen x/y) using
-    // `WtColLayout::pr_col_x`, so the two can't drift. Blank-padded when the row
-    // has no open PR so the trailing columns stay aligned down the pane. A row
-    // whose PR also carries its url — i.e. the cell is actually clickable —
-    // underlines the `#<n>` glyphs (never the pad, so the underline hugs the
-    // text) as the link affordance, matching the detail info tab's pr value.
+    // Open PR `#<n>` — shared [`Palette::pr_style`] (meta). Only the cell layout
+    // lives here; the clickable hit rect is registered in `render_rows` (which
+    // knows the row's on-screen x/y) using `WtColLayout::pr_col_x`, so the two
+    // can't drift. Blank-padded when the row has no open PR so the trailing
+    // columns stay aligned down the pane. A row whose PR also carries its url
+    // underlines the `#<n>` glyphs (never the pad) as the link affordance,
+    // matching the detail info tab's pr value.
     if layout.pr_w > 0 {
         spans.push(Span::raw(gap.clone()));
         match row.pr_number {
             Some(n) => {
                 let text = crate::selectors::clip(&format!("#{n}"), layout.pr_w);
                 let pad = layout.pr_w.saturating_sub(text.chars().count());
-                let style =
-                    if row.pr_url.is_some() { meta.add_modifier(Modifier::UNDERLINED) } else { meta };
+                let style = if row.pr_url.is_some() {
+                    p.pr_style().add_modifier(Modifier::UNDERLINED)
+                } else {
+                    p.pr_style()
+                };
                 spans.push(Span::styled(text, style));
                 if pad > 0 {
                     spans.push(Span::raw(" ".repeat(pad)));
@@ -796,7 +798,7 @@ fn def_line(
 }
 
 /// Style for a def row's Cron (schedule) cell: teal/info when the cron is ARMED,
-/// DIMMED when the operator has paused it (the `[o]cron` toggle). The dim IS the
+/// DIMMED when the operator has paused it (the `[c]ron` toggle). The dim IS the
 /// on/off signal — a paused def keeps its schedule text visible (so you can see
 /// what's parked), just greyed out. Pure so the dim/bright choice is unit-tested
 /// (the row snapshots are text-only and can't capture the style).
@@ -934,7 +936,7 @@ fn render_list_pane<T, C>(
     // spacer, and on empty panes that have no layout).
     header_of: impl Fn(&C, &Palette) -> Line<'static>,
     dim_of: impl Fn(&T) -> bool,
-    // Whether a row has a cron schedule — drives the TASKS `[o]cron` chip's
+    // Whether a row has a cron schedule — drives the TASKS `[c]ron` chip's
     // dim-when-inert state (the selected def has no cron → the toggle is a no-op,
     // so the chip greys out). Queue/Worktrees pass `|_| false`; they have no Cron
     // chip, so the resulting `cron_missing` is never read there.
@@ -966,7 +968,7 @@ fn render_list_pane<T, C>(
     // `archive_selected` uses (its rows come back in the same ascending order).
     let archive_unarchive =
         sel_positions.iter().min().map(|&i| dim_of(&rows[i])).unwrap_or(false);
-    // The TASKS `[o]cron` chip dims when the selected def has no cron (the toggle
+    // The TASKS `[c]ron` chip dims when the selected def has no cron (the toggle
     // is inert). Same anchor as `archive_unarchive` — the topmost selected row;
     // no selection → treated as missing (dimmed). Only read for the Cron chip,
     // which only the TASKS pane carries.
@@ -1259,7 +1261,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &c.queue_sel,
             &c.ui.marks[ListPane::Queue.idx()],
             &c.queue,
-            "queue empty — [c]reate a task",
+            "queue empty — [s]chedule a task",
             app.now_epoch_s,
             pane_buttons(PaneId::Queue),
             QUEUE_ROW_SCOPED,
@@ -1334,7 +1336,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             },
             def_header,
             |_| false,
-            // A def has a cron iff `cron` is set → drives the `[o]cron` chip dim.
+            // A def has a cron iff `cron` is set → drives the `[c]ron` chip dim.
             |d| d.cron.is_some(),
             // "Running" here = the def's `d`-discover RPC is in flight — the
             // generic throbber paints over the row's front `⌕`-marker cell.
@@ -1444,7 +1446,7 @@ mod tests {
     fn sched_cell_dims_when_cron_paused_and_stays_info_when_armed() {
         let p = Palette::default();
         // Armed → teal/info (the live schedule); paused → the shared dim style
-        // (the `[o]cron` off signal). Row snapshots are text-only, so this pure
+        // (the `[c]ron` off signal). Row snapshots are text-only, so this pure
         // helper is where the dim/bright choice is actually asserted.
         assert_eq!(sched_cell_style(true, &p), Style::default().fg(p.info));
         assert_eq!(sched_cell_style(false, &p), p.dim_style());
@@ -1545,10 +1547,10 @@ mod tests {
         let p = Palette::default();
         // width 30 → avail 28: the labeled strip can't fit alongside the title,
         // so all three compact chips survive right-aligned, in scope order
-        // (row-scoped [g]oto first, then [c]reate [z]).
+        // (row-scoped [g]oto first, then [s]chedule [z]).
         let area = Rect { x: 0, y: 0, width: 30, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, &p);
         assert_eq!(rects.len(), 3);
         // avail=28, title "Q"=1, each compact chip=3 cells, base strip=3*(1+3)=12,
         // plus the ` · ` divider (+2, both groups shown) = 14. filler=28-1-14=13.
@@ -1568,20 +1570,20 @@ mod tests {
         let p = Palette::default();
         // width 60 → avail 58 ≥ title(1) + labeled strip + divider: the labeled
         // form fits, so chips carry their label words at full width, in scope
-        // order (row-scoped [g]oto first, then [c]reate [z]).
+        // order (row-scoped [g]oto first, then [s]chedule [z]).
         let area = Rect { x: 0, y: 0, width: 60, height: 8 };
         let (line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, &p);
         assert_eq!(rects.len(), 3);
-        // Labeled widths — `[g]oto`/`[c]reate` merge the key into the word
-        // (goto 3+3=6, create 3+5=8); collapse fuses the same way
+        // Labeled widths — `[g]oto`/`[s]chedule` merge the key into the word
+        // (goto 3+3=6, schedule 3+7=10); collapse fuses the same way
         // (`[z]collapse`, 3+8=11).
         assert_eq!(rects[0].0.width, 6);
-        assert_eq!(rects[1].0.width, 8);
+        assert_eq!(rects[1].0.width, 10);
         assert_eq!(rects[2].0.width, 11);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[g]oto"));
-        assert!(text.contains("[c]reate"));
+        assert!(text.contains("[s]chedule"));
         assert!(text.contains("[z]collapse"));
         // The `·` scope divider sits between the two groups.
         assert!(text.contains('·'), "group divider renders: {text}");
@@ -1640,24 +1642,24 @@ mod tests {
     #[test]
     fn build_header_worktrees_includes_row_verbs_and_tasks_chip() {
         let p = Palette::default();
-        // Wide enough for the labeled form: the worktrees strip carries six chips
-        // in scope order — row-scoped [r]un [g]oto [x]remove [t]asks, then the `·`
-        // divider, then pane-scoped [c]reate [z]collapse.
+        // Four chips: row-scoped [g]oto [x]remove [t]asks · pane-scoped [z]collapse.
+        // Run/create removed — schedule is QUEUE-only.
         let area = Rect { x: 0, y: 0, width: 110, height: 8 };
         let (line, rects) =
             build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, false, &p);
-        assert_eq!(rects.len(), 6);
-        assert_eq!(rects[0].1, PaneButton::Run);
-        assert_eq!(rects[1].1, PaneButton::Goto);
-        assert_eq!(rects[2].1, PaneButton::Remove);
-        assert_eq!(rects[3].1, PaneButton::Tasks);
-        assert_eq!(rects[4].1, PaneButton::Create);
-        assert_eq!(rects[5].1, PaneButton::Collapse);
+        assert_eq!(rects.len(), 4);
+        assert_eq!(rects[0].1, PaneButton::Goto);
+        assert_eq!(rects[1].1, PaneButton::Remove);
+        assert_eq!(rects[2].1, PaneButton::Tasks);
+        assert_eq!(rects[3].1, PaneButton::Collapse);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[g]oto"), "labeled goto chip renders: {text}");
         assert!(text.contains("[x]remove"), "labeled remove chip renders: {text}");
         assert!(text.contains("[t]asks"), "labeled tasks chip renders: {text}");
-        assert!(text.contains("[c]reate"), "labeled create chip renders: {text}");
+        assert!(!text.contains("[r]un"), "run chip gone from WORKTREES: {text}");
+        assert!(!text.contains("create"), "create chip gone from WORKTREES: {text}");
+        assert!(text.contains("[z]collapse"), "labeled collapse chip renders: {text}");
+        assert!(text.contains('·'), "scope divider between tasks and collapse: {text}");
     }
 
     #[test]
@@ -1714,7 +1716,7 @@ mod tests {
         // Only the leftmost (row-scoped [g]oto) stays.
         let area = Rect { x: 0, y: 0, width: 10, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, &p);
         assert_eq!(rects.len(), 1, "only the leftmost (goto) button survives");
         assert_eq!(rects[0].1, PaneButton::Goto);
     }
@@ -1734,9 +1736,9 @@ mod tests {
         let p = Palette::default();
         let area = Rect { x: 0, y: 0, width: 40, height: 8 };
         let (expanded, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, &p);
         let (collapsed, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Create, PaneButton::Collapse], 1, true, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, true, false, false, false, &p);
         let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text(&expanded).contains(BTN_LABEL_COLLAPSE));
         assert!(text(&collapsed).contains(BTN_LABEL_EXPAND));

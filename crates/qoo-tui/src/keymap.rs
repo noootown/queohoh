@@ -5,18 +5,19 @@ use crate::hit::{PaneButton, pane_buttons};
 
 /// Pure key → action for `Mode::List`. Focus is invariantly one of the three
 /// list panes (detail is display-only and never focused). The pane-action verbs
-/// (`a` actions, `t` tasks, `c` create, `r` run) are GATED on the focused pane
-/// actually showing that chip — `pane_buttons(focus)` is the same set the title
-/// bar renders, so a key does nothing on a pane whose chip isn't there (e.g. `a`
-/// is inert on TASKS, which shows only `[r]un [z]`). `z` (collapse) is on every
-/// pane, so it stays effectively global. The vim keys address the DETAIL pane
-/// rather than the left panes: `j`/`k` move its row cursor (or scroll it),
-/// `h`/`l` cycle its sub-tab (aliasing `ctrl+x`/`ctrl+z`); the LEFT-pane cursor
-/// moves with the ARROW keys (`shift` extends the contiguous range; `space`
-/// toggles the cursor row's mark, which builds a NON-contiguous selection —
-/// the two combine, see `view::selected_positions`). `Enter` opens the
-/// selected worktree lane-task. Project-tab cycling (`CycleTab`) is driven by
-/// the stateful `ctrl+s` prefix in `App`, not here.
+/// (`a` archive, `t` tasks, `s` schedule, `c` cron, `r` run) are GATED on the
+/// focused pane actually showing that chip — `pane_buttons(focus)` is the same
+/// set the title bar renders, so a key does nothing on a pane whose chip isn't
+/// there (e.g. `a` is inert on TASKS, which shows only `[r]un [d]iscover [c]ron
+/// [z]`). `z` (collapse) is on every pane, so it stays effectively global. The
+/// vim keys address the DETAIL pane rather than the left panes: `j`/`k` move
+/// its row cursor (or scroll it), `h`/`l` cycle its sub-tab (aliasing
+/// `ctrl+x`/`ctrl+z`); the LEFT-pane cursor moves with the ARROW keys (`shift`
+/// extends the contiguous range; `space` toggles the cursor row's mark, which
+/// builds a NON-contiguous selection — the two combine, see
+/// `view::selected_positions`). `Enter` opens the selected worktree lane-task.
+/// Project-tab cycling (`CycleTab`) is driven by the stateful `ctrl+s` prefix
+/// in `App`, not here — bare `s` is Schedule and cannot steal it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppAction {
     MoveCursor(i32),
@@ -56,8 +57,8 @@ pub enum AppAction {
     /// discovery block refuse with a status line (no dialog). Routes to
     /// `App::discover_selected_def`.
     DiscoverSelectedDef,
-    /// Toggle the TASKS pane's highlighted definition's cron on/off (`o`, and the
-    /// tasks `[o]cron` chip): pause a running schedule or resume a paused one via
+    /// Toggle the TASKS pane's highlighted definition's cron on/off (`c`, and the
+    /// tasks `[c]ron` chip): pause a running schedule or resume a paused one via
     /// the `set_cron_enabled` RPC. A def with no `cron:` refuses with a status
     /// line (no RPC). Routes to `App::toggle_cron`.
     ToggleCron,
@@ -94,6 +95,9 @@ pub enum AppAction {
     /// chip): opens `Mode::Confirm`. Session rows / busy worktrees are a
     /// no-op with a status line. Routes to `App::remove_selected_worktree`.
     RemoveSelectedWorktree,
+    /// Open the unified adhoc-create form (`s` on QUEUE, and the queue's
+    /// `[s]chedule` chip). Prefills the target from the focused pane's selection
+    /// when available. Routes to `App::open_adhoc_create` via `apply_action`.
     Create,
     /// Collapse/expand the focused list pane (`z`). `x` is reserved (unbound).
     ToggleCollapse,
@@ -105,8 +109,9 @@ pub enum AppAction {
     DetailScrollEdge(i32),
     SwitchSubTab(usize),
     Help,
-    /// Read-only model-alias settings overlay (`s`). Distinct from the `ctrl+s`
-    /// project-tab prefix, which `App` consumes before the keymap ever sees it.
+    /// Read-only model-alias settings overlay (`,`). Distinct from the `ctrl+s`
+    /// project-tab prefix, which `App` consumes before the keymap ever sees it,
+    /// and from bare `s` (QUEUE schedule).
     Settings,
     /// `p`: open the Switch-provider form (dropdown of ENABLED providers in
     /// settings-precedence order, defaulting to the current active one). Global —
@@ -143,30 +148,29 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         KeyCode::Char('0') => AppAction::SwitchTab(9),
         KeyCode::Char('q') => AppAction::Quit,
         KeyCode::Char('?') => AppAction::Help,
-        // Plain `s` opens the settings overlay. `ctrl+s` (the project-tab prefix)
-        // never reaches here — `App` arms/consumes it before dispatching to the
-        // keymap — so this bare arm can't shadow it.
-        KeyCode::Char('s') => AppAction::Settings,
+        // Plain `,` opens the settings overlay (was `s`). Global — ungated, like
+        // help/quit. Bare `s` is Schedule (QUEUE-only, gated below).
+        KeyCode::Char(',') => AppAction::Settings,
         // Plain `p` opens the Switch-provider form (global, ungated — it drives
         // the always-visible top-right indicator). The `ctrl+s`-prefixed `p`
         // (previous project tab) is consumed by `App` before the keymap runs, so
         // this bare arm can't shadow it.
         KeyCode::Char('p') => AppAction::SwitchProvider,
         // Pane-action verbs, each gated on the focused pane's chip set:
-        // QUEUE {r,x,g,a,c,z} · TASKS {r,d,z} · WORKTREES {r,g,x,t,c,z}.
+        // QUEUE {r,x,g,a,s,z} · TASKS {r,d,c,z} · WORKTREES {g,x,t,z}.
         KeyCode::Char('t') => gated(PaneButton::Tasks, AppAction::OpenTaskMenu),
-        // `r` is a Run chip on all three panes, but means different things:
-        // QUEUE re-queues the selected task(s), TASKS runs the highlighted def,
-        // WORKTREES opens a fresh worktree-targeted new task.
+        // `r` is a Run chip on QUEUE (re-queue) and TASKS (run def). WORKTREES
+        // no longer has Run — schedule new tasks via QUEUE [s]chedule.
         KeyCode::Char('r') => match focus {
             PaneId::Queue => gated(PaneButton::Run, AppAction::RequeueSelected),
-            PaneId::Worktrees => gated(PaneButton::Run, AppAction::NewTaskOnWorktree),
+            PaneId::Worktrees => AppAction::None,
             _ => gated(PaneButton::Run, AppAction::RunSelectedDef),
         },
         // `d` is a TASKS-only chip: run the highlighted def's discovery fan-out.
         KeyCode::Char('d') => gated(PaneButton::Discover, AppAction::DiscoverSelectedDef),
-        // `o` is a TASKS-only chip: toggle the highlighted def's cron on/off.
-        KeyCode::Char('o') => gated(PaneButton::Cron, AppAction::ToggleCron),
+        // `c` is a TASKS-only chip: toggle the highlighted def's cron on/off
+        // (was `o`; key now matches the label's first letter → `[c]ron`).
+        KeyCode::Char('c') => gated(PaneButton::Cron, AppAction::ToggleCron),
         // `g` is a Goto chip on QUEUE and WORKTREES, but means different things:
         // QUEUE resumes the selected task's Claude session, WORKTREES opens the
         // worktree in a fresh tmux window. Inert on TASKS (no Goto chip there).
@@ -184,7 +188,11 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         },
         // `a` is a QUEUE-only chip: archive/unarchive toggle on the selected row.
         KeyCode::Char('a') => gated(PaneButton::Archive, AppAction::ArchiveSelected),
-        KeyCode::Char('c') => gated(PaneButton::Create, AppAction::Create),
+        // `s` is a QUEUE-only chip: schedule (adhoc create form). `ctrl+s` (the
+        // project-tab prefix) never reaches here — `App` arms/consumes it before
+        // dispatching to the keymap — so this bare arm can't shadow it. Inert on
+        // TASKS/WORKTREES (no Schedule chip there). Settings moved to `,`.
+        KeyCode::Char('s') => gated(PaneButton::Schedule, AppAction::Create),
         // `z` (plain) toggles collapse.
         KeyCode::Char('z') => AppAction::ToggleCollapse,
         // Home/End scroll ONLY the detail pane (head/tail) and never touch the
@@ -236,14 +244,22 @@ mod tests {
     }
 
     #[test]
-    fn s_opens_settings() {
-        // Plain `s` → Settings on any focused list pane. The keymap is
-        // modifier-agnostic on the char; `App` arms/consumes the `ctrl+s`
-        // project-tab prefix BEFORE dispatching to the keymap, so the ctrl case
-        // never reaches this arm in practice.
+    fn comma_opens_settings() {
+        // Plain `,` → Settings on any focused list pane (was `s`). Global /
+        // ungated — not a chip verb. Settings moved off `s` so Queue can use
+        // bare `s` for Schedule without colliding.
         for f in LISTS {
-            assert_eq!(list_mode_action(&k(KeyCode::Char('s')), f), AppAction::Settings);
+            assert_eq!(list_mode_action(&k(KeyCode::Char(',')), f), AppAction::Settings);
         }
+    }
+
+    #[test]
+    fn s_schedules_on_queue_only() {
+        // Bare `s` is the QUEUE `[s]chedule` chip (adhoc create form). Inert on
+        // TASKS/WORKTREES (no Schedule chip). `ctrl+s` never reaches the keymap.
+        assert_eq!(list_mode_action(&k(KeyCode::Char('s')), PaneId::Queue), AppAction::Create);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('s')), PaneId::Tasks), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('s')), PaneId::Worktrees), AppAction::None);
     }
 
     #[test]
@@ -334,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn c_gated_by_pane_slash_esc_help_global() {
+    fn c_cron_and_slash_esc_help_global() {
         // `?`/esc/`/` are global on every list pane.
         for f in LISTS {
             assert_eq!(list_mode_action(&k(KeyCode::Char('?')), f), AppAction::Help);
@@ -350,11 +366,11 @@ mod tests {
         );
         assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Tasks), AppAction::None);
         assert_eq!(list_mode_action(&k(KeyCode::Char('a')), PaneId::Worktrees), AppAction::None);
-        // `c` (create) is a `[c]reate` chip on EVERY list pane now — the unified
-        // adhoc create form, prefilled per pane.
-        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Queue), AppAction::Create);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Worktrees), AppAction::Create);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Tasks), AppAction::Create);
+        // `c` is the TASKS `[c]ron` chip only (was `o`; create/schedule moved to
+        // QUEUE `s`). Inert on QUEUE/WORKTREES (no Create chip anywhere now).
+        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Tasks), AppAction::ToggleCron);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Queue), AppAction::None);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('c')), PaneId::Worktrees), AppAction::None);
     }
 
     #[test]
@@ -373,9 +389,9 @@ mod tests {
 
     #[test]
     fn worktree_pane_r_g_x_verbs() {
-        // The three worktrees row verbs: `r` opens the worktree's session
-        // launcher, `g` gotos (tmux), `x` removes.
-        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);
+        // Worktrees row verbs: `g` gotos (tmux), `x` removes. `r` is unbound
+        // (schedule lives on QUEUE [s]chedule).
+        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::None);
         assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Worktrees), AppAction::GotoWorktree);
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Worktrees), AppAction::RemoveSelectedWorktree);
         // g resumes the session on queue (not inert); x still cancels on queue;
@@ -426,12 +442,11 @@ mod tests {
 
     #[test]
     fn r_runs_def_on_tasks_requeues_on_queue_new_task_on_worktrees() {
-        // `r` is a Run chip on all three panes, meaning different verbs: TASKS
-        // runs the highlighted def; QUEUE re-queues the selected task(s);
-        // WORKTREES opens the worktree's session launcher.
+        // `r` on TASKS runs the highlighted def; on QUEUE re-queues; on
+        // WORKTREES is unbound (use QUEUE [s]chedule for new tasks).
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Tasks), AppAction::RunSelectedDef);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Queue), AppAction::RequeueSelected);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::NewTaskOnWorktree);
+        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::None);
     }
 
     #[test]
@@ -446,14 +461,12 @@ mod tests {
     }
 
     #[test]
-    fn o_toggles_cron_on_tasks_only() {
-        assert_eq!(
-            list_mode_action(&k(KeyCode::Char('o')), PaneId::Tasks),
-            AppAction::ToggleCron
-        );
-        // No Cron chip on QUEUE / WORKTREES → the gate leaves `o` inert there.
-        assert_eq!(list_mode_action(&k(KeyCode::Char('o')), PaneId::Queue), AppAction::None);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('o')), PaneId::Worktrees), AppAction::None);
+    fn o_is_inert_everywhere() {
+        // Cron moved from `o` to `c` (key matches label first letter). `o` stays
+        // unbound so it can't accidentally re-bind to anything.
+        for f in LISTS {
+            assert_eq!(list_mode_action(&k(KeyCode::Char('o')), f), AppAction::None);
+        }
     }
 
     #[test]

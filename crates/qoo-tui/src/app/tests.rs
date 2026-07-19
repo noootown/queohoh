@@ -646,8 +646,8 @@ fn help_opens_and_any_key_closes() {
 fn settings_opens_fetches_once_and_any_key_closes() {
     let mut app = crate::test_fixtures::fixture_app();
     // First open: enters the overlay AND emits exactly one FetchSettings
-    // (settings is None → never fetched).
-    let up = press(&mut app, KeyCode::Char('s'));
+    // (settings is None → never fetched). Settings hotkey is `,` (was `s`).
+    let up = press(&mut app, KeyCode::Char(','));
     assert!(matches!(app.mode, Mode::Settings));
     assert_eq!(
         up.cmds.iter().filter(|c| matches!(c, Cmd::FetchSettings)).count(),
@@ -662,7 +662,7 @@ fn settings_opens_fetches_once_and_any_key_closes() {
     app.update(Event::Settings { payload: Some(SettingsPayload::default()) });
     assert!(matches!(app.settings, Some(Some(_))));
     // Second open: cached → NO re-fetch.
-    let up = press(&mut app, KeyCode::Char('s'));
+    let up = press(&mut app, KeyCode::Char(','));
     assert!(matches!(app.mode, Mode::Settings));
     assert!(
         !up.cmds.iter().any(|c| matches!(c, Cmd::FetchSettings)),
@@ -673,14 +673,14 @@ fn settings_opens_fetches_once_and_any_key_closes() {
 #[test]
 fn settings_failed_fetch_caches_none_and_does_not_refetch() {
     let mut app = crate::test_fixtures::fixture_app();
-    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Char(','));
     // A failed/unsupported fetch caches Some(None) (the "unavailable" state).
     app.update(Event::Settings { payload: None });
     assert!(matches!(app.settings, Some(None)));
     press(&mut app, KeyCode::Char('z')); // close
     // Re-open must NOT re-fetch — Some(None) is a cached outcome, not "never
     // fetched".
-    let up = press(&mut app, KeyCode::Char('s'));
+    let up = press(&mut app, KeyCode::Char(','));
     assert!(
         !up.cmds.iter().any(|c| matches!(c, Cmd::FetchSettings)),
         "cached failure must not re-fetch"
@@ -1197,6 +1197,47 @@ fn ctrl_s_prefix_swallows_other_keys_and_disarms() {
 }
 
 #[test]
+fn esc_then_digit_does_not_switch_project_tab() {
+    // Regression: Esc closing a dialog (or a bare Esc) then a residual digit
+    // from a terminal meta split (Esc then '2') must NOT SwitchTab. Digits
+    // after the guard window still work.
+    let mut app = app();
+    app.update(Event::Snapshot(snapshot_with(&["a", "b", "c"], vec![])));
+    app.active_tab = 0;
+    app.now_ms = 1_000;
+    press(&mut app, KeyCode::Esc);
+    assert!(
+        app.suppress_tab_keys_until_ms > app.now_ms,
+        "Esc arms the post-Esc digit guard"
+    );
+    // Immediate '2' would be SwitchTab(1) without the guard.
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.active_tab, 0, "digit inside the guard window is eaten");
+    // After the window, a deliberate digit still switches.
+    app.now_ms = app.suppress_tab_keys_until_ms;
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.active_tab, 1, "digit after the guard window switches tabs");
+}
+
+#[test]
+fn form_esc_then_digit_does_not_switch_project_tab() {
+    let mut app = app();
+    app.update(Event::Snapshot(snapshot_with(&["a", "b", "c"], vec![])));
+    app.active_tab = 0;
+    app.now_ms = 5_000;
+    // Open settings (a real overlay), Esc-dismiss, residual '3'.
+    press(&mut app, KeyCode::Char(','));
+    assert!(matches!(app.mode, Mode::Settings));
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode, Mode::List));
+    press(&mut app, KeyCode::Char('3'));
+    assert_eq!(
+        app.active_tab, 0,
+        "Esc-dismiss of settings then residual digit must not SwitchTab"
+    );
+}
+
+#[test]
 fn pane_button_tasks_click_focuses_pane_then_opens_task_menu() {
     let mut app = app_with_hits();
     app.set_focus(PaneId::Queue);
@@ -1252,7 +1293,7 @@ fn pane_button_rect(app: &App, pane: PaneId, btn: crate::hit::PaneButton) -> Rec
 fn real_render_tasks_collapse_chip_click_toggles_over_divider() {
     // Tasks' top border is the lower row of divider band 0; the collapse chip
     // must win over the divider and leave focus unchanged. Rendered wide enough
-    // that the TASKS strip keeps its collapse chip — at 80 the `[o]cron` chip
+    // that the TASKS strip keeps its collapse chip — at 80 the `[c]ron` chip
     // pushes the compact strip past the fit and collapse degrades off the right
     // (its `z` KEY still works, but there's no chip rect to click).
     let mut app = app_rendered(120, 24);

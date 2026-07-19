@@ -15,12 +15,12 @@ expression: terminal.backend()
 "│                         ││  outcome   failed (exit code 1)                   │"
 "│                         ││  model     claude-fable-5                         │"
 "╰─────────────────────────╯│  cost      $31.07151099999998                     │"
-"╭⚡TASKS [r] [d] [o] · [c]╮│  turns     40                                     │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] [c] · [z]╮│  turns     40                                     │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││  duration  18m                                    │" Hidden by multi-width symbols: [(3, " ")]
 "│ no task definitions     ││                                                   │"
 "│                         ││                                                   │"
 "╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [g] [x] [t]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│ ● feature               ││                                                   │"
 "│ ● hotfix                ││                                                   │"

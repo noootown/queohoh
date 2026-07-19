@@ -33,17 +33,26 @@ fn initial_arg_value(
 
 /// Resolve a worktree-combobox field value to a canonical target ref: an exact
 /// existing-worktree name → `worktree:<name>` (this wins so a worktree that
-/// happens to look like a PR/ticket still targets the worktree); else the typed
-/// PR/ticket classification ([`crate::ref_classify::classify_ref`]); else a
-/// literal `worktree:<value>` (create-or-reuse a worktree by that name).
-pub(super) fn resolve_target_ref(value: &str, worktrees: &[String]) -> String {
+/// happens to look like a PR/ticket still targets the worktree); else a
+/// classified PR/ticket that an existing worktree already covers (via
+/// [`crate::worktree_context::worktree_ref_aliases`]) → that worktree; else the
+/// typed PR/ticket classification ([`crate::ref_classify::classify_ref`]); else
+/// a literal `worktree:<value>` (create-or-reuse a worktree by that name).
+pub(super) fn resolve_target_ref(
+    value: &str,
+    worktrees: &[String],
+    aliases: &std::collections::HashMap<String, String>,
+) -> String {
     if worktrees.iter().any(|w| w == value) {
-        format!("worktree:{value}")
-    } else if let Some(r) = crate::ref_classify::classify_ref(value) {
-        r
-    } else {
-        format!("worktree:{value}")
+        return format!("worktree:{value}");
     }
+    if let Some(r) = crate::ref_classify::classify_ref(value) {
+        if let Some(wt) = aliases.get(&r) {
+            return format!("worktree:{wt}");
+        }
+        return r;
+    }
+    format!("worktree:{value}")
 }
 
 impl App {
@@ -148,7 +157,11 @@ impl App {
             .fields;
         let mut fields = vec![self.def_model_field(&repo, def_model.as_ref())];
         fields.extend(arg_fields);
-        let state = FormState::new(&name, "Run", fields);
+        let mut state = FormState::new(&name, "Run", fields);
+        // So worktree-typed comboboxes suppress ticket/PR synthetic rows that
+        // an existing worktree already covers (same as the schedule form).
+        state.ref_aliases =
+            crate::worktree_context::worktree_ref_aliases(&self.active_worktree_rows());
         self.mode = Mode::DefArgs {
             state,
             repo,
@@ -180,6 +193,7 @@ impl App {
         let actual = filtered.get(cur).copied();
         match ev.code {
             Esc => {
+                self.note_esc_dismiss();
                 self.mode = Mode::List;
                 Update { dirty: true, cmds: vec![] }
             }
@@ -325,7 +339,12 @@ impl App {
         if state.is_combobox_focused() {
             return match ev.code {
                 Esc => {
-                    if dropdown_open { state.close_dropdown(); } else { self.mode = Mode::List; }
+                    if dropdown_open {
+                        state.close_dropdown();
+                    } else {
+                        self.note_esc_dismiss();
+                        self.mode = Mode::List;
+                    }
                     Update { dirty: true, cmds: vec![] }
                 }
                 Enter => {
@@ -372,7 +391,11 @@ impl App {
         let is_dropdown = state.is_dropdown_focused();
         let fk = state.focus_kind();
         match ev.code {
-            Esc => { self.mode = Mode::List; Update { dirty: true, cmds: vec![] } }
+            Esc => {
+                self.note_esc_dismiss();
+                self.mode = Mode::List;
+                Update { dirty: true, cmds: vec![] }
+            }
             // Newline chord first — must win over the plain-Enter arm; inert off a
             // focused textarea.
             Enter if shift => { state.insert_newline(); Update { dirty: true, cmds: vec![] } }
@@ -425,9 +448,11 @@ impl App {
     /// trailing model field (appended by [`Self::open_def_args`]) is peeled off
     /// and sent as a 1-entry exact `params.model` when non-empty.
     fn submit_def_args(&mut self) -> Update {
-        // The repo's worktree names for the exact-match branch of the ref
-        // resolution — read before the `self.mode` mutable borrow.
-        let worktree_names = self.active_worktree_names();
+        // Worktree names + PR/ticket aliases for ref resolution — read before
+        // the `self.mode` mutable borrow.
+        let rows = self.active_worktree_rows();
+        let worktree_names = Self::worktree_names(&rows);
+        let aliases = crate::worktree_context::worktree_ref_aliases(&rows);
         let Mode::DefArgs { state, repo, def_name, args, initial_worktree, .. } = &mut self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
@@ -454,7 +479,7 @@ impl App {
                     .iter()
                     .position(ArgSpec::is_worktree)
                     .and_then(|i| arg_values.get(i))
-                    .map(|value| resolve_target_ref(value, &worktree_names));
+                    .map(|value| resolve_target_ref(value, &worktree_names, &aliases));
                 let cmd = Self::run_definition_cmd(
                     repo,
                     def_name,

@@ -420,9 +420,9 @@ impl App {
                 }
                 Some(HitTarget::PaneButton(p, btn)) => {
                     // A title-bar button behaves exactly like pressing its hotkey
-                    // with that pane focused. `Create`/`Actions` need the focus
+                    // with that pane focused. `Schedule`/`Tasks` need the focus
                     // (they read `last_list_pane`); `Collapse` is focus-independent
-                    // (its outcome — collapsing pane P — matches pressing `x` with
+                    // (its outcome — collapsing pane P — matches pressing `z` with
                     // P focused regardless), so it skips the focus/scroll reset.
                     let lp = match p {
                         PaneId::Queue => ListPane::Queue,
@@ -440,7 +440,7 @@ impl App {
                             }
                             true
                         }
-                        crate::hit::PaneButton::Create => {
+                        crate::hit::PaneButton::Schedule => {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::Create);
                         }

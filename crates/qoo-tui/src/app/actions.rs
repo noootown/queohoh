@@ -153,10 +153,14 @@ impl App {
                 false
             }
             A::Help => {
+                // Overlay open always clears a sticky ctrl+s prefix — otherwise
+                // Esc-dismiss then `n` could still hop projects.
+                self.prefix_armed = false;
                 self.mode = Mode::Help;
                 true
             }
             A::Settings => {
+                self.prefix_armed = false;
                 self.mode = Mode::Settings;
                 // Fetch once on first open; thereafter the cached value renders
                 // instantly. `None` means never fetched (Some(None) is a cached
@@ -201,6 +205,12 @@ impl App {
                 }
             }
             A::SwitchTab(i) => {
+                // Post-Esc digit guard: absorb residual `2`/`3`/… that some
+                // terminals deliver after Esc (meta split) so closing a dialog
+                // with Esc cannot land the operator on another project tab.
+                if self.now_ms < self.suppress_tab_keys_until_ms {
+                    return Update { dirty: false, cmds: vec![] };
+                }
                 let tabs = self
                     .snapshot
                     .as_ref()
@@ -332,7 +342,7 @@ impl App {
                 u.dirty
             }
             A::ToggleCron => {
-                // `o` is a TASKS chip (keymap-gated there): pause/resume the
+                // `c` is a TASKS chip (keymap-gated there): pause/resume the
                 // highlighted def's cron. Single-row only; a def with no cron
                 // refuses with a status line.
                 let u = self.toggle_cron();
@@ -340,13 +350,14 @@ impl App {
                 u.dirty
             }
             A::Create => {
-                // `Create` (`c`, and the `[c]reate` chip) opens the unified adhoc
-                // create form from any list pane, prefilling the target combobox
-                // from the focused pane's selected row (QUEUE task → its worktree;
-                // WORKTREES row → that worktree, sessions then offered). Not a bulk
-                // verb — a bulk range refuses rather than opening the form.
+                // `Create` (`s` on QUEUE, and the `[s]chedule` chip) opens the
+                // unified adhoc create form, prefilling the target combobox from
+                // the focused pane's selected row (QUEUE task → its worktree).
+                // Queue-only chip; TASKS/WORKTREES no longer show create. Not a
+                // bulk verb — a bulk range refuses rather than opening the form.
+                self.prefix_armed = false;
                 let pane = self.active_ui().last_list_pane;
-                if !self.bulk_blocked(pane, crate::hit::PaneButton::Create)
+                if !self.bulk_blocked(pane, crate::hit::PaneButton::Schedule)
                     && let Some(repo) = self.active_repo()
                 {
                     let prefill = self.adhoc_prefill_target(pane);
@@ -904,7 +915,7 @@ impl App {
         }
     }
 
-    /// `o` on TASKS (and the `[o]cron` chip): pause/resume the highlighted def's
+    /// `c` on TASKS (and the `[c]ron` chip): pause/resume the highlighted def's
     /// cron schedule. Mirrors [`Self::discover_selected_def`]'s selection
     /// resolution. A def with no `cron:` refuses with a status line (no RPC — you
     /// can't toggle a schedule that doesn't exist); a bulk range refuses like
@@ -1049,7 +1060,7 @@ impl App {
 
     /// The real worktrees' identifiers (`raw_name`, minus session rows) — the
     /// combobox seed and the exact-match set for the submit ref resolution.
-    fn worktree_names(rows: &[crate::selectors::WorktreeRow]) -> Vec<String> {
+    pub(super) fn worktree_names(rows: &[crate::selectors::WorktreeRow]) -> Vec<String> {
         rows.iter().filter(|r| !r.is_session).map(|r| r.raw_name.clone()).collect()
     }
 

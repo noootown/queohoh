@@ -16,7 +16,7 @@ use crate::hit::{ButtonKind, HitMap, HitTarget};
 use crate::view::args_form::{caret_line, wrap_value_cursor};
 use crate::view::modal::{render_button_row, DIALOG_WIDTH, MODAL_PADDING};
 use crate::view::multiline_input::{sanitize_paste, MultilineInput};
-use crate::view::theme::{GLYPH_CHEVRON_DOWN, GLYPH_CHEVRON_RIGHT, Palette};
+use crate::view::theme::{GLYPH_CHEVRON_DOWN, Palette};
 
 /// One selectable dropdown option: the `value` is what gets stored on the field
 /// and submitted (e.g. a `provider/label` model ref, or `""` for a "leave unset"
@@ -166,6 +166,64 @@ fn ref_hint(r: &str) -> String {
     }
 }
 
+/// Open-list label for a seeded worktree option: `platform.JUS-1924 #1938`
+/// when a `pr:N` alias points at this worktree, else the bare name. No parens —
+/// the `#N` is painted yellow by [`paint_dropdown_option`]. The pick VALUE stays
+/// the raw name; only the rendered row is decorated.
+pub(crate) fn worktree_option_label(
+    name: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> String {
+    if let Some(n) = aliases.iter().find_map(|(k, v)| {
+        (v.as_str() == name)
+            .then(|| k.strip_prefix("pr:"))
+            .flatten()
+            .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    }) {
+        format!("{name} #{n}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Split a trailing ` #digits` PR suffix off a dropdown label (e.g.
+/// `platform.JUS-1924 #1938` → `("platform.JUS-1924", "#1938")`).
+fn split_pr_suffix(label: &str) -> Option<(&str, &str)> {
+    let (head, rest) = label.rsplit_once(' ')?;
+    if rest.starts_with('#')
+        && rest.len() > 1
+        && rest[1..].bytes().all(|b| b.is_ascii_digit())
+    {
+        Some((head, rest))
+    } else {
+        None
+    }
+}
+
+/// Paint one open-dropdown row: body text in the row style, a trailing `#N` PR
+/// tag in the shared PR style ([`Palette::pr_style`] = `meta`, same as the
+/// WORKTREES `#n` column). Selection bar keeps that color on `selection_bg`.
+fn paint_dropdown_option(opt: &str, selected: bool, p: &Palette) -> Line<'static> {
+    let base = if selected {
+        p.selection()
+    } else {
+        Style::default().fg(p.fg)
+    };
+    let pr_style = if selected {
+        p.pr_style().bg(p.selection_bg)
+    } else {
+        p.pr_style()
+    };
+    if let Some((name, hash)) = split_pr_suffix(opt) {
+        Line::from(vec![
+            Span::styled(format!(" {name} "), base),
+            Span::styled(hash.to_string(), pr_style),
+        ])
+    } else {
+        Line::from(Span::styled(format!(" {opt}"), base))
+    }
+}
+
 /// Which focus stop is active: a field by index, the primary button, or Cancel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusKind {
@@ -193,6 +251,25 @@ pub struct FormState {
     /// `render_form`/`render_fields`; read by `move_up`/`move_down`. Default
     /// `40` keeps navigation sane before the first render.
     pub content_width: usize,
+    /// When true, the dialog uses the session-picker width formula (~47% of
+    /// terminal, floor `DIALOG_WIDTH`, cap 110) instead of fixed `DIALOG_WIDTH`.
+    /// Set for the QUEUE schedule (adhoc) form so target/session rows have room.
+    pub wide: bool,
+    /// Resumable sessions for the adhoc form's session field, loaded when the
+    /// target names an existing worktree. Empty when the target is new/temp or
+    /// not yet fetched.
+    pub sessions: Vec<crate::event::SessionChoice>,
+    /// Worktree the current `sessions` cache was loaded for (so a target change
+    /// invalidates it). `None` when nothing has been fetched.
+    pub sessions_for: Option<String>,
+    /// True while a `listSessions` fetch for `sessions_for` is in flight.
+    pub sessions_loading: bool,
+    /// Classified refs already covered by an existing worktree
+    /// (`pr:N` / `ticket:ID` → `raw_name`). Suppresses synthetic "use PR/ticket
+    /// (new worktree)" combobox rows and the closed-field "(new worktree)"
+    /// suffix when the operator is typing a ticket/PR that maps to a worktree
+    /// they can already pick by name.
+    pub ref_aliases: std::collections::HashMap<String, String>,
 }
 
 impl FormState {
@@ -211,7 +288,29 @@ impl FormState {
             dropdown_index: 0,
             error: None,
             content_width: 40,
+            wide: false,
+            sessions: Vec::new(),
+            sessions_for: None,
+            sessions_loading: false,
+            ref_aliases: std::collections::HashMap::new(),
         }
+    }
+
+    /// True when a combobox target value will create a NEW worktree (not an
+    /// exact name match, and not a PR/ticket already covered by `ref_aliases`).
+    pub fn is_new_worktree_target(value: &str, options: &[String], aliases: &std::collections::HashMap<String, String>) -> bool {
+        if value.is_empty() {
+            return false;
+        }
+        if options.iter().any(|o| o == value) {
+            return false;
+        }
+        if let Some(r) = crate::ref_classify::classify_ref(value)
+            && aliases.contains_key(&r)
+        {
+            return false;
+        }
+        true
     }
 
     /// Cache the focused Textarea's rendered content width, driving visual-line
@@ -437,23 +536,62 @@ impl FormState {
 
     /// The FILTERED option rows for the focused Combobox, in display order:
     /// every seeded option whose text contains the typed value (case-
-    /// insensitive), each paired with its original option index, PLUS a
-    /// synthetic ref row `(usize::MAX, "<ref>")` when `classify_ref(value)` is
-    /// `Some` and no seeded option already equals that ref. `usize::MAX` marks
-    /// the synthetic row so the renderer can label it ("← use PR #45"). Empty
-    /// (or an empty vec) off a Combobox.
+    /// insensitive) **or** that is the target of a `ref_aliases` entry matching
+    /// the query (so typing `1938` lists `platform.JUS-1924` when
+    /// `pr:1938 → platform.JUS-1924` — without this, the synthetic `pr:1938`
+    /// row is suppressed by the alias and the worktree never appears because
+    /// its name doesn't contain the digits). Each row is paired with its
+    /// original option index. PLUS a synthetic ref row `(usize::MAX, "<ref>")`
+    /// when `classify_ref(value)` is `Some`, no seeded option already equals
+    /// that ref, AND no existing worktree covers it via [`Self::ref_aliases`]
+    /// (so typing `JUS-1924` when `platform.JUS-1924` already exists only lists
+    /// the worktree — never a redundant "use ticket… (new worktree)" row).
+    /// `usize::MAX` marks the synthetic row so the renderer can label it
+    /// ("← use PR #45"). Empty (or an empty vec) off a Combobox.
     pub fn combobox_filtered(&self) -> Vec<(usize, String)> {
         let FocusKind::Field(i) = self.focus_kind() else { return Vec::new() };
         let FieldKind::Combobox { options } = &self.fields[i].kind else { return Vec::new() };
-        let needle = self.fields[i].value.to_ascii_lowercase();
+        let value = self.fields[i].value.as_str();
+        let needle = value.to_ascii_lowercase();
+        // Worktrees reachable via an alias whose key (or bare PR/ticket body)
+        // matches the typed needle. Empty needle → no alias filter (all options
+        // already pass the name-contains check below via empty-contains-true).
+        let mut alias_hits = std::collections::HashSet::new();
+        if !needle.is_empty() {
+            if let Some(r) = crate::ref_classify::classify_ref(value)
+                && let Some(wt) = self.ref_aliases.get(&r)
+            {
+                alias_hits.insert(wt.as_str());
+            }
+            for (key, wt) in &self.ref_aliases {
+                let key_l = key.to_ascii_lowercase();
+                if key_l.contains(&needle) {
+                    alias_hits.insert(wt.as_str());
+                    continue;
+                }
+                // Bare body: "1938" hits `pr:1938`; "jus-1924" hits `ticket:JUS-1924`.
+                let body = key
+                    .strip_prefix("pr:")
+                    .or_else(|| key.strip_prefix("ticket:"))
+                    .unwrap_or(key);
+                if body.to_ascii_lowercase().contains(&needle) {
+                    alias_hits.insert(wt.as_str());
+                }
+            }
+        }
         let mut out: Vec<(usize, String)> = options
             .iter()
             .enumerate()
-            .filter(|(_, o)| o.to_ascii_lowercase().contains(&needle))
+            .filter(|(_, o)| {
+                needle.is_empty()
+                    || o.to_ascii_lowercase().contains(&needle)
+                    || alias_hits.contains(o.as_str())
+            })
             .map(|(idx, o)| (idx, o.clone()))
             .collect();
-        if let Some(r) = crate::ref_classify::classify_ref(&self.fields[i].value)
+        if let Some(r) = crate::ref_classify::classify_ref(value)
             && !options.contains(&r)
+            && !self.ref_aliases.contains_key(&r)
         {
             out.push((usize::MAX, r));
         }
@@ -608,7 +746,17 @@ pub fn render_form(frame: &mut ratatui::Frame, hit: &mut HitMap, state: &mut For
     let p = Palette::default();
     let area = frame.area();
 
-    let width = DIALOG_WIDTH.clamp(50.min(area.width.max(1)), area.width.saturating_sub(4).max(1));
+    // Wide (schedule/adhoc): match the session-picker width so target/session
+    // rows have room for provider tags and the "(new worktree)" suffix. Narrow
+    // (other forms): the classic fixed DIALOG_WIDTH.
+    const FORM_WIDE_MAX_W: u16 = 110;
+    let width = if state.wide {
+        let want =
+            (area.width.saturating_mul(7) / 15).clamp(DIALOG_WIDTH, FORM_WIDE_MAX_W);
+        want.clamp(50.min(area.width.max(1)), area.width.saturating_sub(4).max(1))
+    } else {
+        DIALOG_WIDTH.clamp(50.min(area.width.max(1)), area.width.saturating_sub(4).max(1))
+    };
 
     // Every field box shares the same inner content width — a fixed function
     // of the dialog width (outer border+padding, then the field's own
@@ -681,10 +829,209 @@ pub fn render_form(frame: &mut ratatui::Frame, hit: &mut HitMap, state: &mut For
         p.accent,
     );
 
-    // Open dropdown popup last so it is topmost.
+    // Open dropdown popup last so it is topmost. Empty options + session
+    // field open → rich session list (worktree-launcher experience, inline).
     if let Some((anchor, options)) = open_anchor {
-        render_open_dropdown(frame, hit, state, area, anchor, options);
+        if options.is_empty()
+            && state.is_picker_focused()
+            && state.dropdown_open
+        {
+            render_open_session_dropdown(frame, hit, state, area, anchor);
+        } else if !options.is_empty() {
+            render_open_dropdown(frame, hit, state, area, anchor, options);
+        }
     }
+}
+
+/// Inline session list under the adhoc form's session field — mirrors the
+/// worktree SessionPick rows (prompt · provider · age) with a FIXED-height
+/// footer (rule + one line) so arrowing between New session and a real session
+/// never resizes the popup (that height flash was user feedback). Footer shows
+/// a New-session hint or the highlighted session's `id · local datetime`.
+/// Row 0 is always "New session"; subsequent rows are `state.sessions`.
+pub(crate) fn render_open_session_dropdown(
+    frame: &mut ratatui::Frame,
+    hit: &mut HitMap,
+    state: &FormState,
+    area: Rect,
+    anchor: Rect,
+) {
+    use crate::selectors::absolute_local_label;
+    use crate::view::menu::relative_age;
+    use crate::view::theme::{GLYPH_NEW_SESSION, RULE_CHAR};
+
+    let p = Palette::default();
+    let new_label = "New session";
+
+    let n_sess = state.sessions.len();
+    let loading = state.sessions_loading && n_sess == 0;
+    // Rows: New session + (loading placeholder | sessions)
+    let body_rows = 1 + if loading { 1 } else { n_sess };
+    // Always reserve rule + hint/id line — height must not depend on which row
+    // is highlighted (arrow keys used to flash the popup in/out of footer).
+    const FOOTER_H: u16 = 2;
+    let list_h = (body_rows as u16 + FOOTER_H + 2)
+        .min(area.height.saturating_sub(anchor.y + anchor.height));
+    if list_h < 3 {
+        return;
+    }
+    let pop = Rect {
+        x: anchor.x,
+        y: anchor.y + anchor.height,
+        width: anchor.width,
+        height: list_h,
+    };
+    frame.render_widget(Clear, pop);
+    hit.push(pop, HitTarget::Modal);
+    let popblock = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.accent));
+    let popinner = popblock.inner(pop);
+    frame.render_widget(popblock, pop);
+    if popinner.width == 0 || popinner.height == 0 {
+        return;
+    }
+    let inner_w = popinner.width as usize;
+
+    // Body rows occupy everything above the footer.
+    let body_h = popinner.height.saturating_sub(FOOTER_H);
+    let body_area = Rect {
+        x: popinner.x,
+        y: popinner.y,
+        width: popinner.width,
+        height: body_h,
+    };
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    type Spanned = Vec<(String, Style)>;
+    let sel = |vix: usize| {
+        if vix == state.dropdown_index {
+            p.selection()
+        } else {
+            Style::default().fg(p.fg)
+        }
+    };
+    let mut lines: Vec<(usize, Spanned)> = Vec::new();
+    lines.push((
+        0,
+        vec![(format!("{GLYPH_NEW_SESSION} {new_label}"), sel(0))],
+    ));
+    if loading {
+        lines.push((
+            0, // inert — not selectable beyond New session
+            vec![("loading sessions…".into(), p.dim_style())],
+        ));
+    } else {
+        for (n, s) in state.sessions.iter().enumerate() {
+            let vix = n + 1;
+            let base = sel(vix);
+            let age = relative_age(s.mtime_ms, now_ms);
+            let age_w = age.chars().count();
+            let prov = s.provider.as_deref();
+            let prov_w = prov.map(|pr| pr.chars().count() + 1).unwrap_or(0);
+            let right_w = age_w + prov_w;
+            let label = crate::selectors::clip(&s.label, inner_w.saturating_sub(right_w + 2));
+            let gap = inner_w.saturating_sub(label.chars().count() + right_w);
+            // Provider tag: same green as the top-bar `↯ grok` chip (claude and
+            // grok share it). Age: shared timestamp teal (`info`). Under the
+            // selection bar both keep their concept color on selection_bg.
+            let selected = vix == state.dropdown_index;
+            let mut prov_style = p.provider_style(prov.unwrap_or(""));
+            let mut age_style = p.timestamp_style();
+            if selected {
+                prov_style = prov_style.bg(p.selection_bg);
+                age_style = age_style.bg(p.selection_bg);
+            }
+            let mut spans = vec![(label, base), (" ".repeat(gap), base)];
+            if let Some(pr) = prov {
+                spans.push((format!("{pr} "), prov_style));
+            }
+            spans.push((age, age_style));
+            lines.push((vix, spans));
+        }
+    }
+
+    for (row, (vix, spans)) in lines.iter().enumerate() {
+        if row as u16 >= body_area.height {
+            break;
+        }
+        let rr = Rect {
+            x: body_area.x,
+            y: body_area.y + row as u16,
+            width: body_area.width,
+            height: 1,
+        };
+        // Loading placeholder is not a DropdownItem (vix 0 only for New session
+        // on first line; for loading second line we skip hit).
+        if !(loading && row == 1) {
+            hit.push(rr, HitTarget::DropdownItem(*vix));
+        }
+        let mut rat_spans: Vec<Span> = spans
+            .iter()
+            .map(|(t, st)| Span::styled(t.clone(), *st))
+            .collect();
+        // Pad with the row base style (not the last concept color — age/provider
+        // would leak teal/green into the trailing bar fill).
+        let used: usize = spans.iter().map(|(t, _)| t.chars().count()).sum();
+        let pad = inner_w.saturating_sub(used);
+        if pad > 0 {
+            let st = if *vix == state.dropdown_index {
+                p.selection()
+            } else {
+                Style::default()
+            };
+            rat_spans.push(Span::styled(" ".repeat(pad), st));
+        }
+        frame.render_widget(Paragraph::new(Line::from(rat_spans)), rr);
+    }
+
+    // Always paint the footer so arrowing never toggles popup height.
+    let footer_line = if state.dropdown_index > 0
+        && !loading
+        && let Some(s) = state.sessions.get(state.dropdown_index - 1)
+    {
+        // Session id stays dim (identity); datetime uses the shared timestamp
+        // teal — same as relative ages and pane commit-age columns.
+        let tz = chrono::Local::now().offset().local_minus_utc();
+        let when = absolute_local_label(s.mtime_ms / 1000, tz);
+        Line::from(vec![
+            Span::styled(s.session_id.clone(), p.dim_style()),
+            Span::styled("  ·  ", p.dim_style()),
+            Span::styled(when, p.timestamp_style()),
+        ])
+    } else {
+        Line::from(Span::styled(
+            "Create a new session, or select an existing one.",
+            p.dim_style(),
+        ))
+    };
+    let footer_y = popinner.y + popinner.height.saturating_sub(2);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            RULE_CHAR.to_string().repeat(inner_w),
+            Style::default().fg(p.border),
+        ))),
+        Rect {
+            x: popinner.x,
+            y: footer_y,
+            width: popinner.width,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(footer_line),
+        Rect {
+            x: popinner.x,
+            y: footer_y + 1,
+            width: popinner.width,
+            height: 1,
+        },
+    );
 }
 
 /// Draw every field box top-to-bottom into `inner` (reserving no button row —
@@ -778,10 +1125,22 @@ pub(crate) fn render_fields(
                 }
             }
             FieldKind::Picker => {
-                // `value` (display label) left, a right-`▸` on the right — the
-                // affordance that activating opens a modal, not an inline list.
+                // Session field: `value` left, `▾` when an inline list can open
+                // (existing worktree — sessions loaded or loadable), else `▸`.
+                // Activation opens the rich session dropdown (not a separate modal).
                 let val = if f.value.is_empty() { "—" } else { f.value.as_str() };
-                let chev = GLYPH_CHEVRON_RIGHT.to_string();
+                let can_list = focused
+                    && (state.sessions_for.is_some()
+                        || state.sessions_loading
+                        || !state.sessions.is_empty());
+                // Prefer down-chevron once the list is open or sessions known;
+                // still show ▾ when focused so it reads as a dropdown.
+                let chev = if focused || state.dropdown_open {
+                    GLYPH_CHEVRON_DOWN.to_string()
+                } else {
+                    GLYPH_CHEVRON_DOWN.to_string()
+                };
+                let _ = can_list; // reserved for dimming when target is new
                 let gap = (content.width as usize)
                     .saturating_sub(val.chars().count() + chev.chars().count());
                 let line = Line::from(vec![
@@ -790,13 +1149,27 @@ pub(crate) fn render_fields(
                     Span::styled(chev, Style::default().fg(p.accent)),
                 ]);
                 frame.render_widget(Paragraph::new(line), content);
+                if focused && state.dropdown_open {
+                    // Signal a session-style open list via empty options + special
+                    // sentinel handled in render_form (options empty means session).
+                    open_anchor = Some((box_rect, Vec::new()));
+                }
             }
-            FieldKind::Combobox { .. } => {
+            FieldKind::Combobox { options } => {
                 // Text-field path (value + caret) with the right-aligned `▾`; the
                 // rightmost 2 cols are reserved for " ▾" so the chevron never
-                // overlaps the value or its caret.
+                // overlaps the value or its caret. When the typed value does
+                // not match any seeded worktree option (and is non-empty),
+                // append a dim " (new worktree)" so the operator sees the
+                // target will create a fresh worktree (PR/ticket/new name).
                 let chev = GLYPH_CHEVRON_DOWN.to_string();
-                let text_w = content.width.saturating_sub(2);
+                let is_new =
+                    FormState::is_new_worktree_target(&f.value, options, &state.ref_aliases);
+                let suffix = if is_new { " (new worktree)" } else { "" };
+                let suffix_w = suffix.chars().count();
+                // Reserve chevron (1) + space before chevron (1) + optional suffix.
+                let reserve = 2 + suffix_w;
+                let text_w = content.width.saturating_sub(reserve as u16).max(1);
                 let wrap_w = (text_w as usize).saturating_sub(1).max(1);
                 if focused {
                     focused_wrap_w = Some(wrap_w);
@@ -818,6 +1191,21 @@ pub(crate) fn render_fields(
                             lrect,
                         );
                     }
+                    // Suffix only on the caret/first visible row so multi-line
+                    // wraps don't repeat "(new worktree)".
+                    if is_new && ri == start {
+                        let sx = content.x + text_w;
+                        let sw = (suffix_w as u16).min(content.width.saturating_sub(text_w + 1));
+                        if sw > 0 {
+                            frame.render_widget(
+                                Paragraph::new(Line::from(Span::styled(
+                                    suffix.to_string(),
+                                    p.dim_style(),
+                                ))),
+                                Rect { x: sx, y: ly, width: sw, height: 1 },
+                            );
+                        }
+                    }
                 }
                 let chev_rect = Rect {
                     x: content.x + content.width.saturating_sub(1),
@@ -831,17 +1219,18 @@ pub(crate) fn render_fields(
                 );
                 if focused && state.dropdown_open {
                     // The FILTERED rows; label the synthetic ref row so the value
-                    // ("pr:45") reads with its meaning ("← use PR #45"). The
-                    // labeled display order matches `combobox_filtered`, so the
-                    // highlight index and the pick value stay aligned.
+                    // ("pr:45") reads with its meaning ("← use PR #45"), and
+                    // decorate real worktrees that carry a PR as `name #N`
+                    // (`#N` painted with `pr_style` / meta in the open list).
+                    // Pick values still come from `combobox_filtered` (raw names).
                     let labeled: Vec<String> = state
                         .combobox_filtered()
                         .into_iter()
                         .map(|(idx, s)| {
                             if idx == usize::MAX {
-                                format!("{s}   ← {}", ref_hint(&s))
+                                format!("{s}   ← {} (new worktree)", ref_hint(&s))
                             } else {
-                                s
+                                worktree_option_label(&s, &state.ref_aliases)
                             }
                         })
                         .collect();
@@ -916,12 +1305,19 @@ pub(crate) fn render_open_dropdown(
             break;
         }
         let rr = Rect { x: popinner.x, y: popinner.y + row as u16, width: popinner.width, height: 1 };
-        let style = if row == state.dropdown_index { p.selection() } else { Style::default().fg(p.fg) };
+        let selected = row == state.dropdown_index;
         hit.push(rr, HitTarget::DropdownItem(row));
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(format!(" {opt}"), style))),
-            rr,
-        );
+        // Multi-span so a trailing `#N` PR tag keeps `pr_style` (meta) while
+        // the name follows the row selection style.
+        let mut line = paint_dropdown_option(opt, selected, &p);
+        // Pad the last span so the selection bar fills the row width.
+        let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        let pad = (popinner.width as usize).saturating_sub(used);
+        if pad > 0 {
+            let st = if selected { p.selection() } else { Style::default() };
+            line.spans.push(Span::styled(" ".repeat(pad), st));
+        }
+        frame.render_widget(Paragraph::new(line), rr);
     }
 }
 
@@ -1068,6 +1464,65 @@ mod tests {
     }
 
     #[test]
+    fn combobox_suppresses_synthetic_ref_when_alias_covers_existing_worktree() {
+        // Typing JUS-1924 when platform.JUS-1924 exists (alias ticket:JUS-1924)
+        // must list only the worktree — no "use ticket… (new worktree)" row.
+        // Same worktree also has PR 1938 — mirrors platform.JUS-1924 #1938.
+        let mut f = FormState::new(
+            "t",
+            "OK",
+            vec![Field::combobox(
+                "target",
+                vec!["platform.JUS-1924".into(), "platform.other".into()],
+                "",
+            )],
+        );
+        f.ref_aliases
+            .insert("ticket:JUS-1924".into(), "platform.JUS-1924".into());
+        f.ref_aliases
+            .insert("pr:1938".into(), "platform.JUS-1924".into());
+        f.focus = 0;
+        f.set_field_value(0, "JUS-1924");
+        let view = f.combobox_filtered();
+        assert!(
+            view.iter().any(|(_, s)| s == "platform.JUS-1924"),
+            "existing worktree still listed: {view:?}"
+        );
+        assert!(
+            !view.iter().any(|(_, s)| s.starts_with("ticket:")),
+            "no synthetic ticket row when alias covers it: {view:?}"
+        );
+        assert!(
+            !FormState::is_new_worktree_target("JUS-1924", &["platform.JUS-1924".into()], &f.ref_aliases),
+            "closed field must not show (new worktree) for a covered ticket"
+        );
+        // Bare PR number covered by pr_number alias: list the worktree (name
+        // does not contain "1938"), never a synthetic pr: create row.
+        f.set_field_value(0, "1938");
+        let view = f.combobox_filtered();
+        assert!(
+            view.iter().any(|(_, s)| s == "platform.JUS-1924"),
+            "PR digits must surface the aliased worktree: {view:?}"
+        );
+        assert!(
+            !view.iter().any(|(_, s)| s.starts_with("pr:")),
+            "no synthetic pr row when alias covers it: {view:?}"
+        );
+        assert_eq!(
+            worktree_option_label("platform.JUS-1924", &f.ref_aliases),
+            "platform.JUS-1924 #1938"
+        );
+        assert_eq!(
+            split_pr_suffix("platform.JUS-1924 #1938"),
+            Some(("platform.JUS-1924", "#1938"))
+        );
+        // Uncovered PR still offers the synthetic create path.
+        f.set_field_value(0, "9999");
+        let view = f.combobox_filtered();
+        assert!(view.iter().any(|(_, s)| s == "pr:9999"));
+    }
+
+    #[test]
     fn picker_is_a_focus_stop_but_not_text_editable() {
         // A Picker field participates in Tab focus (so it can be activated) but
         // typing/newline never mutate it, and validate never blocks on it.
@@ -1089,12 +1544,13 @@ mod tests {
     }
 
     #[test]
-    fn picker_renders_value_and_right_chevron() {
+    fn picker_renders_value_and_down_chevron() {
+        // Session Picker is an inline dropdown (▾), not a modal-opening ▸.
         let mut f = FormState::new("t", "OK", vec![Field::picker("session", "↻ Fix parser")]);
         let (s, _hit) = render(&mut f, 64, 12);
         assert!(s.contains("session"), "picker label renders");
         assert!(s.contains("Fix parser"), "picker value renders");
-        assert!(s.contains('▸'), "picker draws the right chevron affordance");
+        assert!(s.contains('▾'), "picker draws the down-chevron affordance");
     }
 
     #[test]

@@ -35,7 +35,7 @@ impl App {
                 // list for its dropdown — the always-visible indicator itself
                 // reads the snapshot's `active_provider`, but the form needs the
                 // ordered enabled set, which lives only in the settings payload.
-                // Same `is_none()` guard the `s` overlay uses (a cached Some(None)
+                // Same `is_none()` guard the `,` overlay uses (a cached Some(None)
                 // failure never re-fetches); mirrors the lazy `reconcile_defs`
                 // pattern.
                 if self.settings.is_none() {
@@ -120,6 +120,10 @@ impl App {
                     }
                     // Enter-on-Cancel joins the dismiss accelerators.
                     Char('n') | Char('q') | Esc | Enter => {
+                        // Esc (and n/q cancel) can be the leading half of a
+                        // terminal meta sequence (Esc then digit → SwitchTab);
+                        // arm the post-dismiss digit guard.
+                        self.note_esc_dismiss();
                         self.mode = Mode::List;
                         Update { dirty: true, cmds: vec![] }
                     }
@@ -160,7 +164,16 @@ impl App {
                 }
                 match &self.mode {
                     Mode::Help | Mode::Settings => {
-                        // Any key closes the help / settings overlay.
+                        // Any key closes the help / settings overlay. Esc
+                        // specifically arms the post-dismiss digit guard so a
+                        // residual Esc→digit meta split can't SwitchTab.
+                        if matches!(key.code, KeyCode::Esc) {
+                            self.note_esc_dismiss();
+                        } else {
+                            // Other dismiss keys (e.g. `q`) still clear a sticky
+                            // ctrl+s prefix so the next n/p isn't a tab hop.
+                            self.prefix_armed = false;
+                        }
                         self.mode = Mode::List;
                         Update { dirty: true, cmds: Vec::new() }
                     }
@@ -178,6 +191,7 @@ impl App {
                                 self.schedule_run_read(&mut cmds, 120);
                             }
                             KeyCode::Esc => {
+                                self.note_esc_dismiss();
                                 self.ui().search[pane as usize].clear();
                                 self.ui().selections[pane as usize] =
                                     Selection { cursor: 0, anchor: None };
@@ -331,14 +345,22 @@ impl App {
                 Update { dirty: clear, cmds: vec![] }
             }
             Event::SessionsLoaded { worktree, result } => {
-                // Only applies to a session picker still open for the SAME
-                // worktree — a reply that arrives after the picker moved on (or
-                // closed) is stale and dropped. Both outcomes clear `loading`.
-                let fresh = matches!(
+                // Applies to (1) a SessionPick still open for this worktree, or
+                // (2) the adhoc schedule form whose session cache was requested
+                // for this worktree. Stale replies (picker moved / form closed)
+                // are dropped. Both outcomes clear `loading`.
+                let for_pick = matches!(
                     &self.mode,
                     Mode::SessionPick { worktree: wt, .. } if *wt == worktree
                 );
-                if !fresh {
+                let for_form = matches!(
+                    &self.mode,
+                    Mode::Form {
+                        state,
+                        action: FormAction::AdhocTask { .. },
+                    } if state.sessions_for.as_deref() == Some(worktree.as_str())
+                );
+                if !for_pick && !for_form {
                     return Update { dirty: false, cmds: vec![] };
                 }
                 match result {
@@ -346,13 +368,21 @@ impl App {
                         if let Mode::SessionPick { items, loading, .. } = &mut self.mode {
                             *items = v;
                             *loading = false;
+                        } else if let Mode::Form { state, .. } = &mut self.mode {
+                            state.sessions = v;
+                            state.sessions_loading = false;
+                            // Keep dropdown_index in range if the list shrank.
+                            let n = 1 + state.sessions.len();
+                            if state.dropdown_index >= n {
+                                state.dropdown_index = n.saturating_sub(1);
+                            }
                         }
                     }
                     Err(e) => {
-                        // Keep the modal usable ("New session" still selectable);
-                        // surface the error on the status line.
                         if let Mode::SessionPick { loading, .. } = &mut self.mode {
                             *loading = false;
+                        } else if let Mode::Form { state, .. } = &mut self.mode {
+                            state.sessions_loading = false;
                         }
                         self.status_line = Some(format!("list sessions: {e}"));
                     }

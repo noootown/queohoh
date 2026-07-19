@@ -9,17 +9,20 @@ pub enum ButtonKind {
 }
 
 /// A clickable action chip on a list pane's top border. Clicking one behaves
-/// exactly like pressing its hotkey with that pane focused. `Create` ≡ `c`,
-/// `Tasks` ≡ `t`, `Run` ≡ `r` (TASKS runs the highlighted def; QUEUE re-queues
-/// the selected task, so its chip reads `[r]erun`; WORKTREES opens a fresh
-/// worktree-targeted new task), `Goto` ≡ `g` (QUEUE — resume the task's Claude
-/// session in tmux; WORKTREES — open the worktree in tmux), `Cancel` ≡ `x`
-/// (QUEUE only — skip/stop the selected task), `Remove` ≡ `x` (WORKTREES
-/// only — remove the selected worktree), `Collapse` ≡ `z` (labeled
-/// collapse/expand by expanded/collapsed state).
+/// exactly like pressing its hotkey with that pane focused. `Schedule` ≡ `s`
+/// (QUEUE only — adhoc create form), `Tasks` ≡ `t`, `Run` ≡ `r` (TASKS runs
+/// the highlighted def; QUEUE re-queues the selected task, so its chip reads
+/// `[r]erun`; WORKTREES opens a fresh worktree-targeted new task), `Goto` ≡ `g`
+/// (QUEUE — resume the task's Claude session in tmux; WORKTREES — open the
+/// worktree in tmux), `Cancel` ≡ `x` (QUEUE only — skip/stop the selected
+/// task), `Remove` ≡ `x` (WORKTREES only — remove the selected worktree),
+/// `Cron` ≡ `c` (TASKS only — pause/resume the def's schedule), `Collapse` ≡
+/// `z` (labeled collapse/expand by expanded/collapsed state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneButton {
-    Create,
+    /// QUEUE `[s]chedule` — opens the unified adhoc-create form (same action as
+    /// the old `[c]reate` chip; rename keeps the key the label's first letter).
+    Schedule,
     Tasks,
     Run,
     Discover,
@@ -28,7 +31,7 @@ pub enum PaneButton {
     /// QUEUE `[a]rchive` — a TOGGLE: archives the selected terminal row, or
     /// restores it when the row is already archived (dimmed FINISHED tail).
     Archive,
-    /// TASKS `[o]cron` — a TOGGLE: pauses the selected def's cron schedule, or
+    /// TASKS `[c]ron` — a TOGGLE: pauses the selected def's cron schedule, or
     /// resumes it. The def's Cron column dims while paused. Inert (status line,
     /// no RPC) when the selected def has no `cron:` at all.
     Cron,
@@ -46,9 +49,11 @@ pub enum PaneButton {
 pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     use PaneButton::*;
     match pane {
-        PaneId::Queue => &[Run, Cancel, Goto, Archive, Create, Collapse],
-        PaneId::Tasks => &[Run, Discover, Cron, Create, Collapse],
-        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Create, Collapse],
+        // Schedule (adhoc create) lives on QUEUE only — the single path for new
+        // tasks. WORKTREES no longer has a Run chip (use QUEUE [s]chedule).
+        PaneId::Queue => &[Run, Cancel, Goto, Archive, Schedule, Collapse],
+        PaneId::Tasks => &[Run, Discover, Cron, Collapse],
+        PaneId::Worktrees => &[Goto, Remove, Tasks, Collapse],
         PaneId::Detail => &[],
     }
 }
@@ -58,7 +63,7 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
 /// `Cancel` (stop, `[x]stop`), and `Archive` (`[a]rchive`/`[a]unarchive`) each
 /// fan the RPC out over every eligible row in the range; WORKTREES' `Remove`
 /// opens its own bulk-remove menu. Everything else — including the pane-scoped
-/// `Goto`/`Create`/`Collapse` chips that don't even read the selection — is
+/// `Goto`/`Schedule`/`Collapse` chips that don't even read the selection — is
 /// bulk-disabled: the title bar dims it (see
 /// [`crate::view::panes::button_chip`]) and its key/click refuses with a status
 /// line (`App::apply_action`) instead of silently acting on just the cursor
@@ -169,11 +174,11 @@ mod tests {
         assert!(bulk_allowed(PaneId::Queue, Run));
         assert!(bulk_allowed(PaneId::Queue, Cancel));
         assert!(bulk_allowed(PaneId::Queue, Archive));
-        for btn in [Goto, Create, Collapse] {
+        for btn in [Goto, Schedule, Collapse] {
             assert!(!bulk_allowed(PaneId::Queue, btn), "{btn:?} should be bulk-disabled on QUEUE");
         }
         // TASKS: none.
-        for btn in [Run, Collapse] {
+        for btn in [Run, Discover, Cron, Collapse] {
             assert!(!bulk_allowed(PaneId::Tasks, btn), "{btn:?} should be bulk-disabled on TASKS");
         }
         // WORKTREES: only remove.

@@ -29,7 +29,7 @@ pub enum Event {
     /// Boxed: a full `TaskDefinition` (~400 bytes) would otherwise dominate every
     /// `Event` (clippy::large_enum_variant).
     Definition { repo: String, name: String, def: Option<Box<TaskDefinition>> },
-    /// Result of the on-demand `settings` RPC that backs the `s` overlay.
+    /// Result of the on-demand `settings` RPC that backs the `,` overlay.
     /// `None` = the call failed or the daemon predates the RPC (stored as
     /// `Some(None)` in `App::settings` → overlay shows the "unavailable" line).
     Settings { payload: Option<SettingsPayload> },
@@ -108,7 +108,7 @@ pub enum Cmd {
     /// `listSessions` RPC; the reply lands as [`Event::SessionsLoaded`] (echoing
     /// `worktree` so a stale reply is dropped). `repo`/`worktree` scope the query.
     FetchSessions { repo: String, worktree: String },
-    /// One-shot fetch of the daemon's model-alias settings for the `s` overlay.
+    /// One-shot fetch of the daemon's model-alias settings for the `,` overlay.
     /// Emitted once on first open (App::settings is None); the reply lands as
     /// [`Event::Settings`].
     FetchSettings,

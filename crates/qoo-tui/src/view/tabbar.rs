@@ -9,19 +9,6 @@ use crate::ipc::types::{ProviderUsage, UsageSeverity};
 use crate::view::Computed;
 use crate::view::theme::{GLYPH_DOT, Palette};
 
-/// A per-provider accent for the active `↯ <provider>` indicator, reusing the
-/// theme's existing color slots so it re-themes with the rest of the UI. A
-/// provider name beyond the known set falls back to the generic metadata color.
-fn provider_style(name: &str, p: &Palette) -> Style {
-    let color = match name {
-        "claude" => p.accent,
-        "grok" => p.mauve,
-        "codex" => p.info,
-        _ => p.meta,
-    };
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
-}
-
 /// Severity color for an active provider's usage text. Stale samples add DIM
 /// so a last-good chip reads quieter without disappearing.
 fn usage_style(u: &ProviderUsage, p: &Palette) -> Style {
@@ -178,7 +165,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         let is_active = active_name.as_deref() == Some(name.as_str());
         // Leading double-space separates chips from each other / the run label.
         let prov_span = if is_active {
-            Span::styled(format!("  ↯ {name}"), provider_style(name, p))
+            Span::styled(format!("  ↯ {name}"), p.provider_style(name))
         } else {
             // Inactive: grey (not Modifier::DIM — theme notes grey-on-grey
             // with DIM is unreadable; `p.dim` is the dedicated de-emphasis slot).

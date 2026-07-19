@@ -704,6 +704,36 @@ fn model_field_defaulting_selects_preferred_ref_or_falls_back_to_head() {
     assert_eq!(stale.value, "");
 }
 
+#[test]
+fn model_field_for_session_filters_by_provider() {
+    // Schedule-form session→model coupling: pinned provider hides foreign models.
+    let mut app = launcher_app();
+    app.settings = Some(Some(catalog_settings()));
+    let claude = app.model_field_for_session(
+        "platform",
+        Some("claude"),
+        Some("claude/claude-sonnet-5"),
+    );
+    match &claude.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert!(options.iter().all(|o| o.value.starts_with("claude/")));
+            assert!(!options.iter().any(|o| o.value.starts_with("grok/")));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(claude.value, "claude/claude-sonnet-5");
+    // New session / unknown provider keeps the full catalog + empty head.
+    let any = app.model_field_for_session("platform", None, None);
+    match &any.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert_eq!(options[0].value, "");
+            assert!(options.iter().any(|o| o.value.starts_with("claude/")));
+            assert!(options.iter().any(|o| o.value.starts_with("grok/")));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 // --- Task 4: def-run model picker = effective chain -------------------------
 
 /// Settings + snapshot with active_provider = grok (snapshot wins over settings

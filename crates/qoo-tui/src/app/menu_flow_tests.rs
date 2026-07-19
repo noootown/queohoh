@@ -65,6 +65,12 @@ fn focus_worktrees(a: &mut App) {
     tab(a);
 }
 
+/// Open the worktree session launcher (formerly worktrees `[r]un` chip — removed;
+/// kept as an internal path for SessionPick Launch tests).
+fn open_worktree_launcher(a: &mut App) -> Update {
+    a.apply_action(crate::keymap::AppAction::NewTaskOnWorktree)
+}
+
 // --- queue `r` / `x` chip-keys (the queue menu's old verbs are now keys) ------
 
 #[test]
@@ -674,7 +680,7 @@ fn loaded(worktree: &str) -> Event {
 fn r_on_worktree_opens_session_pick_and_fetches() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    let up = a.update(key('r'));
+    let up = open_worktree_launcher(&mut a);
     assert!(matches!(&a.mode, Mode::SessionPick { worktree, loading: true, items, .. }
         if worktree == "platform.wt-a" && items.is_empty()));
     assert!(matches!(&up.cmds[..], [Cmd::FetchSessions { repo, worktree }]
@@ -685,7 +691,7 @@ fn r_on_worktree_opens_session_pick_and_fetches() {
 fn sessions_loaded_fills_items_and_enter_on_first_row_is_new_session() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('r'));
+    open_worktree_launcher(&mut a);
     a.update(loaded("platform.wt-a"));
     // Loaded items fill and loading clears.
     assert!(matches!(&a.mode, Mode::SessionPick { items, loading: false, .. } if items.len() == 2));
@@ -701,7 +707,7 @@ fn sessions_loaded_fills_items_and_enter_on_first_row_is_new_session() {
 fn picking_a_session_pins_it() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('r'));
+    open_worktree_launcher(&mut a);
     a.update(loaded("platform.wt-a"));
     // Rows: New(0), Create Worktree(1), sessions(2..) — two downs reach sess-1.
     a.update(down());
@@ -726,7 +732,7 @@ fn resuming_a_session_without_a_recorded_model_falls_back_to_head() {
     // daemon resolves the default chain).
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('r'));
+    open_worktree_launcher(&mut a);
     a.update(loaded("platform.wt-a"));
     // Rows: New(0), Create Worktree(1), sess-1(2), sess-2(3) — three downs.
     a.update(down());
@@ -746,7 +752,7 @@ fn resuming_a_session_without_a_recorded_model_falls_back_to_head() {
 fn launcher_tab_focuses_cancel_and_enter_closes() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('r'));
+    open_worktree_launcher(&mut a);
     a.update(loaded("platform.wt-a"));
     // Tab moves focus onto Cancel; Enter then closes the launcher.
     tab(&mut a);
@@ -759,7 +765,7 @@ fn launcher_tab_focuses_cancel_and_enter_closes() {
 fn launcher_create_worktree_row_opens_the_form() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('r'));
+    open_worktree_launcher(&mut a);
     a.update(loaded("platform.wt-a"));
     // Row 1 = Create Worktree; Enter opens the create-worktree launch form
     // (branch/name + model + prompt) for the active repo.
@@ -774,7 +780,7 @@ fn launcher_create_worktree_row_opens_the_form() {
 fn session_pick_type_to_filter_matches_labels() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('r'));
+    open_worktree_launcher(&mut a);
     a.update(loaded("platform.wt-a"));
     for c in "redesign".chars() {
         a.update(key(c));
@@ -789,7 +795,7 @@ fn session_pick_type_to_filter_matches_labels() {
 fn stale_sessions_loaded_for_other_worktree_is_ignored_and_esc_cancels() {
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('r'));
+    open_worktree_launcher(&mut a);
     a.update(loaded("platform.other"));
     assert!(matches!(&a.mode, Mode::SessionPick { loading: true, .. }));
     a.update(esc());
@@ -802,7 +808,7 @@ fn session_pick_load_error_keeps_modal_and_sets_status() {
     // selectable), and surfaces the error on the status line.
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    a.update(key('r'));
+    open_worktree_launcher(&mut a);
     a.update(Event::SessionsLoaded {
         worktree: "platform.wt-a".into(),
         result: Err("boom".into()),
@@ -1005,11 +1011,11 @@ fn r_and_x_are_noops_on_session_rows_but_g_works() {
     focus_worktrees(&mut a);
     a.update(down()); // select the appended session row (index 1)
 
-    // `r`: no mode change, a status line explaining sessions can't host a task.
+    // `r` is unbound on WORKTREES (schedule is QUEUE-only) — inert, no status.
     let ru = a.update(key('r'));
     assert!(matches!(a.mode, Mode::List), "r must not open the launcher on a session row");
     assert!(ru.cmds.is_empty());
-    assert!(a.status_line.as_deref().unwrap_or("").contains("session"), "status: {:?}", a.status_line);
+    assert_eq!(a.status_line, None, "r is unbound, not a refused verb");
 
     // `x`: no mode change, a status line (a session is not a worktree).
     a.status_line = None;

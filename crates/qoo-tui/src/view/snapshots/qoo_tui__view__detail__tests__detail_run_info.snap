@@ -19,7 +19,7 @@ expression: terminal.backend()
 "│                         ││                                                   │"
 "│                         ││  Details                                          │"
 "╰─────────────────────────╯│    worktree     /repos/acme.feature               │"
-"╭⚡TASKS [r] [d] [o] · [c]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
+"╭⚡TASKS [r] [d] [c] · [z]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││    model claude-opus-4.8 (claude) ·               │"
 "│ 🔍 [/]filter            ││  claude-opus-4-8                                  │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││    exit code    0                                 │"
@@ -27,7 +27,7 @@ expression: terminal.backend()
 "│                         ││    tokens       199k in / 22k out                 │"
 "│                         ││    turns        37                                │"
 "╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│  Config                                           │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [g] [x] [t]╮│  Config                                           │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││    description  Squash-merge the branch.          │"
 "│ 🔍 [/]filter            ││    worktree     auto                              │" Hidden by multi-width symbols: [(3, " ")]
 "│   Name                  ││    dedup        none                              │"

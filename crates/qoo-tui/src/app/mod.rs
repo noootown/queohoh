@@ -48,7 +48,7 @@ pub struct App {
     pub status_line: Option<String>,
     pub run_files: Option<(String, Box<RunFiles>)>,
     pub defs_by_project: HashMap<String, Vec<DefinitionSummary>>,
-    /// Model-alias settings backing the `s` overlay, lazily fetched on first
+    /// Model-alias settings backing the `,` overlay, lazily fetched on first
     /// open. Three-state: `None` = never fetched (fetch is in flight → overlay
     /// shows "loading"); `Some(None)` = the fetch failed or the daemon predates
     /// the `settings` RPC (overlay shows the "unavailable" line); `Some(Some(p))`
@@ -84,6 +84,16 @@ pub struct App {
     /// project tab) / `p` (previous) and anything else disarms and is swallowed.
     /// Only armed/consumed inside `Mode::List`, never in text-input modes.
     pub prefix_armed: bool,
+    /// After Esc dismisses an overlay (or clears list selection), ignore
+    /// project-tab digits (`1`–`9`/`0`) until this `now_ms` timestamp.
+    ///
+    /// WHY: terminals without full Esc disambiguation (and Meta/Alt-as-Esc
+    /// modes) deliver Alt+digit as two events: `Esc` then `Char('2')`. Esc
+    /// closes the dialog; the follow-up digit then hits list mode and
+    /// `SwitchTab` — the user sees "I pressed Esc and landed on the 2nd/3rd
+    /// project". A short post-Esc window eats residual tab digits without
+    /// blocking deliberate `2` presses a beat later.
+    pub suppress_tab_keys_until_ms: u64,
     /// Last plain (non-shift) row click: `(pane, row_identity, now_ms)`. A second
     /// click on the SAME ROW IDENTITY within `DOUBLE_CLICK_MS` opens the action
     /// menu; a single click only selects. Keying on the stable per-row identity
@@ -222,6 +232,7 @@ impl App {
             now_epoch_s: now_epoch_s(),
             now_ms: 0,
             prefix_armed: false,
+            suppress_tab_keys_until_ms: 0,
             last_click: None,
             size: (0, 0),
             hit: HitMap::new(),
@@ -688,12 +699,29 @@ impl App {
         true
     }
 
+    /// How long after Esc to ignore project-tab digit keys (see
+    /// [`Self::suppress_tab_keys_until_ms`]). 150ms is long enough to absorb a
+    /// terminal's Esc→digit meta split, short enough that a deliberate second
+    /// keypress still switches tabs.
+    pub(crate) const ESC_TAB_GUARD_MS: u64 = 150;
+
+    /// Call whenever Esc dismisses an overlay or clears list selection state.
+    /// Disarms the `ctrl+s` tab prefix (so a leftover arm can't turn the next
+    /// `n`/`p` into a project switch) and opens the post-Esc digit guard.
+    pub(crate) fn note_esc_dismiss(&mut self) {
+        self.prefix_armed = false;
+        self.suppress_tab_keys_until_ms = self.now_ms.saturating_add(Self::ESC_TAB_GUARD_MS);
+    }
+
     /// Staged Esc in `Mode::List`: (1) drop the pane's bulk selection — the
     /// anchored range AND its marks, together, since from the user's side they
     /// are one selection, not two things to peel back separately; (2) else clear
     /// the pane's search filter. Returns whether anything changed (an Esc with
     /// nothing to clear is inert). Any non-List mode is dismissed first.
     fn clear_esc(&mut self) -> bool {
+        // Always arm the post-Esc digit guard — even a no-op Esc (nothing to
+        // clear) can be the leading half of an Esc→digit meta sequence.
+        self.note_esc_dismiss();
         if !matches!(self.mode, Mode::List) {
             self.mode = Mode::List;
             return true;
@@ -711,6 +739,9 @@ impl App {
             self.ui().selections[pane as usize] = Selection { cursor: 0, anchor: None };
             return true;
         }
+        // Guard was still armed even though nothing else changed — repaint is
+        // not required for the guard alone (it is pure input state), so report
+        // inert when only the guard moved.
         false
     }
 

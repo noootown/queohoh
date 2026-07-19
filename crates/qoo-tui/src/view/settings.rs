@@ -1,4 +1,4 @@
-//! The `s` overlay: a read-only view of the daemon's provider + model settings.
+//! The `,` overlay: a read-only view of the daemon's provider + model settings.
 //!
 //! Post-Task-5 the daemon dropped the per-provider alias table for a flat
 //! `catalog` plus an `active_provider` and `default_models` block, so this

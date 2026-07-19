@@ -299,7 +299,7 @@ pub struct DefinitionSummary {
     /// `default` on the container covers old daemons that omit the field.
     pub cron: Option<String>,
     /// Whether this def's cron is currently ARMED. Meaningful only when
-    /// `cron.is_some()`; the operator pauses/resumes it with the `[o]cron` toggle
+    /// `cron.is_some()`; the operator pauses/resumes it with the `[c]ron` toggle
     /// (`set_cron_enabled` RPC, persisted daemon-side). The Cron column renders
     /// DIMMED when this is `false`. Field-level `default = true` (not the
     /// container `default`, which would give `false`) so an old daemon that omits

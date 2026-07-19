@@ -121,7 +121,9 @@ pub const FENCE_RULE_MIN_TRAIL: usize = 3;
 // `[{key}]` form (labels dropped) on narrow panes. Icons were dropped — the
 // emoji glyphs (➕ ⚙️ 🔽) rendered inconsistently across terminals and carried
 // no meaning the label doesn't.
-pub const BTN_LABEL_CREATE: &str = "create";
+/// QUEUE schedule (adhoc create) chip. Rendered `[s]chedule` — key matches the
+/// label's first letter (was `[c]reate`; settings moved off `s` to `,`).
+pub const BTN_LABEL_SCHEDULE: &str = "schedule";
 pub const BTN_LABEL_TASKS: &str = "tasks";
 pub const BTN_LABEL_RUN: &str = "run";
 pub const BTN_LABEL_DISCOVER: &str = "discover";
@@ -135,9 +137,8 @@ pub const BTN_LABEL_STOP: &str = "stop";
 /// the selection into the chip renderer (see `view::panes::render_list_pane`).
 pub const BTN_LABEL_ARCHIVE: &str = "archive";
 pub const BTN_LABEL_UNARCHIVE: &str = "unarchive";
-/// TASKS cron toggle. Rendered `[o]cron` — the key `o` is NOT the label's first
-/// letter, so `button_chip` takes the `[z]collapse`-style branch (whole label
-/// after the bracket) rather than stripping a leading key char.
+/// TASKS cron toggle. Rendered `[c]ron` — key matches the label's first letter
+/// (was `[o]cron`; `o` is inert).
 pub const BTN_LABEL_CRON: &str = "cron";
 pub const BTN_LABEL_REMOVE: &str = "remove";
 pub const BTN_LABEL_COLLAPSE: &str = "collapse";
@@ -365,6 +366,33 @@ impl Palette {
     /// colors instead of this.
     pub fn dim_style(&self) -> Style {
         Style::default().fg(self.dim)
+    }
+
+    /// Per-provider accent (top-bar `↯ <provider>`, session-list tags). Claude and
+    /// grok share the same green (`mauve` — the grok chip color) so provider
+    /// identity reads as one family rather than blue-vs-green rivalry; codex
+    /// keeps teal; unknown names fall back to metadata.
+    pub fn provider_style(&self, name: &str) -> Style {
+        let color = match name {
+            "claude" | "grok" => self.mauve,
+            "codex" => self.info,
+            _ => self.meta,
+        };
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    }
+
+    /// Open-PR `#<n>` chip — WORKTREES column, detail `pr` value, combobox
+    /// `name #N` suffix. Always `meta` (non-time metadata); never `warn`/`info`
+    /// so the same concept stays one color across the UI.
+    pub fn pr_style(&self) -> Style {
+        Style::default().fg(self.meta)
+    }
+
+    /// Relative ages (`6h ago`) and absolute local datetimes. Always `info`
+    /// (cyan/teal — timestamps ONLY); never `dim`/`meta` so time reads the same
+    /// in panes, session pickers, and footers.
+    pub fn timestamp_style(&self) -> Style {
+        Style::default().fg(self.info)
     }
 
     /// Pane border color by focus state.

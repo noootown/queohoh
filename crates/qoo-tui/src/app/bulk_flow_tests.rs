@@ -193,7 +193,7 @@ fn worktrees_bulk_range_refuses_run_goto_and_tasks_menu() {
 
     a.update(key('r'));
     assert!(matches!(a.mode, Mode::List));
-    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+    assert_eq!(a.status_line, None, "r is unbound on WORKTREES");
 
     a.status_line = None;
     let u = a.update(key('g'));
@@ -210,8 +210,8 @@ fn worktrees_bulk_range_refuses_run_goto_and_tasks_menu() {
 
 #[test]
 fn queue_bulk_range_refuses_goto_create_and_collapse() {
-    // QUEUE keeps only `Run`/`Cancel` (rerun/stop) bulk-doable — `g`/`c`/`z`
-    // all refuse with a status line on a multi-row range.
+    // QUEUE keeps only `Run`/`Cancel`/`Archive` bulk-doable — `g`/`s`/`z`
+    // all refuse with a status line on a multi-row range. (`s` = schedule.)
     let mut a = app_with(two_queue_one_failed());
     a.update(shift_down());
 
@@ -220,8 +220,8 @@ fn queue_bulk_range_refuses_goto_create_and_collapse() {
     assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
 
     a.status_line = None;
-    a.update(key('c'));
-    assert!(matches!(a.mode, Mode::List)); // no adhoc create form opened
+    a.update(key('s'));
+    assert!(matches!(a.mode, Mode::List)); // no adhoc schedule form opened
     assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
 
     a.status_line = None;
