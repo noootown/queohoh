@@ -311,26 +311,37 @@ impl App {
     /// invalidates it (and resets the session field back to "New session").
     /// No-op unless `action` is an `AdhocTask` currently carrying a pin.
 
-    /// Open the unified adhoc-create form (`s` / Schedule on QUEUE), optionally with the
-    /// `target` combobox prefilled from the invoking pane's selected entity (an
-    /// existing worktree name, or a `pr:N` for a PR-associated row). Fields, in
-    /// `adhoc_field` order: `[target combobox, session picker, model dropdown,
-    /// prompt textarea]` — session sits above model so a chosen session can
-    /// filter the model list to that provider only. Initial focus lands on the
-    /// target (field 0). Target is optional (empty ⇒ a fresh temp worktree);
-    /// the session picker offers continuation when the target names an
-    /// existing worktree.
-    pub(super) fn open_adhoc_create(&mut self, repo: String, prefill_target: Option<String>) {
+    /// Open the unified adhoc-create form (`s` / Schedule on QUEUE, or `r` on
+    /// WORKTREES with `lock_target`). Fields, in `adhoc_field` order: `[target,
+    /// session, model, prompt]` — session sits above model so a chosen session
+    /// can filter the model list. When `lock_target` is true the target is a
+    /// readonly field fixed to `prefill_target` (WORKTREES run: worktree locked
+    /// in); otherwise it's an editable combobox (QUEUE schedule). Prefills that
+    /// name an existing worktree kick a `listSessions` fetch (returned as cmds).
+    pub(super) fn open_adhoc_create(
+        &mut self,
+        repo: String,
+        prefill_target: Option<String>,
+        lock_target: bool,
+    ) -> Vec<Cmd> {
         let rows = self.active_worktree_rows();
         let worktrees = Self::worktree_names(&rows);
         let aliases = crate::worktree_context::worktree_ref_aliases(&rows);
         let prefill = prefill_target.as_deref().unwrap_or("").trim().to_string();
         let prefetch = !prefill.is_empty() && worktrees.iter().any(|w| w == &prefill);
+        // Locked target (WORKTREES [r]un): display-only so the operator can't
+        // retarget; focus lands on session (first non-readonly). Unlocked
+        // (QUEUE schedule): editable combobox, focus on target.
+        let target_field = if lock_target && !prefill.is_empty() {
+            Field::readonly("worktree", &prefill)
+        } else {
+            Field::combobox("worktree / PR / ticket", worktrees, &prefill)
+        };
         let mut state = FormState::new(
             &format!("New task · {repo}"),
             "Enqueue",
             vec![
-                Field::combobox("worktree / PR / ticket", worktrees, &prefill),
+                target_field,
                 Field::picker("session", &Self::adhoc_session_label(None)),
                 self.model_field(&repo),
                 Field::textarea("prompt", "", true),
@@ -340,30 +351,25 @@ impl App {
         // session rows have room for the "(new worktree)" suffix and provider tags.
         state.wide = true;
         state.ref_aliases = aliases;
+        let mut cmds = Vec::new();
         if prefetch {
             state.sessions_for = Some(prefill.clone());
             state.sessions_loading = true;
+            cmds.push(Cmd::FetchSessions {
+                repo: repo.clone(),
+                worktree: prefill,
+            });
         }
         self.mode = Mode::Form {
             state,
             action: FormAction::AdhocTask {
-                repo: repo.clone(),
+                repo,
                 resume_session_id: None,
                 resume_label: None,
                 resume_worktree: None,
             },
         };
-        // Prefetch is returned via the Create action path only if callers chain
-        // cmds — open_adhoc_create is currently void. Fire the fetch from the
-        // caller of Create by checking mode after, OR stash here via a side
-        // channel. Simplest: if prefetch, the first session-field open will
-        // fetch; also schedule now by storing pending on app... Use a small
-        // hack: set sessions_loading and rely on open/session or target settle.
-        // Actually inject via apply_action Create — for now prefetch when
-        // opening session list. If prefill is set, kick fetch immediately by
-        // storing a one-shot cmd isn't possible void. Change signature? Keep
-        // void; open_adhoc_session_pick and target-change fetch.
-        let _ = (repo, prefetch);
+        cmds
     }
 
     /// Kick off (or reuse) a `listSessions` fetch for `worktree` into the open
@@ -1009,11 +1015,22 @@ impl App {
             // interactive — no resume). A picked name absent from `choices`
             // (shouldn't happen — the dropdown only offers `choices`' names)
             // is a silent no-op, matching the old picker's index-miss guard.
-            FormAction::GotoProvider { path, choices } => {
+            FormAction::GotoProvider {
+                path,
+                choices,
+                juice_base,
+            } => {
                 let name = values.first().cloned().unwrap_or_default();
                 let cmd = choices.iter().find(|(n, _)| *n == name).map(|(_, bin)| bin.clone());
                 match cmd {
-                    Some(cmd) => Update { dirty: true, cmds: vec![Cmd::Goto { path, cmd }] },
+                    Some(cmd) => Update {
+                        dirty: true,
+                        cmds: vec![Cmd::Goto {
+                            path,
+                            cmd,
+                            juice_base,
+                        }],
+                    },
                     None => Update { dirty: true, cmds: vec![] },
                 }
             }

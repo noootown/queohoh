@@ -193,7 +193,7 @@ fn worktrees_bulk_range_refuses_run_goto_and_tasks_menu() {
 
     a.update(key('r'));
     assert!(matches!(a.mode, Mode::List));
-    assert_eq!(a.status_line, None, "r is unbound on WORKTREES");
+    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
 
     a.status_line = None;
     let u = a.update(key('g'));

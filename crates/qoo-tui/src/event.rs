@@ -124,11 +124,17 @@ pub enum Cmd {
     /// the auto-open (the task owns the worktree).
     CreateWorktree { repo: String, name: String, enqueue: Option<EnqueueAfter> },
     /// Open a worktree (or resume a session) in a first-class tmux layout: new
-    /// window at `path`, left|right split, left = bare shell, right runs `cmd`
-    /// (empty `cmd` leaves both panes as bare shells). Fired by worktree/queue
-    /// `g` after provider resolution; replaces the retired OpenTmux/TmuxResume
-    /// + init-tab path.
-    Goto { path: String, cmd: String },
+    /// window at `path`, left|right split 3:1 — left runs `juice --base
+    /// <juice_base>` (diff viewer), right runs `cmd` (agent / resume). Empty
+    /// `cmd` still opens juice on the left; the right pane stays a bare shell.
+    /// Fired by worktree/queue `g` after provider resolution.
+    Goto {
+        path: String,
+        cmd: String,
+        /// Sticky Review base for juice (`prBase` from the worktree's open PR,
+        /// else `origin/main`).
+        juice_base: String,
+    },
     /// Write-through of the per-project pane layout. Fire-and-forget off the UI
     /// thread; a failed write is silently tolerated (layout is a convenience).
     SaveLayout { path: PathBuf, json: String },
@@ -326,31 +332,46 @@ async fn open_tmux_window(path: &str) -> Option<String> {
     }
 }
 
+/// Fallback juice Review base when the worktree has no open PR / no `prBase`.
+pub(crate) const DEFAULT_JUICE_BASE: &str = "origin/main";
+
 /// The tmux layout shape for a `goto`. Always a new window + left|right split
-/// (left bare shell; right runs `cmd` when non-empty). Derived purely from the
-/// path and the provider-resolved command so unit tests cover the plan without
-/// shelling out to tmux.
+/// 3:1 (left = juice diff viewer; right = agent when `right_cmd` non-empty).
+/// Derived purely so unit tests cover the plan without shelling out to tmux.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum GotoPlan {
-    /// `new-window -P -F #{window_id} -c path` then `split-window -h -t id -c path`;
-    /// when `cmd` is non-empty, select the right pane and `send-keys` the command
-    /// + Enter. Empty `cmd` leaves both panes as bare interactive shells.
-    Split { path: String, cmd: String },
+    /// 1. `new-window -P -F "#{window_id} #{pane_id}" -c path` → win + left pane
+    /// 2. `split-window -h -l 25% -t win -c path -P -F pane_id` → right pane (25%
+    ///    → left:right ≈ 3:1)
+    /// 3. `send-keys` left = `juice --base <base>`; right = agent cmd (if any)
+    Split {
+        path: String,
+        left_cmd: String,
+        right_cmd: String,
+    },
 }
 
-/// Build the first-class split goto plan. `cmd` is the right-pane command
-/// (fresh interactive bin, or `{bin} --resume {session_id}`); empty means both
-/// panes stay bare shells.
-pub(crate) fn goto_split_plan(path: &str, cmd: &str) -> GotoPlan {
-    GotoPlan::Split { path: path.to_string(), cmd: cmd.to_string() }
+/// Build the first-class split goto plan. `right_cmd` is the agent pane command
+/// (fresh interactive bin, or `{bin} --resume {session_id}`); empty leaves the
+/// right pane a bare shell. `juice_base` is the sticky Review base (PR base or
+/// [`DEFAULT_JUICE_BASE`]).
+pub(crate) fn goto_split_plan(path: &str, right_cmd: &str, juice_base: &str) -> GotoPlan {
+    let base = if juice_base.trim().is_empty() {
+        DEFAULT_JUICE_BASE
+    } else {
+        juice_base.trim()
+    };
+    GotoPlan::Split {
+        path: path.to_string(),
+        left_cmd: format!("juice --base {base}"),
+        right_cmd: right_cmd.to_string(),
+    }
 }
 
-/// Whether the plan will type a command into the right pane (false for an empty
-/// `cmd` → both panes bare shells). Pure helper so tests pin the send-keys gate
-/// without running tmux.
+/// Whether the plan will type a command into the right (agent) pane.
 #[cfg(test)]
 pub(crate) fn goto_sends_keys(plan: &GotoPlan) -> bool {
-    matches!(plan, GotoPlan::Split { cmd, .. } if !cmd.is_empty())
+    matches!(plan, GotoPlan::Split { right_cmd, .. } if !right_cmd.is_empty())
 }
 
 /// Execute a [`GotoPlan`] off the UI thread. On any tmux failure, reports the
@@ -358,54 +379,74 @@ pub(crate) fn goto_sends_keys(plan: &GotoPlan) -> bool {
 ///
 /// Sequence (targets the NEW window's panes carefully via captured ids so a
 /// failed capture never injects keys into the operator's own TUI pane):
-/// 1. `new-window -P -F #{window_id} -c path` → window id
-/// 2. `split-window -h -t <win> -c path -P -F #{pane_id}` → right pane id
-/// 3. if `cmd` non-empty: `send-keys -t <pane> -l -- cmd` + `Enter`
+/// 1. `new-window -P -F "#{window_id} #{pane_id}" -c path` → win + left pane
+/// 2. `split-window -h -l 25% -t <win> -c path -P -F #{pane_id}` → right (25%)
+/// 3. `send-keys` juice into left; agent into right (if non-empty); focus right
 async fn run_goto(plan: GotoPlan, tx: UnboundedSender<Event>) {
     async fn tmux(args: &[&str]) -> Result<std::process::Output, std::io::Error> {
         tokio::process::Command::new("tmux").args(args).output().await
     }
-    let GotoPlan::Split { path, cmd } = plan;
+    async fn send_cmd(pane: &str, cmd: &str) {
+        if cmd.is_empty() {
+            return;
+        }
+        // `-l` = literal keys (no key-name lookup); `--` guards a leading '-'.
+        let _ = tmux(&["send-keys", "-t", pane, "-l", "--", cmd]).await;
+        let _ = tmux(&["send-keys", "-t", pane, "Enter"]).await;
+    }
+    let GotoPlan::Split {
+        path,
+        left_cmd,
+        right_cmd,
+    } = plan;
     let status = match tmux(&[
         "new-window",
         "-P",
         "-F",
-        "#{window_id}",
+        "#{window_id} #{pane_id}",
         "-c",
         &path,
     ])
     .await
     {
         Ok(out) if out.status.success() => {
-            let win = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if win.is_empty() {
-                // Empty window id → any `-t ""` retargets the CURRENT pane and
-                // would inject into the operator's TUI. Bail instead.
-                Some("tmux: new-window returned no window id".to_string())
+            let line = String::from_utf8_lossy(&out.stdout);
+            let mut parts = line.split_whitespace();
+            let win = parts.next().unwrap_or("").to_string();
+            let left = parts.next().unwrap_or("").to_string();
+            if win.is_empty() || left.is_empty() {
+                // Empty ids → any `-t ""` retargets the CURRENT pane and would
+                // inject into the operator's TUI. Bail instead.
+                Some("tmux: new-window returned no window/pane id".to_string())
             } else {
-                // Horizontal split on the new window. Capture the new (right)
-                // pane id so send-keys never targets the left bare shell or the
-                // operator's TUI by accident. After `-h`, the new pane is the
-                // right half of the window.
-                match tmux(&["split-window", "-h", "-t", &win, "-c", &path, "-P", "-F", "#{pane_id}"])
-                    .await
+                // Horizontal split: NEW (right) pane is 25% → left:right ≈ 3:1.
+                // Capture the right pane id so agent keys never hit juice or
+                // the operator's TUI by accident.
+                match tmux(&[
+                    "split-window",
+                    "-h",
+                    "-l",
+                    "25%",
+                    "-t",
+                    &win,
+                    "-c",
+                    &path,
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                ])
+                .await
                 {
                     Ok(sout) if sout.status.success() => {
-                        if cmd.is_empty() {
-                            // Both panes bare shells — nothing to type.
-                            None
+                        let right = String::from_utf8_lossy(&sout.stdout).trim().to_string();
+                        if right.is_empty() {
+                            Some("tmux: split-window returned no pane id".to_string())
                         } else {
-                            let pane = String::from_utf8_lossy(&sout.stdout).trim().to_string();
-                            if pane.is_empty() {
-                                Some("tmux: split-window returned no pane id".to_string())
-                            } else {
-                                // `-l` = literal keys (no key-name lookup); `--`
-                                // guards a leading '-'. Enter is a separate
-                                // key-name call.
-                                let _ = tmux(&["send-keys", "-t", &pane, "-l", "--", &cmd]).await;
-                                let _ = tmux(&["send-keys", "-t", &pane, "Enter"]).await;
-                                None
-                            }
+                            send_cmd(&left, &left_cmd).await;
+                            send_cmd(&right, &right_cmd).await;
+                            // Land focus on the agent pane so typing goes there.
+                            let _ = tmux(&["select-pane", "-t", &right]).await;
+                            None
                         }
                     }
                     Ok(sout) => {
@@ -597,8 +638,12 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                 }
             });
         }
-        Cmd::Goto { path, cmd } => {
-            tokio::spawn(run_goto(goto_split_plan(&path, &cmd), tx));
+        Cmd::Goto {
+            path,
+            cmd,
+            juice_base,
+        } => {
+            tokio::spawn(run_goto(goto_split_plan(&path, &cmd, &juice_base), tx));
         }
         Cmd::SaveLayout { path, json } => {
             tokio::spawn(async move {
@@ -748,16 +793,22 @@ mod tests {
 
 #[cfg(test)]
 mod goto_plan_tests {
-    use super::{goto_sends_keys, goto_split_plan, GotoPlan, SessionChoice};
+    use super::{
+        goto_sends_keys, goto_split_plan, GotoPlan, DEFAULT_JUICE_BASE,
+    };
 
     #[test]
-    fn non_empty_cmd_is_split_that_sends_keys() {
-        // Fresh interactive (worktree) or resume (queue): right pane gets the
-        // command. Plan is first-class Split — never CreateAndSend / init-tab.
-        let plan = goto_split_plan("/wt/a", "claude");
+    fn non_empty_cmd_is_split_with_juice_left_and_agent_right() {
+        // Fresh interactive (worktree) or resume (queue): left = juice, right =
+        // agent. Plan is first-class Split — never CreateAndSend / init-tab.
+        let plan = goto_split_plan("/wt/a", "claude", "main");
         assert_eq!(
             plan,
-            GotoPlan::Split { path: "/wt/a".into(), cmd: "claude".into() }
+            GotoPlan::Split {
+                path: "/wt/a".into(),
+                left_cmd: "juice --base main".into(),
+                right_cmd: "claude".into(),
+            }
         );
         assert!(goto_sends_keys(&plan));
         let debug = format!("{plan:?}");
@@ -766,12 +817,16 @@ mod goto_plan_tests {
     }
 
     #[test]
-    fn empty_cmd_is_split_with_no_send_keys() {
-        // Empty cmd → both panes bare shells (new-window + split only).
-        let plan = goto_split_plan("/wt/a", "");
+    fn empty_right_cmd_still_opens_juice_on_the_left() {
+        // Empty agent cmd → right pane bare shell; juice still starts on left.
+        let plan = goto_split_plan("/wt/a", "", "");
         assert_eq!(
             plan,
-            GotoPlan::Split { path: "/wt/a".into(), cmd: String::new() }
+            GotoPlan::Split {
+                path: "/wt/a".into(),
+                left_cmd: format!("juice --base {DEFAULT_JUICE_BASE}"),
+                right_cmd: String::new(),
+            }
         );
         assert!(!goto_sends_keys(&plan));
     }
@@ -779,17 +834,40 @@ mod goto_plan_tests {
     #[test]
     fn resume_cmd_carries_provider_bin_and_session() {
         // Queue goto builds `{bin} --resume {session_id}` before the plan —
-        // the plan itself is path+cmd only (provider resolution lives in actions).
-        let plan = goto_split_plan("/wt/a", "grok --resume sess1");
+        // the plan itself is path + cmds (provider resolution lives in actions).
+        let plan = goto_split_plan("/wt/a", "grok --resume sess1", "origin/main");
         assert_eq!(
             plan,
             GotoPlan::Split {
                 path: "/wt/a".into(),
-                cmd: "grok --resume sess1".into(),
+                left_cmd: "juice --base origin/main".into(),
+                right_cmd: "grok --resume sess1".into(),
             }
         );
         assert!(goto_sends_keys(&plan));
     }
+
+    #[test]
+    fn empty_juice_base_falls_back_to_origin_main() {
+        let plan = goto_split_plan("/wt/a", "claude", "  ");
+        assert_eq!(plan.left_cmd_base(), DEFAULT_JUICE_BASE);
+    }
+}
+
+#[cfg(test)]
+impl GotoPlan {
+    fn left_cmd_base(&self) -> &str {
+        match self {
+            GotoPlan::Split { left_cmd, .. } => {
+                left_cmd.strip_prefix("juice --base ").unwrap_or(left_cmd)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod session_choice_tests {
+    use super::SessionChoice;
 
     #[test]
     fn session_choice_provider_present_and_absent() {

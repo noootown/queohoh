@@ -65,10 +65,27 @@ fn focus_worktrees(a: &mut App) {
     tab(a);
 }
 
-/// Open the worktree session launcher (formerly worktrees `[r]un` chip — removed;
-/// kept as an internal path for SessionPick Launch tests).
+/// Open `Mode::SessionPick` with Launch return — unit-test path for the
+/// worktree session picker itself. WORKTREES `[r]un` now opens the adhoc form
+/// (see `r_on_worktree_opens_locked_schedule_form`); these tests still cover
+/// SessionPick → NewSession form.
 fn open_worktree_launcher(a: &mut App) -> Update {
-    a.apply_action(crate::keymap::AppAction::NewTaskOnWorktree)
+    let repo = "platform".to_string();
+    let worktree = "platform.wt-a".to_string();
+    a.mode = Mode::SessionPick {
+        repo: repo.clone(),
+        worktree: worktree.clone(),
+        items: Vec::new(),
+        loading: true,
+        index: 0,
+        query: String::new(),
+        focus: crate::hit::ButtonKind::Confirm,
+        ret: SessionPickReturn::Launch,
+    };
+    Update {
+        dirty: true,
+        cmds: vec![Cmd::FetchSessions { repo, worktree }],
+    }
 }
 
 // --- queue `r` / `x` chip-keys (the queue menu's old verbs are now keys) ------
@@ -550,7 +567,7 @@ fn queue_g_resumes_the_selected_tasks_session() {
         }),
     ));
     let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd, .. }]
         if path == "/repos/acme-flaky" && cmd == "claude --resume sess-flaky"));
 }
 
@@ -571,7 +588,7 @@ fn queue_g_uses_provider_from_task_model_and_bin_default() {
         }),
     ));
     let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd, .. }]
         if path == "/repos/acme-flaky" && cmd == "grok --resume sess-g"),
         "cmds: {:?}", up.cmds);
 }
@@ -599,7 +616,7 @@ fn queue_g_prefers_run_meta_provider_over_bare_model_id() {
         }),
     ));
     let up = a.update(key('g'));
-    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd, .. }]
         if path == "/repos/acme-flaky" && cmd == "grok --resume sess-g"),
         "cmds: {:?}", up.cmds);
 }
@@ -677,14 +694,42 @@ fn loaded(worktree: &str) -> Event {
 }
 
 #[test]
-fn r_on_worktree_opens_session_pick_and_fetches() {
+fn r_on_worktree_opens_locked_schedule_form() {
+    // WORKTREES [r]un = QUEUE schedule form with the selected worktree locked
+    // (readonly target) and sessions prefetched for that worktree.
     let mut a = app_with(worktree_snapshot());
     focus_worktrees(&mut a);
-    let up = open_worktree_launcher(&mut a);
-    assert!(matches!(&a.mode, Mode::SessionPick { worktree, loading: true, items, .. }
-        if worktree == "platform.wt-a" && items.is_empty()));
-    assert!(matches!(&up.cmds[..], [Cmd::FetchSessions { repo, worktree }]
-        if repo == "platform" && worktree == "platform.wt-a"));
+    let up = a.update(key('r'));
+    match &a.mode {
+        Mode::Form {
+            state,
+            action: FormAction::AdhocTask { .. },
+        } => {
+            assert!(state.fields[crate::app::mode::adhoc_field::TARGET].readonly);
+            assert_eq!(
+                state.fields[crate::app::mode::adhoc_field::TARGET].value,
+                "platform.wt-a"
+            );
+            assert_eq!(
+                state.fields[crate::app::mode::adhoc_field::TARGET].label,
+                "worktree"
+            );
+            // Focus skips the readonly target → session is first stop.
+            assert_eq!(state.focus, crate::app::mode::adhoc_field::SESSION);
+            assert_eq!(state.sessions_for.as_deref(), Some("platform.wt-a"));
+            assert!(state.sessions_loading);
+        }
+        other => panic!("expected locked AdhocTask form, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            &up.cmds[..],
+            [Cmd::FetchSessions { repo, worktree }]
+                if repo == "platform" && worktree == "platform.wt-a"
+        ),
+        "cmds: {:?}",
+        up.cmds
+    );
 }
 
 #[test]
@@ -866,7 +911,7 @@ fn g_on_worktree_row_opens_goto_provider_form_when_inside_tmux() {
     let up = a.update(key('g'));
     assert!(up.cmds.is_empty(), "form opens, no Goto yet: {:?}", up.cmds);
     match &a.mode {
-        Mode::Form { state, action: FormAction::GotoProvider { path, choices } } => {
+        Mode::Form { state, action: FormAction::GotoProvider { path, choices, .. } } => {
             assert_eq!(path, "/wt/wt-a");
             assert_eq!(
                 choices,
@@ -916,7 +961,8 @@ fn g_on_worktree_goto_provider_form_defaults_to_the_active_provider() {
 fn g_on_worktree_goto_provider_form_submit_emits_goto_with_default_bin() {
     // Submitting without touching the dropdown fires Cmd::Goto for whatever
     // it defaulted to (here: the first choice, "claude" — same as its name,
-    // since it has no configured bin).
+    // since it has no configured bin). No PR base on the fixture worktree →
+    // juice_base falls back to origin/main.
     let mut a = app_with(worktree_snapshot());
     a.inside_tmux = true;
     with_providers(&mut a, two_providers());
@@ -925,8 +971,29 @@ fn g_on_worktree_goto_provider_form_submit_emits_goto_with_default_bin() {
     tab(&mut a); // field -> Primary
     let up = a.update(enter());
     assert!(matches!(a.mode, Mode::List));
-    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
-        if path == "/wt/wt-a" && cmd == "claude"),
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd, juice_base }]
+        if path == "/wt/wt-a" && cmd == "claude" && juice_base == "origin/main"),
+        "cmds: {:?}", up.cmds);
+}
+
+#[test]
+fn g_on_worktree_goto_uses_pr_base_for_juice_when_present() {
+    // Worktree with an open PR base → juice Review base is that branch, not
+    // the origin/main fallback.
+    let mut snap = worktree_snapshot();
+    if let Some(wts) = snap.worktrees.get_mut("platform") {
+        wts[0].pr_base = Some("develop".into());
+        wts[0].pr_number = Some(42);
+    }
+    let mut a = app_with(snap);
+    a.inside_tmux = true;
+    with_providers(&mut a, two_providers());
+    focus_worktrees(&mut a);
+    a.update(key('g'));
+    tab(&mut a);
+    let up = a.update(enter());
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { juice_base, cmd, .. }]
+        if juice_base == "develop" && cmd == "claude"),
         "cmds: {:?}", up.cmds);
 }
 
@@ -946,7 +1013,7 @@ fn g_on_worktree_goto_provider_form_pick_non_default_emits_its_bin() {
     tab(&mut a); // field -> Primary
     let up = a.update(enter());
     assert!(matches!(a.mode, Mode::List));
-    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd }]
+    assert!(matches!(&up.cmds[..], [Cmd::Goto { path, cmd, .. }]
         if path == "/wt/wt-a" && cmd == "/opt/grok"),
         "cmds: {:?}", up.cmds);
 }
@@ -1011,11 +1078,14 @@ fn r_and_x_are_noops_on_session_rows_but_g_works() {
     focus_worktrees(&mut a);
     a.update(down()); // select the appended session row (index 1)
 
-    // `r` is unbound on WORKTREES (schedule is QUEUE-only) — inert, no status.
+    // `r` refuses session rows (tasks target worktrees, not sessions).
     let ru = a.update(key('r'));
-    assert!(matches!(a.mode, Mode::List), "r must not open the launcher on a session row");
+    assert!(matches!(a.mode, Mode::List), "r must not open the form on a session row");
     assert!(ru.cmds.is_empty());
-    assert_eq!(a.status_line, None, "r is unbound, not a refused verb");
+    assert_eq!(
+        a.status_line.as_deref(),
+        Some("tasks target worktrees, not sessions")
+    );
 
     // `x`: no mode change, a status line (a session is not a worktree).
     a.status_line = None;

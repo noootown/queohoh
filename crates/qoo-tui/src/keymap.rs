@@ -76,10 +76,9 @@ pub enum AppAction {
     /// rows refuse with a status line. Routes to `App::archive_selected`.
     ArchiveSelected,
     /// New adhoc task on the selected WORKTREES row (`r`, and the worktrees
-    /// `[r]un` chip): opens the session picker (`Mode::SessionPick`) for the
-    /// worktree, which then leads to a launch `Mode::Form` (model + prompt).
-    /// Session rows can't host a task (status line, no mode change). Routes to
-    /// `App::new_task_on_worktree`.
+    /// `[r]un` chip): same form as QUEUE `[s]chedule`, with the selected
+    /// worktree locked as the target (readonly). Session rows can't host a
+    /// task (status line, no mode change). Routes to `App::new_task_on_worktree`.
     NewTaskOnWorktree,
     /// Open the selected WORKTREES row in a new tmux window (`g`, and the
     /// worktrees `[g]oto` chip): works for session rows too. Inert with a status
@@ -157,13 +156,13 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         // this bare arm can't shadow it.
         KeyCode::Char('p') => AppAction::SwitchProvider,
         // Pane-action verbs, each gated on the focused pane's chip set:
-        // QUEUE {r,x,g,a,s,z} · TASKS {r,d,c,z} · WORKTREES {g,x,t,z}.
+        // QUEUE {r,x,g,a,s,z} · TASKS {r,d,c,z} · WORKTREES {r,g,x,t,z}.
         KeyCode::Char('t') => gated(PaneButton::Tasks, AppAction::OpenTaskMenu),
-        // `r` is a Run chip on QUEUE (re-queue) and TASKS (run def). WORKTREES
-        // no longer has Run — schedule new tasks via QUEUE [s]chedule.
+        // `r` is a Run chip on QUEUE (re-queue), TASKS (run def), and WORKTREES
+        // (adhoc form with worktree locked — same form as QUEUE schedule).
         KeyCode::Char('r') => match focus {
             PaneId::Queue => gated(PaneButton::Run, AppAction::RequeueSelected),
-            PaneId::Worktrees => AppAction::None,
+            PaneId::Worktrees => gated(PaneButton::Run, AppAction::NewTaskOnWorktree),
             _ => gated(PaneButton::Run, AppAction::RunSelectedDef),
         },
         // `d` is a TASKS-only chip: run the highlighted def's discovery fan-out.
@@ -389,9 +388,12 @@ mod tests {
 
     #[test]
     fn worktree_pane_r_g_x_verbs() {
-        // Worktrees row verbs: `g` gotos (tmux), `x` removes. `r` is unbound
-        // (schedule lives on QUEUE [s]chedule).
-        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::None);
+        // Worktrees row verbs: `r` run (locked schedule form), `g` goto (tmux),
+        // `x` removes.
+        assert_eq!(
+            list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees),
+            AppAction::NewTaskOnWorktree
+        );
         assert_eq!(list_mode_action(&k(KeyCode::Char('g')), PaneId::Worktrees), AppAction::GotoWorktree);
         assert_eq!(list_mode_action(&k(KeyCode::Char('x')), PaneId::Worktrees), AppAction::RemoveSelectedWorktree);
         // g resumes the session on queue (not inert); x still cancels on queue;
@@ -443,10 +445,13 @@ mod tests {
     #[test]
     fn r_runs_def_on_tasks_requeues_on_queue_new_task_on_worktrees() {
         // `r` on TASKS runs the highlighted def; on QUEUE re-queues; on
-        // WORKTREES is unbound (use QUEUE [s]chedule for new tasks).
+        // WORKTREES opens the schedule form with the worktree locked.
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Tasks), AppAction::RunSelectedDef);
         assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Queue), AppAction::RequeueSelected);
-        assert_eq!(list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees), AppAction::None);
+        assert_eq!(
+            list_mode_action(&k(KeyCode::Char('r')), PaneId::Worktrees),
+            AppAction::NewTaskOnWorktree
+        );
     }
 
     #[test]

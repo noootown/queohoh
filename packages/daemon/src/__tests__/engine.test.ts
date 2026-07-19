@@ -674,6 +674,7 @@ describe("Engine.worktreesByRepo", () => {
 					lastCommitHash: null,
 					prNumber: null,
 					prUrl: null,
+					prBase: null,
 					prAuthor: null,
 					prState: null,
 					approved: null,
@@ -923,7 +924,7 @@ describe("Engine git enrichment", () => {
 		expect(counts.log).toBe(logAfterFirst);
 	});
 
-	it("stamps prNumber and prUrl when an open PR matches the worktree branch", async () => {
+	it("stamps prNumber, prUrl, and prBase when an open PR matches the worktree branch", async () => {
 		const exec = gitExec({
 			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
 			gh: () => ({
@@ -931,11 +932,13 @@ describe("Engine git enrichment", () => {
 					{
 						number: 99,
 						headRefName: "other",
+						baseRefName: "develop",
 						url: "https://github.com/o/r/pull/99",
 					},
 					{
 						number: 42,
 						headRefName: "JUS-1",
+						baseRefName: "main",
 						url: "https://github.com/o/r/pull/42",
 					},
 				]),
@@ -948,6 +951,7 @@ describe("Engine git enrichment", () => {
 		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
 			prNumber: 42,
 			prUrl: "https://github.com/o/r/pull/42",
+			prBase: "main",
 		});
 	});
 

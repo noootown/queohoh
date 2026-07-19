@@ -18,7 +18,7 @@ const HELP_ROWS: [(&str, &str); 25] = [
     ("ctrl+x / ctrl+z", "detail sub-tab (alias of l / h)"),
     ("enter", "open selected lane task (worktrees)"),
     ("r", "rerun (queue) · run def (tasks) — schedule new tasks via s on queue"),
-    ("g", "goto: resume task's Claude session (queue) · open worktree in tmux (worktrees)"),
+    ("g", "goto: tmux split juice|agent 3:1 — resume session (queue) · open worktree (worktrees)"),
     ("x", "cancel (queue) · remove worktree (worktrees)"),
     ("a", "archive / unarchive selection (queue)"),
     ("d", "discover: fan out one task per discovered item (tasks)"),

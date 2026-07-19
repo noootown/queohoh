@@ -14,7 +14,7 @@ expression: terminal.backend()
 "│ ●  mai│   ctrl+x / ctrl+z detail sub-tab (alias of l / h)            │       │"
 "│       │   enter           open selected lane task (worktrees)        │       │"
 "│       │   r               rerun (queue) · run def (tasks) — schedul  │       │"
-"╰───────│   g               goto: resume task's Claude session (queue  │       │"
+"╰───────│   g               goto: tmux split juice|agent 3:1 — resume  │       │"
 "╭⚡TASKS│   x               cancel (queue) · remove worktree (worktre  │       │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]│   a               archive / unarchive selection (queue)      │       │" Hidden by multi-width symbols: [(3, " ")]
 "│ no tas│   d               discover: fan out one task per discovered  │       │"

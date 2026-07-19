@@ -351,9 +351,8 @@ impl App {
             }
             A::Create => {
                 // `Create` (`s` on QUEUE, and the `[s]chedule` chip) opens the
-                // unified adhoc create form, prefilling the target combobox from
-                // the focused pane's selected row (QUEUE task → its worktree).
-                // Queue-only chip; TASKS/WORKTREES no longer show create. Not a
+                // unified adhoc create form with a free target combobox. Queue
+                // only; WORKTREES uses `[r]un` (locked target) instead. Not a
                 // bulk verb — a bulk range refuses rather than opening the form.
                 self.prefix_armed = false;
                 let pane = self.active_ui().last_list_pane;
@@ -361,7 +360,7 @@ impl App {
                     && let Some(repo) = self.active_repo()
                 {
                     let prefill = self.adhoc_prefill_target(pane);
-                    self.open_adhoc_create(repo, prefill);
+                    cmds.extend(self.open_adhoc_create(repo, prefill, false));
                 }
                 true
             }
@@ -1125,12 +1124,10 @@ impl App {
         }
     }
 
-    /// `r` on WORKTREES (and the `[r]un` chip there): open the session picker
-    /// (`Mode::SessionPick`) for the selected worktree and kick off the
-    /// `listSessions` fetch. The picker's Enter carries the chosen session (or a
-    /// fresh start) into a launch `Mode::Form` (`SessionPickReturn::Launch`).
-    /// Session rows are interactive sessions, not worktrees, so they can't host a
-    /// task → status line, no mode change.
+    /// `r` on WORKTREES (and the `[r]un` chip): same adhoc form as QUEUE
+    /// `[s]chedule`, with the selected worktree locked as a readonly target.
+    /// Prefetches sessions for that worktree. Session rows can't host a task →
+    /// status line, no mode change.
     pub(super) fn new_task_on_worktree(&mut self) -> Update {
         // A bulk range isn't in the doable set (only `Remove` is) — refuse
         // rather than silently targeting just the cursor row's worktree.
@@ -1148,23 +1145,13 @@ impl App {
             self.status_line = Some("tasks target worktrees, not sessions".into());
             return Update { dirty: true, cmds: vec![] };
         }
-        let worktree = row.raw_name.clone();
-        self.mode = Mode::SessionPick {
-            repo: repo.clone(),
-            worktree: worktree.clone(),
-            items: Vec::new(),
-            loading: true,
-            index: 0,
-            query: String::new(),
-            focus: crate::hit::ButtonKind::Confirm,
-            ret: SessionPickReturn::Launch,
-        };
-        Update { dirty: true, cmds: vec![Cmd::FetchSessions { repo, worktree }] }
+        let cmds = self.open_adhoc_create(repo, Some(row.raw_name), true);
+        Update { dirty: true, cmds }
     }
 
     /// `g` on WORKTREES (and the `[g]oto` chip): open the Goto-provider form,
-    /// then launch a first-class tmux split (left bare shell | right = provider
-    /// bin) at the selected worktree (or session) cwd. Inert with a status line
+    /// then launch a first-class tmux split (left = juice | right = provider bin,
+    /// 3:1) at the selected worktree (or session) cwd. Inert with a status line
     /// outside tmux. Session rows resolve to their cwd path.
     pub(super) fn goto_worktree(&mut self) -> Update {
         // A bulk range isn't in the doable set (only `Remove` is) — refuse
@@ -1181,6 +1168,8 @@ impl App {
             return Update { dirty: true, cmds: vec![] };
         };
         let path = row.path.clone();
+        // Juice Review base: the open PR's base branch when known, else origin/main.
+        let juice_base = Self::juice_base_from_pr(row.pr_base.as_deref());
         // Enabled providers + resolved bins, frozen into the form so a
         // settings push mid-dialog cannot retarget the launch.
         let Some(payload) = self.settings.as_ref().and_then(|s| s.as_ref()) else {
@@ -1224,8 +1213,25 @@ impl App {
             "Go",
             vec![crate::view::form::Field::dropdown("provider", names, &default)],
         );
-        self.mode = Mode::Form { state, action: FormAction::GotoProvider { path, choices } };
+        self.mode = Mode::Form {
+            state,
+            action: FormAction::GotoProvider {
+                path,
+                choices,
+                juice_base,
+            },
+        };
         Update { dirty: true, cmds: vec![] }
+    }
+
+    /// Sticky juice Review base: non-empty PR base when known, else
+    /// [`crate::event::DEFAULT_JUICE_BASE`] (`origin/main`).
+    pub(super) fn juice_base_from_pr(pr_base: Option<&str>) -> String {
+        pr_base
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .unwrap_or(crate::event::DEFAULT_JUICE_BASE)
+            .to_string()
     }
 
     /// `g` on QUEUE (and the `[g]oto` chip): resume the selected task's session
@@ -1260,9 +1266,31 @@ impl App {
                 let settings = self.settings.as_ref().and_then(|s| s.as_ref());
                 let bin = provider_bin(settings, &provider);
                 let cmd = format!("{bin} --resume {session_id}");
-                Update { dirty: true, cmds: vec![Cmd::Goto { path, cmd }] }
+                let juice_base = self.juice_base_for_path(&path);
+                Update {
+                    dirty: true,
+                    cmds: vec![Cmd::Goto {
+                        path,
+                        cmd,
+                        juice_base,
+                    }],
+                }
             }
         }
+    }
+
+    /// Look up a worktree by path in the active project's snapshot and return
+    /// its juice Review base (PR base or `origin/main`). Used by queue goto,
+    /// which has a path but not a `WorktreeRow` in hand.
+    fn juice_base_for_path(&self, path: &str) -> String {
+        let pr_base = self.snapshot.as_ref().and_then(|snap| {
+            snap.worktrees
+                .values()
+                .flatten()
+                .find(|w| w.path == path)
+                .and_then(|w| w.pr_base.as_deref())
+        });
+        Self::juice_base_from_pr(pr_base)
     }
 
     /// Resolve the QUEUE cursor row's session id + worktree path + provider for

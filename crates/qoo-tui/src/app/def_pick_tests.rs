@@ -1157,7 +1157,7 @@ fn def_args_paste_inserts_multiline_verbatim() {
 fn paste_into_adhoc_prompt_keeps_newlines() {
     use crate::app::mode::adhoc_field;
     let mut app = fixture_app_one_project("platform");
-    app.open_adhoc_create("platform".into(), None);
+    app.open_adhoc_create("platform".into(), None, false);
     if let Mode::Form { state, .. } = &mut app.mode {
         state.focus_field(adhoc_field::PROMPT);
     }

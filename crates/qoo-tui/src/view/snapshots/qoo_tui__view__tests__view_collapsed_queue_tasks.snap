@@ -7,7 +7,7 @@ expression: terminal.backend()
 "╰─────────────────────────╯│ 1:report  2:transcript  3:prompt  4:info          │"
 "╭⚡TASKS · 0 tasks──── [z]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "╰─────────────────────────╯│  (no report yet)                                  │"
-"╭🌲 WORKTREES─ [g] [x] [t]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [r] [g] [x]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││                                                   │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│   Name                  ││                                                   │"

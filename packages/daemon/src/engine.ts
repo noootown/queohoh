@@ -125,6 +125,10 @@ interface GitEnrichment {
 	 * unknown / no open PR / gh unavailable / gh omitted the field. Paired with
 	 * prNumber so the TUI can open the PR on a click. */
 	prUrl: string | null;
+	/** Base branch of that PR (`gh`'s `baseRefName`, e.g. `main`). null when
+	 * there is no PR / gh unavailable / field omitted. Goto feeds this to
+	 * `juice --base <ref>` (TUI falls back to `origin/main` when null). */
+	prBase: string | null;
 	/** Display name of the PR's author — its `author.name`, falling back to
 	 * `author.login`, null when both are empty / there is no PR. This is who
 	 * OPENED the PR; for a squash-merged branch the local HEAD author is instead
@@ -146,21 +150,23 @@ interface GitEnrichment {
 }
 
 /** The git-commit subset of GitEnrichment — everything computeGitEnrichment
- * derives from a single worktree path. The PR facts (prNumber/prUrl/prAuthor/
- * prState) are layered on separately: they're per-repo facts, fetched once per
- * sweep from `gh`, not per worktree. */
+ * derives from a single worktree path. The PR facts (prNumber/prUrl/prBase/
+ * prAuthor/prState) are layered on separately: they're per-repo facts, fetched
+ * once per sweep from `gh`, not per worktree. */
 type GitCommitFacts = Omit<
 	GitEnrichment,
-	"prNumber" | "prUrl" | "prAuthor" | "prState" | "approved"
+	"prNumber" | "prUrl" | "prBase" | "prAuthor" | "prState" | "approved"
 >;
 
-/** One repo's PR facts, keyed by head branch: the number/url/state plus the
+/** One repo's PR facts, keyed by head branch: the number/url/base/state plus the
  * author's name and login (either may be empty on the wire → treated as null
  * when composing `prAuthor`). Populated from both the open and the recently
  * merged `gh pr list` calls (see ghPrMap). */
 interface PrFacts {
 	number: number;
 	url: string | null;
+	/** gh's `baseRefName` (e.g. `main`); null when omitted. */
+	baseRef: string | null;
 	state: string | null;
 	authorName: string | null;
 	authorLogin: string | null;
@@ -747,6 +753,7 @@ export class Engine {
 				const pr = prMap?.get(wt.branch) ?? null;
 				const prNumber = pr?.number ?? null;
 				const prUrl = pr?.url ?? null;
+				const prBase = pr?.baseRef ?? null;
 				const prState = pr?.state ?? null;
 				// PR author display: name preferred, else login, else null.
 				const prAuthor = pr ? (pr.authorName ?? pr.authorLogin ?? null) : null;
@@ -766,6 +773,7 @@ export class Engine {
 					merged,
 					prNumber,
 					prUrl,
+					prBase,
 					prAuthor,
 					prState,
 					approved,
@@ -782,6 +790,7 @@ export class Engine {
 					prev.lastCommitHash !== e.lastCommitHash ||
 					prev.prNumber !== e.prNumber ||
 					prev.prUrl !== e.prUrl ||
+					prev.prBase !== e.prBase ||
 					prev.prAuthor !== e.prAuthor ||
 					prev.prState !== e.prState ||
 					prev.approved !== e.approved
@@ -962,7 +971,7 @@ export class Engine {
 					"--state",
 					state,
 					"--json",
-					"number,headRefName,url,state,author,reviewDecision",
+					"number,headRefName,baseRefName,url,state,author,reviewDecision",
 					"--limit",
 					String(limit),
 				],
@@ -983,6 +992,7 @@ export class Engine {
 					headRefName,
 					number,
 					url,
+					baseRefName,
 					state: prState,
 					author,
 					reviewDecision,
@@ -990,6 +1000,7 @@ export class Engine {
 					headRefName?: unknown;
 					number?: unknown;
 					url?: unknown;
+					baseRefName?: unknown;
 					state?: unknown;
 					author?: unknown;
 					reviewDecision?: unknown;
@@ -1007,6 +1018,10 @@ export class Engine {
 				map.set(headRefName, {
 					number,
 					url: typeof url === "string" ? url : null,
+					baseRef:
+						typeof baseRefName === "string" && baseRefName.length > 0
+							? baseRefName
+							: null,
 					state: typeof prState === "string" ? prState : null,
 					authorName,
 					authorLogin,

@@ -229,6 +229,10 @@ pub struct WorktreeInfo {
     /// `pr_number` so the `#<n>` chip in the detail info tab and the WORKTREES
     /// PR column open the PR in a browser on a click.
     pub pr_url: Option<String>,
+    /// Base branch of that PR (`gh`'s `baseRefName`, e.g. `main`). `None` when
+    /// no PR / old daemon. Goto feeds `juice --base <ref>` (fallback
+    /// `origin/main` when absent).
+    pub pr_base: Option<String>,
     /// PR author display name (the daemon's `prAuthor`: the PR's `author.name`,
     /// falling back to `author.login`). This is who OPENED the PR — for a
     /// squash-merged branch the local `last_commit_author` is instead an

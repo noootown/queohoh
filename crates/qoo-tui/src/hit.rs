@@ -12,12 +12,13 @@ pub enum ButtonKind {
 /// exactly like pressing its hotkey with that pane focused. `Schedule` ≡ `s`
 /// (QUEUE only — adhoc create form), `Tasks` ≡ `t`, `Run` ≡ `r` (TASKS runs
 /// the highlighted def; QUEUE re-queues the selected task, so its chip reads
-/// `[r]erun`; WORKTREES opens a fresh worktree-targeted new task), `Goto` ≡ `g`
-/// (QUEUE — resume the task's Claude session in tmux; WORKTREES — open the
-/// worktree in tmux), `Cancel` ≡ `x` (QUEUE only — skip/stop the selected
-/// task), `Remove` ≡ `x` (WORKTREES only — remove the selected worktree),
-/// `Cron` ≡ `c` (TASKS only — pause/resume the def's schedule), `Collapse` ≡
-/// `z` (labeled collapse/expand by expanded/collapsed state).
+/// `[r]erun`; WORKTREES opens the same adhoc form with the selected worktree
+/// locked in as the target), `Goto` ≡ `g` (QUEUE — resume the task's Claude
+/// session in tmux; WORKTREES — open the worktree in tmux), `Cancel` ≡ `x`
+/// (QUEUE only — skip/stop the selected task), `Remove` ≡ `x` (WORKTREES only
+/// — remove the selected worktree), `Cron` ≡ `c` (TASKS only — pause/resume
+/// the def's schedule), `Collapse` ≡ `z` (labeled collapse/expand by
+/// expanded/collapsed state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneButton {
     /// QUEUE `[s]chedule` — opens the unified adhoc-create form (same action as
@@ -49,11 +50,11 @@ pub enum PaneButton {
 pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     use PaneButton::*;
     match pane {
-        // Schedule (adhoc create) lives on QUEUE only — the single path for new
-        // tasks. WORKTREES no longer has a Run chip (use QUEUE [s]chedule).
+        // Schedule (blank adhoc create) on QUEUE; WORKTREES Run is the same form
+        // with the selected worktree locked as the target.
         PaneId::Queue => &[Run, Cancel, Goto, Archive, Schedule, Collapse],
         PaneId::Tasks => &[Run, Discover, Cron, Collapse],
-        PaneId::Worktrees => &[Goto, Remove, Tasks, Collapse],
+        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Collapse],
         PaneId::Detail => &[],
     }
 }

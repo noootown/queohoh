@@ -27,7 +27,7 @@ expression: terminal.backend()
 "│                         ││    tokens       199k in / 22k out                 │"
 "│                         ││    turns        37                                │"
 "╰─────────────────────────╯│                                                   │"
-"╭🌲 WORKTREES─ [g] [x] [t]╮│  Config                                           │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES─ [r] [g] [x]╮│  Config                                           │" Hidden by multi-width symbols: [(2, " ")]
 "│                         ││    description  Squash-merge the branch.          │"
 "│ 🔍 [/]filter            ││    worktree     auto                              │" Hidden by multi-width symbols: [(3, " ")]
 "│   Name                  ││    dedup        none                              │"

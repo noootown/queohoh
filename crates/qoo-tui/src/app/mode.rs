@@ -321,17 +321,22 @@ pub enum FormAction {
         resume_worktree: Option<String>,
     },
     /// Worktree `g` provider picker: pick which interactive agent bin to launch
-    /// in the right pane of a first-class tmux split. Fields: `[provider
-    /// dropdown]`, its options the ENABLED provider names, defaulting to the
-    /// current active provider (else the first choice). `path` is the frozen
-    /// worktree cwd; `choices` are `(name, resolved_bin)` pairs for ENABLED
-    /// providers only, frozen at open so a settings push mid-dialog cannot
-    /// retarget the launch. On submit, fires `Cmd::Goto` with the picked
-    /// provider's resolved bin (fresh interactive — no resume). This is a
-    /// DIFFERENT flow from the `p`-key active-provider switch
-    /// ([`FormAction::SwitchProvider`]), which only mutates the operator's
-    /// active provider via `set_active_provider`.
-    GotoProvider { path: String, choices: Vec<(String, String)> },
+    /// in the right pane of a first-class tmux split (left = juice). Fields:
+    /// `[provider dropdown]`, its options the ENABLED provider names, defaulting
+    /// to the current active provider (else the first choice). `path` is the
+    /// frozen worktree cwd; `choices` are `(name, resolved_bin)` pairs for
+    /// ENABLED providers only, frozen at open so a settings push mid-dialog
+    /// cannot retarget the launch. `juice_base` is the sticky Review base for
+    /// the left pane (`prBase` or `origin/main`), frozen with the form. On
+    /// submit, fires `Cmd::Goto` with the picked bin + juice base (fresh
+    /// interactive — no resume). This is a DIFFERENT flow from the `p`-key
+    /// active-provider switch ([`FormAction::SwitchProvider`]), which only
+    /// mutates the operator's active provider via `set_active_provider`.
+    GotoProvider {
+        path: String,
+        choices: Vec<(String, String)>,
+        juice_base: String,
+    },
     /// Active-provider switch (`p` / top-bar ↯ click). Fields: `[provider
     /// dropdown]` of ENABLED providers in settings-precedence order, defaulting
     /// to the current active provider (else the first choice). Options are

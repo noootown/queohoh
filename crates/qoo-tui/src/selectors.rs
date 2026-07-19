@@ -148,6 +148,9 @@ pub struct WorktreeRow {
     /// or when there is no open PR). Drives the clickable `#<n>` link in the
     /// detail info tab and the WORKTREES PR column — a click opens it.
     pub pr_url: Option<String>,
+    /// PR base branch (`gh` `baseRefName`); drives goto's `juice --base`.
+    /// `None` when no PR / old daemon → TUI falls back to `origin/main`.
+    pub pr_base: Option<String>,
     /// True when the daemon flagged this worktree as protected from deletion.
     /// Drives the `⛨` front-column marker and gates the remove action. Session
     /// rows default `false` (never removable anyway).
@@ -665,6 +668,7 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 last_commit_hash: wt.last_commit_hash.clone(),
                 pr_number: wt.pr_number,
                 pr_url: wt.pr_url.clone(),
+                pr_base: wt.pr_base.clone(),
                 pr_author: wt.pr_author.clone(),
                 protected: wt.protected,
             }

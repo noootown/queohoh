@@ -38,6 +38,10 @@ export interface WorktreeInfo {
 	 * unknown / no open PR / gh unavailable. Paired with prNumber so the TUI can
 	 * open the PR in a browser on a click. */
 	prUrl?: string | null;
+	/** Base branch of that PR (`gh`'s `baseRefName`, e.g. `main`). null when
+	 * there is no PR / gh unavailable. The TUI's goto layout feeds this to
+	 * `juice --base <ref>` (falling back to `origin/main` when null). */
+	prBase?: string | null;
 	/** Display name of the PR's author (its `author.name`, falling back to
 	 * `author.login`) — the person who OPENED the PR, which for a squash-merged
 	 * branch differs from the local HEAD author (an automation merge commit).
