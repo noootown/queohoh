@@ -10,11 +10,16 @@ import { launchdPlist } from "./launchd.js";
 import { runMcpStdio } from "./mcp.js";
 import { socketPath, statePath } from "./paths.js";
 import { defaultReloadSteps, runReload } from "./reload.js";
+import { systemdUnit } from "./systemd.js";
 
 const PLIST_PATH = join(
 	homedir(),
 	"Library/LaunchAgents/com.queohoh.daemon.plist",
 );
+
+/** systemd user unit name (and basename under ~/.config/systemd/user/). */
+const SYSTEMD_UNIT = "queohoh.daemon.service";
+const SYSTEMD_UNIT_PATH = join(homedir(), ".config/systemd/user", SYSTEMD_UNIT);
 
 const program = new Command();
 program.name("queohoh").description("queohoh orchestrator daemon");
@@ -122,6 +127,37 @@ program
 		if (existsSync(PLIST_PATH)) unlinkSync(PLIST_PATH);
 		console.log(
 			`removed. deactivate: launchctl bootout gui/$(id -u)/com.queohoh.daemon`,
+		);
+	});
+
+program
+	.command("systemd:install")
+	.description("write the systemd user unit (Linux keep-alive)")
+	.action(() => {
+		mkdirSync(join(homedir(), ".config/systemd/user"), { recursive: true });
+		mkdirSync(join(statePath(), "daemon"), { recursive: true });
+		const cliPath = fileURLToPath(import.meta.url);
+		writeFileSync(
+			SYSTEMD_UNIT_PATH,
+			systemdUnit({
+				nodeBin: process.execPath,
+				cliPath,
+				logPath: join(statePath(), "daemon/daemon.log"),
+			}),
+		);
+		console.log(`wrote ${SYSTEMD_UNIT_PATH}`);
+		console.log(
+			`activate: systemctl --user daemon-reload && systemctl --user enable --now ${SYSTEMD_UNIT}`,
+		);
+	});
+
+program
+	.command("systemd:uninstall")
+	.description("remove the systemd user unit")
+	.action(() => {
+		if (existsSync(SYSTEMD_UNIT_PATH)) unlinkSync(SYSTEMD_UNIT_PATH);
+		console.log(
+			`removed. deactivate: systemctl --user disable --now ${SYSTEMD_UNIT} && systemctl --user daemon-reload`,
 		);
 	});
 

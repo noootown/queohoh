@@ -67,6 +67,8 @@ export async function runReload(
 }
 
 const LAUNCHD_LABEL = "com.queohoh.daemon";
+/** Must match the unit basename written by `systemd:install` (cli.ts). */
+const SYSTEMD_UNIT = "queohoh.daemon.service";
 
 function pidAlive(pid: number): boolean {
 	try {
@@ -88,6 +90,35 @@ function execCode(cmd: string, args: string[]): Promise<number> {
 	});
 }
 
+/**
+ * Prefer a supervised restart (launchd on macOS, systemd --user on Linux)
+ * when the default state dir is in use and that supervisor owns the daemon.
+ * Fall back to pidfile SIGTERM + detached re-spawn for one-shot / bare starts
+ * and for QUEOHOH_STATE_DIR overrides (hermetic tests, alt deployments) so we
+ * never kick a daemon we aren't talking to.
+ */
+async function supervisedRestart(): Promise<boolean> {
+	if (process.env.QUEOHOH_STATE_DIR !== undefined) return false;
+
+	const uid = process.getuid?.() ?? 0;
+	const launchdTarget = `gui/${uid}/${LAUNCHD_LABEL}`;
+	if ((await execCode("launchctl", ["print", launchdTarget])) === 0) {
+		await execCode("launchctl", ["kickstart", "-k", launchdTarget]);
+		return true;
+	}
+
+	// is-active returns 0 only when the unit is running; inactive/missing unit
+	// or absent systemctl all fall through to the pidfile path.
+	if (
+		(await execCode("systemctl", ["--user", "is-active", SYSTEMD_UNIT])) === 0
+	) {
+		await execCode("systemctl", ["--user", "restart", SYSTEMD_UNIT]);
+		return true;
+	}
+
+	return false;
+}
+
 export function defaultReloadSteps(cliPath: string): ReloadSteps {
 	const state = statePath();
 	const sock = socketPath(state);
@@ -107,17 +138,8 @@ export function defaultReloadSteps(cliPath: string): ReloadSteps {
 			}),
 
 		restart: async () => {
-			// launchd governs only the default state dir; with QUEOHOH_STATE_DIR
-			// overridden (hermetic tests, alt deployments) always take the
-			// pidfile path so we never kick a daemon we aren't talking to.
-			if (process.env.QUEOHOH_STATE_DIR === undefined) {
-				const uid = process.getuid?.() ?? 0;
-				const target = `gui/${uid}/${LAUNCHD_LABEL}`;
-				if ((await execCode("launchctl", ["print", target])) === 0) {
-					await execCode("launchctl", ["kickstart", "-k", target]);
-					return;
-				}
-			}
+			if (await supervisedRestart()) return;
+
 			let pid: number | null = null;
 			try {
 				pid = Number.parseInt(readFileSync(pidPath(state), "utf-8").trim(), 10);

@@ -19,9 +19,13 @@ src/
                   business logic; never touch the store directly.
   client.ts       ApiClient: socket client used by cli, reload, mcp, tests.
   cli.ts          commander CLI: daemon | status | reload | launchd:install |
-                  launchd:uninstall | mcp | heartbeat.
-  reload.ts       `reload`: rebuild + restart the daemon (refuses if busy).
-  launchd.ts      launchd plist install/uninstall helpers (macOS keep-alive).
+                  launchd:uninstall | systemd:install | systemd:uninstall |
+                  mcp | heartbeat.
+  reload.ts       `reload`: rebuild + restart (launchd / systemd --user when
+                  active, else pidfile + detached re-spawn).
+  launchd.ts      launchd plist renderer (macOS keep-alive).
+  systemd.ts      systemd user unit renderer (Linux keep-alive; KillMode=process
+                  so detached run shims survive restarts).
   lock.ts         acquireLock: single-instance pidfile lock (atomic, stale
                   takeover). See decision below.
   build-id.ts     currentBuildId(): build fingerprint for TUI self-heal.

@@ -106,10 +106,40 @@ The full `config.yaml` key set alongside `verify`: `description`, `discovery`,
 
 ```bash
 queohoh daemon              # foreground (first run writes a starter config)
-queohoh launchd:install     # keep-alive via launchd (prints the bootstrap command)
 queohoh status              # check it's up
 queohoh reload              # after changing daemon code: rebuild + restart
-                            # (refuses if tasks are running; --force overrides)
+                            # (prefers launchd/systemd when that supervisor owns
+                            # the daemon; otherwise pidfile + detached re-spawn)
+```
+
+### Keep-alive (optional)
+
+A bare `queohoh daemon` or `mise run daemon:ensure` is enough for a session. For restart-on-crash and start-on-login:
+
+**macOS (launchd):**
+
+```bash
+queohoh launchd:install     # writes ~/Library/LaunchAgents/com.queohoh.daemon.plist
+# then the printed launchctl bootstrap command, or:
+mise run launchd:up         # install + bootstrap
+mise run launchd:down       # bootout + remove plist
+```
+
+**Linux (systemd user unit):**
+
+```bash
+queohoh systemd:install     # writes ~/.config/systemd/user/queohoh.daemon.service
+# then the printed systemctl commands, or:
+mise run systemd:up         # install + enable --now
+mise run systemd:down       # disable + remove unit
+```
+
+The unit uses `KillMode=process` so a restart only signals the daemon process — detached run shims keep running and are re-adopted when the daemon comes back (same contract as a manual reload).
+
+If the unit should stay up after you log out of the graphical session, enable lingering once:
+
+```bash
+loginctl enable-linger "$USER"
 ```
 
 ## 4. Claude Code integration
