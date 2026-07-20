@@ -29,9 +29,11 @@ export interface NewTaskInput {
 	/** Requested model(s): a single `provider/label` ref or an ordered fallback
 	 * list (see `TaskInstance.model` / `resolveModelChain`). */
 	model?: string | string[];
-	/** True when `model` is an explicit TUI dialog pick that must run EXACTLY
-	 * that ref (see `TaskInstance.modelPinned` / `resolvePinnedModel`).
-	 * Defaults to false — absent on legacy/MCP callers. */
+	/** True when `model` is an explicit pick that must run EXACTLY that ref
+	 * (see `TaskInstance.modelPinned` / `resolvePinnedModel`). Defaults to
+	 * false. Set by TUI dialog picks and by MCP/API when a single-string
+	 * `model` is stamped (so active-provider re-head cannot override a
+	 * host-session handoff). */
 	modelPinned?: boolean;
 	/** Per-task hard wall-clock ceiling override, in ms (from the MCP `timeout`
 	 * param); a definition task's own `timeout:` still wins at run time
@@ -54,6 +56,10 @@ export interface ChainStepInput {
 	item?: Record<string, string>;
 	itemKey?: string;
 	model?: string | string[];
+	/** True when `model` is an explicit single-ref pick that must run EXACTLY
+	 * that ref (see `TaskInstance.modelPinned`). Chain-level stamp from
+	 * enqueue_chain when a single-string model is given. */
+	modelPinned?: boolean;
 	/** Chain-wide hard wall-clock ceiling override, in ms (a definition step's
 	 * own `timeout:` still wins at run time — def-first, unlike `model`). */
 	timeoutMs?: number;
@@ -162,6 +168,7 @@ export class QueueStore {
 				// Resume applies to the head only; later steps are always fresh.
 				resumeSessionId: i === 0 ? (shared.resumeSessionId ?? null) : null,
 				model: step.model ?? null,
+				modelPinned: step.modelPinned ?? false,
 				timeoutMs: step.timeoutMs ?? null,
 				prompt: step.prompt,
 				chainId,

@@ -37,7 +37,7 @@ export function createMcpServer(caller: McpCaller): McpServer {
 
 	server.tool(
 		"enqueue_task",
-		"Enqueue an ad-hoc task into the queohoh queue. The task runs end-to-end in a worktree and commits its work. Pass cwd (absolute path inside the target worktree) to target the current worktree, and resume_session_id to make the run RESUME that Claude session instead of starting fresh — resumed runs keep the full conversation context. Without resume_session_id workers never see this conversation: transcribe any images, error text, or rich context into the prompt verbatim. Returns the created task as JSON.",
+		"Enqueue an ad-hoc task into the queohoh queue. The task runs end-to-end in a worktree and commits its work. Pass cwd (absolute path inside the target worktree) to target the current worktree, and resume_session_id to make the run RESUME that provider-native session (Claude / Grok / Codex) instead of starting fresh — resumed runs keep the full conversation context. Without resume_session_id workers never see this conversation: transcribe any images, error text, or rich context into the prompt verbatim. A single-string model is pinned (no active-provider re-head). Returns the created task as JSON.",
 		{
 			prompt: z.string().describe("Task prompt (directive if resuming)"),
 			repo: z
@@ -61,13 +61,13 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.string()
 				.optional()
 				.describe(
-					"Claude session id to resume; the run continues that session's context",
+					"Provider-native session id to resume (Claude / Grok / Codex); the run continues that session's context. Pair with a model on the same provider.",
 				),
 			model: z
 				.union([z.string(), z.array(z.string())])
 				.optional()
 				.describe(
-					"Model for the run, as a provider/label ref (e.g. claude/claude-opus-4.8, grok/grok-4.5), or an ordered fallback list of such refs; defaults to the daemon default. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
+					"Model for the run, as a provider/label ref (e.g. claude/claude-opus-4.8, grok/grok-4.5), or an ordered fallback list of such refs; defaults to the daemon default. A single-string ref is pinned (exact pick, no active-provider re-head). Every ref is validated against the catalog — an unknown ref fails the enqueue.",
 				),
 			timeout: z
 				.string()
@@ -144,12 +144,14 @@ export function createMcpServer(caller: McpCaller): McpServer {
 			resume_session_id: z
 				.string()
 				.optional()
-				.describe("Claude session id to resume for the FIRST step only"),
+				.describe(
+					"Provider-native session id to resume for the FIRST step only (pair with a same-provider model)",
+				),
 			model: z
 				.union([z.string(), z.array(z.string())])
 				.optional()
 				.describe(
-					"Model stamped onto EVERY step (prompt and definition) as a provider/label ref (e.g. claude/claude-opus-4.8) or an ordered fallback list; overrides a definition step's authored model (worker: task.model beats def.model). Omit to leave task.model null so definition steps use their own list / default_models. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
+					"Model stamped onto EVERY step (prompt and definition) as a provider/label ref (e.g. claude/claude-opus-4.8) or an ordered fallback list; overrides a definition step's authored model (worker: task.model beats def.model). A single-string ref is pinned. Omit to leave task.model null so definition steps use their own list / default_models. Every ref is validated against the catalog — an unknown ref fails the enqueue.",
 				),
 			timeout: z
 				.string()
@@ -206,7 +208,9 @@ export function createMcpServer(caller: McpCaller): McpServer {
 			resume_session_id: z
 				.string()
 				.optional()
-				.describe("Claude session id to resume for the created task(s)"),
+				.describe(
+					"Provider-native session id to resume for the created task(s)",
+				),
 		},
 		async (args) => toCallResult(mcpRunTaskDefinition(caller, args)),
 	);

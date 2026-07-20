@@ -75,12 +75,13 @@ const TaskMetaSchema = z
 			.union([z.string(), z.array(z.string())])
 			.nullable()
 			.default(null),
-		// True when `model` was an explicit TUI dialog pick that must run
-		// EXACTLY that ref: no active-provider re-head (resolveModelChain's
-		// step 5 group-head prepend), no fallback chain — see
-		// `resolvePinnedModel` in models.ts. Absent/false on legacy task files,
-		// and on a task whose `model` came from a definition's authored list or
-		// `default_models` resolution — only a stamped TUI pick sets this true.
+		// True when `model` was an explicit pick that must run EXACTLY that
+		// ref: no active-provider re-head (resolveModelChain's step 5
+		// group-head prepend), no fallback chain — see `resolvePinnedModel` in
+		// models.ts. Set by TUI dialog picks and by enqueue when a single-string
+		// model is stamped (MCP /qoo host handoff). Absent/false on legacy
+		// task files and on tasks whose model came from a definition list or
+		// default_models without an explicit pin.
 		model_pinned: z.boolean().default(false),
 		// Per-task hard wall-clock ceiling override, in ms (additive; absent on
 		// legacy files → null). Set from the MCP `timeout` param (enqueue_task /

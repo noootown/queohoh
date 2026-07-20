@@ -29,6 +29,23 @@ import { extractTicket } from "./worktree-context.js";
 export type ClaudeExecutor = typeof executeClaude;
 export type VerifyExecutor = typeof executeVerify;
 
+/** Provider named by a single-string (or list-head) model spec, if resolvable.
+ * Used when a resume session has no lineage provider tag yet — e.g. an
+ * interactive Grok/Claude session being continued for the first time. */
+function providerFromModelSpec(
+	spec: string | string[] | null,
+	catalog: CatalogEntry[],
+): string | undefined {
+	const ref =
+		typeof spec === "string"
+			? spec
+			: Array.isArray(spec) && typeof spec[0] === "string"
+				? spec[0]
+				: null;
+	if (ref === null) return undefined;
+	return findModel(catalog, ref)?.provider;
+}
+
 /** Default ceiling for a `verify` (done-condition) command: 10 minutes. A check
  * is meant to be quick; this only guards a wedged one (it lands `verify-failed`).
  * A constant rather than a per-definition knob — no definition has needed to
@@ -215,13 +232,13 @@ async function resolveRunContext(
 	// Without a stamp, fall through to def.model, then default_models.
 	const providers: ProviderConfig[] = deps.providers ?? DEFAULT_PROVIDERS;
 	const modelSpec = task.model ?? def?.model ?? null;
-	// `model_pinned` (an explicit TUI dialog pick) bypasses resolveModelChain
-	// entirely: it must run EXACTLY the stamped ref, with no active-provider
-	// re-head and no fallback chain. Def-authored `model:` chains and
-	// default_models keep today's re-heading behavior — only a stamped pin
-	// skips it. A pin with a non-string `task.model` (a fallback LIST) can't
-	// happen from the TUI wire (it always stamps a single ref), but falls
-	// through to the normal chain resolution defensively rather than crashing.
+	// `model_pinned` (TUI dialog pick, or enqueue single-string model) bypasses
+	// resolveModelChain entirely: it must run EXACTLY the stamped ref, with no
+	// active-provider re-head and no fallback chain. Def-authored `model:`
+	// chains and default_models keep re-heading — only a stamped pin skips it.
+	// A pin with a non-string `task.model` (a fallback LIST) can't happen from
+	// the wire (it always stamps a single ref), but falls through to the normal
+	// chain resolution defensively rather than crashing.
 	const chainResult =
 		task.modelPinned === true && typeof task.model === "string"
 			? resolvePinnedModel(task.model, deps.catalog, providers)
@@ -260,10 +277,29 @@ async function resolveRunContext(
 
 		// A resume task never falls back (spec decision 2) — its context lives
 		// in a specific provider's session, so the chain is pinned to exactly
-		// that provider (untagged/unknown sessions default to claude, matching
-		// pre-Task-11 behavior for lineage files that predate provider tags).
-		const pinnedProvider =
-			deps.lineage?.providerOf(resumeSessionId) ?? "claude";
+		// that provider. Prefer the lineage tag; when the session is untagged
+		// (interactive sessions are only recorded after a headless run), infer
+		// from a single-string task/def model so a Grok handoff does not
+		// default to claude. Pre-Task-11 lineage files still fall through to
+		// claude when no model names a provider either.
+		const taggedProvider = deps.lineage?.providerOf(resumeSessionId) ?? null;
+		const inferredFromModel = providerFromModelSpec(modelSpec, deps.catalog);
+		const pinnedProvider = taggedProvider ?? inferredFromModel ?? "claude";
+		// Stamp untagged interactive resumes so follow-ups and the session
+		// picker see the correct provider without re-inferring.
+		if (
+			taggedProvider === null &&
+			inferredFromModel !== undefined &&
+			deps.lineage
+		) {
+			deps.lineage.recordProvider(resumeSessionId, inferredFromModel);
+			if (
+				task.resumeSessionId !== null &&
+				task.resumeSessionId !== resumeSessionId
+			) {
+				deps.lineage.recordProvider(task.resumeSessionId, inferredFromModel);
+			}
+		}
 		const pinnedEntry = chain.find((e) => e.provider === pinnedProvider);
 		if (pinnedEntry !== undefined) {
 			chain = [pinnedEntry];

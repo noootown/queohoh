@@ -422,11 +422,13 @@ export class ApiServer {
 				// validated against the merged catalog (invalid → the enqueue fails
 				// with an `unknown model` / did-you-mean message).
 				const model = this.coerceModel(deps.config.catalog, params.model);
-				// Explicit TUI dialog pick (new-session/adhoc/create-worktree forms):
-				// stamped onto the task so the worker runs EXACTLY this ref, no
-				// active-provider re-head, no fallback. Absent on MCP's enqueue_task
-				// (which never sends it), so it stays unpinned there.
-				const modelPinned = params.model_pinned === true;
+				// Explicit model pick: TUI dialogs send `model_pinned: true`; a
+				// single-string `model` (MCP /qoo skill, ad-hoc enqueue) is also
+				// pinned so active-provider re-head cannot override a host-session
+				// handoff (Grok→grok, Claude→claude). A fallback LIST stays
+				// unpinned so resolveModelChain still re-heads / walks the chain.
+				const modelPinned =
+					params.model_pinned === true || typeof model === "string";
 				const verify =
 					typeof params.verify === "string" && params.verify.length > 0
 						? params.verify
@@ -467,6 +469,15 @@ export class ApiServer {
 					timeoutMs,
 					verify,
 				});
+				// Interactive handoff: tag the resume session's provider from the
+				// model ref so the worker (and session picker) don't default an
+				// untagged Grok/Codex session to claude.
+				this.stampResumeProvider(
+					deps.lineage,
+					deps.config.catalog,
+					resumeSessionId,
+					model,
+				);
 				deps.onMutation();
 				return task;
 			}
@@ -483,6 +494,10 @@ export class ApiServer {
 				// override semantics as enqueue / runDefinition. Accept a single
 				// ref or a fallback list; every ref is validated against the catalog.
 				const model = this.coerceModel(deps.config.catalog, params.model);
+				// Same pin rule as enqueue: single-string model = exact pick on
+				// every step; a fallback list stays unpinned.
+				const modelPinned =
+					params.model_pinned === true || typeof model === "string";
 				const timeoutMs =
 					typeof params.timeout_ms === "number" ? params.timeout_ms : undefined;
 				const resumeSessionId =
@@ -552,13 +567,20 @@ export class ApiServer {
 							// worker. Priority is the chain's (shared), applied
 							// uniformly by createChain so members schedule together.
 							model,
+							modelPinned,
 							timeoutMs,
 							verify,
 							lane: def.lane ?? undefined,
 						};
 					}
 					if (typeof s.prompt === "string" && s.prompt.length > 0) {
-						return { prompt: s.prompt, model, timeoutMs, verify };
+						return {
+							prompt: s.prompt,
+							model,
+							modelPinned,
+							timeoutMs,
+							verify,
+						};
 					}
 					throw new Error(
 						`chain step ${i}: must have either 'definition' or 'prompt'`,
@@ -571,6 +593,12 @@ export class ApiServer {
 					priority,
 					resumeSessionId,
 				});
+				this.stampResumeProvider(
+					deps.lineage,
+					deps.config.catalog,
+					resumeSessionId,
+					model,
+				);
 				deps.onMutation();
 				return created;
 			}
@@ -1188,6 +1216,26 @@ export class ApiServer {
 		const task = this.deps.store.get(id);
 		if (!task) throw new Error(`task not found: ${id}`);
 		return task;
+	}
+
+	/**
+	 * When enqueueing a resume of an interactive session, tag that session's
+	 * provider from a single-string model ref if lineage has no tag yet. Without
+	 * this, the worker defaults untagged resumes to claude (pre-Task-11) and a
+	 * Grok interactive handoff would spawn the wrong CLI. Never overwrites an
+	 * existing tag. No-op when there is no resume id or model is absent/a list.
+	 */
+	private stampResumeProvider(
+		lineage: SessionLineageStore,
+		catalog: CatalogEntry[],
+		resumeSessionId: string | undefined,
+		model: string | string[] | undefined,
+	): void {
+		if (resumeSessionId === undefined || typeof model !== "string") return;
+		if (lineage.providerOf(resumeSessionId) !== null) return;
+		const entry = findModel(catalog, model);
+		if (entry === undefined) return;
+		lineage.recordProvider(resumeSessionId, entry.provider);
 	}
 
 	/**

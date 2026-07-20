@@ -163,7 +163,11 @@ pub struct TaskInstance {
     pub error: Option<String>,
     pub session: String,
     pub resume_session_id: Option<String>,
-    pub model: Option<String>,
+    /// Task model on the wire: a single `provider/label` ref, an ordered
+    /// fallback list, or null. Must accept both shapes — a list-form model used
+    /// to make the entire `tasks`/`archivedRecent` vec fail serde, and the
+    /// subscription's `unwrap_or_default()` then blanked the whole TUI.
+    pub model: Option<ModelRef>,
     pub prompt: String,
     /// Done-condition (`verify`) fields (additive; all `None` on an old daemon
     /// that omits them, via the container `default`). `verify` is the configured
@@ -597,7 +601,7 @@ mod tests {
         assert!(!t.ephemeral_worktree);
         assert_eq!(t.session, "main");
         assert_eq!(t.resume_session_id.as_deref(), Some("sess-1"));
-        assert_eq!(t.model.as_deref(), Some("claude/claude-opus-4.8"));
+        assert_eq!(t.model, Some(ModelRef::One("claude/claude-opus-4.8".into())));
         assert_eq!(t.prompt, "do the thing\n");
         assert_eq!(t.started_at.as_deref(), Some("2026-07-08T10:00:30.000Z"));
         assert_eq!(t.finished_at.as_deref(), Some("2026-07-08T10:05:00.000Z"));
@@ -624,6 +628,40 @@ mod tests {
         assert_eq!(wt.last_commit_author_email.as_deref(), Some("kevin@justicebid.com"));
         assert_eq!(wt.last_commit_author.as_deref(), Some("Kevin O'Shea"));
         assert_eq!(s.build_id.as_deref(), Some("1751970000000"));
+    }
+
+    /// Regression: a task with list-form `model` must NOT blank the whole
+    /// snapshot (subscription falls back to Default on any serde error).
+    #[test]
+    fn task_model_list_does_not_fail_snapshot_deserialize() {
+        let json = r#"{
+          "tasks": [{
+            "id": "01LISTMODEL00000000000000000",
+            "status": "cancelled",
+            "target": {"repo": "queohoh", "ref": "temp", "worktree": null},
+            "priority": "low",
+            "created": "2026-07-20T20:00:00.000Z",
+            "source": "mcp",
+            "session": "fresh",
+            "model": ["claude/claude-sonnet-5", "grok/grok-4.5"],
+            "prompt": "[PROBE] list-check"
+          }],
+          "archivedRecent": [],
+          "sessions": [],
+          "running": [],
+          "projects": [{"name": "queohoh"}],
+          "worktrees": {"queohoh": [{"name": "queohoh", "path": "/x", "branch": "main"}]}
+        }"#;
+        let s: StateSnapshot = serde_json::from_str(json).expect("list model must deserialize");
+        assert_eq!(s.projects.len(), 1);
+        assert_eq!(s.worktrees.get("queohoh").map(|w| w.len()), Some(1));
+        assert_eq!(
+            s.tasks[0].model,
+            Some(ModelRef::Many(vec![
+                "claude/claude-sonnet-5".into(),
+                "grok/grok-4.5".into(),
+            ]))
+        );
     }
 
     #[test]

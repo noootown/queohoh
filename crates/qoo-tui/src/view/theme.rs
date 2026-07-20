@@ -209,8 +209,9 @@ pub struct Palette {
 
 /// Catppuccin Mocha-inspired dark profile (the original color set). The three
 /// status slots (`ok`/`warn`/`error`) use raw terminal ANSI colors
-/// (green/yellow/red) for a vivid, high-contrast look; the rest stay Catppuccin
-/// RGB.
+/// (green/bright-yellow/red) for a vivid, high-contrast look; the rest stay
+/// Catppuccin RGB. `warn` is `LightYellow` (not plain `Yellow`) — basic ANSI
+/// yellow often maps to a muddy mustard on dark terminals (user: "brighter").
 pub const MOCHA: Palette = Palette {
     accent: Color::Rgb(137, 180, 250),       // blue
     worktree: Color::Rgb(137, 180, 250),     // worktree names = accent (no split)
@@ -221,7 +222,7 @@ pub const MOCHA: Palette = Palette {
                                              // (user: grey-on-grey unreadable)
     error: Color::Red,                       // ANSI red — vivid status
     ok: Color::Green,                        // ANSI green — vivid status
-    warn: Color::Yellow,                     // ANSI yellow — vivid status
+    warn: Color::LightYellow,                // bright ANSI yellow — vivid status
     info: Color::Rgb(148, 226, 213),         // teal — timestamps ONLY
     meta: Color::Rgb(180, 190, 254),         // lavender — non-time metadata
     fg: Color::Rgb(205, 214, 244),           // text
@@ -247,7 +248,7 @@ pub const MOCHA_BRIGHT: Palette = Palette {
     dim: Color::Rgb(166, 173, 200),          // subtext0 — brighter, still dim vs fg
     error: Color::Red,                       // ANSI red — vivid status (unchanged)
     ok: Color::Green,                        // ANSI green — vivid status (unchanged)
-    warn: Color::Yellow,                     // ANSI yellow — vivid status (unchanged)
+    warn: Color::LightYellow,                // bright ANSI yellow — vivid status
     info: Color::Rgb(178, 240, 229),         // teal, lightened — timestamps ONLY
     meta: Color::Rgb(205, 212, 255),         // lavender, lightened
     fg: Color::Rgb(230, 237, 255),           // near-white text
@@ -264,9 +265,8 @@ pub const MOCHA_BRIGHT: Palette = Palette {
 /// `accent` (selection bar, focused borders, tabs, prompts) are the cool anchors.
 /// `fg` (near-white) is reserved for actions/tabs/chrome — prose and summaries
 /// render in the terminal's default grey. The three status slots
-/// (`ok`/`warn`/`error`) stay raw ANSI green/yellow/red (user: "keep the status
-/// colors, those are already great"); names use a lighter spring green so they
-/// never read as the "done" status dot.
+/// (`ok`/`warn`/`error`) stay raw ANSI green/bright-yellow/red; names use a
+/// lighter spring green so they never read as the "done" status dot.
 pub const PRISM: Palette = Palette {
     accent: Color::Rgb(77, 166, 255),        // electric blue — generic UI accent
     worktree: Color::Rgb(255, 182, 133),     // lighter warm orange (user request) — worktree NAME columns only
@@ -275,7 +275,7 @@ pub const PRISM: Palette = Palette {
     dim: Color::Rgb(123, 131, 166),          // still clearly dimmer than fg
     error: Color::Red,                        // ANSI — status (kept)
     ok: Color::Green,                         // ANSI — status (kept)
-    warn: Color::Yellow,                      // ANSI — status (kept)
+    warn: Color::LightYellow,                 // bright ANSI yellow (user: "brighter")
     info: Color::Rgb(47, 230, 200),           // teal — timestamps ONLY (cool anchor)
     meta: Color::Rgb(230, 195, 74),           // gold — non-time metadata
     fg: Color::Rgb(238, 241, 255),            // near-white — reserved for actions/tabs/chrome
@@ -291,7 +291,8 @@ pub const PRISM: Palette = Palette {
 /// Neon Ice — the coldest, highest-contrast rainbow profile (user pick):
 /// electric cyan worktree identity, indigo task/def names, sky-blue timestamps,
 /// light-cyan metadata, and hot-pink headings over a near-black terminal. Same
-/// status rule as [`PRISM`] — `ok`/`warn`/`error` stay raw ANSI green/yellow/red.
+/// status rule as [`PRISM`] — `ok`/`warn`/`error` stay raw ANSI
+/// green/bright-yellow/red.
 pub const NEON_ICE: Palette = Palette {
     accent: Color::Rgb(34, 211, 238),        // electric cyan
     worktree: Color::Rgb(34, 211, 238),      // worktree names = accent (no split)
@@ -300,7 +301,7 @@ pub const NEON_ICE: Palette = Palette {
     dim: Color::Rgb(111, 123, 160),          // still clearly dimmer than fg
     error: Color::Red,                        // ANSI — status (kept)
     ok: Color::Green,                         // ANSI — status (kept)
-    warn: Color::Yellow,                      // ANSI — status (kept)
+    warn: Color::LightYellow,                 // bright ANSI yellow (user: "brighter")
     info: Color::Rgb(56, 189, 248),           // sky — timestamps ONLY
     meta: Color::Rgb(103, 232, 249),          // light cyan — non-time metadata
     fg: Color::Rgb(242, 247, 255),            // near-white text
@@ -314,7 +315,7 @@ pub const NEON_ICE: Palette = Palette {
 /// Synthwave — magenta + cyan accents on a deep-purple base (user pick): magenta
 /// worktree identity, purple task/def names, teal timestamps, lavender metadata,
 /// and cyan headings. Moodier/warmer than [`NEON_ICE`]; same status rule —
-/// `ok`/`warn`/`error` stay raw ANSI green/yellow/red.
+/// `ok`/`warn`/`error` stay raw ANSI green/bright-yellow/red.
 pub const SYNTHWAVE: Palette = Palette {
     accent: Color::Rgb(255, 95, 210),        // magenta
     worktree: Color::Rgb(255, 95, 210),      // worktree names = accent (no split)
@@ -323,7 +324,7 @@ pub const SYNTHWAVE: Palette = Palette {
     dim: Color::Rgb(139, 123, 166),          // still clearly dimmer than fg
     error: Color::Red,                        // ANSI — status (kept)
     ok: Color::Green,                         // ANSI — status (kept)
-    warn: Color::Yellow,                      // ANSI — status (kept)
+    warn: Color::LightYellow,                 // bright ANSI yellow (user: "brighter")
     info: Color::Rgb(45, 212, 191),           // teal — timestamps ONLY
     meta: Color::Rgb(196, 181, 253),          // lavender — non-time metadata
     fg: Color::Rgb(253, 240, 255),            // near-white text (warm)
@@ -483,11 +484,12 @@ mod tests {
     #[test]
     fn active_theme_keeps_ansi_status_colors() {
         // Invariant (user requirement): whatever the active profile, the three
-        // status slots stay the raw ANSI green/yellow/red — a theme swap must not
-        // silently recolor task status.
+        // status slots stay raw ANSI green/bright-yellow/red — a theme swap must
+        // not silently recolor task status. `warn` is LightYellow (not plain
+        // Yellow) so dark terminals don't muddle it into mustard.
         let p = Palette::default();
         assert_eq!(p.ok, Color::Green);
-        assert_eq!(p.warn, Color::Yellow);
+        assert_eq!(p.warn, Color::LightYellow);
         assert_eq!(p.error, Color::Red);
     }
 

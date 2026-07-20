@@ -1335,7 +1335,12 @@ impl App {
             .filter(|p| !p.is_empty())
             .map(|p| p.to_string())
             .or_else(|| meta.and_then(|m| model_provider_segment(m.model.as_deref())))
-            .or_else(|| model_provider_segment(task.model.as_deref()))
+            .or_else(|| {
+                task.model.as_ref().and_then(|m| {
+                    let refs = m.refs();
+                    model_provider_segment(refs.first().map(String::as_str))
+                })
+            })
             .unwrap_or_else(|| "claude".into());
         match (session_id, worktree_path) {
             (None, _) => QueueGotoTarget::NoSession,

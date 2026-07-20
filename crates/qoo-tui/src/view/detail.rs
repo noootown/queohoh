@@ -265,7 +265,14 @@ fn run_info_lines(
         ("session", or_dash(meta.session_id.clone())),
         (
             "model",
-            or_dash(meta.model.clone().or_else(|| task.model.clone()).map(|id| model_display(&id))),
+            or_dash(
+                meta.model
+                    .clone()
+                    .or_else(|| {
+                        task.model.as_ref().and_then(|m| m.refs().into_iter().next())
+                    })
+                    .map(|id| model_display(&id)),
+            ),
         ),
         ("exit code", meta.exit_code.map(|c| c.to_string()).unwrap_or_else(dash)),
     ];
@@ -1950,7 +1957,7 @@ mod tests {
             t.status = TaskStatus::Queued;
             t.definition = Some("pr-fix-ci-conflicts".to_string());
             t.created = "2026-07-09T12:00:00.000Z".to_string();
-            t.model = Some("claude-opus-4-8".to_string());
+            t.model = Some(crate::ipc::types::ModelRef::One("claude-opus-4-8".to_string()));
             t.finished_at = None;
             t.started_at = None;
             snap.tasks = vec![t];

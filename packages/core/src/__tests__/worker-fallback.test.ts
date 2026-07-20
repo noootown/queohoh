@@ -400,6 +400,27 @@ describe("runTask activeProvider vs resume pin", () => {
 		expect(seenProviders).toEqual(["claude"]);
 	});
 
+	it("untagged resume + single-string grok model runs grok (not default claude)", async () => {
+		// Interactive Grok sessions are not in lineage until a headless run
+		// records them. Without model-based inference, providerOf defaults to
+		// claude and the wrong CLI would get --resume. Model pins the provider
+		// and stamps lineage for follow-ups.
+		const lineage = new SessionLineageStore(
+			join(mkdtempSync(join(tmpdir(), "qo-lineage-")), "lineage.json"),
+		);
+		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
+			firstResult: okResult,
+			resumeSessionId: "gsess-interactive",
+			model: "grok/grok-4.5",
+			modelPinned: true,
+			activeProvider: "claude",
+		});
+		const out = await runTask(taskId, { ...deps, providers, lineage });
+		expect(out.status).toBe("done");
+		expect(seenProviders).toEqual(["grok"]);
+		expect(lineage.providerOf("gsess-interactive")).toBe("grok");
+	});
+
 	it("model-less task with an EMPTY defaultModels still heads onto the active provider", async () => {
 		// Deliberate decision (documented on WorkerDeps.defaultModels): the worker
 		// passes defaultModels through verbatim and does NOT treat [] as "no

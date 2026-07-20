@@ -976,6 +976,45 @@ describe("ApiServer", () => {
 			expect(task.model).toBe("claude/claude-opus-4.8");
 		});
 
+		it("pins a single-string model so active-provider re-head cannot override", async () => {
+			// MCP /qoo host handoffs pass a single provider/label ref — that must
+			// stamp modelPinned so the worker runs EXACTLY that provider (not the
+			// TUI active provider).
+			const { client } = await setup();
+			const task = (await client.call("enqueue", {
+				repo: "platform",
+				prompt: "p",
+				model: "grok/grok-4.5",
+			})) as { model: string; modelPinned: boolean };
+			expect(task.model).toBe("grok/grok-4.5");
+			expect(task.modelPinned).toBe(true);
+		});
+
+		it("does not pin a fallback list (re-head / chain walk still apply)", async () => {
+			const { client } = await setup();
+			const task = (await client.call("enqueue", {
+				repo: "platform",
+				prompt: "p",
+				model: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+			})) as { model: string[]; modelPinned: boolean };
+			expect(task.model).toEqual(["claude/claude-opus-4.8", "grok/grok-4.5"]);
+			expect(task.modelPinned).toBe(false);
+		});
+
+		it("tags an untagged resume session's provider from the single-string model", async () => {
+			// Interactive Grok/Claude sessions are not in lineage until a headless
+			// run records them. Enqueue with resume + model must stamp the
+			// provider so the worker does not default untagged resumes to claude.
+			const { client, lineage } = await setup();
+			await client.call("enqueue", {
+				repo: "platform",
+				prompt: "continue",
+				resume_session_id: "gsess-interactive",
+				model: "grok/grok-4.5",
+			});
+			expect(lineage.providerOf("gsess-interactive")).toBe("grok");
+		});
+
 		it("accepts an ordered fallback list of refs", async () => {
 			const { client } = await setup();
 			const task = (await client.call("enqueue", {

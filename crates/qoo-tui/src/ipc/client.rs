@@ -163,7 +163,15 @@ async fn subscription_session(
         *last_committed = Some(raw);
         // Lenient decode: a malformed payload becomes the empty default rather
         // than killing the subscription task (types.rs handles missing fields).
-        let snapshot: StateSnapshot = serde_json::from_value(data).unwrap_or_default();
+        // Log the error — silent default previously blanked the whole TUI with
+        // no signal when one bad task field (e.g. model as a list) failed serde.
+        let snapshot: StateSnapshot = match serde_json::from_value(data) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("qoo-tui: state snapshot deserialize failed: {e}");
+                StateSnapshot::default()
+            }
+        };
         if tx.send(Event::Snapshot(snapshot)).is_err() {
             return Ok(());
         }
