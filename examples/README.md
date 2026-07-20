@@ -14,10 +14,12 @@ Global definitions appear under every project in the TUI's definition picker (ma
 
 ## Skills
 
-`skills/qoo/` is a minimal reference `/qoo` skill: it routes a request to the queohoh MCP server (definition match → chain → ad-hoc enqueue) instead of doing the work inline. Copy it into your skills directory and adapt it:
+`skills/qoo/` is a minimal reference `/qoo` skill: it routes a request to the queohoh MCP server (definition match → chain → ad-hoc enqueue) instead of doing the work inline. Copy it into your agent skills directory and adapt it:
 
 ```bash
-cp -R examples/skills/qoo ~/.claude/skills/
+cp -R examples/skills/qoo ~/.claude/skills/  # Claude Code
+# other agents: place under their skills dir once MCP is registered
+mise run mcp:register                       # Claude + Codex + Grok Build (skips missing CLIs)
 ```
 
 It is deliberately simple — treat it as the starting point for your own queue-everything workflow (session continuation, model routing, plan previews all layer on cleanly; see the "Make it your own" section inside the skill).

@@ -101,8 +101,10 @@ run = [
 # --- integrations ---
 
 [tasks."mcp:register"]
-description = "Register the queohoh MCP server with Claude Code (user scope)"
-run = 'claude mcp add --scope user queohoh -- "$(command -v node)" {{config_root}}/packages/daemon/dist/cli.js mcp'
+description = "Register the queohoh MCP server with every available agent CLI (Claude Code, Codex, Grok Build; rebuilds first)"
+depends = ["build"]
+# Optional args select a subset: `mise run mcp:register -- claude codex`
+run = "scripts/mcp-register.sh"
 
 [tasks."launchd:up"]
 description = "Install the launchd plist and bootstrap the daemon (macOS; rebuilds first)"

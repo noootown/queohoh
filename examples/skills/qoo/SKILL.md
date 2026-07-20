@@ -1,6 +1,6 @@
 ---
 name: qoo
-description: Queue work onto the queohoh orchestrator instead of doing it inline. Turns the user's request into a headless queued run (or an ordered chain for multi-step requests) via the queohoh MCP server. Requires the queohoh daemon and MCP server (`claude mcp add queohoh -- queohoh mcp`).
+description: Queue work onto the queohoh orchestrator instead of doing it inline. Turns the user's request into a headless queued run (or an ordered chain for multi-step requests) via the queohoh MCP server. Requires the queohoh daemon and MCP server (`mise run mcp:register`, or per-CLI `claude`/`codex`/`grok mcp add`).
 user-invocable: true
 argument-hint: "<what you want done> | status"
 ---
@@ -34,7 +34,7 @@ One line: what was queued, the target repo:worktree (or ref), and that progress 
 
 ## Failure modes
 
-- MCP tools missing or connection refused → the daemon isn't running: `queohoh daemon` (foreground) or `queohoh launchd:install`.
+- MCP tools missing or connection refused → the daemon isn't running or MCP isn't registered: `queohoh daemon` (or `mise run daemon:ensure` / platform keep-alive) and `mise run mcp:register`.
 - "no registered project contains ..." → relay the error verbatim; the fix is in the user's `config.yaml`, not here.
 
 ## Make it your own

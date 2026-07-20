@@ -68,7 +68,7 @@ In a secondary worktree where the daemon runs from the main checkout, use `mise 
 Integrations:
 
 ```bash
-mise run mcp:register    # register the queohoh MCP server with Claude Code (user scope)
+mise run mcp:register    # register the queohoh MCP server with Claude Code, Codex, and Grok Build (skips CLIs not on PATH)
 mise run launchd:up      # install the launchd plist and keep the daemon alive (macOS)
 mise run launchd:down    # stop the launchd daemon and remove the plist
 mise run systemd:up      # install the systemd user unit and keep the daemon alive (Linux)

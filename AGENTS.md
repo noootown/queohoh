@@ -56,7 +56,8 @@ crates/qoo-tui/         The TUI — strictly layered, one-way data flow
 
 examples/               Example task definitions + reference skill (NOT read by
                         the daemon — copy into a workspace's tasks / skills dir)
-scripts/                daemon-ensure.sh: build + (re)start the daemon
+scripts/                daemon-ensure.sh (build + (re)start the daemon);
+                          mcp-register.sh (register MCP with claude/codex/grok)
 ```
 
 Dependency direction: `view → selectors → ipc/types`, `app/update → selectors`, side effects only in `event.rs`. TS side: `daemon → core`; the TUI depends on the wire shape only, never on TS code.
