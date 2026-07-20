@@ -20,7 +20,7 @@ use ratatui::widgets::{
 use crate::event::SessionChoice;
 use crate::hit::{ButtonKind, HitMap, HitTarget};
 use crate::ipc::types::{DefinitionSummary, TaskDefinition};
-use crate::markup::{fence_states, style_transcript_line, wrap_lines, LineCtx};
+use crate::markup::{fence_states, style_display_line, wrap_lines, LineCtx};
 use crate::selectors::{absolute_local_label, arg_summary, clip, filter_rows, pad_clip};
 use crate::view::modal::{render_button_row, DIALOG_WIDTH, MODAL_PADDING};
 use crate::view::theme::{
@@ -330,11 +330,7 @@ pub(crate) fn render_preview_markup(
             // the detail pane's `Line::from(" ")` for empty segments).
             let mut out = wrap_styled(prefix, w);
             for seg in wrap_lines(&lines, &ctxs, w) {
-                out.push(if seg.text.is_empty() {
-                    Line::from(" ")
-                } else {
-                    style_transcript_line(&seg.text, &seg.ctx, w as u16, &p)
-                });
+                out.push(style_display_line(&seg, w as u16, &p));
             }
             out
         },

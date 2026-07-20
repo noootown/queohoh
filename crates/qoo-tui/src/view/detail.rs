@@ -15,7 +15,8 @@ use crate::hit::{HitMap, HitTarget};
 use crate::ipc::types::{CatalogEntry, TaskDefinition, TaskInstance, TaskStatus};
 use crate::runfiles::RunMeta;
 use crate::markup::{
-    DisplayLine, LineCtx, fence_states, fence_states_from, style_transcript_line, wrap_lines,
+    DisplayLine, LineCtx, fence_states, fence_states_from, style_display_line,
+    wrap_lines,
 };
 use crate::selectors::arg_summary;
 use crate::view::Computed;
@@ -804,14 +805,10 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
     let mut styled: Vec<Line> = display[start..end]
         .iter()
         .map(|seg| {
-            // Only original fence-delimiter lines carry `Fence` ctx (continuations
-            // never do), so `style_transcript_line` regenerates a rule only for a
-            // real rule line — `text_width` sizes it clear of the scrollbar column.
-            let mut line = if seg.text.is_empty() {
-                Line::from(" ")
-            } else {
-                style_transcript_line(&seg.text, &seg.ctx, text_width, p)
-            };
+            // Table visual rows carry precomputed roles; fence rules still go
+            // through `style_transcript_line` via [`style_display_line`].
+            // `text_width` sizes fence rules clear of the scrollbar column.
+            let mut line = style_display_line(seg, text_width, p);
             if dimmed {
                 // Spotlight mute: flatten the markup colors while filtering.
                 for span in line.spans.iter_mut() {

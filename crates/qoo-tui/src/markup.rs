@@ -1,4 +1,4 @@
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -137,12 +137,41 @@ pub fn fence_states_from(lines: &[String], starts_in_fence: bool) -> Vec<LineCtx
 /// line, carrying the [`LineCtx`] it must be styled under. Continuation segments
 /// (everything after the first) keep their line's ctx so fenced syntax accents
 /// carry across the wrap.
+///
+/// Markdown table blocks are expanded at wrap time into column-aligned visual
+/// rows (juice.ai discuss); those carry [`DisplayLine::md_roles`] so paint does
+/// not re-split the laid-out text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayLine {
     pub text: String,
     pub ctx: LineCtx,
     /// `false` for the first segment of a logical line, `true` for the rest.
     pub is_continuation: bool,
+    /// Pre-parsed juice.ai-style roles for a laid-out table visual row. When
+    /// `Some`, [`style_display_line`] paints these instead of re-tokenizing
+    /// `text` (so column padding and gutters survive).
+    md_roles: Option<Vec<(String, SpanRole)>>,
+}
+
+impl DisplayLine {
+    fn plain(text: String, ctx: LineCtx, is_continuation: bool) -> Self {
+        Self {
+            text,
+            ctx,
+            is_continuation,
+            md_roles: None,
+        }
+    }
+
+    fn table_row(roles: Vec<(String, SpanRole)>) -> Self {
+        let text: String = roles.iter().map(|(s, _)| s.as_str()).collect();
+        Self {
+            text,
+            ctx: LineCtx::Text,
+            is_continuation: false,
+            md_roles: Some(roles),
+        }
+    }
 }
 
 /// Cell width of `s` (unicode-width, matching ratatui's own layout — control
@@ -208,37 +237,79 @@ pub fn slice_cells(text: &str, lo: usize, hi: usize) -> String {
 ///   including indentation); each continuation keeps the block's `Fenced` ctx.
 /// - Text lines word-wrap at spaces; a single token wider than `width` (URLs!)
 ///   hard-breaks. Continuations are flush-left.
+/// - Consecutive GFM table rows (`| … |`) in [`LineCtx::Text`] are laid out as a
+///   block (column-aligned, cells wrap within columns) — juice.ai discuss parity.
 pub fn wrap_lines(lines: &[String], ctxs: &[LineCtx], width: usize) -> Vec<DisplayLine> {
     let width = width.max(1);
     let mut out = Vec::with_capacity(lines.len());
-    for (line, ctx) in lines.iter().zip(ctxs.iter()) {
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = &lines[i];
+        let ctx = ctxs.get(i).cloned().unwrap_or(LineCtx::Text);
+
+        // Markdown table block: group consecutive Text table lines, then expand
+        // into column-aligned visual rows (may be more rows than source lines).
+        if matches!(ctx, LineCtx::Text) && is_md_table_line(line) {
+            let start = i;
+            i += 1;
+            while i < lines.len()
+                && matches!(ctxs.get(i), Some(LineCtx::Text) | None)
+                && is_md_table_line(&lines[i])
+            {
+                i += 1;
+            }
+            let block = &lines[start..i];
+            if block.len() >= 2 {
+                out.extend(layout_markdown_table(block, width));
+                continue;
+            }
+            // Lone pipe-ish line — fall through as ordinary text (i already past
+            // it; reprocess that single line below).
+            i = start;
+        }
+
         // Fence delimiters, lane-task rows (self-truncating in the styler), and
         // already-fitting/empty lines pass through as one segment. `str_width("")
         // == 0 <= width` folds the empty case in here.
-        if matches!(ctx, LineCtx::Fence { .. } | LineCtx::LaneTask { .. } | LineCtx::LaneHeader)
-            || str_width(line) <= width
+        if matches!(
+            ctx,
+            LineCtx::Fence { .. } | LineCtx::LaneTask { .. } | LineCtx::LaneHeader
+        ) || str_width(line) <= width
         {
-            out.push(DisplayLine { text: line.clone(), ctx: ctx.clone(), is_continuation: false });
+            out.push(DisplayLine::plain(line.clone(), ctx, false));
+            i += 1;
             continue;
         }
-        let pieces = match ctx {
+        let pieces = match &ctx {
             LineCtx::Fenced { .. } => hard_break(line, width),
             _ => word_wrap(line, width),
         };
-        for (i, text) in pieces.into_iter().enumerate() {
+        for (j, text) in pieces.into_iter().enumerate() {
             // A wrapped `key   value` row only has a key on its FIRST segment; the
             // continuation is pure value (word-wrap drops the alignment padding
             // too), so it must NOT re-color its first `key_col` chars as a key —
             // `key_col: 0` means "value column starts at 0". Every other ctx keeps
             // its styling across the wrap (fenced syntax, plain text).
-            let seg_ctx = match ctx {
-                LineCtx::Config { .. } if i > 0 => LineCtx::Config { key_col: 0 },
+            let seg_ctx = match &ctx {
+                LineCtx::Config { .. } if j > 0 => LineCtx::Config { key_col: 0 },
                 other => other.clone(),
             };
-            out.push(DisplayLine { text, ctx: seg_ctx, is_continuation: i > 0 });
+            out.push(DisplayLine::plain(text, seg_ctx, j > 0));
         }
+        i += 1;
     }
     out
+}
+
+/// Style a display segment: prefers precomputed table roles when present.
+pub fn style_display_line(seg: &DisplayLine, width: u16, p: &Palette) -> Line<'static> {
+    if let Some(roles) = &seg.md_roles {
+        return apply_jinja(spans_from_roles(roles.clone(), p), p);
+    }
+    if seg.text.is_empty() {
+        return Line::from(" ");
+    }
+    style_transcript_line(&seg.text, &seg.ctx, width, p)
 }
 
 /// Split `line` into pieces each at most `width` cells, breaking at cell
@@ -323,17 +394,13 @@ fn push_hard_broken(word: &str, width: usize, segs: &mut Vec<String>, cur: &mut 
 /// Style a transcript line given its precomputed [`LineCtx`]. Fence delimiters
 /// become horizontal rules (labeled with the language when opening); fenced
 /// content gets best-effort, line-local syntax accents; plain text delegates to
-/// [`style_line`]. `width` is the content width the rules are sized to (any
-/// overflow is clipped by the `Paragraph`).
+/// [`style_line`] (juice.ai discuss/chat markdown: markers stripped, violet
+/// headings / mint code / gold emphasis). `width` is the content width the rules
+/// are sized to (any overflow is clipped by the `Paragraph`).
 ///
-/// Rule precedence (nvim-treesitter-like): fence-delimiter RULES are pure and
-/// take no further styling. For every other line a `{{jinja}}` overlay
-/// ([`apply_jinja`]) is applied LAST, on top of whatever the base styler
-/// produced, so a placeholder is warn-yellow consistently in prose, inside
-/// inline `` `code` ``, and inside fenced blocks — outranking the inline-code
-/// green (rule 1 wins the placeholder span). Base styling within a text line is
-/// itself ordered whole-line rule (heading / hr) > leading list marker > inline
-/// tokens (bold > code > URL); see [`style_line`].
+/// Rule precedence: fence-delimiter RULES are pure chrome. For every other line
+/// a `{{jinja}}` overlay ([`apply_jinja`]) is applied LAST so placeholders stay
+/// warn-yellow over mint code / gold bold. See [`style_line`] for prose roles.
 pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette) -> Line<'static> {
     match ctx {
         LineCtx::Text => apply_jinja(style_line(line, p), p),
@@ -791,113 +858,782 @@ fn json_literal_at(rest: &str) -> Option<&'static str> {
     None
 }
 
-/// Style one detail-pane text line (port of markup.ts styleLine). Whole-line
-/// rules win first: headings (bold + magenta, `#` marks KEPT — nvim styles the
-/// whole line) and horizontal rules. Otherwise a leading list marker is accented
-/// (blue) and the remainder is tokenized into **bold** / `code` / URL spans with
-/// surrounding text plain. Returns an owned Line — always at least one span. The
-/// `{{jinja}}` overlay is applied by the caller ([`style_transcript_line`]), not
-/// here.
-pub fn style_line(line: &str, p: &Palette) -> Line<'static> {
-    if is_heading(line) {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(p.heading).add_modifier(Modifier::BOLD),
-        ));
-    }
-    if is_rule(line) {
-        // Border color, not the DIM modifier — grey-on-dark was unreadable, and
-        // it now matches the fenced-block rules.
-        return Line::from(Span::styled(line.to_string(), Style::default().fg(p.border)));
-    }
+// juice.ai discuss/chat markdown roles (`ColorProfile` fg_heading / fg_code /
+// fg_emph). Fixed so transcript prose matches the chat view regardless of which
+// qoo chrome theme is active.
+const MD_HEADING: Color = Color::Rgb(214, 158, 255); // #d69eff bright soft violet
+const MD_CODE: Color = Color::Rgb(126, 231, 168); // #7ee7a8 soft mint
+const MD_EMPH: Color = Color::Rgb(232, 201, 138); // #e8c98a soft gold (bold + italic)
 
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    // A leading list marker (`- ` / `* ` / `+ ` / `1. ` / `2) `) is accented; the
-    // item text after it tokenizes normally.
-    let mut start = 0usize;
-    if let Some((indent, marker_len)) = list_marker(line) {
-        if indent > 0 {
-            spans.push(Span::raw(line[..indent].to_string()));
-        }
-        spans.push(Span::styled(
-            line[indent..indent + marker_len].to_string(),
-            Style::default().fg(p.accent),
-        ));
-        start = indent + marker_len;
-    }
-    spans.extend(tokenize_inline(&line[start..], p));
-    if spans.is_empty() {
-        spans.push(Span::raw(line.to_string()));
-    }
-    Line::from(spans)
+/// Inline role after markdown markers are stripped (drives span paint).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpanRole {
+    Body,
+    Bold,
+    Italic,
+    Code,
+    Dim,
+    Heading,
+    /// URL — accent blue (queohoh extra; juice.ai chat has no URL role).
+    Link,
 }
 
-/// Tokenize inline markup in `text`, emitting **bold** / `code` / URL spans with
-/// surrounding runs raw. Returns `[]` for empty `text` (the caller supplies the
-/// empty-line fallback). Precedence per position mirrors [`match_token`]: bold >
-/// code > URL.
-fn tokenize_inline(text: &str, p: &Palette) -> Vec<Span<'static>> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut last = 0usize;
-    let mut i = 0usize;
-    while i < text.len() {
-        if !text.is_char_boundary(i) {
-            i += 1;
-            continue;
-        }
-        if let Some((end, span)) = match_token(text, i, p) {
-            if i > last {
-                spans.push(Span::raw(text[last..i].to_string()));
-            }
-            spans.push(span);
-            last = end;
-            i = end;
-        } else {
-            i += 1;
-        }
+fn style_for_role(role: SpanRole, p: &Palette) -> Style {
+    match role {
+        SpanRole::Body => Style::default(),
+        SpanRole::Bold => Style::default().fg(MD_EMPH).add_modifier(Modifier::BOLD),
+        SpanRole::Italic => Style::default().fg(MD_EMPH).add_modifier(Modifier::ITALIC),
+        SpanRole::Code => Style::default().fg(MD_CODE),
+        SpanRole::Dim => p.dim_style(),
+        SpanRole::Heading => Style::default().fg(MD_HEADING).add_modifier(Modifier::BOLD),
+        SpanRole::Link => Style::default().fg(p.accent),
     }
-    if last < text.len() {
-        spans.push(Span::raw(text[last..].to_string()));
+}
+
+fn spans_from_roles(roles: Vec<(String, SpanRole)>, p: &Palette) -> Line<'static> {
+    if roles.is_empty() {
+        return Line::from(Span::raw(String::new()));
+    }
+    Line::from(
+        roles
+            .into_iter()
+            .map(|(t, r)| Span::styled(t, style_for_role(r, p)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Style one detail-pane prose line — port of juice.ai `discuss` chat markdown
+/// (`display_spans_for_line` + `parse_inline`). Markers are stripped; headings
+/// are violet, emphasis gold, inline code mint; lists use a dim `• `; GFM table
+/// rows paint dim gutters. The `{{jinja}}` overlay is applied by the caller
+/// ([`style_transcript_line`]), not here.
+pub fn style_line(line: &str, p: &Palette) -> Line<'static> {
+    if line.is_empty() {
+        return Line::from(Span::raw(String::new()));
+    }
+    if is_rule(line) {
+        // Border color — matches fenced-block rules.
+        return Line::from(Span::styled(line.to_string(), Style::default().fg(p.border)));
+    }
+    if is_heading_line(line.trim_start()) {
+        let body = strip_heading_marker(line);
+        let roles = parse_inline(body)
+            .into_iter()
+            .map(|(s, role)| {
+                let r = match role {
+                    SpanRole::Code | SpanRole::Link => role,
+                    _ => SpanRole::Heading,
+                };
+                (s, r)
+            })
+            .collect();
+        return spans_from_roles(roles, p);
+    }
+    if is_md_table_line(line) {
+        return spans_from_roles(style_table_row_roles(line), p);
+    }
+    if is_quote_line(line.trim_start()) {
+        return spans_from_roles(style_quote_roles(line), p);
+    }
+    if is_list_line(line.trim_start()) {
+        return spans_from_roles(style_list_roles(line), p);
+    }
+    spans_from_roles(parse_inline(line), p)
+}
+
+fn style_list_roles(line: &str) -> Vec<(String, SpanRole)> {
+    let t = line.trim_start();
+    let lead_n = line.len() - t.len();
+    let lead = " ".repeat(lead_n);
+    let body = strip_list_marker(t);
+    let mut spans = Vec::new();
+    if lead_n > 0 {
+        spans.push((lead, SpanRole::Body));
+    }
+    spans.push(("• ".into(), SpanRole::Dim));
+    spans.extend(parse_inline(&body));
+    spans
+}
+
+fn style_quote_roles(line: &str) -> Vec<(String, SpanRole)> {
+    let t = line.trim_start();
+    let lead_n = line.len() - t.len();
+    let lead = " ".repeat(lead_n);
+    let body = t
+        .strip_prefix("> ")
+        .or_else(|| t.strip_prefix('>'))
+        .unwrap_or(t);
+    let mut spans = Vec::new();
+    if lead_n > 0 {
+        spans.push((lead, SpanRole::Dim));
+    }
+    spans.push(("│ ".into(), SpanRole::Dim));
+    for (s, role) in parse_inline(body) {
+        let r = match role {
+            SpanRole::Bold | SpanRole::Italic | SpanRole::Code | SpanRole::Link => role,
+            _ => SpanRole::Dim,
+        };
+        spans.push((s, r));
     }
     spans
 }
 
-/// `^#{1,6}\s` — 1–6 hashes followed by ≥1 whitespace. 7+ hashes or no
-/// whitespace after the markers → not a heading. (The text is NOT stripped:
-/// callers style the whole line including the `#` marks.)
-fn is_heading(line: &str) -> bool {
-    let hashes = line.bytes().take_while(|&b| b == b'#').count();
-    if !(1..=6).contains(&hashes) {
-        return false;
+/// Style a lone GFM table line (block layout already handled in [`wrap_lines`]).
+fn style_table_row_roles(line: &str) -> Vec<(String, SpanRole)> {
+    if is_md_table_sep(line) {
+        let cells = split_table_cells(line.trim());
+        let mut spans = Vec::new();
+        for (c, cell) in cells.iter().enumerate() {
+            if c > 0 {
+                spans.push(("─┼─".into(), SpanRole::Dim));
+            }
+            let w = cell.chars().filter(|ch| *ch == '-').count().max(3);
+            spans.push(("─".repeat(w), SpanRole::Dim));
+        }
+        if spans.is_empty() {
+            spans.push(("───".into(), SpanRole::Dim));
+        }
+        return spans;
     }
-    line[hashes..]
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_whitespace())
+    let cells = split_table_cells(line.trim());
+    if cells.is_empty() {
+        return parse_inline(line);
+    }
+    let mut spans = Vec::new();
+    for (c, cell) in cells.iter().enumerate() {
+        if c > 0 {
+            spans.push((" │ ".into(), SpanRole::Dim));
+        }
+        let cell_spans = parse_inline(cell);
+        if cell_spans.is_empty() {
+            spans.push((String::new(), SpanRole::Body));
+        } else {
+            spans.extend(cell_spans);
+        }
+    }
+    spans
 }
 
-/// Leading list marker on a (possibly indented) line, as byte lengths
-/// `(indent, marker)` where `marker` excludes the trailing whitespace. Bullets
-/// are `-` / `*` / `+` followed by whitespace (or end of line); ordered markers
-/// are a digit run then `.` or `)` then whitespace (or end of line). `None` when
-/// the line does not start with a marker. (`*` followed by `*` is left for the
-/// bold tokenizer, not read as a bullet.)
-fn list_marker(line: &str) -> Option<(usize, usize)> {
-    let indent = line.len() - line.trim_start().len();
-    let b = line.as_bytes();
-    let rest = &b[indent..];
-    if rest.is_empty() {
-        return None;
+/// Lay out a GFM table block as a **Grok-style full grid**: outer border, per-row
+/// and per-column rules (`┌─┬─┐` / `│ │` / `├─┼─┤` / `└─┴─┘`). Markdown
+/// separator rows (`|---|`) only mark the header; they are not painted as content.
+fn layout_markdown_table(block: &[String], width: usize) -> Vec<DisplayLine> {
+    if width == 0 || block.is_empty() {
+        return Vec::new();
     }
-    if matches!(rest[0], b'-' | b'*' | b'+') {
-        return (rest.len() == 1 || rest[1].is_ascii_whitespace()).then_some((indent, 1));
-    }
-    let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
-    if digits > 0 && digits < rest.len() && matches!(rest[digits], b'.' | b')') {
-        let marker = digits + 1;
-        if marker == rest.len() || rest[marker].is_ascii_whitespace() {
-            return Some((indent, marker));
+
+    let mut raw: Vec<(bool, Vec<String>)> = Vec::new(); // (is_sep, cells)
+    for line in block {
+        let cells = split_table_cells(line);
+        if cells.iter().all(|c| c.is_empty()) {
+            continue;
         }
+        raw.push((is_md_table_sep(line), cells));
+    }
+    if raw.is_empty() {
+        return Vec::new();
+    }
+
+    // Header = first row when the second is a GFM separator.
+    let has_header = raw.len() >= 2 && raw[1].0;
+    // Drop separator rows — borders replace them.
+    let data_rows: Vec<Vec<String>> = raw
+        .into_iter()
+        .filter(|(is_sep, _)| !*is_sep)
+        .map(|(_, cells)| cells)
+        .collect();
+    if data_rows.is_empty() {
+        return Vec::new();
+    }
+
+    let ncols = data_rows.iter().map(|c| c.len()).max().unwrap_or(0).max(1);
+    let mut data_rows = data_rows;
+    for cells in &mut data_rows {
+        cells.resize(ncols, String::new());
+    }
+
+    // Natural column widths (display width after stripping inline markers).
+    // 1-char left+right padding inside each cell (Grok-like breathing room).
+    const CELL_PAD: usize = 1; // space each side of content
+    let mut col_w = vec![1usize; ncols];
+    for cells in &data_rows {
+        for (c, cell) in cells.iter().enumerate() {
+            col_w[c] = col_w[c].max(table_cell_plain_width(cell).max(1));
+        }
+    }
+
+    // Fit: content cols + vertical borders (ncols + 1) + 2*pad per column.
+    // Line shape: `│` + pad + content*w + pad + `│` + … + `│`
+    // total = sum(col_w) + ncols * (2 * CELL_PAD) + (ncols + 1)
+    let border_budget = ncols + 1 + ncols * (2 * CELL_PAD);
+    let avail = width.saturating_sub(border_budget).max(ncols);
+    let mut total: usize = col_w.iter().sum();
+    while total > avail {
+        let Some((idx, _)) = col_w
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| **w > 1)
+            .max_by_key(|(_, w)| *w)
+        else {
+            break;
+        };
+        col_w[idx] -= 1;
+        total -= 1;
+    }
+
+    // Pre-wrap every data row's cells.
+    let mut wrapped_rows: Vec<(bool, Vec<Vec<Vec<(String, SpanRole)>>>)> =
+        Vec::with_capacity(data_rows.len());
+    for (ri, cells) in data_rows.iter().enumerate() {
+        let header_row = has_header && ri == 0;
+        let mut wrapped_cells: Vec<Vec<Vec<(String, SpanRole)>>> = Vec::with_capacity(ncols);
+        for (c, cell) in cells.iter().enumerate() {
+            let mut cell_spans = parse_inline(cell);
+            if header_row {
+                // Grok headers: bold body (not violet) — code/links keep their roles.
+                cell_spans = cell_spans
+                    .into_iter()
+                    .map(|(s, role)| {
+                        let r = match role {
+                            SpanRole::Code | SpanRole::Link => role,
+                            _ => SpanRole::Bold,
+                        };
+                        (s, r)
+                    })
+                    .collect();
+            }
+            wrapped_cells.push(wrap_roles_to_width(&cell_spans, col_w[c].max(1)));
+        }
+        wrapped_rows.push((header_row, wrapped_cells));
+    }
+
+    let mut out = Vec::new();
+    out.push(DisplayLine::table_row(box_rule(&col_w, BoxRule::Top)));
+
+    for (ri, (_header_row, wrapped_cells)) in wrapped_rows.iter().enumerate() {
+        let row_h = wrapped_cells
+            .iter()
+            .map(|lines| lines.len())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+
+        for line_i in 0..row_h {
+            let mut spans: Vec<(String, SpanRole)> = Vec::new();
+            spans.push(("│".into(), SpanRole::Dim));
+            for c in 0..ncols {
+                // left pad
+                spans.push((" ".repeat(CELL_PAD), SpanRole::Body));
+                let w = col_w[c];
+                let mut line_spans = wrapped_cells[c]
+                    .get(line_i)
+                    .cloned()
+                    .unwrap_or_else(|| vec![(String::new(), SpanRole::Body)]);
+                if line_spans.len() == 1 && line_spans[0].0.is_empty() {
+                    line_spans = vec![(String::new(), SpanRole::Body)];
+                }
+                let pw = str_width(&roles_plain(&line_spans));
+                if pw < w {
+                    line_spans.push((" ".repeat(w - pw), SpanRole::Body));
+                } else if pw > w {
+                    // Safety: hard-clip plain width if wrap under-shot.
+                    line_spans = clip_roles_to_width(line_spans, w);
+                }
+                spans.extend(line_spans);
+                // right pad
+                spans.push((" ".repeat(CELL_PAD), SpanRole::Body));
+                spans.push(("│".into(), SpanRole::Dim));
+            }
+            out.push(DisplayLine::table_row(spans));
+        }
+
+        if ri + 1 < wrapped_rows.len() {
+            out.push(DisplayLine::table_row(box_rule(&col_w, BoxRule::Mid)));
+        }
+    }
+
+    out.push(DisplayLine::table_row(box_rule(&col_w, BoxRule::Bottom)));
+    out
+}
+
+#[derive(Clone, Copy)]
+enum BoxRule {
+    Top,
+    Mid,
+    Bottom,
+}
+
+/// Horizontal rule for the Grok-style grid (`┌─┬─┐` / `├─┼─┤` / `└─┴─┘`).
+/// Interior segment width = col_w + 2*pad (matches content lines).
+fn box_rule(col_w: &[usize], kind: BoxRule) -> Vec<(String, SpanRole)> {
+    const CELL_PAD: usize = 1;
+    let (left, mid, right, fill) = match kind {
+        BoxRule::Top => ('┌', '┬', '┐', '─'),
+        BoxRule::Mid => ('├', '┼', '┤', '─'),
+        BoxRule::Bottom => ('└', '┴', '┘', '─'),
+    };
+    let mut spans = Vec::new();
+    spans.push((left.to_string(), SpanRole::Dim));
+    for (c, &w) in col_w.iter().enumerate() {
+        let seg = w + 2 * CELL_PAD;
+        spans.push((fill.to_string().repeat(seg), SpanRole::Dim));
+        spans.push((
+            if c + 1 < col_w.len() {
+                mid.to_string()
+            } else {
+                right.to_string()
+            },
+            SpanRole::Dim,
+        ));
+    }
+    spans
+}
+
+/// Hard-clip role spans to `width` display cells (last resort).
+fn clip_roles_to_width(
+    spans: Vec<(String, SpanRole)>,
+    width: usize,
+) -> Vec<(String, SpanRole)> {
+    if width == 0 {
+        return vec![(String::new(), SpanRole::Body)];
+    }
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for (text, role) in spans {
+        if used >= width {
+            break;
+        }
+        let mut chunk = String::new();
+        for ch in text.chars() {
+            let cw = char_width(ch);
+            if used + cw > width {
+                break;
+            }
+            chunk.push(ch);
+            used += cw;
+        }
+        if !chunk.is_empty() {
+            out.push((chunk, role));
+        }
+    }
+    if out.is_empty() {
+        out.push((String::new(), SpanRole::Body));
+    }
+    // Pad if we clipped short (e.g. wide char refused).
+    let pw = str_width(&roles_plain(&out));
+    if pw < width {
+        out.push((" ".repeat(width - pw), SpanRole::Body));
+    }
+    out
+}
+
+fn table_cell_plain_width(cell: &str) -> usize {
+    str_width(&roles_plain(&parse_inline(cell)))
+}
+
+fn roles_plain(spans: &[(String, SpanRole)]) -> String {
+    spans.iter().map(|(s, _)| s.as_str()).collect()
+}
+
+/// Word-wrap role spans to `width` cells (roles preserved across breaks).
+fn wrap_roles_to_width(spans: &[(String, SpanRole)], width: usize) -> Vec<Vec<(String, SpanRole)>> {
+    if width == 0 {
+        return vec![vec![(String::new(), SpanRole::Body)]];
+    }
+    let plain = roles_plain(spans);
+    if plain.is_empty() {
+        return vec![spans.to_vec()];
+    }
+    if str_width(&plain) <= width {
+        return vec![spans.to_vec()];
+    }
+
+    // Flatten to (char, role), then greedy word-wrap.
+    let mut chars: Vec<(char, SpanRole)> = Vec::new();
+    for (text, role) in spans {
+        for ch in text.chars() {
+            chars.push((ch, *role));
+        }
+    }
+
+    let mut rows: Vec<Vec<(String, SpanRole)>> = Vec::new();
+    let mut rest: &[(char, SpanRole)] = &chars;
+    while !rest.is_empty() {
+        let (line_chars, next) = take_wrapped_role_chars(rest, width);
+        rest = next;
+        rows.push(coalesce_role_chars(&line_chars));
+    }
+    if rows.is_empty() {
+        rows.push(vec![(String::new(), SpanRole::Body)]);
+    }
+    rows
+}
+
+fn take_wrapped_role_chars(
+    chars: &[(char, SpanRole)],
+    max_cols: usize,
+) -> (Vec<(char, SpanRole)>, &[(char, SpanRole)]) {
+    if chars.is_empty() || max_cols == 0 {
+        return (Vec::new(), chars);
+    }
+    let total_w: usize = chars.iter().map(|(ch, _)| char_width(*ch)).sum();
+    if total_w <= max_cols {
+        return (chars.to_vec(), &[]);
+    }
+
+    let mut cols = 0usize;
+    let mut last_ws: Option<usize> = None;
+    let mut end_idx = chars.len();
+    for (i, (ch, _)) in chars.iter().enumerate() {
+        let cw = char_width(*ch);
+        if cols + cw > max_cols {
+            end_idx = i;
+            break;
+        }
+        if ch.is_whitespace() {
+            last_ws = Some(i);
+        }
+        cols += cw;
+    }
+
+    if let Some(ws) = last_ws {
+        if ws > 0 {
+            let line = chars[..ws].to_vec();
+            let mut rest = &chars[ws..];
+            while let Some((c, _)) = rest.first() {
+                if c.is_whitespace() {
+                    rest = &rest[1..];
+                } else {
+                    break;
+                }
+            }
+            return (line, rest);
+        }
+    }
+    if end_idx == 0 {
+        end_idx = 1; // force at least one char
+    }
+    (chars[..end_idx].to_vec(), &chars[end_idx..])
+}
+
+fn coalesce_role_chars(chars: &[(char, SpanRole)]) -> Vec<(String, SpanRole)> {
+    let mut out: Vec<(String, SpanRole)> = Vec::new();
+    for &(ch, role) in chars {
+        if let Some((s, r)) = out.last_mut() {
+            if *r == role {
+                s.push(ch);
+                continue;
+            }
+        }
+        out.push((ch.to_string(), role));
+    }
+    if out.is_empty() {
+        out.push((String::new(), SpanRole::Body));
+    }
+    out
+}
+
+/// True when a line looks like a GFM table row (`| a | b |` or `a | b`).
+fn is_md_table_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() || !t.contains('|') {
+        return false;
+    }
+    if t.chars().all(|c| c == '|' || c.is_whitespace()) {
+        return true;
+    }
+    if t.starts_with('|') {
+        return true;
+    }
+    split_table_cells(t).len() >= 2
+}
+
+/// Separator row: only dashes/colons/spaces in every cell (`|---|:---:|`).
+fn is_md_table_sep(line: &str) -> bool {
+    let cells = split_table_cells(line.trim());
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            !c.is_empty()
+                && c.chars().all(|ch| matches!(ch, '-' | ':' | ' '))
+                && c.chars().any(|ch| ch == '-')
+        })
+}
+
+fn split_table_cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let mut s = t;
+    if let Some(r) = s.strip_prefix('|') {
+        s = r;
+    }
+    if let Some(r) = s.strip_suffix('|') {
+        s = r;
+    }
+    s.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+fn is_heading_line(t: &str) -> bool {
+    let b = t.as_bytes();
+    if b.is_empty() || b[0] != b'#' {
+        return false;
+    }
+    let mut i = 0usize;
+    while i < b.len() && b[i] == b'#' {
+        i += 1;
+    }
+    // ATX headings: 1–6 hashes, then space or end.
+    i >= 1 && i <= 6 && (i == b.len() || b[i] == b' ')
+}
+
+fn is_list_line(t: &str) -> bool {
+    if t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") {
+        return true;
+    }
+    // `*` alone as bullet (space required in juice; keep +/`- ` strict).
+    let bytes = t.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    i > 0 && (t[i..].starts_with(". ") || t[i..].starts_with(") "))
+}
+
+fn is_quote_line(t: &str) -> bool {
+    t.starts_with("> ") || t == ">"
+}
+
+/// Strip leading `#+\s*` from a heading line (display text only).
+fn strip_heading_marker(line: &str) -> &str {
+    let t = line.trim_start();
+    let mut i = 0usize;
+    let b = t.as_bytes();
+    while i < b.len() && b[i] == b'#' {
+        i += 1;
+    }
+    if i == 0 {
+        return t;
+    }
+    if i < b.len() && b[i] == b' ' {
+        i += 1;
+    }
+    &t[i..]
+}
+
+/// Strip `- ` / `* ` / `+ ` / `N. ` / `N) ` from a list line (already trim_start'd).
+fn strip_list_marker(t: &str) -> String {
+    if let Some(rest) = t
+        .strip_prefix("- ")
+        .or_else(|| t.strip_prefix("* "))
+        .or_else(|| t.strip_prefix("+ "))
+    {
+        return rest.to_string();
+    }
+    let bytes = t.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 {
+        if t[i..].starts_with(". ") {
+            return t[i + 2..].to_string();
+        }
+        if t[i..].starts_with(") ") {
+            return t[i + 2..].to_string();
+        }
+    }
+    t.to_string()
+}
+
+/// Span-level parse of inline markdown. Markers are stripped.
+///
+/// Supports:
+/// - `` `code` ``
+/// - `**bold**` / `__bold__`
+/// - `*italic*` / `_italic_`
+/// - `http(s)://…` URLs (queohoh extra)
+///
+/// Bold/italic interiors are re-parsed so nested `` `code` `` still strips
+/// (common LLM pattern: `` **`col` vs `other`** ``). Port of juice.ai
+/// `discuss::parse_inline`.
+fn parse_inline(s: &str) -> Vec<(String, SpanRole)> {
+    let mut out: Vec<(String, SpanRole)> = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    let mut plain = String::new();
+
+    let flush_plain = |plain: &mut String, out: &mut Vec<(String, SpanRole)>| {
+        if !plain.is_empty() {
+            // Scan flushed plain for URLs so links still paint accent blue.
+            out.extend(split_urls(std::mem::take(plain)));
+        }
+    };
+
+    while i < s.len() {
+        // Inline code: `...` (prefer before * so `*_usd` stays one code span).
+        if bytes[i] == b'`' {
+            if let Some(end) = s[i + 1..].find('`').map(|o| i + 1 + o) {
+                flush_plain(&mut plain, &mut out);
+                out.push((s[i + 1..end].to_string(), SpanRole::Code));
+                i = end + 1;
+                continue;
+            }
+            // Unmatched opener — drop the stray backtick rather than show it.
+            i += 1;
+            continue;
+        }
+        // Bold: **...**
+        if bytes[i] == b'*' && i + 1 < s.len() && bytes[i + 1] == b'*' {
+            if let Some(rel) = s[i + 2..].find("**") {
+                let end = i + 2 + rel;
+                flush_plain(&mut plain, &mut out);
+                extend_emphasis(&mut out, &s[i + 2..end], SpanRole::Bold);
+                i = end + 2;
+                continue;
+            }
+            // Unmatched `**` — drop both stars so they don't paint.
+            i += 2;
+            continue;
+        }
+        // Bold: __...__
+        if bytes[i] == b'_' && i + 1 < s.len() && bytes[i + 1] == b'_' {
+            if let Some(rel) = s[i + 2..].find("__") {
+                let end = i + 2 + rel;
+                flush_plain(&mut plain, &mut out);
+                extend_emphasis(&mut out, &s[i + 2..end], SpanRole::Bold);
+                i = end + 2;
+                continue;
+            }
+            i += 2;
+            continue;
+        }
+        // Italic: *...* (not **)
+        if bytes[i] == b'*' && (i + 1 >= s.len() || bytes[i + 1] != b'*') {
+            if let Some(end) = find_italic_close(s, i + 1, b'*') {
+                flush_plain(&mut plain, &mut out);
+                extend_emphasis(&mut out, &s[i + 1..end], SpanRole::Italic);
+                i = end + 1;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        // Italic: _..._ (not __). Skip mid-identifier `_` so snake_case like
+        // `usd_exchange_rate` stays intact (only boundary-flanked _italic_).
+        if bytes[i] == b'_' && (i + 1 >= s.len() || bytes[i + 1] != b'_') {
+            let prev_word = i > 0
+                && s[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric());
+            if !prev_word {
+                if let Some(end) = find_italic_close(s, i + 1, b'_') {
+                    let next_word = s[end + 1..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphanumeric());
+                    if !next_word {
+                        flush_plain(&mut plain, &mut out);
+                        extend_emphasis(&mut out, &s[i + 1..end], SpanRole::Italic);
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+            // Mid-word or unmatched: keep the underscore as plain text.
+            plain.push('_');
+            i += 1;
+            continue;
+        }
+        let ch = s[i..].chars().next().unwrap();
+        plain.push(ch);
+        i += ch.len_utf8();
+    }
+    flush_plain(&mut plain, &mut out);
+    if out.is_empty() {
+        out.push((String::new(), SpanRole::Body));
+    }
+    out
+}
+
+/// Split plain text into Body / Link spans on http(s) URLs.
+fn split_urls(s: String) -> Vec<(String, SpanRole)> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut rest = s.as_str();
+    while !rest.is_empty() {
+        let https = rest.find("https://");
+        let http = rest.find("http://");
+        let start = match (https, http) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        let Some(start) = start else {
+            out.push((rest.to_string(), SpanRole::Body));
+            break;
+        };
+        if start > 0 {
+            out.push((rest[..start].to_string(), SpanRole::Body));
+        }
+        let url_rest = &rest[start..];
+        let scheme_len = if url_rest.starts_with("https://") { 8 } else { 7 };
+        let stop = url_rest
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '>' | ']' | '"' | '\''))
+            .unwrap_or(url_rest.len());
+        if stop > scheme_len {
+            out.push((url_rest[..stop].to_string(), SpanRole::Link));
+            rest = &url_rest[stop..];
+        } else {
+            // scheme-only / no host — keep from the scheme onward as body.
+            out.push((url_rest.to_string(), SpanRole::Body));
+            break;
+        }
+    }
+    out
+}
+
+/// Re-parse emphasis interior so nested `` `code` `` / markers still strip.
+fn extend_emphasis(out: &mut Vec<(String, SpanRole)>, inner: &str, outer: SpanRole) {
+    if inner.is_empty() {
+        return;
+    }
+    for (text, role) in parse_inline(inner) {
+        if text.is_empty() {
+            continue;
+        }
+        let r = match role {
+            SpanRole::Body => outer,
+            other => other,
+        };
+        out.push((text, r));
+    }
+}
+
+/// Find closing italic marker at `delim` that is not doubled (not `**` / `__`).
+fn find_italic_close(s: &str, from: usize, delim: u8) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut j = from;
+    while j < bytes.len() {
+        if bytes[j] == delim {
+            let doubled = j + 1 < bytes.len() && bytes[j + 1] == delim;
+            if !doubled {
+                if j > from {
+                    return Some(j);
+                }
+            } else {
+                j += 2;
+                continue;
+            }
+        }
+        if bytes[j] == b'`' {
+            if let Some(end) = s[j + 1..].find('`').map(|o| j + 1 + o) {
+                j = end + 1;
+                continue;
+            }
+        }
+        j += 1;
     }
     None
 }
@@ -905,56 +1641,6 @@ fn list_marker(line: &str) -> Option<(usize, usize)> {
 /// `^---+$` — three or more dashes, nothing else.
 fn is_rule(line: &str) -> bool {
     line.len() >= 3 && line.bytes().all(|b| b == b'-')
-}
-
-/// Try to match an inline token starting exactly at byte `i`. Precedence order
-/// mirrors the TS alternation: **bold**, then `code`, then URL.
-fn match_token(line: &str, i: usize, p: &Palette) -> Option<(usize, Span<'static>)> {
-    let rest = &line[i..];
-    // \*\*[^*]+\*\* — star-free, non-empty content between double stars
-    if let Some(inner) = rest.strip_prefix("**")
-        && let Some(close) = inner.find("**")
-    {
-        let content = &inner[..close];
-        if !content.is_empty() && !content.contains('*') {
-            let end = i + 2 + close + 2;
-            return Some((
-                end,
-                Span::styled(
-                    content.to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ));
-        }
-    }
-    // `[^`]+` — non-empty content between backticks
-    if let Some(inner) = rest.strip_prefix('`')
-        && let Some(close) = inner.find('`')
-        && close > 0
-    {
-        let content = &inner[..close];
-        let end = i + 1 + close + 1;
-        // Green (nvim renders inline code like `git status --porcelain` green);
-        // a `{{jinja}}` inside overrides to yellow via the caller's overlay.
-        return Some((end, Span::styled(content.to_string(), Style::default().fg(p.ok))));
-    }
-    // https?://[^\s)>\]"']+ — the `+` requires >=1 host char after the scheme.
-    let scheme_len = if rest.starts_with("https://") {
-        Some(8)
-    } else if rest.starts_with("http://") {
-        Some(7)
-    } else {
-        None
-    };
-    if let Some(scheme_len) = scheme_len {
-        let stop = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '>' | ']' | '"' | '\''))
-            .unwrap_or(rest.len());
-        if stop > scheme_len {
-            return Some((i + stop, Span::styled(rest[..stop].to_string(), Style::default().fg(p.accent))));
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -992,7 +1678,7 @@ mod tests {
     }
 
     fn bold() -> Style {
-        Style::default().add_modifier(Modifier::BOLD)
+        Style::default().fg(MD_EMPH).add_modifier(Modifier::BOLD)
     }
     fn plain() -> Style {
         Style::default()
@@ -1000,11 +1686,11 @@ mod tests {
     fn rule(p: &Palette) -> Style {
         Style::default().fg(p.border)
     }
-    fn code(p: &Palette) -> Style {
-        Style::default().fg(p.ok)
+    fn code() -> Style {
+        Style::default().fg(MD_CODE)
     }
-    fn heading(p: &Palette) -> Style {
-        Style::default().fg(p.heading).add_modifier(Modifier::BOLD)
+    fn heading() -> Style {
+        Style::default().fg(MD_HEADING).add_modifier(Modifier::BOLD)
     }
     fn link(p: &Palette) -> Style {
         Style::default().fg(p.accent)
@@ -1021,17 +1707,23 @@ mod tests {
     fn mauve(p: &Palette) -> Style {
         Style::default().fg(p.mauve)
     }
+    fn joined(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
 
     #[test]
-    fn styles_headings_bold_magenta_keeping_markers() {
+    fn styles_headings_violet_and_strips_markers() {
         let p = Palette::default();
-        // Whole line (including the `#` marks) is bold + magenta — nvim styles both.
-        assert_eq!(parts(&style_line("## Findings", &p)), vec![("## Findings".into(), heading(&p))]);
-        assert_eq!(parts(&style_line("# Title", &p)), vec![("# Title".into(), heading(&p))]);
-        assert_eq!(parts(&style_line("### Deep", &p)), vec![("### Deep".into(), heading(&p))]);
-        // 1–6 hashes are all headings now.
-        assert_eq!(parts(&style_line("#### Four", &p)), vec![("#### Four".into(), heading(&p))]);
-        assert_eq!(parts(&style_line("###### Six", &p)), vec![("###### Six".into(), heading(&p))]);
+        // juice.ai discuss: strip `#` marks; paint body in violet+bold.
+        assert_eq!(parts(&style_line("## Findings", &p)), vec![("Findings".into(), heading())]);
+        assert_eq!(parts(&style_line("# Title", &p)), vec![("Title".into(), heading())]);
+        assert_eq!(parts(&style_line("### Deep", &p)), vec![("Deep".into(), heading())]);
+        assert_eq!(parts(&style_line("#### Four", &p)), vec![("Four".into(), heading())]);
+        assert_eq!(parts(&style_line("###### Six", &p)), vec![("Six".into(), heading())]);
+        // Nested code inside a heading stays mint.
+        let got = parts(&style_line("### Tool: `Bash`", &p));
+        assert_eq!(joined(&style_line("### Tool: `Bash`", &p)), "Tool: Bash");
+        assert!(got.iter().any(|(t, s)| t == "Bash" && *s == code()));
     }
 
     #[test]
@@ -1059,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn bolds_double_star_spans_and_strips_markers() {
+    fn bolds_double_star_spans_gold_and_strips_markers() {
         let p = Palette::default();
         assert_eq!(
             parts(&style_line("see **Full report:** here", &p)),
@@ -1072,13 +1764,13 @@ mod tests {
     }
 
     #[test]
-    fn colors_inline_code_green_and_strips_backticks() {
+    fn colors_inline_code_mint_and_strips_backticks() {
         let p = Palette::default();
         assert_eq!(
             parts(&style_line("call `foo.py:275` now", &p)),
             vec![
                 ("call ".into(), plain()),
-                ("foo.py:275".into(), code(&p)),
+                ("foo.py:275".into(), code()),
                 (" now".into(), plain()),
             ]
         );
@@ -1105,7 +1797,7 @@ mod tests {
             vec![
                 ("Full report:".into(), bold()),
                 (" ".into(), plain()),
-                ("pr.md".into(), code(&p)),
+                ("pr.md".into(), code()),
                 (" at ".into(), plain()),
                 ("https://x.io".into(), link(&p)),
             ]
@@ -1114,22 +1806,25 @@ mod tests {
 
     #[test]
     fn scheme_only_urls_stay_plain() {
-        // TS `https?:\/\/[^\s)>\]"']+` requires >=1 host char after `//`.
         let p = Palette::default();
-        assert_eq!(
-            parts(&style_line("see http:// done", &p)),
-            vec![("see http:// done".into(), plain())]
-        );
-        assert_eq!(parts(&style_line("https://", &p)), vec![("https://".into(), plain())]);
-        assert_eq!(parts(&style_line("http://)", &p)), vec![("http://)".into(), plain())]);
+        for s in ["see http:// done", "https://", "http://)"] {
+            let line = style_line(s, &p);
+            assert_eq!(joined(&line), s);
+            assert!(
+                parts(&line).iter().all(|(_, st)| *st == plain()),
+                "scheme-only must stay plain body, got {:?}",
+                parts(&line)
+            );
+        }
     }
 
     #[test]
-    fn unclosed_bold_stays_plain() {
+    fn unclosed_bold_drops_markers() {
+        // juice.ai: unmatched `**` is dropped rather than painted.
         let p = Palette::default();
         assert_eq!(
             parts(&style_line("a **b never closes", &p)),
-            vec![("a **b never closes".into(), plain())]
+            vec![("a b never closes".into(), plain())]
         );
     }
 
@@ -1137,6 +1832,39 @@ mod tests {
     fn returns_one_segment_for_an_empty_line() {
         let p = Palette::default();
         assert_eq!(parts(&style_line("", &p)), vec![("".into(), plain())]);
+    }
+
+    #[test]
+    fn italic_strips_markers_and_uses_gold() {
+        let p = Palette::default();
+        let italic = Style::default().fg(MD_EMPH).add_modifier(Modifier::ITALIC);
+        assert_eq!(
+            parts(&style_line("the *inverse* of", &p)),
+            vec![
+                ("the ".into(), plain()),
+                ("inverse".into(), italic),
+                (" of".into(), plain()),
+            ]
+        );
+        // Underscore italic only at word boundaries — snake_case stays intact.
+        assert_eq!(joined(&style_line("usd_exchange_rate", &p)), "usd_exchange_rate");
+        assert_eq!(
+            parts(&style_line("the _inverse_ of", &p)),
+            vec![
+                ("the ".into(), plain()),
+                ("inverse".into(), italic),
+                (" of".into(), plain()),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_code_inside_bold() {
+        let p = Palette::default();
+        assert_eq!(joined(&style_line("**`col` vs `other`**", &p)), "col vs other");
+        let got = parts(&style_line("**`col` vs `other`**", &p));
+        assert!(got.iter().any(|(t, s)| t == "col" && *s == code()));
+        assert!(got.iter().any(|(t, s)| t == "other" && *s == code()));
     }
 
     // ---- jinja overlay (applied by style_transcript_line) ------------------
@@ -1161,15 +1889,15 @@ mod tests {
     }
 
     #[test]
-    fn jinja_inside_inline_code_overrides_green_to_warn() {
+    fn jinja_inside_inline_code_overrides_mint_to_warn() {
         let p = Palette::default();
-        // The code span is green; the placeholder within it is re-colored yellow.
+        // The code span is mint; the placeholder within it is re-colored yellow.
         assert_eq!(
             text("run `{{cmd}} x`", &p),
             vec![
                 ("run ".into(), plain()),
                 ("{{cmd}}".into(), warn(&p)),
-                (" x".into(), ok(&p)),
+                (" x".into(), code()),
             ]
         );
     }
@@ -1216,33 +1944,33 @@ mod tests {
     // ---- list markers ------------------------------------------------------
 
     #[test]
-    fn bullet_marker_is_accent_text_normal() {
+    fn bullet_marker_is_dim_bullet_glyph() {
         let p = Palette::default();
+        // juice.ai: strip `- `/`* ` and paint a dim `• `.
         assert_eq!(
             parts(&style_line("- item one", &p)),
-            vec![("-".into(), accent(&p)), (" item one".into(), plain())]
+            vec![("• ".into(), dim(&p)), ("item one".into(), plain())]
         );
-        // Indented bullet keeps the indent plain, marker accented.
         assert_eq!(
             parts(&style_line("  * nested", &p)),
             vec![
                 ("  ".into(), plain()),
-                ("*".into(), accent(&p)),
-                (" nested".into(), plain()),
+                ("• ".into(), dim(&p)),
+                ("nested".into(), plain()),
             ]
         );
     }
 
     #[test]
-    fn ordered_marker_is_accent() {
+    fn ordered_marker_becomes_dim_bullet() {
         let p = Palette::default();
         assert_eq!(
             parts(&style_line("1. first", &p)),
-            vec![("1.".into(), accent(&p)), (" first".into(), plain())]
+            vec![("• ".into(), dim(&p)), ("first".into(), plain())]
         );
         assert_eq!(
             parts(&style_line("2) second", &p)),
-            vec![("2)".into(), accent(&p)), (" second".into(), plain())]
+            vec![("• ".into(), dim(&p)), ("second".into(), plain())]
         );
     }
 
@@ -1251,6 +1979,95 @@ mod tests {
         let p = Palette::default();
         // `**` must not read as a `*` bullet — the bold tokenizer owns it.
         assert_eq!(parts(&style_line("**hi**", &p)), vec![("hi".into(), bold())]);
+    }
+
+    #[test]
+    fn table_block_uses_grok_full_grid_borders() {
+        let p = Palette::default();
+        // Full GFM table → Grok grid: top rule, header, mid, data, bottom.
+        let lines = vec![
+            "| Bucket | Count | Item |".into(),
+            "|---|---|---|".into(),
+            "| FIX | 1 | long item text that wraps within the column |".into(),
+            "| DROPPED | 0 | - |".into(),
+        ];
+        let ctxs = vec![LineCtx::Text; lines.len()];
+        let display = wrap_lines(&lines, &ctxs, 48);
+        assert!(display.len() >= 5, "top+header+mid+data+bottom, got {}", display.len());
+        assert!(display.iter().all(|d| d.md_roles.is_some()));
+
+        // Outer frame characters.
+        assert!(
+            display[0].text.starts_with('┌') && display[0].text.ends_with('┐'),
+            "top border, got {:?}",
+            display[0].text
+        );
+        assert!(
+            display.last().unwrap().text.starts_with('└')
+                && display.last().unwrap().text.ends_with('┘'),
+            "bottom border, got {:?}",
+            display.last().unwrap().text
+        );
+        assert!(
+            display.iter().any(|d| d.text.starts_with('├') && d.text.contains('┼')),
+            "mid row rule with ┼ expected"
+        );
+
+        // Header content row: bold (Grok), vertical bars dim.
+        let header = style_display_line(&display[1], 48, &p);
+        assert!(joined(&header).contains("Bucket"));
+        assert!(
+            parts(&header)
+                .iter()
+                .any(|(t, s)| t.contains("Bucket") && *s == bold()),
+            "header cells bold, got {:?}",
+            parts(&header)
+        );
+        assert!(
+            parts(&header)
+                .iter()
+                .any(|(t, s)| t == "│" && *s == dim(&p)),
+            "vertical borders dim"
+        );
+
+        // Data: DROPPED is body, not bold header.
+        let dropped = display
+            .iter()
+            .find(|d| d.text.contains("DROPPED"))
+            .expect("DROPPED row");
+        let painted = style_display_line(dropped, 48, &p);
+        assert!(
+            !parts(&painted)
+                .iter()
+                .any(|(t, s)| t.contains("DROPPED") && *s == bold()),
+            "data cell must not be header-bold, got {:?}",
+            parts(&painted)
+        );
+    }
+
+    #[test]
+    fn table_long_cell_wraps_inside_column() {
+        let lines = vec![
+            "| A | B |".into(),
+            "|---|---|".into(),
+            "| x | one two three four five six seven eight |".into(),
+        ];
+        let ctxs = vec![LineCtx::Text; lines.len()];
+        let display = wrap_lines(&lines, &ctxs, 28);
+        // Content rows that carry cell text (skip pure border rules).
+        let content: Vec<_> = display
+            .iter()
+            .filter(|d| d.text.starts_with('│'))
+            .collect();
+        assert!(
+            content.len() >= 3,
+            "header + multi-line data body expected, got {}",
+            content.len()
+        );
+        // Wrapped data continuations still open with a vertical bar (grid intact).
+        for row in &content {
+            assert!(row.text.starts_with('│'), "grid row must start with │: {:?}", row.text);
+        }
     }
 
     // ---- fence_states ------------------------------------------------------
