@@ -147,16 +147,36 @@ interface GitEnrichment {
 	 * marker's front slot but yields to it (merged wins; see the TUI's
 	 * `wt_merge_marker`). */
 	approved: boolean | null;
+	/** Whether the matched PR has the `ready-for-review` label. null when there
+	 * is no PR / gh unavailable; false when a PR exists without the label. Shares
+	 * the merge-marker front slot below approved (merge > approve > R > W). */
+	readyForReview: boolean | null;
+	/** Whether the matched PR has the `WIP` label. null when there is no PR /
+	 * gh unavailable; false when a PR exists without the label. Lowest-priority
+	 * front marker (merge > approve > ready-for-review > WIP). */
+	wip: boolean | null;
 }
 
 /** The git-commit subset of GitEnrichment — everything computeGitEnrichment
  * derives from a single worktree path. The PR facts (prNumber/prUrl/prBase/
- * prAuthor/prState) are layered on separately: they're per-repo facts, fetched
- * once per sweep from `gh`, not per worktree. */
+ * prAuthor/prState/approved/readyForReview/wip) are layered on separately:
+ * they're per-repo facts, fetched once per sweep from `gh`, not per worktree. */
 type GitCommitFacts = Omit<
 	GitEnrichment,
-	"prNumber" | "prUrl" | "prBase" | "prAuthor" | "prState" | "approved"
+	| "prNumber"
+	| "prUrl"
+	| "prBase"
+	| "prAuthor"
+	| "prState"
+	| "approved"
+	| "readyForReview"
+	| "wip"
 >;
+
+/** Label names the TUI's front merge-marker slot cares about. Exact GitHub label
+ * names (case-sensitive as gh returns them). */
+const LABEL_READY_FOR_REVIEW = "ready-for-review";
+const LABEL_WIP = "WIP";
 
 /** One repo's PR facts, keyed by head branch: the number/url/base/state plus the
  * author's name and login (either may be empty on the wire → treated as null
@@ -174,6 +194,9 @@ interface PrFacts {
 	 * `"REVIEW_REQUIRED"`, or empty (no reviewers) → null. The caller reduces it
 	 * to the `approved` boolean carried on the wire. */
 	reviewDecision: string | null;
+	/** gh's `labels[].name` values for this PR (empty when none / omitted). The
+	 * caller reduces these to the `readyForReview` / `wip` wire booleans. */
+	labelNames: string[];
 }
 
 /** Serve last-known enrichment for a worktree this long before re-shelling git.
@@ -768,6 +791,13 @@ export class Engine {
 				// no PR (unknown); a PR that isn't approved reads false. It shares the
 				// merged marker's slot in the TUI but yields to merged.
 				const approved = pr ? pr.reviewDecision === "APPROVED" : null;
+				// Label markers: null with no PR; false when the PR exists without
+				// the label. Same front slot as merge/approve; precedence is
+				// merge > approve > ready-for-review > WIP (see TUI wt_merge_marker).
+				const readyForReview = pr
+					? pr.labelNames.includes(LABEL_READY_FOR_REVIEW)
+					: null;
+				const wip = pr ? pr.labelNames.includes(LABEL_WIP) : null;
 				const e: GitEnrichment = {
 					...facts,
 					merged,
@@ -777,6 +807,8 @@ export class Engine {
 					prAuthor,
 					prState,
 					approved,
+					readyForReview,
+					wip,
 				};
 				this.gitEnrichFetchedAt.set(wt.path, Date.now());
 				const prev = this.gitEnrichCache.get(wt.path);
@@ -793,7 +825,9 @@ export class Engine {
 					prev.prBase !== e.prBase ||
 					prev.prAuthor !== e.prAuthor ||
 					prev.prState !== e.prState ||
-					prev.approved !== e.approved
+					prev.approved !== e.approved ||
+					prev.readyForReview !== e.readyForReview ||
+					prev.wip !== e.wip
 				) {
 					changed = true;
 				}
@@ -971,7 +1005,7 @@ export class Engine {
 					"--state",
 					state,
 					"--json",
-					"number,headRefName,baseRefName,url,state,author,reviewDecision",
+					"number,headRefName,baseRefName,url,state,author,reviewDecision,labels",
 					"--limit",
 					String(limit),
 				],
@@ -996,6 +1030,7 @@ export class Engine {
 					state: prState,
 					author,
 					reviewDecision,
+					labels,
 				} = row as {
 					headRefName?: unknown;
 					number?: unknown;
@@ -1004,6 +1039,7 @@ export class Engine {
 					state?: unknown;
 					author?: unknown;
 					reviewDecision?: unknown;
+					labels?: unknown;
 				};
 				if (typeof headRefName !== "string" || typeof number !== "number") {
 					continue;
@@ -1015,6 +1051,18 @@ export class Engine {
 					typeof a.name === "string" && a.name.length > 0 ? a.name : null;
 				const authorLogin =
 					typeof a.login === "string" && a.login.length > 0 ? a.login : null;
+				// labels is `[{name, ...}, ...]`; keep only non-empty name strings.
+				// Omitted / malformed → empty list (caller's includes() reads false).
+				const labelNames: string[] = [];
+				if (Array.isArray(labels)) {
+					for (const lab of labels) {
+						if (lab === null || typeof lab !== "object") continue;
+						const name = (lab as { name?: unknown }).name;
+						if (typeof name === "string" && name.length > 0) {
+							labelNames.push(name);
+						}
+					}
+				}
 				map.set(headRefName, {
 					number,
 					url: typeof url === "string" ? url : null,
@@ -1031,6 +1079,7 @@ export class Engine {
 						typeof reviewDecision === "string" && reviewDecision.length > 0
 							? reviewDecision
 							: null,
+					labelNames,
 				});
 			}
 			return map;

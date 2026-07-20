@@ -261,6 +261,17 @@ pub struct WorktreeInfo {
     /// container `default`). Drives the green approved marker, which shares the
     /// `↣` merged marker's front slot but yields to it (see `wt_merge_marker`).
     pub approved: Option<bool>,
+    /// Whether this worktree's PR has the `ready-for-review` label (daemon
+    /// `readyForReview`, reduced from `gh`'s `labels[].name`). `Some(true)` =
+    /// present, `Some(false)` = PR exists without it, `None`/null = unknown / no
+    /// PR / old daemon. Shares the merge-marker front slot as `r`; precedence is
+    /// merge > approve > ready-for-review > WIP (see `wt_merge_marker`).
+    pub ready_for_review: Option<bool>,
+    /// Whether this worktree's PR has the `WIP` label (daemon `wip`, reduced from
+    /// `gh`'s `labels[].name`). `Some(true)` = present, `Some(false)` = PR exists
+    /// without it, `None`/null = unknown / no PR / old daemon. Lowest-priority
+    /// front marker (`w`); see `wt_merge_marker`.
+    pub wip: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -858,6 +869,28 @@ mod tests {
         let old: WorktreeInfo =
             serde_json::from_str(r#"{"name":"a","path":"/a","branch":"a"}"#).unwrap();
         assert_eq!(old.approved, None);
+    }
+
+    #[test]
+    fn worktree_label_markers_parse_and_absent_default_none() {
+        // Modern daemon sends camelCase `readyForReview` / `wip` from gh labels.
+        let both: WorktreeInfo = serde_json::from_str(
+            r#"{"name":"a","path":"/a","branch":"a","readyForReview":true,"wip":true}"#,
+        )
+        .unwrap();
+        assert_eq!(both.ready_for_review, Some(true));
+        assert_eq!(both.wip, Some(true));
+        let neither: WorktreeInfo = serde_json::from_str(
+            r#"{"name":"a","path":"/a","branch":"a","readyForReview":false,"wip":false}"#,
+        )
+        .unwrap();
+        assert_eq!(neither.ready_for_review, Some(false));
+        assert_eq!(neither.wip, Some(false));
+        // Old daemon omits both → None (container `default`).
+        let old: WorktreeInfo =
+            serde_json::from_str(r#"{"name":"a","path":"/a","branch":"a"}"#).unwrap();
+        assert_eq!(old.ready_for_review, None);
+        assert_eq!(old.wip, None);
     }
 
     #[test]

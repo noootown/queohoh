@@ -76,6 +76,23 @@ pub const GLYPH_MERGED: char = '↣';
 /// check reads as exactly the intended "approved" status, unlike on the merged
 /// marker where it was rejected as too status-like for "flowed into the branch".
 pub const GLYPH_APPROVED: char = '✓';
+/// PR has the `ready-for-review` label but is not merged/approved — shares the
+/// merge-marker front slot as `r` (single-width ASCII, lowercase). Yields to
+/// merge and approve; beats WIP (see `wt_merge_marker`). Colored with
+/// [`COLOR_PR_READY`] to match the GitHub label pill.
+pub const GLYPH_READY_FOR_REVIEW: char = 'r';
+/// PR has the `WIP` label and none of the higher markers — shares the
+/// merge-marker front slot as `w` (single-width ASCII, lowercase). Lowest
+/// priority: merge > approve > ready-for-review > WIP. Colored with
+/// [`COLOR_PR_WIP`] to match the GitHub label pill.
+pub const GLYPH_WIP: char = 'w';
+/// GitHub `ready-for-review` label fill (`#933df9`), sampled from the purple
+/// pill in the GitHub UI. Theme-independent so the `r` marker always matches
+/// the label, not the active TUI profile.
+pub const COLOR_PR_READY: Color = Color::Rgb(147, 61, 249);
+/// GitHub `WIP` label fill (`#9de6f5`), sampled from the cyan pill in the
+/// GitHub UI. Theme-independent so the `w` marker always matches the label.
+pub const COLOR_PR_WIP: Color = Color::Rgb(157, 230, 245);
 /// Filled dot — colored by context (connection indicator, worktree state).
 pub const GLYPH_DOT: char = '●';
 /// Magnifier prefixing the inline search-hint/input row. Double-width, but it is

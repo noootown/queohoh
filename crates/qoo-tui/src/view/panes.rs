@@ -22,8 +22,9 @@ use crate::view::theme::{
     BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_SCHEDULE,
     BTN_LABEL_STOP, BTN_LABEL_TASKS, BTN_LABEL_UNARCHIVE,
-    FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_APPROVED, GLYPH_CURSOR,
-    GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_NEXT, GLYPH_PROTECTED, GLYPH_SEARCH,
+    COLOR_PR_READY, COLOR_PR_WIP, FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_APPROVED,
+    GLYPH_CURSOR, GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_NEXT,
+    GLYPH_PROTECTED, GLYPH_READY_FOR_REVIEW, GLYPH_SEARCH, GLYPH_WIP,
     Palette, RULE_CHAR, SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
 
@@ -599,10 +600,10 @@ fn worktree_line(
         }
         spans.push(Span::raw(" "));
     }
-    // Shared front marker slot: `↣` merged-back (ok green — "committed work is in
-    // the default branch, safe to clean up") OR, when not merged, `✓` approved (ok
-    // green — the PR passed review). Merged wins; blank for neither/unknown/old
-    // daemons. The precedence lives in the pure `wt_merge_marker` selector.
+    // Shared front marker slot. Precedence (merge > approve > ready-for-review >
+    // WIP) lives in pure `wt_merge_marker`; blank for none/unknown/old daemons.
+    // Merged/approved stay ok-green; r/w use the GitHub label fills (theme-
+    // independent — see COLOR_PR_READY / COLOR_PR_WIP).
     if layout.merged_w > 0 {
         match wt_merge_marker(row) {
             Some(WtMergeMarker::Merged) => {
@@ -610,6 +611,18 @@ fn worktree_line(
             }
             Some(WtMergeMarker::Approved) => {
                 spans.push(Span::styled(GLYPH_APPROVED.to_string(), Style::default().fg(p.ok)));
+            }
+            Some(WtMergeMarker::ReadyForReview) => {
+                spans.push(Span::styled(
+                    GLYPH_READY_FOR_REVIEW.to_string(),
+                    Style::default().fg(COLOR_PR_READY),
+                ));
+            }
+            Some(WtMergeMarker::Wip) => {
+                spans.push(Span::styled(
+                    GLYPH_WIP.to_string(),
+                    Style::default().fg(COLOR_PR_WIP),
+                ));
             }
             None => spans.push(Span::raw(" ")),
         }
@@ -1540,6 +1553,51 @@ mod tests {
         let merged_text = text(&merged);
         assert!(merged_text.contains(GLYPH_MERGED));
         assert!(!merged_text.contains(GLYPH_APPROVED));
+    }
+
+    #[test]
+    fn worktree_line_renders_ready_and_wip_markers_in_the_merged_slot() {
+        use crate::selectors::{wt_col_layout, WorktreeRow};
+        let p = Palette::default();
+        let ready = WorktreeRow {
+            name: "JUS-r".into(),
+            raw_name: "JUS-r".into(),
+            path: "/r".into(),
+            branch: "JUS-r".into(),
+            merged: Some(false),
+            approved: Some(false),
+            ready_for_review: Some(true),
+            wip: Some(true), // both labels → r wins
+            ..Default::default()
+        };
+        let wip = WorktreeRow {
+            name: "JUS-w".into(),
+            raw_name: "JUS-w".into(),
+            path: "/w".into(),
+            branch: "JUS-w".into(),
+            merged: Some(false),
+            approved: Some(false),
+            ready_for_review: Some(false),
+            wip: Some(true),
+            ..Default::default()
+        };
+        let rows = vec![ready.clone(), wip.clone()];
+        let layout = wt_col_layout(&rows, 120);
+        let text = |r: &WorktreeRow| {
+            worktree_line(r, &layout, &p, 0)
+                .spans
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<String>()
+        };
+        let ready_text = text(&ready);
+        assert!(ready_text.contains(GLYPH_READY_FOR_REVIEW));
+        assert!(!ready_text.contains(GLYPH_WIP));
+        assert!(!ready_text.contains(GLYPH_APPROVED));
+        assert!(!ready_text.contains(GLYPH_MERGED));
+        let wip_text = text(&wip);
+        assert!(wip_text.contains(GLYPH_WIP));
+        assert!(!wip_text.contains(GLYPH_READY_FOR_REVIEW));
     }
 
     #[test]

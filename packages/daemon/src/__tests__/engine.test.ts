@@ -678,6 +678,8 @@ describe("Engine.worktreesByRepo", () => {
 					prAuthor: null,
 					prState: null,
 					approved: null,
+					readyForReview: null,
+					wip: null,
 					protected: false,
 				},
 			],
@@ -1025,6 +1027,9 @@ describe("Engine git enrichment", () => {
 			prAuthor: "Tim Kuminecz",
 			// The row carries no reviewDecision → a PR exists but isn't approved.
 			approved: false,
+			// No labels on the fixture → PR exists without the marker labels.
+			readyForReview: false,
+			wip: false,
 		});
 	});
 
@@ -1119,8 +1124,10 @@ describe("Engine git enrichment", () => {
 			prNumber: null,
 			// No PR data for this branch; the merged marker is the local verdict (false).
 			merged: false,
-			// No PR → approved is unknown (null), not false.
+			// No PR → approved / label markers are unknown (null), not false.
 			approved: null,
+			readyForReview: null,
+			wip: null,
 		});
 	});
 
@@ -1181,6 +1188,96 @@ describe("Engine git enrichment", () => {
 		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
 			approved: false,
 			prState: "OPEN",
+		});
+	});
+
+	it("stamps wip=true from an OPEN PR with the WIP label", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }),
+			"gh:open": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 44,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/44",
+						state: "OPEN",
+						author: { name: "Ian Chiu", login: "noootown" },
+						labels: [{ name: "WIP" }],
+					},
+				]),
+				exitCode: 0,
+			}),
+			"gh:merged": () => ({ stdout: "[]", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			wip: true,
+			readyForReview: false,
+			approved: false,
+			prState: "OPEN",
+			merged: false,
+		});
+	});
+
+	it("stamps readyForReview=true from an OPEN PR with the ready-for-review label", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }),
+			"gh:open": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 45,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/45",
+						state: "OPEN",
+						author: { name: "Ian Chiu", login: "noootown" },
+						labels: [{ name: "ready-for-review" }, { name: "WIP" }],
+					},
+				]),
+				exitCode: 0,
+			}),
+			"gh:merged": () => ({ stdout: "[]", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		// Both labels present on the wire; the TUI's marker precedence picks R
+		// over W, but the daemon stamps both facts truthfully.
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			readyForReview: true,
+			wip: true,
+			prState: "OPEN",
+		});
+	});
+
+	it("stamps wip/readyForReview false when a PR exists without those labels", async () => {
+		const exec = gitExec({
+			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			"merge-base": () => ({ stdout: "", exitCode: 1 }),
+			"gh:open": () => ({
+				stdout: JSON.stringify([
+					{
+						number: 46,
+						headRefName: "JUS-1",
+						url: "https://github.com/o/r/pull/46",
+						state: "OPEN",
+						author: { name: "Ian Chiu", login: "noootown" },
+						labels: [{ name: "bug" }],
+					},
+				]),
+				exitCode: 0,
+			}),
+			"gh:merged": () => ({ stdout: "[]", exitCode: 0 }),
+		});
+		const { engine } = setup({ exec });
+		await engine.tick();
+		await engine.refreshGitEnrichment();
+		expect(engine.worktreesByRepo().platform?.[0]).toMatchObject({
+			wip: false,
+			readyForReview: false,
 		});
 	});
 

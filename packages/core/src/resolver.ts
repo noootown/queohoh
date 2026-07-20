@@ -62,6 +62,16 @@ export interface WorktreeInfo {
 	 * shares the `↣` merged marker's front slot but yields to it (a merged PR
 	 * shows the merged marker even when it was also approved). */
 	approved?: boolean | null;
+	/** Whether the worktree's PR has the `ready-for-review` label (daemon reduces
+	 * `gh`'s `labels[].name`). true = present, false = PR exists without it,
+	 * null/absent = unknown / no PR / old daemon. Shares the merge-marker front
+	 * slot; precedence is merge > approve > ready-for-review > WIP. */
+	readyForReview?: boolean | null;
+	/** Whether the worktree's PR has the `WIP` label (daemon reduces
+	 * `gh`'s `labels[].name`). true = present, false = PR exists without it,
+	 * null/absent = unknown / no PR / old daemon. Lowest-priority front marker
+	 * (merge > approve > ready-for-review > WIP). */
+	wip?: boolean | null;
 	/** True when queohoh must never delete this worktree — the project's main
 	 * checkout (path-equality) or a name in the project's `protected_worktrees`.
 	 * Computed by the daemon and carried to the TUI. Absent/undefined = not

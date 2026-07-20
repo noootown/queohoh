@@ -132,6 +132,12 @@ pub struct WorktreeRow {
     /// `None` = unknown / no PR / old daemon. Drives the green approved marker,
     /// which shares the `↣` merged slot but yields to it (see `wt_merge_marker`).
     pub approved: Option<bool>,
+    /// PR has the `ready-for-review` label (daemon `readyForReview`). Shares the
+    /// merge-marker front slot as `r`; yields to merge and approve.
+    pub ready_for_review: Option<bool>,
+    /// PR has the `WIP` label (daemon `wip`). Shares the merge-marker front slot
+    /// as `w`; lowest priority (merge > approve > ready-for-review > WIP).
+    pub wip: Option<bool>,
     pub last_commit_epoch: Option<u64>,
     pub last_commit_author: Option<String>,
     pub last_commit_author_email: Option<String>,
@@ -662,6 +668,8 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 dirty: wt.dirty,
                 merged: wt.merged,
                 approved: wt.approved,
+                ready_for_review: wt.ready_for_review,
+                wip: wt.wip,
                 last_commit_epoch: wt.last_commit_epoch,
                 last_commit_author: wt.last_commit_author.clone(),
                 last_commit_author_email: wt.last_commit_author_email.clone(),
@@ -1523,26 +1531,35 @@ pub fn wt_author_text(row: &WorktreeRow) -> Option<String> {
 }
 
 /// The front-column status marker a worktree row shows in the shared `↣` slot,
-/// or `None` for a blank slot. Merged and approved are mutually exclusive for
-/// display and merged WINS: a merged PR shows `Merged` even when it was also
-/// approved (the merged fact subsumes the approval). Pure so the precedence is
-/// unit-testable away from the view, which only maps the variant to a glyph.
+/// or `None` for a blank slot. Only one glyph shows; precedence is
+/// **merge > approve > ready-for-review > WIP** (each higher fact subsumes the
+/// ones below). Pure so the precedence is unit-testable away from the view,
+/// which only maps the variant to a glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WtMergeMarker {
     /// Committed work is on the default branch (or the PR merged) — `↣`, green.
     Merged,
     /// The PR's review decision is APPROVED but it isn't merged yet — `✓`, green.
     Approved,
+    /// PR has the `ready-for-review` label (and is not merged/approved) — `r`.
+    ReadyForReview,
+    /// PR has the `WIP` label (and none of the higher markers) — `w`.
+    Wip,
 }
 
-/// Resolve a row's front merge/approval marker: `Merged` when `merged` is true,
-/// else `Approved` when `approved` is true, else `None`. Merged takes precedence
-/// so an approved-then-merged PR keeps showing the merged glyph.
+/// Resolve a row's front merge/label marker. Precedence:
+/// merge > approve > ready-for-review > WIP. Higher facts win so e.g. an
+/// approved-then-merged PR keeps showing the merged glyph, and a PR with both
+/// `ready-for-review` and `WIP` labels shows `r` not `w`.
 pub fn wt_merge_marker(row: &WorktreeRow) -> Option<WtMergeMarker> {
     if row.merged == Some(true) {
         Some(WtMergeMarker::Merged)
     } else if row.approved == Some(true) {
         Some(WtMergeMarker::Approved)
+    } else if row.ready_for_review == Some(true) {
+        Some(WtMergeMarker::ReadyForReview)
+    } else if row.wip == Some(true) {
+        Some(WtMergeMarker::Wip)
     } else {
         None
     }
@@ -3515,10 +3532,12 @@ mod tests {
 
     #[test]
     fn wt_merge_marker_neither_shows_nothing() {
-        // A PR that exists but isn't approved and isn't merged → blank slot.
+        // A PR that exists but isn't approved/merged and has no label markers → blank.
         let not_approved = WorktreeRow {
             merged: Some(false),
             approved: Some(false),
+            ready_for_review: Some(false),
+            wip: Some(false),
             ..Default::default()
         };
         assert_eq!(wt_merge_marker(&not_approved), None);
@@ -3526,6 +3545,64 @@ mod tests {
         // Everything unknown (old daemon / no PR) → blank slot.
         let unknown = WorktreeRow::default();
         assert_eq!(wt_merge_marker(&unknown), None);
+    }
+
+    #[test]
+    fn wt_merge_marker_ready_for_review_and_wip() {
+        // Ready-for-review alone → r.
+        let ready = WorktreeRow {
+            merged: Some(false),
+            approved: Some(false),
+            ready_for_review: Some(true),
+            wip: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(wt_merge_marker(&ready), Some(WtMergeMarker::ReadyForReview));
+
+        // WIP alone → w.
+        let wip = WorktreeRow {
+            merged: Some(false),
+            approved: Some(false),
+            ready_for_review: Some(false),
+            wip: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(wt_merge_marker(&wip), Some(WtMergeMarker::Wip));
+
+        // Both labels → ready-for-review wins over WIP.
+        let both_labels = WorktreeRow {
+            ready_for_review: Some(true),
+            wip: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            wt_merge_marker(&both_labels),
+            Some(WtMergeMarker::ReadyForReview)
+        );
+
+        // Approve still beats ready-for-review.
+        let approved_and_ready = WorktreeRow {
+            approved: Some(true),
+            ready_for_review: Some(true),
+            wip: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            wt_merge_marker(&approved_and_ready),
+            Some(WtMergeMarker::Approved)
+        );
+
+        // Merge still beats everything, including labels.
+        let merged_and_labels = WorktreeRow {
+            merged: Some(true),
+            ready_for_review: Some(true),
+            wip: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            wt_merge_marker(&merged_and_labels),
+            Some(WtMergeMarker::Merged)
+        );
     }
 
     #[test]
