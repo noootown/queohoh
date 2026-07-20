@@ -108,20 +108,40 @@ pub fn fence_states(lines: &[String]) -> Vec<LineCtx> {
 /// scrolled out of the window, so the first line is treated as fenced content
 /// with an unknown (empty) language, and the first bare ```` ``` ```` CLOSES that
 /// fence. All other callers read from line 0 and pass `false` via [`fence_states`].
+///
+/// After the pass, unlabeled / `text` / `plain` fence bodies that *look like
+/// markdown* (agent thinking often opens a bare ```` ``` ```` and then dumps
+/// prose) are re-tagged `lang = "markdown"` so paint uses the prose styler
+/// instead of plain/code accents.
 pub fn fence_states_from(lines: &[String], starts_in_fence: bool) -> Vec<LineCtx> {
     let mut out = Vec::with_capacity(lines.len());
     // Some(lang) while inside a fence; None outside. An unknown-language open
     // (window began mid-fence) carries the empty lang a bare ``` opener produces.
     let mut open: Option<String> = starts_in_fence.then(String::new);
+    // Index of first body line of the current fence (for reclass on close/EOF).
+    // Mid-window: opener scrolled out → body starts at line 0.
+    let mut body_start: Option<usize> = starts_in_fence.then_some(0);
     for line in lines {
         if let Some(rest) = line.trim_start().strip_prefix("```") {
             if open.is_none() {
                 let info = rest.trim();
-                let lang = if info.is_empty() { None } else { Some(info.to_string()) };
+                // First token of the info string is the language (ignore attrs).
+                let lang_tok = info.split_whitespace().next().unwrap_or("");
+                let lang = if lang_tok.is_empty() {
+                    None
+                } else {
+                    Some(lang_tok.to_string())
+                };
                 open = Some(lang.clone().unwrap_or_default());
+                body_start = Some(out.len() + 1); // next pushed line is first body
                 out.push(LineCtx::Fence { lang });
             } else {
+                // Closing fence — maybe upgrade unlabeled body to markdown.
+                if let Some(start) = body_start {
+                    reclass_fence_body_if_markdown(&mut out, start, lines);
+                }
                 open = None;
+                body_start = None;
                 out.push(LineCtx::Fence { lang: None });
             }
         } else if let Some(lang) = &open {
@@ -130,7 +150,115 @@ pub fn fence_states_from(lines: &[String], starts_in_fence: bool) -> Vec<LineCtx
             out.push(LineCtx::Text);
         }
     }
+    // Unclosed fence at EOF — still reclass.
+    if let Some(start) = body_start {
+        reclass_fence_body_if_markdown(&mut out, start, lines);
+    }
     out
+}
+
+/// Languages we always treat as markdown (explicit tags).
+fn is_markdown_lang_tag(lang: &str) -> bool {
+    matches!(
+        lang.trim().to_ascii_lowercase().as_str(),
+        "md" | "markdown" | "gfm" | "mdown" | "mkd"
+    )
+}
+
+/// Unlabeled / plain tags are candidates for content-based markdown detection.
+fn is_markdown_candidate_lang(lang: &str) -> bool {
+    let l = lang.trim().to_ascii_lowercase();
+    l.is_empty() || matches!(l.as_str(), "text" | "plain" | "plaintext" | "txt")
+}
+
+/// Rewrite `out[body_start..]` Fenced lines to `lang = "markdown"` when the
+/// body scores as prose markdown (headings, bold, lists, tables, quotes).
+fn reclass_fence_body_if_markdown(out: &mut [LineCtx], body_start: usize, lines: &[String]) {
+    if body_start >= out.len() {
+        return;
+    }
+    // Only reclass if the fence opened as a candidate (empty/text/plain).
+    let Some(LineCtx::Fenced { lang }) = out.get(body_start) else {
+        // Body may be empty (open+close with nothing between) or start at fence.
+        return;
+    };
+    if !is_markdown_candidate_lang(lang) {
+        return;
+    }
+    // Collect body text from matching source lines. `out[i]` corresponds to
+    // `lines[i]` 1:1.
+    let mut body: Vec<&str> = Vec::new();
+    for (i, ctx) in out.iter().enumerate().skip(body_start) {
+        match ctx {
+            LineCtx::Fenced { .. } => {
+                if let Some(line) = lines.get(i) {
+                    body.push(line.as_str());
+                }
+            }
+            _ => break,
+        }
+    }
+    if !fence_body_looks_like_markdown(&body) {
+        return;
+    }
+    for ctx in out.iter_mut().skip(body_start) {
+        match ctx {
+            LineCtx::Fenced { lang } => *lang = "markdown".into(),
+            LineCtx::Fence { .. } => break, // hit the closer
+            _ => break,
+        }
+    }
+}
+
+/// Heuristic: does this unlabeled fence body look like markdown prose rather
+/// than a short code snippet?
+///
+/// Agent transcripts often open a bare ```` ``` ```` for a log line and then
+/// keep writing headings/bold/lists without closing — those bodies must paint
+/// as prose. Real unlabeled code fences (a few plain lines) score low and stay
+/// code-styled.
+fn fence_body_looks_like_markdown(body: &[&str]) -> bool {
+    let mut score = 0i32;
+    let mut non_empty = 0usize;
+    let mut table_lines = 0usize;
+    for line in body {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        non_empty += 1;
+        if is_heading_line(t) {
+            score += 3;
+        }
+        if is_list_line(t) {
+            score += 2;
+        }
+        if is_quote_line(t) {
+            score += 2;
+        }
+        if is_md_table_line(t) {
+            table_lines += 1;
+            score += 1;
+        }
+        // Inline markers common in agent prose.
+        if t.contains("**") || t.contains("`]") {
+            score += 1;
+        }
+        if t.contains('`') && t.matches('`').count() >= 2 {
+            score += 1;
+        }
+        // Numbered summary sections without ATX: "1. " already covered by list.
+    }
+    if table_lines >= 2 {
+        return true;
+    }
+    // Need real signal — a single bare `**` in one code comment shouldn't flip.
+    // Long bodies with multiple md cues (typical agent dumps) flip easily.
+    if non_empty >= 4 {
+        score >= 3
+    } else {
+        score >= 4
+    }
 }
 
 /// One display line produced by [`wrap_lines`]: a slice of an original logical
@@ -237,8 +365,8 @@ pub fn slice_cells(text: &str, lo: usize, hi: usize) -> String {
 ///   including indentation); each continuation keeps the block's `Fenced` ctx.
 /// - Text lines word-wrap at spaces; a single token wider than `width` (URLs!)
 ///   hard-breaks. Continuations are flush-left.
-/// - Consecutive GFM table rows (`| … |`) in [`LineCtx::Text`] are laid out as a
-///   block (column-aligned, cells wrap within columns) — juice.ai discuss parity.
+/// - Consecutive GFM table rows (`| … |`) in prose ([`LineCtx::Text`] or a
+///   fenced markdown block) are laid out as a Grok full-grid table.
 pub fn wrap_lines(lines: &[String], ctxs: &[LineCtx], width: usize) -> Vec<DisplayLine> {
     let width = width.max(1);
     let mut out = Vec::with_capacity(lines.len());
@@ -247,13 +375,12 @@ pub fn wrap_lines(lines: &[String], ctxs: &[LineCtx], width: usize) -> Vec<Displ
         let line = &lines[i];
         let ctx = ctxs.get(i).cloned().unwrap_or(LineCtx::Text);
 
-        // Markdown table block: group consecutive Text table lines, then expand
-        // into column-aligned visual rows (may be more rows than source lines).
-        if matches!(ctx, LineCtx::Text) && is_md_table_line(line) {
+        // Markdown table block: group consecutive prose/md-fence table lines.
+        if is_prose_ctx(&ctx) && is_md_table_line(line) {
             let start = i;
             i += 1;
             while i < lines.len()
-                && matches!(ctxs.get(i), Some(LineCtx::Text) | None)
+                && ctxs.get(i).map(is_prose_ctx).unwrap_or(true)
                 && is_md_table_line(&lines[i])
             {
                 i += 1;
@@ -280,7 +407,9 @@ pub fn wrap_lines(lines: &[String], ctxs: &[LineCtx], width: usize) -> Vec<Displ
             i += 1;
             continue;
         }
+        // Markdown fences word-wrap like prose; real code fences hard-break.
         let pieces = match &ctx {
+            LineCtx::Fenced { lang } if is_markdown_lang_tag(lang) => word_wrap(line, width),
             LineCtx::Fenced { .. } => hard_break(line, width),
             _ => word_wrap(line, width),
         };
@@ -682,29 +811,117 @@ fn rule_run(n: usize) -> String {
 }
 
 enum FenceLang {
+    Markdown,
     Bash,
     Json,
-    Other,
+    /// Generic source (rust/python/…) — light string/comment accents.
+    Code,
 }
 
 impl FenceLang {
     fn classify(lang: &str) -> Self {
-        match lang.trim().to_ascii_lowercase().as_str() {
-            "bash" | "sh" | "shell" | "zsh" | "console" => FenceLang::Bash,
-            "json" => FenceLang::Json,
-            _ => FenceLang::Other,
+        let l = lang.trim().to_ascii_lowercase();
+        if is_markdown_lang_tag(&l) {
+            return FenceLang::Markdown;
+        }
+        match l.as_str() {
+            "bash" | "sh" | "shell" | "zsh" | "console" | "shellsession" => FenceLang::Bash,
+            "json" | "jsonc" => FenceLang::Json,
+            // Explicit plain — leave unstyled (brightness rule).
+            "text" | "plain" | "plaintext" | "txt" | "" => FenceLang::Code,
+            _ => FenceLang::Code,
         }
     }
 }
 
-/// Dispatch fenced content to a per-language accenter. Unknown languages render
-/// as plain fg (rule-of-brightness: no flat wash).
+/// Prose ctx for table grouping / word-wrap: free text or a reclassed markdown fence.
+fn is_prose_ctx(ctx: &LineCtx) -> bool {
+    match ctx {
+        LineCtx::Text => true,
+        LineCtx::Fenced { lang } => is_markdown_lang_tag(lang),
+        _ => false,
+    }
+}
+
+/// Dispatch fenced content: markdown fences use the prose styler (same as
+/// [`style_line`]); bash/json keep their heuristics; everything else gets a
+/// light generic code accent (strings + comments) so unlabeled dumps aren't flat.
 fn style_fenced(line: &str, lang: &str, p: &Palette) -> Line<'static> {
     match FenceLang::classify(lang) {
+        FenceLang::Markdown => style_line(line, p),
         FenceLang::Bash => style_bash(line, p),
         FenceLang::Json => style_json(line, p),
-        FenceLang::Other => Line::from(Span::raw(line.to_string())),
+        FenceLang::Code => style_code_generic(line, p),
     }
+}
+
+/// Light line-local accents for generic source fences (no full grammar):
+/// - `#` / `//` line comments → dim
+/// - `"…"` / `'…'` strings → mint code
+/// - remaining text plain
+///
+/// Enough to make python/rust/go dumps readable without syntect.
+fn style_code_generic(line: &str, p: &Palette) -> Line<'static> {
+    let code = Style::default().fg(MD_CODE);
+    let dim = p.dim_style();
+    let plain = Style::default();
+    let t = line.trim_start();
+    // Whole-line comments.
+    if t.starts_with("//") || t.starts_with('#') || t.starts_with("-- ") || t == "--" {
+        return Line::from(Span::styled(line.to_string(), dim));
+    }
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let b = line.as_bytes();
+    let n = b.len();
+    let mut i = 0usize;
+    let mut plain_buf = String::new();
+    let flush_plain = |buf: &mut String, spans: &mut Vec<Span<'static>>| {
+        if !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(buf), plain));
+        }
+    };
+    while i < n {
+        // Line comment mid-line (`code // note`).
+        if b[i] == b'/' && i + 1 < n && b[i + 1] == b'/' {
+            flush_plain(&mut plain_buf, &mut spans);
+            spans.push(Span::styled(line[i..].to_string(), dim));
+            break;
+        }
+        if b[i] == b'#' && (i == 0 || b[i - 1].is_ascii_whitespace()) {
+            flush_plain(&mut plain_buf, &mut spans);
+            spans.push(Span::styled(line[i..].to_string(), dim));
+            break;
+        }
+        // Quoted string.
+        if b[i] == b'"' || b[i] == b'\'' {
+            let quote = b[i];
+            flush_plain(&mut plain_buf, &mut spans);
+            let start = i;
+            i += 1;
+            while i < n {
+                if b[i] == b'\\' && i + 1 < n {
+                    i += 2;
+                    continue;
+                }
+                if b[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            spans.push(Span::styled(line[start..i].to_string(), code));
+            continue;
+        }
+        let ch = line[i..].chars().next().unwrap();
+        plain_buf.push(ch);
+        i += ch.len_utf8();
+    }
+    flush_plain(&mut plain_buf, &mut spans);
+    if spans.is_empty() {
+        spans.push(Span::raw(line.to_string()));
+    }
+    Line::from(spans)
 }
 
 /// bash accents (line-local heuristic, no shell parser): the first token of the
@@ -2164,6 +2381,114 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unlabeled_fence_with_markdown_body_is_reclassed() {
+        // Agent dump: bare ``` then prose with headings/bold — paint as markdown.
+        let lines = [
+            "intro",
+            "```",
+            "Found the failure:",
+            "",
+            "**Summary:** root cause is X.",
+            "",
+            "## Details",
+            "- item one",
+            "- item two",
+            "more prose about the fix",
+            "```",
+            "outro",
+        ];
+        let got = kinds(&lines);
+        assert_eq!(got[0], LineCtx::Text);
+        assert_eq!(got[1], LineCtx::Fence { lang: None });
+        // Body re-tagged markdown.
+        for ctx in &got[2..10] {
+            assert_eq!(
+                ctx,
+                &LineCtx::Fenced {
+                    lang: "markdown".into()
+                },
+                "expected markdown reclass, got {ctx:?}"
+            );
+        }
+        assert_eq!(got[10], LineCtx::Fence { lang: None });
+        assert_eq!(got[11], LineCtx::Text);
+
+        let p = Palette::default();
+        let summary = style_transcript_line(
+            "**Summary:** root cause is X.",
+            &LineCtx::Fenced {
+                lang: "markdown".into(),
+            },
+            80,
+            &p,
+        );
+        assert!(
+            parts(&summary).iter().any(|(_, s)| *s == bold()),
+            "markdown fence must bold **…**, got {:?}",
+            parts(&summary)
+        );
+        let h = style_transcript_line(
+            "## Details",
+            &LineCtx::Fenced {
+                lang: "markdown".into(),
+            },
+            80,
+            &p,
+        );
+        assert_eq!(joined(&h), "Details");
+        assert!(parts(&h).iter().any(|(_, s)| *s == heading()));
+    }
+
+    #[test]
+    fn unlabeled_short_code_fence_is_not_reclassed_as_markdown() {
+        let lines = ["```", "make build", "make test", "```"];
+        let got = kinds(&lines);
+        assert_eq!(
+            got,
+            vec![
+                LineCtx::Fence { lang: None },
+                LineCtx::Fenced { lang: String::new() },
+                LineCtx::Fenced { lang: String::new() },
+                LineCtx::Fence { lang: None },
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_markdown_fence_uses_prose_styler() {
+        let p = Palette::default();
+        let got = parts(&style_transcript_line(
+            "call `foo` and **bar**",
+            &LineCtx::Fenced {
+                lang: "markdown".into(),
+            },
+            80,
+            &p,
+        ));
+        assert!(got.iter().any(|(t, s)| t == "foo" && *s == code()));
+        assert!(got.iter().any(|(t, s)| t == "bar" && *s == bold()));
+    }
+
+    #[test]
+    fn generic_code_fence_accents_strings_and_comments() {
+        let p = Palette::default();
+        let s = parts(&style_transcript_line(
+            r#"x = "hello"  # note"#,
+            &LineCtx::Fenced { lang: "python".into() },
+            80,
+            &p,
+        ));
+        assert!(
+            s.iter().any(|(t, st)| t.contains("hello") && *st == code()),
+            "string mint, got {s:?}"
+        );
+        assert!(
+            s.iter().any(|(t, st)| t.contains("# note") && *st == dim(&p)),
+            "comment dim, got {s:?}"
+        );
+    }
+
     // ---- windowed slice ----------------------------------------------------
 
     #[test]
@@ -2605,7 +2930,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_language_is_plain() {
+    fn rust_fence_without_strings_is_plain_body() {
+        // Generic code accent only colors strings/comments — bare tokens stay plain.
         let p = Palette::default();
         let got = parts(&style_transcript_line(
             "fn main() {}",

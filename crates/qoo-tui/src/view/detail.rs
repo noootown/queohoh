@@ -562,13 +562,19 @@ pub(crate) fn detail_content_len(app: &crate::app::App) -> usize {
     app.detail_wrapped_len.get()
 }
 
+/// Columns reserved on the right when the detail scrollbar shows: 1 empty
+/// gutter so text never kisses the thumb (user feedback — flush right edge
+/// was hard to read) + 1 for the track itself. Matches juice discuss's
+/// `SCROLLBAR_MARGIN + 1` reserve.
+const DETAIL_SCROLLBAR_RESERVE: usize = 2;
+
 /// Wrap `lines` for a `width`×`height` viewport, resolving the scrollbar
 /// chicken-and-egg: whether the scrollbar shows depends on the wrapped count,
 /// which depends on the width its column steals. Two deterministic passes — wrap
 /// at full width; if that overflows the viewport the scrollbar shows, so re-wrap
-/// one column narrower (narrower can only add segments, so the overflow verdict
-/// never flips back). Returns the display lines, whether a scrollbar is needed,
-/// and the text width fence rules must be sized to (one narrower with a scrollbar).
+/// [`DETAIL_SCROLLBAR_RESERVE`] columns narrower (narrower can only add segments,
+/// so the overflow verdict never flips back). Returns the display lines, whether
+/// a scrollbar is needed, and the text width fence rules must be sized to.
 fn wrap_for_viewport(
     lines: &[String],
     ctxs: &[LineCtx],
@@ -576,11 +582,13 @@ fn wrap_for_viewport(
     height: usize,
 ) -> (Vec<DisplayLine>, bool, u16) {
     let display = wrap_lines(lines, ctxs, width);
-    if display.len() > height && width > 1 {
-        (wrap_lines(lines, ctxs, width - 1), true, (width - 1) as u16)
+    if display.len() > height {
+        // Prefer margin+track; fall back to track-only on very narrow panes.
+        let reserve = DETAIL_SCROLLBAR_RESERVE.min(width.saturating_sub(1)).max(1);
+        let text_w = width.saturating_sub(reserve).max(1);
+        (wrap_lines(lines, ctxs, text_w), true, text_w as u16)
     } else {
-        let has_scrollbar = display.len() > height;
-        (display, has_scrollbar, width as u16)
+        (display, false, width as u16)
     }
 }
 
@@ -1789,15 +1797,16 @@ mod tests {
     }
 
     #[test]
-    fn wrap_for_viewport_reserves_scrollbar_column_on_overflow() {
+    fn wrap_for_viewport_reserves_scrollbar_gutter_and_track_on_overflow() {
         // Four 10-cell lines into a width-10, height-3 viewport fit at full width
         // (4 display lines) but 4 > 3 forces a scrollbar, so the second pass
-        // re-wraps at width 9 — each 10-cell line splits in two → 8 display lines.
+        // re-wraps at width 8 (margin 1 + track 1) — each 10-cell line splits
+        // into two segments (8+2) → 8 display lines.
         let lines: Vec<String> = vec!["abcdefghij".into(); 4];
         let ctxs = fence_states(&lines);
         let (display, has_scrollbar, text_width) = wrap_for_viewport(&lines, &ctxs, 10, 3);
         assert!(has_scrollbar);
-        assert_eq!(text_width, 9);
+        assert_eq!(text_width, 8);
         assert_eq!(display.len(), 8);
     }
 
