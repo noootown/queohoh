@@ -1012,7 +1012,7 @@ mod tests {
     fn snapshot_no_projects() {
         // Starter config: daemon is up, snapshot present, projects: []. The tab
         // bar, every list-pane empty body, and the footer must all advertise the
-        // setup path — not "queue empty — [c]reate a task".
+        // setup path — not "queue empty — [s]chedule a task".
         use crate::ipc::types::StateSnapshot;
         let buffer_text = |t: &Terminal<TestBackend>| {
             let buf = t.backend().buffer();
@@ -1046,8 +1046,8 @@ mod tests {
             "setup path must name the config file: {text}"
         );
         assert!(
-            !text.contains("[c]reate a task"),
-            "must not advertise create when there is no project: {text}"
+            !text.contains("[s]chedule a task"),
+            "must not advertise schedule when there is no project: {text}"
         );
         assert!(
             !hits.iter().any(|(_, t)| matches!(t, HitTarget::Tab(_))),
