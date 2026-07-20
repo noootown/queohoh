@@ -58,3 +58,5 @@ export const settingsPath = (state: string): string =>
 export const sessionLineagePath = (state: string): string =>
 	join(state, "daemon/session-lineage.json");
 export const runsPath = (state: string) => join(state, "runs");
+/** Reserved review (discuss) sessions — index + per-session meta/transcript. */
+export const discussPath = (state: string) => join(state, "discuss");

@@ -37,6 +37,8 @@ import {
 	unknownModelError,
 } from "@queohoh/core";
 import { currentBuildId } from "./build-id.js";
+import type { DiscussService } from "./discuss-service.js";
+import { discussMetaToWire } from "./discuss-service.js";
 import type { Engine } from "./engine.js";
 import type { SettingsStore } from "./settings-store.js";
 
@@ -128,6 +130,12 @@ interface ApiDeps {
 		/** All known samples, in providers() order. */
 		snapshot: () => ProviderUsage[];
 	};
+	/**
+	 * Reserved review (discuss) sessions — juice AI review path. Optional so
+	 * bare api tests that never exercise discuss_* omit it; production daemon
+	 * always wires a DiscussService. Methods throw when called without one.
+	 */
+	discuss?: DiscussService;
 	onMutation: () => void;
 	/**
 	 * Tears the daemon down so a fresh build can take over. Invoked by the
@@ -220,8 +228,7 @@ export class ApiServer {
 			snap.providerUsages = usages;
 			// Single-chip back-compat: active provider's sample (or null).
 			const active = this.deps.settings.activeProvider();
-			snap.providerUsage =
-				usages.find((u) => u.provider === active) ?? null;
+			snap.providerUsage = usages.find((u) => u.provider === active) ?? null;
 		}
 		return snap;
 	}
@@ -1053,9 +1060,128 @@ export class ApiServer {
 				setTimeout(() => deps.onShutdown?.(), 50);
 				return true;
 			}
+			// ── discuss_* (juice AI review; snake_case wire fields) ──────────
+			// Additive RPC surface; qoo-tui does not call these. Meta/tail shapes
+			// use snake_case (session_id, next_cursor, …) so juice can keep a
+			// simple serde rename_all without camelCase duals.
+			case "discuss_ensure": {
+				const discuss = this.requireDiscuss();
+				const worktree = String(params.worktree ?? "");
+				if (!worktree) throw new Error("discuss_ensure: worktree required");
+				return discussMetaToWire(discuss.ensure(worktree));
+			}
+			case "discuss_turn": {
+				const discuss = this.requireDiscuss();
+				const worktree = String(params.worktree ?? "");
+				const prompt = String(params.prompt ?? "");
+				const rawAnchor = params.anchor;
+				let anchor:
+					| {
+							path: string;
+							side: "old" | "new";
+							line: number;
+							snippet?: string;
+					  }
+					| undefined;
+				if (rawAnchor !== undefined && rawAnchor !== null) {
+					if (typeof rawAnchor !== "object") {
+						throw new Error("discuss_turn: anchor must be an object");
+					}
+					const a = rawAnchor as Record<string, unknown>;
+					const side = a.side === "old" || a.side === "new" ? a.side : null;
+					if (
+						typeof a.path !== "string" ||
+						side === null ||
+						typeof a.line !== "number"
+					) {
+						throw new Error(
+							"discuss_turn: anchor requires path (string), side (old|new), line (number)",
+						);
+					}
+					anchor = {
+						path: a.path,
+						side,
+						line: a.line,
+						...(typeof a.snippet === "string" ? { snippet: a.snippet } : {}),
+					};
+				}
+				return discuss.startTurn({ worktree, prompt, anchor });
+			}
+			case "discuss_tail": {
+				const discuss = this.requireDiscuss();
+				const sessionId = String(params.session_id ?? "");
+				const cursor =
+					typeof params.cursor === "number" ? params.cursor : undefined;
+				return discuss.tail(sessionId, cursor);
+			}
+			case "discuss_stop": {
+				const discuss = this.requireDiscuss();
+				const sessionId = String(params.session_id ?? "");
+				return discuss.stop(sessionId);
+			}
+			case "discuss_reset": {
+				const discuss = this.requireDiscuss();
+				const worktree = String(params.worktree ?? "");
+				if (!worktree) throw new Error("discuss_reset: worktree required");
+				return discussMetaToWire(discuss.reset(worktree));
+			}
+			case "discuss_promote_fix": {
+				const discuss = this.requireDiscuss();
+				const sessionId = String(params.session_id ?? "");
+				const note = typeof params.note === "string" ? params.note : undefined;
+				const result = await discuss.promoteFix(sessionId, note);
+				// New queued task — kick a tick/broadcast like enqueue.
+				deps.onMutation();
+				return result;
+			}
+			case "discuss_promote_pr_reply": {
+				const discuss = this.requireDiscuss();
+				const sessionId = String(params.session_id ?? "");
+				const draft =
+					typeof params.draft === "string" ? params.draft : undefined;
+				const pr =
+					typeof params.pr === "number"
+						? params.pr
+						: typeof params.pr === "string" && params.pr.length > 0
+							? Number(params.pr)
+							: undefined;
+				const prNum = pr !== undefined && Number.isFinite(pr) ? pr : undefined;
+				// Optional line target from juice [+] — when present, post inline.
+				const path =
+					typeof params.path === "string" ? params.path : undefined;
+				const lineRaw = params.line;
+				const line =
+					typeof lineRaw === "number"
+						? lineRaw
+						: typeof lineRaw === "string" && lineRaw.length > 0
+							? Number(lineRaw)
+							: undefined;
+				const side =
+					typeof params.side === "string" ? params.side : undefined;
+				const anchor =
+					path && line !== undefined && Number.isFinite(line)
+						? { path, line, side }
+						: undefined;
+				const result = await discuss.promotePrReply(
+					sessionId,
+					draft,
+					prNum,
+					anchor,
+				);
+				deps.onMutation();
+				return result;
+			}
 			default:
 				throw new Error(`unknown method: ${method}`);
 		}
+	}
+
+	/** Discuss RPCs require a wired DiscussService (production always has one). */
+	private requireDiscuss(): DiscussService {
+		if (!this.deps.discuss) {
+			throw new Error("discuss service not available");
+		}
+		return this.deps.discuss;
 	}
 
 	private mustGet(id: string): TaskInstance {

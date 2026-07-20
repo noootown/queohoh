@@ -114,7 +114,7 @@ queohoh reload              # after changing daemon code: rebuild + restart
 claude mcp add queohoh -- queohoh mcp
 ```
 
-A minimal reference `/qoo` skill ships in `library/skills/qoo/` — copy it into `~/.claude/skills/` and it routes requests to the daemon purely through the MCP server above. It's intentionally simple; grow your own from it (see `library/README.md`).
+A minimal reference `/qoo` skill ships in `examples/skills/qoo/` — copy it into `~/.claude/skills/` and it routes requests to the daemon purely through the MCP server above. It's intentionally simple; grow your own from it (see `examples/README.md`).
 
 Interactive-session awareness (the scheduler won't run tasks in a worktree you're actively using) — add to `~/.claude/settings.json` hooks:
 

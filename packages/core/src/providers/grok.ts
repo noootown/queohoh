@@ -30,6 +30,7 @@ export const grokAdapter: ProviderAdapter = {
 		resumeSessionId,
 		systemPrompt,
 		promptFilePath,
+		mode,
 	}: BuildArgsInput): string[] {
 		if (!promptFilePath) {
 			throw new Error(
@@ -38,15 +39,18 @@ export const grokAdapter: ProviderAdapter = {
 					"a missing path here means the runner/adapter wiring is broken.",
 			);
 		}
-		// --always-approve: queohoh runs are autonomous, so tool executions must
-		// auto-approve. --resume reuses the same session id (no --fork-session), so
-		// finalizeRun's recordFork no-ops. --rules appends to the system prompt.
+		// --always-approve: agent-mode queohoh runs are autonomous, so tool
+		// executions must auto-approve. Discuss turns are read-only review, so
+		// we omit it (default/`agent` keeps it for back-compat). --resume reuses
+		// the same session id (no --fork-session), so finalizeRun's recordFork
+		// no-ops. --rules appends to the system prompt.
+		const approve = mode === "discuss" ? [] : ["--always-approve"];
 		return [
 			"--prompt-file",
 			promptFilePath,
 			"--output-format",
 			"streaming-json",
-			"--always-approve",
+			...approve,
 			"--model",
 			model,
 			...(resumeSessionId ? ["--resume", resumeSessionId] : []),

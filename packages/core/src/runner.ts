@@ -59,6 +59,12 @@ export interface ExecuteRunOptions extends ExecuteClaudeOptions {
 	 * `claudeArgs` (which stays a caller-supplied trailing passthrough for
 	 * back-compat with today's claude invocation). */
 	extraArgs?: string[];
+	/**
+	 * Forwarded to `adapter.buildArgs`. Default/`agent` keeps autonomous tool
+	 * approval; `discuss` is the read-only review path (e.g. grok omits
+	 * `--always-approve`). Missing means agent for back-compat.
+	 */
+	mode?: "agent" | "discuss";
 }
 
 /** Default inactivity window for the streaming Claude runner: 12 minutes. Reset
@@ -117,6 +123,7 @@ export function executeRun(
 				systemPrompt: opts.systemPrompt,
 				extraArgs: opts.extraArgs,
 				promptFilePath,
+				mode: opts.mode,
 			}),
 			...(opts.claudeArgs ?? []),
 		];

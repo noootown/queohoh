@@ -39,7 +39,7 @@ Optional overrides: `QUEOHOH_CONFIG` (explicit config file), `QUEOHOH_STATE_DIR`
 | `packages/core/` | Shared TS domain layer: worktree/ref resolution, task-definition model, config, queue dedup. No I/O policy of its own. |
 | `packages/daemon/` | The daemon — queue engine, git/PR enrichment, JSON-RPC API + `StateSnapshot`, MCP server, run shim, hot self-restart, CLI entry points. The single writer of all state. |
 | `crates/qoo-tui/` | The Rust ratatui TUI: `ipc/` wire layer, pure `selectors.rs` derivations, Elm-style `app/` state+update, pure `view/` render functions, event loop, hit-testing. |
-| `library/` | Versioned, shareable task definitions and a minimal reference `/qoo` skill. Source of truth to copy into your workspace / skills dir — the daemon does not read this directory. |
+| `examples/` | Example task definitions and a minimal reference `/qoo` skill. Source of truth to copy into your workspace / skills dir — the daemon does not read this directory. |
 | `scripts/` | `daemon-ensure.sh`: build and (re)start the daemon. |
 | `docs/` | `setup.md` (install/config/run walkthrough) and supporting material. |
 

@@ -30,6 +30,13 @@ export interface BuildArgsInput {
 	/** Absolute path to a temp file holding the prompt, when the adapter uses one
 	 * (grok). Provided by the runner; null when the adapter takes the prompt inline. */
 	promptFilePath?: string;
+	/**
+	 * Invocation mode. Default/`agent` is the autonomous task-queue path
+	 * (auto-approve tools). `discuss` is a read-only review turn — adapters
+	 * that gate tool approval (grok `--always-approve`) omit that flag so the
+	 * session stays advisory. Treat missing as `agent` for back-compat.
+	 */
+	mode?: "agent" | "discuss";
 }
 
 export interface UnavailableInput {

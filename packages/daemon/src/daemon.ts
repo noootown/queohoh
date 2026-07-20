@@ -3,23 +3,32 @@ import { dirname, join } from "node:path";
 import {
 	buildSecretMap,
 	createResolverIO,
+	DiscussStore,
 	defaultExec,
+	definitionExists,
 	executeClaude,
 	executeVerify,
+	globalWorkspaceDir,
+	instantiateDefinition,
 	loadGlobalConfig,
+	loadProjectVars,
 	makeRedactor,
+	projectWorkspaceDir,
 	QueueStore,
 	RunStore,
+	resolveDefinition,
 	SessionLineageStore,
 	SessionRegistry,
 } from "@queohoh/core";
 import { ApiServer } from "./api.js";
+import { DiscussService } from "./discuss-service.js";
 import { Engine } from "./engine.js";
 import { loadWorkspaceEnv } from "./env-loader.js";
 import { acquireLock, releaseLock } from "./lock.js";
 import { normalizeDaemonPath, probeGh } from "./path-env.js";
 import {
 	configPath,
+	discussPath,
 	pidPath,
 	runsPath,
 	sessionLineagePath,
@@ -141,6 +150,65 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		onChange: () => broadcastRef(),
 	});
 
+	// Reserved review sessions (juice AI review). In-process turns — not the
+	// QUEUE shim — so a discuss chat never competes with agent tasks for
+	// concurrency slots and survives as its own store under state/discuss/.
+	// queue deps power promote_fix / promote_pr_reply into the normal agent
+	// queue (full tools, worktree from DiscussMeta).
+	const discuss = new DiscussService({
+		store: new DiscussStore(discussPath(state)),
+		lineage,
+		settings,
+		config,
+		redact,
+		queue: {
+			create: (input) => store.create(input),
+			resolveCwd: (cwd) => engine.resolveCwd(cwd),
+			tryRunDefinition: async ({ repo, name, args }) => {
+				const project = config.projects.find((p) => p.name === repo);
+				if (!project) return null;
+				const projectDir = projectWorkspaceDir(config, repo);
+				const globalDir = globalWorkspaceDir(config);
+				// Example defs must be copied into the workspace (see examples/README).
+				// Missing → promote falls back to an ad-hoc prompt with the same rules.
+				if (
+					!definitionExists(projectDir, name) &&
+					!definitionExists(globalDir, name)
+				) {
+					return null;
+				}
+				try {
+					const def = resolveDefinition(config, repo, name);
+					const created = await instantiateDefinition(
+						def,
+						{ mode: "args", values: args },
+						{
+							store,
+							exec: defaultExec,
+							cwd: projectDir,
+							source: "tui",
+							globalVars: {
+								project: repo,
+								repo_path: project.path,
+								...config.vars,
+							},
+							repoVars: loadProjectVars(projectDir),
+							// Operator-initiated promote is "run NOW" — never silent-dedup.
+							bypassDedup: true,
+						},
+					);
+					return created[0] ? { id: created[0].id } : null;
+				} catch (err) {
+					console.warn(
+						`[discuss] tryRunDefinition ${repo}/${name} failed:`,
+						err instanceof Error ? err.message : err,
+					);
+					return null;
+				}
+			},
+		},
+	});
+
 	const server = new ApiServer({
 		engine,
 		store,
@@ -150,6 +218,7 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 		settings,
 		lineage,
 		usagePoller,
+		discuss,
 		onMutation: () => {
 			void engine.tick().then(() => server.broadcast());
 		},

@@ -52,8 +52,8 @@ crates/qoo-tui/         The TUI — strictly layered, one-way data flow
                           reverse scan = topmost wins
   src/markup.rs           Line styling/wrapping (transcripts, key/value)
 
-library/                Versioned shareable task definitions (NOT read by the
-                        daemon — copied into a workspace's tasks dir)
+examples/               Example task definitions + reference skill (NOT read by
+                        the daemon — copy into a workspace's tasks / skills dir)
 scripts/                daemon-ensure.sh: build + (re)start the daemon
 ```
 
