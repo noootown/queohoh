@@ -356,6 +356,29 @@ fn cycle_pane_wraps_queue_tasks_worktrees() {
 }
 
 #[test]
+fn create_with_no_projects_sets_setup_status_line() {
+    // Starter config (projects: []): `[s]chedule` used to be a silent no-op.
+    // It must surface the same setup hint the empty-state UI paints.
+    use crate::ipc::types::StateSnapshot;
+    let mut app = App::new("/tmp/runs".into(), "/tmp/sock".into());
+    app.snapshot = Some(StateSnapshot {
+        projects: vec![],
+        ..Default::default()
+    });
+    app.connected = true;
+    // Queue-focused `s` → AppAction::Create (schedule). `c` is ToggleCron now.
+    press(&mut app, KeyCode::Char('s'));
+    assert!(
+        matches!(app.mode, crate::app::Mode::List),
+        "schedule must not open a form without a project"
+    );
+    assert_eq!(
+        app.status_line.as_deref(),
+        Some(crate::view::NO_PROJECTS_HINT),
+    );
+}
+
+#[test]
 fn hl_cycle_detail_subtabs_without_moving_focus() {
     let mut app = crate::test_fixtures::fixture_app();
     press(&mut app, KeyCode::Tab); // → tasks

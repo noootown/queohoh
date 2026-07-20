@@ -356,11 +356,16 @@ impl App {
                 // bulk verb — a bulk range refuses rather than opening the form.
                 self.prefix_armed = false;
                 let pane = self.active_ui().last_list_pane;
-                if !self.bulk_blocked(pane, crate::hit::PaneButton::Schedule)
-                    && let Some(repo) = self.active_repo()
-                {
+                if self.bulk_blocked(pane, crate::hit::PaneButton::Schedule) {
+                    // bulk_blocked already set the status line.
+                } else if let Some(repo) = self.active_repo() {
                     let prefill = self.adhoc_prefill_target(pane);
                     cmds.extend(self.open_adhoc_create(repo, prefill, false));
+                } else {
+                    // Starter config / no project tabs: schedule has no repo.
+                    // Surface the same setup path the tab bar and empty panes
+                    // advertise.
+                    self.status_line = Some(crate::view::NO_PROJECTS_HINT.into());
                 }
                 true
             }
