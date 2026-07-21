@@ -451,15 +451,21 @@ fn queue_line(
             Style::default().fg(p.info),
         ));
     }
-    // Trailing live slot (fixed QUEUE_LIVE_W): `⏱ <elapsed>` for running rows or
-    // `#N in lane` for queued rows — both are "live/now" → warn. Archived/blank
-    // rows render raw padding so the reserved cell stays aligned.
+    // Trailing live slot (fixed QUEUE_LIVE_W): `⏱ <elapsed>` for running rows
+    // (formatted here from start epoch + now so the App rows cache is Tick-safe)
+    // or `#N in lane` for queued rows — both are "live/now" → warn. Archived/
+    // blank rows render raw padding so the reserved cell stays aligned.
     if layout.live_w > 0 {
         spans.push(Span::raw(gap));
-        if row.running || !row.detail.is_empty() {
-            spans.push(Span::styled(pad_clip(&row.detail, layout.live_w), Style::default().fg(p.warn)));
+        let live = if let Some(start) = row.running_elapsed {
+            elapsed_label(start, now_epoch_s)
         } else {
-            spans.push(Span::raw(pad_clip(&row.detail, layout.live_w)));
+            row.detail.clone()
+        };
+        if row.running || !live.is_empty() {
+            spans.push(Span::styled(pad_clip(&live, layout.live_w), Style::default().fg(p.warn)));
+        } else {
+            spans.push(Span::raw(pad_clip(&live, layout.live_w)));
         }
     }
     Line::from(spans)

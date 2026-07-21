@@ -23,9 +23,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::{App, Selection, TabUiState};
 use crate::hit::HitMap;
 use crate::ipc::types::DefinitionSummary;
-use crate::selectors::{
-    QueueRow, WorktreeRow, build_tabs, filter_rows, queue_rows, worktree_rows,
-};
+use crate::selectors::{QueueRow, WorktreeRow, build_tabs, filter_rows};
 use theme::Palette;
 
 /// Everything a frame needs, computed once so hit-testing and drawing use the
@@ -59,7 +57,9 @@ pub(crate) fn clamp_sel(sel: &Selection, len: usize) -> Selection {
 }
 
 /// The compute pass. Derives the active project, its filtered rows, and clamped
-/// selections. Pure — no drawing.
+/// selections. Queue/worktree lists come from App's pre-filter rows cache
+/// (rebuild only on snapshot_gen / project miss — not on Tick); search still
+/// filters after the cache. No drawing.
 pub fn compute(app: &App) -> Computed<'_> {
     let palette = Palette::default();
     let tabs = app
@@ -74,23 +74,42 @@ pub fn compute(app: &App) -> Computed<'_> {
         .and_then(|n| app.ui_by_tab.get(n).cloned())
         .unwrap_or_default();
 
-    let (queue, defs, worktrees) = match (&app.snapshot, &active_name) {
-        (Some(snap), Some(name)) => {
-            let q = queue_rows(snap, name, app.now_epoch_s);
-            let d = app.defs_by_project.get(name).cloned().unwrap_or_default();
-            let w = worktree_rows(snap, name);
-            (q, d, w)
-        }
-        _ => (Vec::new(), Vec::new(), Vec::new()),
-    };
+    // Pre-filter rows: cached on App by (snapshot_gen, project). Cloned out so
+    // search can still move/filter into the Computed-owned vecs without holding
+    // the RefCell borrow across the rest of the frame.
+    let (queue, worktrees) = app.cached_rows();
+    let defs = active_name
+        .as_ref()
+        .and_then(|n| app.defs_by_project.get(n).cloned())
+        .unwrap_or_default();
 
-    // Filter each pane by its search string (indices → owned rows).
-    let q_idx = filter_rows(&queue, &ui.search[0], |r| r.summary.clone());
-    let d_idx = filter_rows(&defs, &ui.search[1], |d| d.name.clone());
-    let w_idx = filter_rows(&worktrees, &ui.search[2], |r| r.name.clone());
-    let queue: Vec<QueueRow> = q_idx.into_iter().map(|i| queue[i].clone()).collect();
-    let defs: Vec<DefinitionSummary> = d_idx.into_iter().map(|i| defs[i].clone()).collect();
-    let worktrees: Vec<WorktreeRow> = w_idx.into_iter().map(|i| worktrees[i].clone()).collect();
+    // Empty search (the common case): move the already-built vec as-is — no
+    // filter_rows index vec, no clone-all of every row. Non-empty: indices of
+    // matches → owned rows via clone of the hits only.
+    let queue = if ui.search[0].is_empty() {
+        queue
+    } else {
+        filter_rows(&queue, &ui.search[0], |r| r.summary.clone())
+            .into_iter()
+            .map(|i| queue[i].clone())
+            .collect()
+    };
+    let defs = if ui.search[1].is_empty() {
+        defs
+    } else {
+        filter_rows(&defs, &ui.search[1], |d| d.name.clone())
+            .into_iter()
+            .map(|i| defs[i].clone())
+            .collect()
+    };
+    let worktrees = if ui.search[2].is_empty() {
+        worktrees
+    } else {
+        filter_rows(&worktrees, &ui.search[2], |r| r.name.clone())
+            .into_iter()
+            .map(|i| worktrees[i].clone())
+            .collect()
+    };
 
     let queue_sel = clamp_sel(&ui.selections[0], queue.len());
     let tasks_sel = clamp_sel(&ui.selections[1], defs.len());

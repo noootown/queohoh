@@ -71,7 +71,15 @@ pub struct QueueRow {
     /// task definition name; None for ad-hoc prompts
     pub def_name: Option<String>,
     pub summary: String,
+    /// Static live-column text for non-running rows (`#N in lane` for Queued;
+    /// empty otherwise). Running elapsed is NOT baked here — see
+    /// [`Self::running_elapsed`] so a rows cache can survive Tick without
+    /// freezing the timer (pane formats `elapsed_label` at paint, like worktrees).
     pub detail: String,
+    /// Start epoch of the CURRENT run when `running` (see [`run_start_epoch_s`]);
+    /// `None` for non-running rows. The QUEUE Live column formats the timer
+    /// against wall-clock `now` at draw time.
+    pub running_elapsed: Option<u64>,
     /// creation epoch seconds (parsed from the daemon ISO timestamp)
     pub created_epoch_s: u64,
     pub archived: bool,
@@ -361,7 +369,11 @@ pub fn active_count_for(snapshot: &StateSnapshot, project: &str) -> usize {
         .count()
 }
 
-pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> Vec<QueueRow> {
+/// Derive the pre-filter QUEUE rows for `project`. Elapsed is NOT formatted
+/// here: running rows carry a start epoch ([`QueueRow::running_elapsed`]) and
+/// the pane paints `elapsed_label` against wall-clock now — so App's rows cache
+/// need not rebuild on Tick (worktree rows already worked that way).
+pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
     // Live rows plus ALL project-filtered archived rows (dimmed by the view via
     // `archived: true`; archived rows whose worktree was deleted are hidden
     // outright — see the filter below). Full history is intentional (user wants
@@ -374,19 +386,19 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
     let mut queued_position: HashMap<String, usize> = HashMap::new();
     let mut rows: Vec<QueueRow> = Vec::new();
     for task in snapshot.tasks.iter().filter(|t| t.target.repo == project) {
-        // The detail column is a live-progress hint only: elapsed for Running,
-        // queue position for Queued. Done/Failed/NeedsInput/Unknown carry NOTHING
-        // — the ✓/✗/? glyph already says the outcome and the full error/status
+        // Live-progress: start epoch for Running (formatted at paint), queue
+        // position for Queued. Done/Failed/NeedsInput/Unknown carry NOTHING —
+        // the ✓/✗/? glyph already says the outcome and the full error/status
         // lives in the DETAIL pane; a trailing "done"/"exit code 1" duplicated it.
-        let detail = match task.status {
-            TaskStatus::Running => elapsed_label(run_start_epoch_s(task), now_epoch_s),
+        let (detail, running_elapsed) = match task.status {
+            TaskStatus::Running => (String::new(), Some(run_start_epoch_s(task))),
             TaskStatus::Queued => {
                 let lane = lane_label(task);
                 let position = queued_position.get(&lane).copied().unwrap_or(0) + 1;
                 queued_position.insert(lane, position);
-                format!("#{position} in lane")
+                (format!("#{position} in lane"), None)
             }
-            _ => String::new(),
+            _ => (String::new(), None),
         };
         rows.push(QueueRow {
             task_id: task.id.clone(),
@@ -400,6 +412,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
             def_name: task.definition.as_deref().map(def_display_name),
             summary: prompt_summary(&task.prompt),
             detail,
+            running_elapsed,
             created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: false,
             status: task.status,
@@ -440,6 +453,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str, now_epoch_s: u64) -> 
             summary: prompt_summary(&task.prompt),
             // Archived rows carry no detail text (the dimming + glyph convey state).
             detail: String::new(),
+            running_elapsed: None,
             created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: true,
             status: task.status,
@@ -469,6 +483,148 @@ fn task_lane(task: &TaskInstance) -> Option<String> {
         .map(|wt| format!("{}:{}", task.target.repo, wt))
 }
 
+/// Per-lane aggregate pre-computed once by [`build_lane_index`] — everything
+/// [`worktree_rows`] needs to answer, in O(1), the same five questions the
+/// legacy `worktree_state`/`queued_on_lane`/`running_elapsed_on_lane`/
+/// `next_queued_name_on_lane`/`last_finished_on_lane` each re-scanned
+/// `snapshot.tasks` (and `last_finished_on_lane` also `archived_recent`) to
+/// answer, once PER WORKTREE. Borrows into the snapshot rather than cloning —
+/// this is a hot per-frame path.
+#[derive(Debug, Default)]
+struct LaneAgg<'a> {
+    /// Any LIVE task on the lane is Running — feeds `worktree_state`'s Busy
+    /// branch (an archived task is never Running, so this is live-only by
+    /// construction, matching the legacy helper's live-only filter).
+    has_running: bool,
+    /// Newest-by-id LIVE task (ULIDs sort chronologically); ties keep the LAST
+    /// one seen while walking `snapshot.tasks`, mirroring `Iterator::max_by`'s
+    /// "last of equal maxima wins". Its status feeds `worktree_state`'s
+    /// Failed-vs-Free branch once nothing on the lane is running.
+    newest_live: Option<&'a TaskInstance>,
+    /// Count of LIVE Queued tasks on the lane — `queued_on_lane`.
+    queued_count: usize,
+    /// FIRST live Running task in `snapshot.tasks` order (NOT the newest) —
+    /// `running_elapsed_on_lane` always reads the head-of-lane runner.
+    first_running: Option<&'a TaskInstance>,
+    /// FIRST live Queued task in `snapshot.tasks` order — feeds
+    /// `next_queued_name_on_lane`.
+    first_queued: Option<&'a TaskInstance>,
+    /// Newest-by-id task across LIVE+ARCHIVED whose status is neither Running
+    /// nor Queued — feeds `last_finished_on_lane`. Built by walking
+    /// `snapshot.tasks` then `snapshot.archived_recent`, in that order, with
+    /// the same last-of-equal-maxima tiebreak as `newest_live`; together the
+    /// two passes reproduce
+    /// `tasks.iter().chain(archived_recent.iter()).max_by(id)` exactly.
+    newest_finished: Option<&'a TaskInstance>,
+}
+
+/// Builds every lane's [`LaneAgg`] in one forward pass over `snapshot.tasks`
+/// (live) and one over `snapshot.archived_recent`, replacing the five O(W×T)
+/// per-lane re-scans the old `worktree_rows` ran for every worktree with
+/// O(T+A) total work up front — the `W` worktrees then do O(1) hashmap
+/// lookups. A lane with zero tasks anywhere legitimately has no entry (the
+/// caller treats a miss as "no tasks on this lane", the same outcome the
+/// legacy per-lane scans produced when nothing matched).
+///
+/// "First" fields (`first_running`/`first_queued`) are set only once — the
+/// FIRST write wins — to preserve the legacy helpers' `.find()` (first-in-
+/// snapshot-order) semantics. "Newest" fields (`newest_live`/
+/// `newest_finished`) replace on `>=` on every candidate, preserving
+/// `Iterator::max_by`'s "last of equal maxima wins" semantics across the full
+/// live-then-archived scan (mirroring the legacy `.max_by(id)` calls exactly).
+fn build_lane_index<'a>(snapshot: &'a StateSnapshot) -> HashMap<String, LaneAgg<'a>> {
+    let mut index: HashMap<String, LaneAgg<'a>> = HashMap::new();
+
+    for task in &snapshot.tasks {
+        let Some(lane) = task_lane(task) else { continue };
+        let agg = index.entry(lane).or_default();
+        match task.status {
+            TaskStatus::Running => {
+                agg.has_running = true;
+                if agg.first_running.is_none() {
+                    agg.first_running = Some(task);
+                }
+            }
+            TaskStatus::Queued => {
+                agg.queued_count += 1;
+                if agg.first_queued.is_none() {
+                    agg.first_queued = Some(task);
+                }
+            }
+            _ => {}
+        }
+        if agg.newest_live.is_none_or(|cur| task.id >= cur.id) {
+            agg.newest_live = Some(task);
+        }
+        if !matches!(task.status, TaskStatus::Running | TaskStatus::Queued)
+            && agg.newest_finished.is_none_or(|cur| task.id >= cur.id)
+        {
+            agg.newest_finished = Some(task);
+        }
+    }
+
+    for task in &snapshot.archived_recent {
+        // Archived tasks are never Running/Queued in practice, but the guard
+        // mirrors the legacy filter exactly regardless of what the archive holds.
+        if matches!(task.status, TaskStatus::Running | TaskStatus::Queued) {
+            continue;
+        }
+        let Some(lane) = task_lane(task) else { continue };
+        let agg = index.entry(lane).or_default();
+        if agg.newest_finished.is_none_or(|cur| task.id >= cur.id) {
+            agg.newest_finished = Some(task);
+        }
+    }
+
+    index
+}
+
+/// Projects a lane's aggregate into the same `WtState` [`worktree_state`]
+/// returns; a lane miss (`None`) is the same "no tasks on this lane" outcome
+/// the legacy helper produced from an empty filtered vec.
+fn lane_state(agg: Option<&LaneAgg>) -> WtState {
+    let Some(agg) = agg else { return WtState::Free };
+    if agg.has_running {
+        return WtState::Busy;
+    }
+    match agg.newest_live {
+        Some(t) if matches!(t.status, TaskStatus::Failed | TaskStatus::VerifyFailed) => {
+            WtState::Failed
+        }
+        _ => WtState::Free,
+    }
+}
+
+/// Mirrors [`queued_on_lane`] over a [`LaneAgg`].
+fn lane_queued(agg: Option<&LaneAgg>) -> usize {
+    agg.map_or(0, |a| a.queued_count)
+}
+
+/// Mirrors [`running_elapsed_on_lane`] over a [`LaneAgg`].
+fn lane_running_elapsed(agg: Option<&LaneAgg>) -> Option<u64> {
+    agg.and_then(|a| a.first_running).map(run_start_epoch_s)
+}
+
+/// Mirrors [`next_queued_name_on_lane`] over a [`LaneAgg`].
+fn lane_next_queued(agg: Option<&LaneAgg>) -> Option<(String, bool)> {
+    agg.and_then(|a| a.first_queued).map(|t| lane_task_display_name(t, NEXT_NAME_CAP))
+}
+
+/// Mirrors [`last_finished_on_lane`] over a [`LaneAgg`].
+fn lane_last_finished(agg: Option<&LaneAgg>) -> Option<(char, String, u64, bool)> {
+    agg.and_then(|a| a.newest_finished).map(|t| {
+        let (name, is_def) = lane_task_display_name(t, usize::MAX);
+        (status_glyph(t), name, parse_iso_epoch_s(&t.created), is_def)
+    })
+}
+
+// The five per-lane helpers below are kept only as the differential-test
+// oracle for `build_lane_index` (see `lane_index_matches_legacy_per_lane_helpers`)
+// — `worktree_rows` now goes through the single-pass index above instead of
+// calling these once per worktree. `#[cfg(test)]` keeps them out of the
+// release build so they don't trip `dead_code` now that nothing outside tests
+// calls them.
+#[cfg(test)]
 fn worktree_state(snapshot: &StateSnapshot, lane: &str) -> WtState {
     let on_lane: Vec<&TaskInstance> = snapshot
         .tasks
@@ -490,6 +646,7 @@ fn worktree_state(snapshot: &StateSnapshot, lane: &str) -> WtState {
     }
 }
 
+#[cfg(test)]
 fn queued_on_lane(snapshot: &StateSnapshot, lane: &str) -> usize {
     snapshot
         .tasks
@@ -501,6 +658,7 @@ fn queued_on_lane(snapshot: &StateSnapshot, lane: &str) -> usize {
 /// Run-start epoch of a task RUNNING on `lane` (the first in snapshot order), or
 /// None. Drives the worktree row's live `⏱` timer — anchored on `started_at` so a
 /// re-run's clock restarts from the re-run (see [`run_start_epoch_s`]).
+#[cfg(test)]
 fn running_elapsed_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<u64> {
     snapshot
         .tasks
@@ -512,6 +670,7 @@ fn running_elapsed_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<u64> 
 /// Display name of the head-of-lane queued task (first in snapshot order): the
 /// def's short name, else the prompt clipped to `NEXT_NAME_CAP`. The bool is
 /// whether the name came from a definition (drives mauve vs fg coloring).
+#[cfg(test)]
 fn next_queued_name_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<(String, bool)> {
     snapshot
         .tasks
@@ -523,6 +682,7 @@ fn next_queued_name_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<(Str
 /// The lane's most recent FINISHED task (anything not running/queued) across both
 /// the live and archived lists, newest by id (ULIDs sort chronologically):
 /// (status glyph, display name, creation epoch).
+#[cfg(test)]
 fn last_finished_on_lane(snapshot: &StateSnapshot, lane: &str) -> Option<(char, String, u64, bool)> {
     snapshot
         .tasks
@@ -637,6 +797,12 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Build WORKTREES pane rows for `project`. Lane-derived fields (state, queued,
+/// running timer, next queued name, last finished) come from a single
+/// [`build_lane_index`] pass over the snapshot — O(T+A+W) instead of the old
+/// O(W×T) five-scan-per-worktree path. The next-queued name is projected once
+/// into both `next_name` and `next_is_def` (the double helper call used to walk
+/// the task list twice for the same cell).
 pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow> {
     let empty: Vec<crate::ipc::types::WorktreeInfo> = Vec::new();
     let worktrees = snapshot.worktrees.get(project).unwrap_or(&empty);
@@ -647,24 +813,33 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
         .iter()
         .find(|p| p.name == project)
         .and_then(|p| p.github_id.as_deref());
+    // One pass over live + archived tasks; each worktree then O(1)-looks up its
+    // lane. Built outside the map so W worktrees share a single index.
+    let lanes = build_lane_index(snapshot);
     let mut rows: Vec<WorktreeRow> = worktrees
         .iter()
         .map(|wt| {
             let lane = lane_key(project, &wt.name);
+            let agg = lanes.get(&lane);
+            // One next-queued projection — both the clipped name and the is-def
+            // flag come from the same head-of-lane Queued task (the double
+            // helper call used to re-walk the task list for each field).
+            let (next_name, next_is_def) = match lane_next_queued(agg) {
+                Some((n, d)) => (Some(n), d),
+                None => (None, false),
+            };
             WorktreeRow {
                 name: strip_repo_prefix(&wt.name, project).to_string(),
                 raw_name: wt.name.clone(),
                 path: wt.path.clone(),
                 branch: wt.branch.clone(),
-                state: worktree_state(snapshot, &lane),
-                queued: queued_on_lane(snapshot, &lane),
+                state: lane_state(agg),
+                queued: lane_queued(agg),
                 is_session: false,
-                running_elapsed: running_elapsed_on_lane(snapshot, &lane),
-                next_name: next_queued_name_on_lane(snapshot, &lane).map(|(n, _)| n),
-                next_is_def: next_queued_name_on_lane(snapshot, &lane)
-                    .map(|(_, d)| d)
-                    .unwrap_or(false),
-                last: last_finished_on_lane(snapshot, &lane),
+                running_elapsed: lane_running_elapsed(agg),
+                next_name,
+                next_is_def,
+                last: lane_last_finished(agg),
                 dirty: wt.dirty,
                 merged: wt.merged,
                 approved: wt.approved,
@@ -1277,7 +1452,8 @@ pub struct QueueColLayout {
     /// `AGE_W` when the relative-age column is kept, else 0 (fixed width).
     pub age_w: usize,
     /// `QUEUE_LIVE_W` when the trailing live slot is kept, else 0 (fixed width).
-    /// Renders `row.detail` — `⏱ <elapsed>` (running) or `#N in lane` (queued).
+    /// Renders live `⏱ <elapsed>` (from `running_elapsed` + now) or
+    /// `row.detail` (`#N in lane` for queued).
     pub live_w: usize,
 }
 
@@ -1979,7 +2155,7 @@ mod tests {
                 task_on(TaskStatus::Done, "01TASKDDD000000000000000000", "web", Some("wt-b")),
             ],
         );
-        let rows = queue_rows(&s, "platform", now());
+        let rows = queue_rows(&s, "platform");
         assert_eq!(
             rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
             vec!["01TASKAAA000000000000000000", "01TASKCCC000000000000000000"]
@@ -2042,14 +2218,24 @@ mod tests {
         let mut failed = task_on(TaskStatus::Failed, "t4", "platform", Some("wt-a"));
         failed.error = Some("tree left dirty".into());
         let done = task_on(TaskStatus::Done, "t5", "platform", Some("wt-a"));
-        let rows = queue_rows(&snap(vec![running, q1, q2, failed, done], vec![]), "platform", now());
+        let rows = queue_rows(&snap(vec![running, q1, q2, failed, done], vec![]), "platform");
         // ACTIVE section (running → queued) then FINISHED section (done/failed,
         // ordered by completion; here both lack finishedAt so id-desc wins →
         // t5(done) before t4(failed)). The `#N in lane` position is still computed
         // in creation order, so q1/q2 keep #1/#2 regardless of the display sort.
-        // Only live-progress states carry detail text; Failed/Done are empty.
-        assert_eq!(rows[0].detail, "⏱ 3m12s"); // running
+        // Running stores a start epoch (pane formats the timer at paint); Queued
+        // bakes `#N in lane`; Failed/Done are empty.
+        assert_eq!(rows[0].detail, ""); // running: timer not baked
+        assert_eq!(
+            rows[0].running_elapsed,
+            Some(parse_iso_epoch_s("2026-07-08T10:00:00.000Z"))
+        );
+        assert_eq!(
+            elapsed_label(rows[0].running_elapsed.unwrap(), now()),
+            "⏱ 3m12s"
+        );
         assert_eq!(rows[1].detail, "#1 in lane"); // q1
+        assert_eq!(rows[1].running_elapsed, None);
         assert_eq!(rows[2].detail, "#2 in lane"); // q2
         assert_eq!(rows[3].detail, ""); // done: no trailing "done"
         assert_eq!(rows[4].detail, ""); // failed: no trailing error word
@@ -2087,8 +2273,7 @@ mod tests {
                 vec![timed_out, session_limit, generic, no_reason, out_of_budget, provider_unavailable],
                 vec![],
             ),
-            "platform",
-            now(),
+            "platform"
         );
         let glyph_for = |id: &str| rows.iter().find(|r| r.task_id == id).unwrap().glyph;
         assert_eq!(glyph_for("t1"), '⧗');
@@ -2102,7 +2287,7 @@ mod tests {
     #[test]
     fn queue_rows_needs_input_has_no_detail_text() {
         let ni = task_on(TaskStatus::NeedsInput, "t1", "platform", Some("wt-a"));
-        let rows = queue_rows(&snap(vec![ni], vec![]), "platform", now());
+        let rows = queue_rows(&snap(vec![ni], vec![]), "platform");
         assert_eq!(rows[0].detail, ""); // the ‼ glyph carries the state
         assert_eq!(rows[0].glyph, '‼');
     }
@@ -2112,7 +2297,7 @@ mod tests {
         let mut pending = task_on(TaskStatus::Queued, "t1", "platform", None);
         pending.target.git_ref = "pr:257".into();
         let old = task_on(TaskStatus::Done, "t0", "platform", Some("wt-a"));
-        let rows = queue_rows(&snap(vec![pending], vec![old]), "platform", now());
+        let rows = queue_rows(&snap(vec![pending], vec![old]), "platform");
         assert_eq!(rows[0].worktree, "pr:257");
         assert!(rows[1].archived);
         assert_eq!(rows[1].detail, ""); // archived rows carry no detail text
@@ -2124,7 +2309,7 @@ mod tests {
         let archived: Vec<TaskInstance> = (0..15)
             .map(|i| task_on(TaskStatus::Done, &format!("t{i:02}"), "platform", Some("wt-a")))
             .collect();
-        let rows = queue_rows(&snap(vec![], archived), "platform", now());
+        let rows = queue_rows(&snap(vec![], archived), "platform");
         assert_eq!(rows.len(), 15);
         // With no finishedAt the FINISHED section falls back to id-desc, so
         // the newest (t14) leads and the oldest (t00) is last.
@@ -2148,7 +2333,7 @@ mod tests {
             ],
         );
         s.worktrees = platform_worktrees();
-        let rows = queue_rows(&s, "platform", now());
+        let rows = queue_rows(&s, "platform");
         let ids: Vec<&str> = rows.iter().map(|r| r.task_id.as_str()).collect();
         assert!(!ids.contains(&"t2"), "deleted-worktree archived row is hidden: {ids:?}");
         assert!(ids.contains(&"t1") && ids.contains(&"t3"), "survivors keep the dimmed display");
@@ -2161,7 +2346,6 @@ mod tests {
         let rows = queue_rows(
             &snap(vec![], vec![task_on(TaskStatus::Done, "t1", "platform", Some("wt-gone"))]),
             "platform",
-            now(),
         );
         assert_eq!(rows.len(), 1);
         assert!(rows[0].archived);
@@ -2177,7 +2361,7 @@ mod tests {
             vec![],
         );
         s.worktrees = platform_worktrees();
-        let rows = queue_rows(&s, "platform", now());
+        let rows = queue_rows(&s, "platform");
         assert_eq!(rows.len(), 1);
         assert!(!rows[0].archived);
     }
@@ -2194,7 +2378,7 @@ mod tests {
         );
         let mut s = snap(vec![], archived);
         s.worktrees = platform_worktrees();
-        let rows = queue_rows(&s, "platform", now());
+        let rows = queue_rows(&s, "platform");
         assert_eq!(rows.len(), 12);
         assert!(rows.iter().all(|r| r.task_id.starts_with("kept")), "only survivors shown");
     }
@@ -2207,7 +2391,7 @@ mod tests {
             "platform",
             Some("platform.dedup-dependabot-run"),
         );
-        let rows = queue_rows(&snap(vec![running], vec![]), "platform", now());
+        let rows = queue_rows(&snap(vec![running], vec![]), "platform");
         assert_eq!(rows[0].worktree, "dedup-dependabot-run");
     }
 
@@ -2215,7 +2399,7 @@ mod tests {
     fn queue_rows_display_repo_sentinel_as_repo_name() {
         let live = task_on(TaskStatus::Running, "t1", "platform", Some(REPO_SENTINEL));
         let archived = task_on(TaskStatus::Done, "t2", "platform", Some(REPO_SENTINEL));
-        let rows = queue_rows(&snap(vec![live], vec![archived]), "platform", now());
+        let rows = queue_rows(&snap(vec![live], vec![archived]), "platform");
         assert_eq!(rows[0].worktree, "platform");
         assert_eq!(rows[1].worktree, "platform");
     }
@@ -2226,7 +2410,7 @@ mod tests {
         t.definition = Some("squash-merge".into());
         t.created = "2026-07-08T10:00:00.000Z".into();
         let adhoc = task_on(TaskStatus::Queued, "t2", "platform", Some("wt-a"));
-        let rows = queue_rows(&snap(vec![t, adhoc], vec![]), "platform", now());
+        let rows = queue_rows(&snap(vec![t, adhoc], vec![]), "platform");
         assert_eq!(rows[0].def_name, Some("squash-merge".into()));
         assert_eq!(rows[1].def_name, None);
         assert_eq!(rows[0].created_epoch_s, parse_iso_epoch_s("2026-07-08T10:00:00.000Z"));
@@ -2238,7 +2422,7 @@ mod tests {
         // meaningless in the queue display.
         let mut t = task_on(TaskStatus::Running, "t1", "platform", Some("wt-a"));
         t.definition = Some("platform/pr-ready".into());
-        let rows = queue_rows(&snap(vec![t], vec![]), "platform", now());
+        let rows = queue_rows(&snap(vec![t], vec![]), "platform");
         assert_eq!(rows[0].def_name, Some("pr-ready".into()));
         assert_eq!(def_display_name("pr-ready"), "pr-ready");
         assert_eq!(def_display_name("platform/pr-ready"), "pr-ready");
@@ -2275,7 +2459,6 @@ mod tests {
                 vec![],
             ),
             "platform",
-            now(),
         );
         assert_eq!(
             rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
@@ -2300,7 +2483,6 @@ mod tests {
                 vec![],
             ),
             "platform",
-            now(),
         );
         assert_eq!(
             rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
@@ -2325,7 +2507,6 @@ mod tests {
                 vec![],
             ),
             "platform",
-            now(),
         );
         // Sorted: [running, queued | failed, done].
         assert_eq!(
@@ -2353,7 +2534,6 @@ mod tests {
                 vec![],
             ),
             "platform",
-            now(),
         );
         assert_eq!(
             rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
@@ -2372,13 +2552,11 @@ mod tests {
         let active = queue_rows(
             &snap(vec![qtask(TaskStatus::Running, "01R", "normal", None)], vec![]),
             "platform",
-            now(),
         );
         assert_eq!(queue_divider_after(&active), None);
         let finished = queue_rows(
             &snap(vec![qtask(TaskStatus::Done, "01D", "normal", None)], vec![]),
             "platform",
-            now(),
         );
         assert_eq!(queue_divider_after(&finished), None);
     }
@@ -2398,7 +2576,6 @@ mod tests {
                 vec![qtask(TaskStatus::Done, "01ARCH", "normal", Some("2026-07-09T13:00:00.000Z"))],
             ),
             "platform",
-            now(),
         );
         assert_eq!(
             rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
@@ -2420,7 +2597,6 @@ mod tests {
                 ],
             ),
             "platform",
-            now(),
         );
         assert_eq!(
             rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
@@ -2890,6 +3066,121 @@ mod tests {
         assert_eq!(rows.iter().find(|r| r.name == "wt-c").unwrap().queued, 0);
     }
 
+    // ---- build_lane_index (single-pass oracle vs the legacy O(W×T) per-lane
+    // helpers it replaces) ----
+
+    #[test]
+    fn lane_index_matches_legacy_per_lane_helpers() {
+        // wt-a: BUSY — a running task wins even with a Failed sibling present
+        // (proves Busy short-circuits the newest-by-id Failed/Free branch).
+        let tasks_a = vec![
+            task_on(TaskStatus::Failed, "01A00000000000000000000001", "platform", Some("wt-a")),
+            task_on(TaskStatus::Running, "01A00000000000000000000002", "platform", Some("wt-a")),
+        ];
+
+        // wt-b: queued-only, 2 queued tasks. The FIRST one in snapshot/vec order
+        // (deliberately the HIGHER id, i.e. NOT the newest-by-id) must win — this
+        // catches an index that picks by id instead of preserving `.find()`'s
+        // first-in-vec-order semantics.
+        let mut q_head =
+            task_on(TaskStatus::Queued, "01B00000000000000000000009", "platform", Some("wt-b"));
+        q_head.definition = Some("beta-def".into());
+        let mut q_tail =
+            task_on(TaskStatus::Queued, "01B00000000000000000000001", "platform", Some("wt-b"));
+        q_tail.definition = Some("alpha-def".into());
+        let tasks_b = vec![q_head, q_tail];
+
+        // wt-c: FAILED — newest-by-id live task is Failed.
+        let tasks_c = vec![
+            task_on(TaskStatus::Done, "01C00000000000000000000001", "platform", Some("wt-c")),
+            task_on(TaskStatus::Failed, "01C00000000000000000000002", "platform", Some("wt-c")),
+        ];
+
+        // wt-d: FREE — newest-by-id live task is Done despite an older Failed
+        // sibling (mirror of wt-c, opposite outcome).
+        let tasks_d = vec![
+            task_on(TaskStatus::Failed, "01D00000000000000000000001", "platform", Some("wt-d")),
+            task_on(TaskStatus::Done, "01D00000000000000000000002", "platform", Some("wt-d")),
+        ];
+
+        // wt-g: live/archived merge. The only LIVE task is OLDER by id than the
+        // ARCHIVED task, so `last_finished` (live+archived) must surface the
+        // archived one while `worktree_state` (live-only) still reads the live
+        // Done task as Free — the two aggregates diverge from the same lane.
+        let tasks_g =
+            vec![task_on(TaskStatus::Done, "01G00000000000000000000001", "platform", Some("wt-g"))];
+        let archived_g =
+            task_on(TaskStatus::Failed, "01G00000000000000000000005", "platform", Some("wt-g"));
+
+        // wt-e: archived-only — no live task on the lane at all.
+        let archived_e =
+            task_on(TaskStatus::Done, "01E00000000000000000000001", "platform", Some("wt-e"));
+
+        let mut tasks = Vec::new();
+        tasks.extend(tasks_a);
+        tasks.extend(tasks_b);
+        tasks.extend(tasks_c);
+        tasks.extend(tasks_d);
+        tasks.extend(tasks_g);
+        let archived = vec![archived_e, archived_g];
+        let s = snap(tasks, archived);
+
+        // wt-f: deliberately has NO task anywhere (live or archived) — exercises
+        // the "lane absent from the index" miss path, which must agree with what
+        // the legacy helpers return when nothing matches (all defaults).
+        let lanes: Vec<String> =
+            ["wt-a", "wt-b", "wt-c", "wt-d", "wt-e", "wt-f", "wt-g"]
+                .iter()
+                .map(|w| lane_key("platform", w))
+                .collect();
+
+        let index = build_lane_index(&s);
+        for lane in &lanes {
+            let agg = index.get(lane);
+            assert_eq!(lane_state(agg), worktree_state(&s, lane), "state mismatch for {lane}");
+            assert_eq!(lane_queued(agg), queued_on_lane(&s, lane), "queued mismatch for {lane}");
+            assert_eq!(
+                lane_running_elapsed(agg),
+                running_elapsed_on_lane(&s, lane),
+                "running_elapsed mismatch for {lane}"
+            );
+            assert_eq!(
+                lane_next_queued(agg),
+                next_queued_name_on_lane(&s, lane),
+                "next_queued mismatch for {lane}"
+            );
+            assert_eq!(
+                lane_last_finished(agg),
+                last_finished_on_lane(&s, lane),
+                "last_finished mismatch for {lane}"
+            );
+        }
+
+        // Sanity: the loop above only proves agreement, not that the fixture
+        // actually exercised the interesting branches — pin the non-trivial
+        // outcomes directly so a vacuously-passing fixture can't hide a bug.
+        assert_eq!(worktree_state(&s, &lane_key("platform", "wt-a")), WtState::Busy);
+        assert_eq!(worktree_state(&s, &lane_key("platform", "wt-c")), WtState::Failed);
+        assert_eq!(worktree_state(&s, &lane_key("platform", "wt-d")), WtState::Free);
+        assert_eq!(worktree_state(&s, &lane_key("platform", "wt-g")), WtState::Free);
+        assert_eq!(queued_on_lane(&s, &lane_key("platform", "wt-b")), 2);
+        assert_eq!(
+            next_queued_name_on_lane(&s, &lane_key("platform", "wt-b")),
+            Some(("beta-def".to_string(), true))
+        );
+        // wt-g's last-finished must come from the ARCHIVED Failed task (id …005),
+        // not the live Done task (id …001) — the live+archived merge in action.
+        assert_eq!(
+            last_finished_on_lane(&s, &lane_key("platform", "wt-g")).map(|(g, _, _, _)| g),
+            Some('✗')
+        );
+        // wt-e's last-finished must come from the archive alone.
+        assert_eq!(
+            last_finished_on_lane(&s, &lane_key("platform", "wt-e")).map(|(g, _, _, _)| g),
+            Some('●')
+        );
+    }
+
     // ---- pane_layout (mirrors computePaneLayout) ----
 
     const NONE_COLLAPSED: [bool; 3] = [false, false, false];
@@ -3110,6 +3401,7 @@ mod tests {
             def_name: def.map(str::to_string),
             summary: summary.into(),
             detail: String::new(),
+            running_elapsed: None,
             created_epoch_s: 0,
             archived: false,
             status: TaskStatus::Queued,
@@ -3607,25 +3899,27 @@ mod tests {
 
     #[test]
     fn queue_col_layout_stable_when_a_row_gains_a_timer() {
-        // Two row sets identical except one row goes finished (empty detail) →
-        // running (detail = "⏱ 5m03s"). The live/age/timestamp columns are FIXED
-        // reserved widths (never data-sized), so the layout is byte-identical.
-        let finished = |detail: &str, running: bool, glyph: char| QueueRow {
+        // Two row sets identical except one row goes finished (no start epoch) →
+        // running (start epoch set; timer formatted at paint). The live/age/
+        // timestamp columns are FIXED reserved widths (never data-sized), so the
+        // layout is byte-identical.
+        let finished = |running: bool, glyph: char| QueueRow {
             task_id: "t".into(),
             glyph,
             running,
             worktree: "feature".into(),
             def_name: Some("squash-merge".into()),
             summary: "implement the widget cache".into(),
-            detail: detail.into(),
+            detail: String::new(),
+            running_elapsed: if running { Some(now() - 303) } else { None },
             created_epoch_s: 0,
             archived: false,
             status: if running { TaskStatus::Running } else { TaskStatus::Done },
             priority: "normal".into(),
             finished_epoch_s: None,
         };
-        let before = vec![finished("", false, '✓'), qrow("main", None, "flaky migration")];
-        let after = vec![finished("⏱ 5m03s", true, '▶'), qrow("main", None, "flaky migration")];
+        let before = vec![finished(false, '✓'), qrow("main", None, "flaky migration")];
+        let after = vec![finished(true, '▶'), qrow("main", None, "flaky migration")];
         assert_eq!(queue_col_layout(&before, 100, 0), queue_col_layout(&after, 100, 0));
     }
 

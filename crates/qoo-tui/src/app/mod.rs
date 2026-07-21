@@ -13,6 +13,7 @@
 //! - [`def_args`] — def-picker, run-form, and create-worktree input handling.
 //! - [`mouse`] — mouse routing, drags, and DETAIL text selection.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +28,7 @@ use crate::ipc::types::{
 };
 use crate::keymap::AppAction;
 use crate::runfiles::RunFiles;
+use crate::selectors::{QueueRow, WorktreeRow};
 
 mod actions;
 mod def_args;
@@ -38,9 +40,24 @@ mod update;
 
 pub use mode::*;
 
+/// Pre-search-filter queue/worktree rows for one `(snapshot_gen, project)`.
+/// Rebuilt only on gen or project miss — never on Tick: running elapsed is a
+/// start epoch formatted at paint (`view/panes`), so wall-clock advances do not
+/// need a full `queue_rows`/`worktree_rows` re-derive.
+#[derive(Clone)]
+struct RowsCache {
+    snapshot_gen: u64,
+    project: String,
+    queue: Vec<QueueRow>,
+    worktrees: Vec<WorktreeRow>,
+}
+
 #[derive(Clone)]
 pub struct App {
     pub snapshot: Option<StateSnapshot>,
+    /// Bumped on every `Event::Snapshot`. Keys the pre-filter [`RowsCache`] so
+    /// handlers and draws reuse derived rows until the daemon pushes again.
+    pub snapshot_gen: u64,
     pub connected: bool,
     pub active_tab: usize,
     pub ui_by_tab: HashMap<String, TabUiState>,
@@ -179,6 +196,14 @@ pub struct App {
     /// opens new panes/windows via tmux, so they are inert outside it. Read from
     /// the environment once in `new`; tests set it directly.
     pub inside_tmux: bool,
+    /// Pre-filter queue/worktree rows for the active project. Interior mutability
+    /// so `view::compute(&App)` / `visible_len` / `row_identity` can refresh on
+    /// miss without forcing every call site to `&mut self` (matches
+    /// `detail_geom` / the other render-feedback cells).
+    rows_cache: RefCell<Option<RowsCache>>,
+    /// How many times `ensure_rows_cache` rebuilt the pre-filter lists. Tests
+    /// pin reuse across Tick / repeated compute until gen or project changes.
+    rows_cache_builds: Cell<u64>,
 }
 
 /// Whether a def consumes the worktree context a WORKTREES-scoped task menu
@@ -217,6 +242,7 @@ impl App {
     pub fn new(runs_dir: PathBuf, sock_path: PathBuf) -> Self {
         Self {
             snapshot: None,
+            snapshot_gen: 0,
             connected: false,
             active_tab: 0,
             ui_by_tab: HashMap::new(),
@@ -260,6 +286,55 @@ impl App {
             sock_path,
             runs_dir,
             inside_tmux: std::env::var_os("TMUX").is_some(),
+            rows_cache: RefCell::new(None),
+            rows_cache_builds: Cell::new(0),
+        }
+    }
+
+    /// Ensure the pre-filter queue/worktree cache matches the current
+    /// `snapshot_gen` and active project. No-op on hit; rebuilds from the
+    /// snapshot on miss. Safe under `&self` via `RefCell`.
+    pub(crate) fn ensure_rows_cache(&self) {
+        let project = self.active_repo().unwrap_or_default();
+        {
+            let cache = self.rows_cache.borrow();
+            if let Some(c) = cache.as_ref()
+                && c.snapshot_gen == self.snapshot_gen
+                && c.project == project
+            {
+                return;
+            }
+        }
+        let (queue, worktrees) = match (&self.snapshot, project.is_empty()) {
+            (Some(snap), false) => (
+                crate::selectors::queue_rows(snap, &project),
+                crate::selectors::worktree_rows(snap, &project),
+            ),
+            _ => (Vec::new(), Vec::new()),
+        };
+        self.rows_cache_builds
+            .set(self.rows_cache_builds.get().wrapping_add(1));
+        *self.rows_cache.borrow_mut() = Some(RowsCache {
+            snapshot_gen: self.snapshot_gen,
+            project,
+            queue,
+            worktrees,
+        });
+    }
+
+    /// Rebuild count for the pre-filter rows cache (tests assert reuse).
+    #[cfg(test)]
+    pub(crate) fn rows_cache_builds(&self) -> u64 {
+        self.rows_cache_builds.get()
+    }
+
+    /// Clone the cached pre-filter queue + worktree rows (rebuilds on miss).
+    /// Search filtering is still applied by `view::compute` after this.
+    pub(crate) fn cached_rows(&self) -> (Vec<QueueRow>, Vec<WorktreeRow>) {
+        self.ensure_rows_cache();
+        match self.rows_cache.borrow().as_ref() {
+            Some(c) => (c.queue.clone(), c.worktrees.clone()),
+            None => (Vec::new(), Vec::new()),
         }
     }
 

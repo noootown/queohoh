@@ -1,3 +1,4 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -10,6 +11,21 @@ use tokio::task::JoinHandle;
 
 use crate::event::Event;
 use crate::ipc::types::StateSnapshot;
+
+/// In-process dedup key for a raw snapshot JSON payload.
+///
+/// Hashes the serialized form rather than retaining it: under large queues the
+/// snapshot JSON can be multi-MB, and the push loop only needs equality against
+/// the previous commit. `DefaultHasher` is fine here — this is not a security
+/// boundary, just "same bytes as last time?" across reconnects of one TUI
+/// process. Keyed on the raw string (not the parsed Value) so envelope shape
+/// differences that stringify identically still collide, matching the old
+/// `lastPushedJson` / byte-equal behaviour.
+fn snapshot_dedup_key(raw: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    raw.hash(&mut h);
+    h.finish()
+}
 
 /// Short-lived NDJSON JSON-RPC client: one Unix-socket connection, sequential
 /// calls (mirror of `ApiClient` in packages/daemon/src/client.ts as used by
@@ -97,11 +113,12 @@ impl RpcClient {
 /// forever (mirror of use-daemon.ts's attempt/scheduleRetry loop).
 pub fn spawn_subscription(sock: PathBuf, tx: UnboundedSender<Event>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        // Persisted across reconnects: dedup key of the last committed snapshot
-        // (mirror of lastPushedJson). The per-session `first` flag inside
-        // subscription_session mirrors connectedRef: the first snapshot after a
-        // (re)connect always commits, even when byte-identical.
-        let mut last_committed: Option<String> = None;
+        // Persisted across reconnects: hash of the last committed snapshot
+        // payload (mirror of lastPushedJson, without retaining the multi-MB
+        // string). The per-session `first` flag inside subscription_session
+        // mirrors connectedRef: the first snapshot after a (re)connect always
+        // commits, even when the hash matches.
+        let mut last_committed: Option<u64> = None;
         loop {
             let _ = subscription_session(&sock, &tx, &mut last_committed).await;
             if tx.send(Event::Disconnected).is_err() {
@@ -115,7 +132,7 @@ pub fn spawn_subscription(sock: PathBuf, tx: UnboundedSender<Event>) -> JoinHand
 async fn subscription_session(
     sock: &Path,
     tx: &UnboundedSender<Event>,
-    last_committed: &mut Option<String>,
+    last_committed: &mut Option<u64>,
 ) -> Result<(), String> {
     let stream = UnixStream::connect(sock).await.map_err(|e| e.to_string())?;
     let (r, mut w) = stream.into_split();
@@ -153,14 +170,17 @@ async fn subscription_session(
             None // subscribe ack (id 1) or anything else
         };
         let Some(data) = data else { continue };
-        // Dedup on the serialized snapshot payload (envelope-independent, like
-        // JSON.stringify(pushed)) — except the first snapshot of this session.
+        // Dedup on a hash of the serialized snapshot payload (envelope-
+        // independent, like JSON.stringify(pushed)) — except the first
+        // snapshot of this session. Hash only: retaining raw was O(snapshot)
+        // memory for no gain beyond equality.
         let raw = data.to_string();
-        if !first && last_committed.as_deref() == Some(raw.as_str()) {
+        let key = snapshot_dedup_key(&raw);
+        if !first && *last_committed == Some(key) {
             continue;
         }
         first = false;
-        *last_committed = Some(raw);
+        *last_committed = Some(key);
         // Lenient decode: a malformed payload becomes the empty default rather
         // than killing the subscription task (types.rs handles missing fields).
         // Log the error — silent default previously blanked the whole TUI with
@@ -237,6 +257,17 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
         // returning drops both halves → connection closes
+    }
+
+    #[test]
+    fn snapshot_dedup_key_is_stable_and_discriminating() {
+        // Same bytes → same key (the only contract the push loop relies on).
+        assert_eq!(snapshot_dedup_key(SNAP_A), snapshot_dedup_key(SNAP_A));
+        // Distinct payloads must not collide for the fixtures we actually ship
+        // through the subscription tests — if they did, dedup would swallow B.
+        assert_ne!(snapshot_dedup_key(SNAP_A), snapshot_dedup_key(SNAP_B));
+        // Empty vs non-empty: guards the trivial all-zero / empty-input case.
+        assert_ne!(snapshot_dedup_key(""), snapshot_dedup_key(SNAP_A));
     }
 
     #[tokio::test]

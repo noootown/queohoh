@@ -22,6 +22,10 @@ impl App {
         match event {
             Event::Snapshot(snapshot) => {
                 self.snapshot = Some(snapshot);
+                // Invalidate the pre-filter rows cache (queue/worktree derivation
+                // is keyed on this gen). Project-tab switches reuse the same gen
+                // and miss on the project string instead.
+                self.snapshot_gen = self.snapshot_gen.wrapping_add(1);
                 self.connected = true;
                 let mut cmds = Vec::new();
                 // A fresh snapshot can change (or first-establish) the selected

@@ -78,6 +78,61 @@ fn tick_advances_clock_and_dirties() {
 }
 
 #[test]
+fn rows_cache_reuses_until_snapshot_gen_or_project_changes() {
+    // Pre-filter queue/worktree rows rebuild only on snapshot_gen / project miss.
+    // Tick advances now_epoch_s but must NOT rebuild (elapsed is painted live).
+    let mut app = app();
+    assert_eq!(app.rows_cache_builds(), 0);
+    app.update(Event::Snapshot(snapshot_with(
+        &["platform", "web"],
+        vec![running_task("platform")],
+    )));
+    app.active_tab = 0;
+    let _ = crate::view::compute(&app);
+    assert_eq!(app.rows_cache_builds(), 1, "first compute builds the cache");
+
+    let _ = crate::view::compute(&app);
+    let _ = app.visible_len(ListPane::Queue);
+    let _ = app.row_identity(ListPane::Queue, 0);
+    assert_eq!(
+        app.rows_cache_builds(),
+        1,
+        "repeated compute / visible_len / row_identity reuse the cache"
+    );
+
+    app.now_epoch_s = 0;
+    let _ = app.update(Event::Tick);
+    let _ = crate::view::compute(&app);
+    assert_eq!(
+        app.rows_cache_builds(),
+        1,
+        "Tick must not rebuild rows (running elapsed is start-epoch + paint-time now)"
+    );
+
+    // Project tab switch: same snapshot_gen, different project string → rebuild.
+    app.active_tab = 1;
+    let _ = crate::view::compute(&app);
+    assert_eq!(app.rows_cache_builds(), 2, "active project change rebuilds");
+
+    // Back to platform without a new snapshot → another rebuild (different project).
+    app.active_tab = 0;
+    let _ = crate::view::compute(&app);
+    assert_eq!(app.rows_cache_builds(), 3);
+
+    // Fresh daemon snapshot bumps gen → rebuild even on the same project.
+    app.update(Event::Snapshot(snapshot_with(
+        &["platform", "web"],
+        vec![running_task("platform")],
+    )));
+    let _ = crate::view::compute(&app);
+    assert_eq!(app.rows_cache_builds(), 4, "snapshot_gen bump rebuilds");
+    let snap_gen = app.snapshot_gen;
+    let _ = crate::view::compute(&app);
+    assert_eq!(app.rows_cache_builds(), 4);
+    assert_eq!(app.snapshot_gen, snap_gen);
+}
+
+#[test]
 fn wants_tick_requires_running_task_in_active_project() {
     let mut app = app();
     assert!(!app.wants_tick()); // no snapshot yet

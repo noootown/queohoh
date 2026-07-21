@@ -442,7 +442,7 @@ impl App {
         let snap = self.snapshot.as_ref()?;
         let repo = self.active_repo()?;
         let ui = self.active_ui();
-        let rows = crate::selectors::queue_rows(snap, &repo, self.now_epoch_s);
+        let rows = crate::selectors::queue_rows(snap, &repo);
         let vis = crate::selectors::filter_rows(&rows, &ui.search[0], |r| r.summary.clone());
         // The VISIBLE rows, in view order — the coordinate space the selection
         // and the marks both live in.
@@ -1302,7 +1302,7 @@ impl App {
         let Some(snap) = self.snapshot.as_ref() else { return QueueGotoTarget::NothingSelected };
         let Some(repo) = self.active_repo() else { return QueueGotoTarget::NothingSelected };
         let ui = self.active_ui();
-        let rows = crate::selectors::queue_rows(snap, &repo, self.now_epoch_s);
+        let rows = crate::selectors::queue_rows(snap, &repo);
         let vis = crate::selectors::filter_rows(&rows, &ui.search[0], |r| r.summary.clone());
         let cursor = ui.selections[0].cursor.min(vis.len().saturating_sub(1));
         let Some(row) = vis.get(cursor).and_then(|&i| rows.get(i)) else {
