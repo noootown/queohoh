@@ -85,13 +85,23 @@ export function createResolverIO(exec: Exec): ResolverIO {
 					cwd: repoPath,
 				});
 			}
-			const args = branch ? ["switch", branch] : ["switch", "-c", name];
+			// `--yes`: the daemon is non-interactive — without it Worktrunk
+			// refuses to run project post-start hooks (platform's mise/uv/docker
+			// setup) and spawn fails with "Cannot prompt for approval".
+			// `--no-cd`: we only need the worktree created; the daemon never
+			// changes its own cwd into it.
+			const args = branch
+				? ["--yes", "switch", "--no-cd", branch]
+				: ["--yes", "switch", "--no-cd", "-c", name];
 			const { exitCode } = await exec("wt", args, { cwd: repoPath });
 			if (exitCode === 0) {
 				const after = await listWorktrees(repoPath);
+				// Prefer branch match: Worktrunk path templates are often
+				// `{repo}.{branch}` (slashes folded), not the slash→dash name
+				// we pass for PR refs — basename equality alone misses them.
 				const spawned =
-					after.find((w) => w.name === name) ??
-					after.find((w) => w.branch === (branch ?? name));
+					after.find((w) => w.branch === (branch ?? name)) ??
+					after.find((w) => w.name === name);
 				if (spawned) return spawned;
 			}
 			throw new Error(`failed to spawn worktree: ${name}`);
@@ -106,7 +116,7 @@ export function createResolverIO(exec: Exec): ResolverIO {
 			await exec("git", ["clean", "-fd"], { cwd: worktree.path });
 			const { exitCode } = await exec(
 				"wt",
-				["remove", worktree.branch, "--yes"],
+				["--yes", "remove", worktree.branch],
 				{ cwd: repoPath },
 			);
 			if (exitCode !== 0) {

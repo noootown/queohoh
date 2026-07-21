@@ -6,6 +6,27 @@ import type { Redactor } from "./redact.js";
 
 export { formatEventToMarkdown } from "./event-format.js";
 
+/**
+ * Repair a missing space between streamed token deltas.
+ *
+ * Some providers (notably grok's streaming-json thought/text stream) emit
+ * sentence boundaries as separate tokens without a following space, e.g.
+ * `"comments."` then `"Python"`, which concatenates to `comments.Python`.
+ * When the buffer already ends in sentence punctuation and the next delta
+ * starts with a letter, insert a single space. Leading whitespace on the
+ * delta, or non-letter starts (digits after `1.`, closing quotes, …), are
+ * left alone so numbered lists and abbreviations stay intact.
+ */
+export function glueStreamDelta(buf: string, delta: string): string {
+	if (!buf || !delta) return delta;
+	const last = buf[buf.length - 1]!;
+	const first = delta[0]!;
+	if (".!?".includes(last) && /[A-Za-z]/.test(first)) {
+		return ` ${delta}`;
+	}
+	return delta;
+}
+
 export interface RunUsage {
 	costUsd: number | null;
 	turns: number | null;
@@ -238,16 +259,23 @@ export function executeRun(
 		// Append one thinking/text delta to the live stream, injecting the same
 		// "### Thinking" header and blank-line separator the old batched flush used
 		// -- but as each section STARTS rather than only once fully accumulated --
-		// then flushing whatever complete lines that produced.
-		const appendStreamDelta = (kind: "thinking" | "text", delta: string) => {
+		// then flushing whatever complete lines that produced. Returns the piece
+		// actually written (after glueStreamDelta) so the resultText accumulators
+		// stay byte-identical to the transcript body.
+		const appendStreamDelta = (
+			kind: "thinking" | "text",
+			delta: string,
+		): string => {
 			if (streamSection === "none" && kind === "thinking") {
 				streamBuf += "### Thinking\n";
 			} else if (streamSection === "thinking" && kind === "text") {
 				streamBuf += "\n\n";
 			}
 			streamSection = kind;
-			streamBuf += delta;
+			const piece = glueStreamDelta(streamBuf, delta);
+			streamBuf += piece;
 			flushStreamLines();
+			return piece;
 		};
 
 		// Flush whatever remains buffered (a trailing partial line with no newline
@@ -286,12 +314,10 @@ export function executeRun(
 				sessionId = parsed.sessionId;
 			}
 			if (parsed.thinkingDelta) {
-				thinkingAcc += parsed.thinkingDelta;
-				appendStreamDelta("thinking", parsed.thinkingDelta);
+				thinkingAcc += appendStreamDelta("thinking", parsed.thinkingDelta);
 			}
 			if (parsed.textDelta) {
-				textAcc += parsed.textDelta;
-				appendStreamDelta("text", parsed.textDelta);
+				textAcc += appendStreamDelta("text", parsed.textDelta);
 			}
 			if (parsed.result) {
 				// Delta-stream adapters (grok) carry no full-text result event, so
