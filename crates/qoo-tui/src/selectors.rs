@@ -133,10 +133,10 @@ pub struct WorktreeRow {
     /// which shares the `↣` merged slot but yields to it (see `wt_merge_marker`).
     pub approved: Option<bool>,
     /// PR has the `ready-for-review` label (daemon `readyForReview`). Shares the
-    /// merge-marker front slot as `r`; yields to merge and approve.
+    /// merge-marker front slot as `◎`; yields to merge and approve.
     pub ready_for_review: Option<bool>,
     /// PR has the `WIP` label (daemon `wip`). Shares the merge-marker front slot
-    /// as `w`; lowest priority (merge > approve > ready-for-review > WIP).
+    /// as `✎`; lowest priority (merge > approve > ready-for-review > WIP).
     pub wip: Option<bool>,
     pub last_commit_epoch: Option<u64>,
     pub last_commit_author: Option<String>,
@@ -1541,16 +1541,16 @@ pub enum WtMergeMarker {
     Merged,
     /// The PR's review decision is APPROVED but it isn't merged yet — `✓`, green.
     Approved,
-    /// PR has the `ready-for-review` label (and is not merged/approved) — `r`.
+    /// PR has the `ready-for-review` label (and is not merged/approved) — `◎`.
     ReadyForReview,
-    /// PR has the `WIP` label (and none of the higher markers) — `w`.
+    /// PR has the `WIP` label (and none of the higher markers) — `✎`.
     Wip,
 }
 
 /// Resolve a row's front merge/label marker. Precedence:
 /// merge > approve > ready-for-review > WIP. Higher facts win so e.g. an
 /// approved-then-merged PR keeps showing the merged glyph, and a PR with both
-/// `ready-for-review` and `WIP` labels shows `r` not `w`.
+/// `ready-for-review` and `WIP` labels shows `◎` not `✎`.
 pub fn wt_merge_marker(row: &WorktreeRow) -> Option<WtMergeMarker> {
     if row.merged == Some(true) {
         Some(WtMergeMarker::Merged)
@@ -3549,7 +3549,7 @@ mod tests {
 
     #[test]
     fn wt_merge_marker_ready_for_review_and_wip() {
-        // Ready-for-review alone → r.
+        // Ready-for-review alone → ◎.
         let ready = WorktreeRow {
             merged: Some(false),
             approved: Some(false),
@@ -3559,7 +3559,7 @@ mod tests {
         };
         assert_eq!(wt_merge_marker(&ready), Some(WtMergeMarker::ReadyForReview));
 
-        // WIP alone → w.
+        // WIP alone → ✎.
         let wip = WorktreeRow {
             merged: Some(false),
             approved: Some(false),

@@ -264,13 +264,13 @@ pub struct WorktreeInfo {
     /// Whether this worktree's PR has the `ready-for-review` label (daemon
     /// `readyForReview`, reduced from `gh`'s `labels[].name`). `Some(true)` =
     /// present, `Some(false)` = PR exists without it, `None`/null = unknown / no
-    /// PR / old daemon. Shares the merge-marker front slot as `r`; precedence is
+    /// PR / old daemon. Shares the merge-marker front slot as `◎`; precedence is
     /// merge > approve > ready-for-review > WIP (see `wt_merge_marker`).
     pub ready_for_review: Option<bool>,
     /// Whether this worktree's PR has the `WIP` label (daemon `wip`, reduced from
     /// `gh`'s `labels[].name`). `Some(true)` = present, `Some(false)` = PR exists
     /// without it, `None`/null = unknown / no PR / old daemon. Lowest-priority
-    /// front marker (`w`); see `wt_merge_marker`.
+    /// front marker (`✎`); see `wt_merge_marker`.
     pub wip: Option<bool>,
 }
 

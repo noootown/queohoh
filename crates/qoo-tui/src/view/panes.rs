@@ -602,7 +602,7 @@ fn worktree_line(
     }
     // Shared front marker slot. Precedence (merge > approve > ready-for-review >
     // WIP) lives in pure `wt_merge_marker`; blank for none/unknown/old daemons.
-    // Merged/approved stay ok-green; r/w use the GitHub label fills (theme-
+    // Merged/approved stay ok-green; ◎/✎ use the GitHub label fills (theme-
     // independent — see COLOR_PR_READY / COLOR_PR_WIP).
     if layout.merged_w > 0 {
         match wt_merge_marker(row) {
@@ -1567,7 +1567,7 @@ mod tests {
             merged: Some(false),
             approved: Some(false),
             ready_for_review: Some(true),
-            wip: Some(true), // both labels → r wins
+            wip: Some(true), // both labels → ◎ wins
             ..Default::default()
         };
         let wip = WorktreeRow {
