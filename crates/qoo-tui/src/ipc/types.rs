@@ -179,6 +179,12 @@ pub struct TaskInstance {
     pub verified: Option<bool>,
     pub verify_exit_code: Option<i64>,
     pub verify_output: Option<String>,
+    /// Scheduler-lane override from the definition's `lane:` (e.g. `testing1-stack`
+    /// for autotest / self-review-e2e). `None` on an old daemon or plain tasks →
+    /// the default per-worktree lane. The TUI's `#N in lane` counter and the
+    /// daemon scheduler both use this (via `scheduler_lane_key` / core `laneKey`)
+    /// so display position matches who actually serializes with whom.
+    pub lane: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -926,6 +932,18 @@ mod tests {
         let t: TaskInstance =
             serde_json::from_str(r#"{"id": "x", "status": "paused-by-alien"}"#).unwrap();
         assert_eq!(t.status, TaskStatus::Unknown);
+    }
+
+    #[test]
+    fn task_lane_parses_and_absent_defaults_none() {
+        let with: TaskInstance = serde_json::from_str(
+            r#"{"id":"t1","status":"queued","lane":"testing1-stack","target":{"repo":"platform","ref":"x","worktree":"wt-a"}}"#,
+        )
+        .unwrap();
+        assert_eq!(with.lane.as_deref(), Some("testing1-stack"));
+        let old: TaskInstance =
+            serde_json::from_str(r#"{"id":"t2","status":"queued"}"#).unwrap();
+        assert_eq!(old.lane, None);
     }
 
     #[test]

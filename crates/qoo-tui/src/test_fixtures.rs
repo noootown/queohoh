@@ -48,6 +48,7 @@ fn task(
         verified: None,
         verify_exit_code: None,
         verify_output: None,
+        lane: None,
     }
 }
 

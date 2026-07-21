@@ -252,10 +252,31 @@ fn status_glyph(task: &TaskInstance) -> char {
     }
 }
 
-/// `repo:worktree-or-ref` with the redundant `<repo>.` display prefix stripped.
-fn lane_label(task: &TaskInstance) -> String {
-    let lane = task.target.worktree.as_deref().unwrap_or(&task.target.git_ref);
-    format!("{}:{}", task.target.repo, strip_repo_prefix(lane, &task.target.repo))
+/// Scheduler lane key for queue-position display — mirrors core `laneKey`
+/// (`packages/core/src/task.ts`):
+///
+/// - worktree unresolved → bucket by override or git ref (display-only; the
+///   scheduler treats unresolved as null and routes them to resolve)
+/// - `task.lane` set → `repo:<lane>` (definition override; serializes across
+///   worktrees, e.g. `platform:testing1-stack`)
+/// - else → `repo:<worktree>` (default per-worktree concurrency)
+///
+/// This is the **one** key the scheduler uses for serialization, so `#N in lane`
+/// already aggregates worktree + override control: whatever would block a start
+/// on that key shares one position counter. Per-project max is a separate cap
+/// and is not part of lane position.
+fn scheduler_lane_key(task: &TaskInstance) -> String {
+    if let Some(override_lane) = task.lane.as_deref().filter(|s| !s.is_empty()) {
+        // Override applies even when worktree is still resolving so testing1-stack
+        // waiters already share one counter before their worktrees land.
+        return format!("{}:{}", task.target.repo, override_lane);
+    }
+    let wt = task
+        .target
+        .worktree
+        .as_deref()
+        .unwrap_or(task.target.git_ref.as_str());
+    format!("{}:{}", task.target.repo, wt)
 }
 
 /// ACTIVE-section status priority: running first, then needs-input, then queued.
@@ -382,7 +403,9 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
     // (done/failed/cancelled/skipped/unknown + archived).
     // The per-lane queue position (`#N in lane`) is computed in snapshot order
     // (creation order) BEFORE the display sort so it reflects execution order,
-    // not the re-sorted display position.
+    // not the re-sorted display position. Lane key = scheduler key
+    // (`scheduler_lane_key`), so definition `lane:` overrides (testing1-stack)
+    // share one counter across worktrees — matching who actually waits on whom.
     let mut queued_position: HashMap<String, usize> = HashMap::new();
     let mut rows: Vec<QueueRow> = Vec::new();
     for task in snapshot.tasks.iter().filter(|t| t.target.repo == project) {
@@ -393,7 +416,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
         let (detail, running_elapsed) = match task.status {
             TaskStatus::Running => (String::new(), Some(run_start_epoch_s(task))),
             TaskStatus::Queued => {
-                let lane = lane_label(task);
+                let lane = scheduler_lane_key(task);
                 let position = queued_position.get(&lane).copied().unwrap_or(0) + 1;
                 queued_position.insert(lane, position);
                 (format!("#{position} in lane"), None)
@@ -2026,6 +2049,7 @@ mod tests {
             verified: None,
             verify_exit_code: None,
             verify_output: None,
+            lane: None,
         }
     }
 
@@ -2246,6 +2270,41 @@ mod tests {
             rows.iter().map(|r| r.glyph).collect::<Vec<_>>(),
             vec!['▶', '○', '○', '●', '✗']
         );
+    }
+
+    #[test]
+    fn queue_rows_lane_override_shares_position_across_worktrees() {
+        // Three self-review-e2e-style tasks: same definition lane override
+        // (`testing1-stack`), different worktrees. Scheduler serializes them on
+        // one key; the Live column must share one #N counter (not #1 per worktree).
+        let mut running = task_on(TaskStatus::Running, "t1", "platform", Some("JUS-1927"));
+        running.lane = Some("testing1-stack".into());
+        let mut q1 = task_on(TaskStatus::Queued, "t2", "platform", Some("qoo-small"));
+        q1.lane = Some("testing1-stack".into());
+        let mut q2 = task_on(TaskStatus::Queued, "t3", "platform", Some("SEC-37"));
+        q2.lane = Some("testing1-stack".into());
+        // Control: plain autofix-style task on yet another worktree — own lane.
+        let plain = task_on(TaskStatus::Queued, "t4", "platform", Some("other-wt"));
+
+        let rows = queue_rows(&snap(vec![running, q1, q2, plain], vec![]), "platform");
+        let by_id = |id: &str| {
+            rows.iter()
+                .find(|r| r.task_id == id)
+                .map(|r| r.detail.as_str())
+                .unwrap_or("")
+        };
+        assert_eq!(by_id("t1"), ""); // running: timer, not #N
+        assert_eq!(by_id("t2"), "#1 in lane");
+        assert_eq!(by_id("t3"), "#2 in lane");
+        assert_eq!(by_id("t4"), "#1 in lane"); // different scheduler key
+    }
+
+    #[test]
+    fn scheduler_lane_key_prefers_override_over_worktree() {
+        let mut t = task_on(TaskStatus::Queued, "t", "platform", Some("JUS-1"));
+        assert_eq!(scheduler_lane_key(&t), "platform:JUS-1");
+        t.lane = Some("testing1-stack".into());
+        assert_eq!(scheduler_lane_key(&t), "platform:testing1-stack");
     }
 
     #[test]
