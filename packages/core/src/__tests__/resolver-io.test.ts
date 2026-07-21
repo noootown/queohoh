@@ -90,7 +90,7 @@ describe("createResolverIO", () => {
 				// The new worktree only appears after `wt switch` has run.
 				return { stdout: wtRan ? after : before, exitCode: 0 };
 			}
-			if (key === "wt switch -c JUS-77") {
+			if (key === "wt --yes switch --no-cd -c JUS-77") {
 				wtRan = true;
 				return { stdout: "", exitCode: 0 };
 			}
@@ -113,7 +113,7 @@ describe("createResolverIO", () => {
 			if (key === "git worktree list --porcelain") {
 				return { stdout: wtRan ? after : PORCELAIN, exitCode: 0 };
 			}
-			if (key === `wt switch ${branch}`) {
+			if (key === `wt --yes switch --no-cd ${branch}`) {
 				wtRan = true;
 				return { stdout: "", exitCode: 0 };
 			}
@@ -125,7 +125,8 @@ describe("createResolverIO", () => {
 		expect(spawned.branch).toBe(branch);
 		expect(calls).toContain(`git fetch origin ${branch}`);
 		expect(calls).toContain(`git branch --track ${branch} origin/${branch}`);
-		expect(calls.some((c) => c.startsWith("wt switch -c"))).toBe(false);
+		// Must not create a NEW branch (-c); --no-cd is fine.
+		expect(calls.some((c) => /\bswitch\b.*\s-c(\s|$)/.test(c))).toBe(false);
 	});
 
 	it("spawnWorktree throws when wt fails", async () => {
@@ -153,7 +154,7 @@ describe("createResolverIO", () => {
 		expect(records).toEqual([
 			{ key: "git reset --hard HEAD", cwd: "/wt/JUS-77" },
 			{ key: "git clean -fd", cwd: "/wt/JUS-77" },
-			{ key: "wt remove JUS-77-fix --yes", cwd: "/repo" },
+			{ key: "wt --yes remove JUS-77-fix", cwd: "/repo" },
 			{ key: "git branch -D JUS-77-fix", cwd: "/repo" },
 		]);
 	});
@@ -194,7 +195,7 @@ describe("createResolverIO", () => {
 			path: "/wt/JUS-77",
 			branch: "JUS-77-fix",
 		});
-		expect(keys).toContain("wt remove JUS-77-fix --yes");
+		expect(keys).toContain("wt --yes remove JUS-77-fix");
 		expect(keys).toContain("git branch -D JUS-77-fix");
 	});
 });

@@ -150,6 +150,44 @@ process.stdout.write(JSON.stringify({ type: "result", text: contents }) + "\\n")
 		expect(existsSync(join(dir, "prompt.txt"))).toBe(false);
 	});
 
+	it("inserts a space when grok thought deltas join sentence.Next without one", async () => {
+		// Live bug: grok emits `"comments."` then `"Python"` as separate thought
+		// tokens; naive concat produced `comments.Python` in the TUI transcript.
+		const { dir, eventsPath, transcriptPath } = paths();
+		const script = fakeBin(
+			dir,
+			`const emit = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+emit({ type: "thought", data: "reviews, and comments." });
+emit({ type: "thought", data: "Python f-string issue." });
+emit({ type: "thought", data: "The first query failed." });
+emit({ type: "text", data: "done." });
+emit({ type: "text", data: "Really." });
+emit({ type: "end", stopReason: "EndTurn", sessionId: "gsess-glue", num_turns: 1 });
+`,
+		);
+		const res = await executeRun(grokAdapter, {
+			prompt: "ping",
+			model: "grok-4.5",
+			cwd: dir,
+			timeoutMs: 5000,
+			claudeBin: script,
+			eventsPath,
+			transcriptPath,
+			redact: (s) => s,
+		});
+		expect(res.exitCode).toBe(0);
+		const md = readFileSync(transcriptPath, "utf-8");
+		expect(md).toContain(
+			"reviews, and comments. Python f-string issue. The first query failed.",
+		);
+		expect(md).toContain("done. Really.");
+		expect(md).not.toMatch(/comments\.Python/);
+		expect(md).not.toMatch(/issue\.The/);
+		expect(md).not.toMatch(/done\.Really/);
+		// resultText is the text section only (glued the same way)
+		expect(res.resultText).toBe("done. Really.");
+	});
+
 	// grok's streaming-json carries no full-text result: the runner accumulates
 	// `thought`/`text` deltas into resultText, AND streams them into
 	// transcript.md line-by-line as they arrive (not just once at the end).
