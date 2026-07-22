@@ -7,7 +7,9 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use crate::ipc::types::TaskDefinition;
 
 /// Fixed tail window: read at most this many bytes from the end of transcript.md.
-const TAIL_WINDOW: u64 = 262_144;
+/// Bumped from 256 KiB → 2 MiB so long agent runs still scroll back usefully
+/// without loading multi‑MB full files every poll.
+const TAIL_WINDOW: u64 = 2 * 1024 * 1024;
 
 /// Contents of a run's on-disk files. `PartialEq` so content-identical re-reads
 /// can be dropped before becoming events (Task 10's poll loop).
@@ -19,7 +21,7 @@ pub struct RunFiles {
     /// scrolled out). The transcript styler seeds [`crate::markup::fence_states_from`]
     /// with this so mid-fence tails don't invert prose/code styling. `false`
     /// when the transcript is missing/empty, and (a known limitation) when the
-    /// file exceeds the 256 KiB read window the unseen prefix's parity is
+    /// file exceeds the `TAIL_WINDOW` read window the unseen prefix's parity is
     /// unknowable so we assume outside-fence — same as before this flag existed.
     pub transcript_starts_in_fence: bool,
     pub report: Vec<String>,
@@ -83,8 +85,8 @@ pub struct RunMeta {
 
 /// Read `<runs_dir>/<task_id>/{report.md, transcript.md}`. Report is read fully
 /// and split into lines; transcript is tail-read: stat the length, seek to
-/// `max(0, len − 256KiB)`, read to end, drop the first (partial) line when the
-/// seek started mid-file, keep the last `tail_lines` lines. Missing or
+/// `max(0, len − TAIL_WINDOW)`, read to end, drop the first (partial) line when
+/// the seek started mid-file, keep the last `tail_lines` lines. Missing or
 /// unreadable files yield empty vecs — never an error (parity: run dirs appear
 /// lazily as the worker writes).
 pub async fn read_run_files(runs_dir: &Path, task_id: &str, tail_lines: usize) -> RunFiles {
@@ -438,14 +440,14 @@ mod tests {
 
     #[tokio::test]
     async fn large_transcript_tail_correct_and_partial_line_dropped() {
-        // Push well past the 256 KiB window, then 25 known tail lines. The seek
+        // Push well past TAIL_WINDOW (2 MiB), then 25 known tail lines. The seek
         // lands mid-line inside the padding; the torn first line must be dropped.
-        let padding: Vec<String> = (0..8000)
-            .map(|i| format!("padding line {i} {}", "x".repeat(32)))
+        let padding: Vec<String> = (0..40_000)
+            .map(|i| format!("padding line {i} {}", "x".repeat(48)))
             .collect();
         let tail: Vec<String> = (0..25).map(|i| format!("tail {i}")).collect();
         let content = [padding.clone(), tail.clone()].concat().join("\n");
-        assert!(content.len() > 262_144);
+        assert!(content.len() as u64 > TAIL_WINDOW);
         let runs = setup("01BIG", Some(&content), None);
         let out = read_run_files(&runs, "01BIG", 25).await;
         assert_eq!(out.transcript_tail, tail);

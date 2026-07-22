@@ -216,9 +216,11 @@ impl App {
         (self.size.1 as usize).saturating_sub(6).max(1)
     }
 
-    /// Tail lines to read: 4 windows of scrollback behind the visible region.
+    /// Tail lines to read: 20 viewports of scrollback (was 4 — too short for
+    /// long agent transcripts). Floored at 1; still clipped by `TAIL_WINDOW`
+    /// bytes in `runfiles::read_tail`.
     pub(crate) fn tail_lines(&self) -> usize {
-        (self.detail_height() * 4).max(1)
+        (self.detail_height() * 20).max(1)
     }
 
     /// The pane a hit target belongs to (for wheel/drag routing). Row/PaneBody/
