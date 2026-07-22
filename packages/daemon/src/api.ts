@@ -193,11 +193,31 @@ export class ApiServer {
 			deps.claudeProjectsDir ?? join(homedir(), ".claude", "projects");
 	}
 
+	/**
+	 * Wire-side prompt budget. Queue list only needs the first ~line (TUI
+	 * `prompt_summary` is 240 chars); full prompts (often multi‑KB intake /
+	 * autofix text) were ~75% of a 11 MB snapshot and the main reason state
+	 * RPCs took ~6–10s. Detail can re-fetch via the `task` method.
+	 */
+	static readonly PROMPT_WIRE_MAX = 400;
+	/**
+	 * Cap on archived rows in the snapshot. Name is still `archivedRecent`;
+	 * we keep the newest N by ULID order (ids are time-sortable). Older archive
+	 * files stay on disk for unarchive/getAny.
+	 */
+	static readonly ARCHIVED_WIRE_MAX = 200;
+
 	snapshot(): StateSnapshot {
+		const live = this.deps.store.list().map((t) => this.forWire(t));
+		// Newest last after id-sort — take the tail.
+		const archivedAll = this.deps.store.listArchived();
+		const archivedTail =
+			archivedAll.length > ApiServer.ARCHIVED_WIRE_MAX
+				? archivedAll.slice(-ApiServer.ARCHIVED_WIRE_MAX)
+				: archivedAll;
 		const snap: StateSnapshot = {
-			tasks: this.deps.store.list(),
-			// Full archive — name is historical (`archivedRecent`); do not re-cap.
-			archivedRecent: this.deps.store.listArchived(),
+			tasks: live,
+			archivedRecent: archivedTail.map((t) => this.forWire(t)),
 			sessions: this.deps.registry.list(),
 			running: this.deps.engine.runningTaskIds(),
 			// Per-project cap (see GlobalConfig.maxConcurrentTasks) — not a global total.
@@ -233,12 +253,41 @@ export class ApiServer {
 		return snap;
 	}
 
+	/** Truncate heavy fields for the broadcast/state payload. Disk + getAny keep full text. */
+	private forWire(task: TaskInstance): TaskInstance {
+		const prompt = task.prompt ?? "";
+		const verifyOutput = task.verifyOutput ?? null;
+		let next = task;
+		if (prompt.length > ApiServer.PROMPT_WIRE_MAX) {
+			next = {
+				...next,
+				prompt: `${prompt.slice(0, ApiServer.PROMPT_WIRE_MAX - 1)}…`,
+			};
+		}
+		// verify_output is bounded ~4 KB already on write; still clamp in case.
+		if (verifyOutput !== null && verifyOutput.length > 2048) {
+			next = {
+				...next,
+				verifyOutput: `${verifyOutput.slice(0, 2047)}…`,
+			};
+		}
+		return next;
+	}
+
 	broadcast(): void {
 		const frame = `${JSON.stringify({ event: "state", data: this.snapshot() })}\n`;
+		// Skip write when nothing changed — common for the 2s tick when the
+		// queue is idle. Still pays stringify cost, but avoids flooding clients
+		// with identical  multi‑MB frames (and the TUI re-derive work).
+		if (frame === this.lastBroadcastFrame) return;
+		this.lastBroadcastFrame = frame;
 		for (const sock of this.subscribers) {
 			sock.write(frame);
 		}
 	}
+
+	/** Last JSON frame sent to subscribers; used to skip no-op broadcasts. */
+	private lastBroadcastFrame = "";
 
 	listen(sockPath: string): Promise<void> {
 		if (existsSync(sockPath)) unlinkSync(sockPath);
@@ -956,6 +1005,12 @@ export class ApiServer {
 			}
 			case "runMeta":
 				return deps.runStore.readRunMeta(String(params.id));
+			case "task": {
+				// Full task (untruncated prompt) for DETAIL prompt tab / resume.
+				// Snapshot only ships a short prompt preview for wire size.
+				const id = String(params.id ?? "");
+				return deps.store.getAny(id) ?? null;
+			}
 			case "listSessions": {
 				const repo = String(params.repo ?? "");
 				const worktree = String(params.worktree ?? "");

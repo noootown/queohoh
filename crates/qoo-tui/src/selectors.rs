@@ -1089,6 +1089,28 @@ pub fn filter_rows<T>(rows: &[T], filter: &str, text_of: impl Fn(&T) -> String) 
         .collect()
 }
 
+/// Haystack for QUEUE pane `/` search. Includes definition name (task name),
+/// worktree, and prompt summary so a query like `intake` or `pr-ready` or a
+/// worktree `JUS-1966` hits the right rows — not just freeform prompt text.
+pub fn queue_search_text(row: &QueueRow) -> String {
+    let mut s = String::with_capacity(
+        row.def_name.as_ref().map(|d| d.len() + 1).unwrap_or(0)
+            + row.worktree.len()
+            + 1
+            + row.summary.len(),
+    );
+    if let Some(d) = &row.def_name {
+        s.push_str(d);
+        s.push(' ');
+    }
+    if !row.worktree.is_empty() {
+        s.push_str(&row.worktree);
+        s.push(' ');
+    }
+    s.push_str(&row.summary);
+    s
+}
+
 /// "pr, mode=ready, review=auto" — `name` for required args, `name=default` otherwise.
 pub fn arg_summary(args: &[ArgSpec]) -> String {
     args.iter()
@@ -3433,6 +3455,39 @@ mod tests {
         assert_eq!(filter_rows(&rows, "tui", |r| r.clone()), vec![0, 2]);
         assert_eq!(filter_rows(&rows, "TUI", |r| r.clone()), vec![0, 2]);
         assert_eq!(filter_rows(&rows, "xyz", |r| r.clone()), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn queue_search_text_matches_def_name_worktree_and_summary() {
+        let row = QueueRow {
+            task_id: "t1".into(),
+            glyph: '○',
+            running: false,
+            worktree: "JUS-1966".into(),
+            def_name: Some("intake".into()),
+            summary: "blank page after undo".into(),
+            detail: String::new(),
+            running_elapsed: None,
+            created_epoch_s: 0,
+            archived: false,
+            status: TaskStatus::Queued,
+            priority: "normal".into(),
+            finished_epoch_s: None,
+        };
+        let hay = queue_search_text(&row);
+        assert!(hay.contains("intake"));
+        assert!(hay.contains("JUS-1966"));
+        assert!(hay.contains("blank page after undo"));
+        // Filter by task (def) name
+        assert_eq!(filter_rows(&[row.clone()], "intake", queue_search_text), vec![0]);
+        assert_eq!(
+            filter_rows(&[row.clone()], "pr-ready", queue_search_text),
+            Vec::<usize>::new()
+        );
+        // Filter by worktree / ticket-like name
+        assert_eq!(filter_rows(&[row.clone()], "1966", queue_search_text), vec![0]);
+        // Still matches prompt summary
+        assert_eq!(filter_rows(&[row], "undo", queue_search_text), vec![0]);
     }
 
     // ---- column layout helpers ----

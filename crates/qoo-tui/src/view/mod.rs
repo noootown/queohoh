@@ -23,7 +23,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::{App, Selection, TabUiState};
 use crate::hit::HitMap;
 use crate::ipc::types::DefinitionSummary;
-use crate::selectors::{QueueRow, WorktreeRow, build_tabs, filter_rows};
+use crate::selectors::{QueueRow, WorktreeRow, build_tabs, filter_rows, queue_search_text};
 use theme::Palette;
 
 /// Everything a frame needs, computed once so hit-testing and drawing use the
@@ -89,7 +89,7 @@ pub fn compute(app: &App) -> Computed<'_> {
     let queue = if ui.search[0].is_empty() {
         queue
     } else {
-        filter_rows(&queue, &ui.search[0], |r| r.summary.clone())
+        filter_rows(&queue, &ui.search[0], queue_search_text)
             .into_iter()
             .map(|i| queue[i].clone())
             .collect()

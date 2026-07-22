@@ -242,6 +242,9 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 	const watcher = watch(join(state, "tasks"), () => {
 		if (debounce) clearTimeout(debounce);
 		debounce = setTimeout(() => {
+			// External write (or our own rename) — drop list caches so the next
+			// snapshot re-reads. Writes through QueueStore already invalidate.
+			store.reload();
 			void engine.tick().then(() => server.broadcast());
 		}, 250);
 	});

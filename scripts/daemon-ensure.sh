@@ -14,18 +14,31 @@ LOGFILE="$STATE/daemon/daemon.log"
 
 mkdir -p "$STATE/daemon"
 
-is_up() { $CLI status >/dev/null 2>&1; }
+# Liveness only — must NOT call `status`/`state`. Full state snapshots can take
+# 10s+ with a large live+archive queue, which used to make ensure fail while the
+# daemon was healthy. Prefer `ping` (instant pong); fall back to a socket connect
+# for older builds that lack the ping command.
+is_up() {
+	if $CLI ping >/dev/null 2>&1; then
+		return 0
+	fi
+	# Pre-ping builds: status used to be the probe, but its 5s default timed out
+	# on large queues. Socket existence alone is too weak (stale sock files);
+	# try status with the long budget only as last resort after ping fails.
+	$CLI status >/dev/null 2>&1
+}
 
 start_and_wait() {
 	nohup $CLI daemon >>"$LOGFILE" 2>&1 &
-	for _ in $(seq 1 10); do
+	# 20 × 0.5s = 10s — cold start + first tick can be slow under load.
+	for _ in $(seq 1 20); do
 		if is_up; then
 			echo "daemon started, reachable"
 			return 0
 		fi
 		sleep 0.5
 	done
-	echo "daemon failed to become reachable within 5s; last log lines:" >&2
+	echo "daemon failed to become reachable within 10s; last log lines:" >&2
 	tail -n 20 "$LOGFILE" >&2 || true
 	return 1
 }

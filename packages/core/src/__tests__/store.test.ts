@@ -185,6 +185,49 @@ describe("QueueStore", () => {
 		);
 	});
 
+	it("list/listArchived cache until write or reload", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		const a = store.list();
+		const b = store.list();
+		expect(a).toBe(b); // same cached array reference
+		store.update(t.id, { status: "done" });
+		const c = store.list();
+		expect(c).not.toBe(a); // invalidated
+		expect(c[0]?.status).toBe("done");
+		// External drop: still cached until reload
+		const external = store.create({
+			prompt: "y",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		// create invalidates — new list
+		expect(store.list().map((x) => x.id).sort()).toEqual(
+			[t.id, external.id].sort(),
+		);
+		store.reload();
+		expect(store.list()).toHaveLength(2);
+	});
+
+	it("getAny finds archived tasks", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "archived-me",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		store.archive(t.id);
+		expect(store.get(t.id)).toBeUndefined();
+		expect(store.getAny(t.id)?.prompt).toBe("archived-me");
+	});
+
 	it("listArchived returns archived tasks", () => {
 		const store = freshStore();
 		const t = store.create({

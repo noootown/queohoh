@@ -27,13 +27,35 @@ program
 	});
 
 program
+	.command("ping")
+	.description("check whether the daemon responds (lightweight; does not load state)")
+	.action(async () => {
+		const client = new ApiClient();
+		try {
+			await client.connect(socketPath(statePath()));
+			const pong = await client.call("ping");
+			if (pong !== "pong") throw new Error(`unexpected ping reply: ${String(pong)}`);
+			console.log("ok");
+		} catch {
+			console.error("daemon not reachable");
+			process.exitCode = 1;
+		} finally {
+			client.close();
+		}
+	});
+
+program
 	.command("status")
 	.description("print daemon state")
 	.action(async () => {
 		const client = new ApiClient();
 		try {
 			await client.connect(socketPath(statePath()));
-			const state = await client.call("state");
+			// Full state can take many seconds with a large live+archive queue
+			// (~10s observed at ~380 tasks + ~1k archived). Default call timeout
+			// is 5s — too short for status dumps and for health checks that used
+			// to call state. Use a long budget; liveness should use `ping`.
+			const state = await client.call("state", undefined, 60_000);
 			console.log(JSON.stringify(state, null, 2));
 		} catch {
 			console.error("daemon not reachable");

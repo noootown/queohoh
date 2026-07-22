@@ -88,6 +88,12 @@ export class QueueStore {
 	invalidFiles: string[] = [];
 
 	private readonly ulid = monotonicFactory();
+	/** In-memory live queue. Invalidated on every write/rename and on `reload()`.
+	 * Avoids re-reading hundreds of task files on every 2s broadcast (was the
+	 * dominant cost once the queue grew past a few hundred tasks). */
+	private liveCache: TaskInstance[] | null = null;
+	/** In-memory archive list — same invalidation rules as `liveCache`. */
+	private archiveCache: TaskInstance[] | null = null;
 
 	constructor(stateDir: string) {
 		this.stateDir = stateDir;
@@ -99,6 +105,14 @@ export class QueueStore {
 
 	taskPath(id: string): string {
 		return join(this.tasksDir, `${id}.md`);
+	}
+
+	/** Drop both list caches. Call after an external tasks/ mutation (fs.watch)
+	 * so the next list() re-reads disk. Writes through this class invalidate
+	 * themselves. */
+	reload(): void {
+		this.liveCache = null;
+		this.archiveCache = null;
 	}
 
 	create(input: NewTaskInput): TaskInstance {
@@ -149,7 +163,7 @@ export class QueueStore {
 	): TaskInstance[] {
 		const chainId = this.ulid();
 		const now = new Date().toISOString();
-		return steps.map((step, i) => {
+		const created = steps.map((step, i) => {
 			const task: TaskInstance = {
 				id: this.ulid(),
 				status: "queued",
@@ -180,12 +194,18 @@ export class QueueStore {
 				attemptedModels: [],
 				lane: step.lane ?? null,
 			};
-			this.write(task);
+			this.write(task, { keepCache: true });
 			return task;
 		});
+		// Single invalidate after the batch so intermediate list() callers (none
+		// today) don't re-read partial state; write() with keepCache skipped
+		// per-file invalidation.
+		this.liveCache = null;
+		return created;
 	}
 
 	list(): TaskInstance[] {
+		if (this.liveCache !== null) return this.liveCache;
 		this.invalidFiles = [];
 		const tasks: TaskInstance[] = [];
 		for (const file of readdirSync(this.tasksDir).sort()) {
@@ -197,12 +217,31 @@ export class QueueStore {
 				this.invalidFiles.push(path);
 			}
 		}
-		return tasks.sort((a, b) => a.id.localeCompare(b.id));
+		tasks.sort((a, b) => a.id.localeCompare(b.id));
+		this.liveCache = tasks;
+		return tasks;
 	}
 
 	get(id: string): TaskInstance | undefined {
+		// Prefer cache for hot paths (engine tick / scheduler); fall back to disk
+		// so a get of a just-written id still works if cache is cold.
+		const cached = this.liveCache?.find((t) => t.id === id);
+		if (cached) return cached;
 		try {
 			return parseTaskFile(readFileSync(this.taskPath(id), "utf-8"));
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Live task, or archived if not in the live queue. Used by detail fetches. */
+	getAny(id: string): TaskInstance | undefined {
+		const live = this.get(id);
+		if (live) return live;
+		const archived = this.listArchived().find((t) => t.id === id);
+		if (archived) return archived;
+		try {
+			return parseTaskFile(readFileSync(join(this.archiveDir, `${id}.md`), "utf-8"));
 		} catch {
 			return undefined;
 		}
@@ -235,6 +274,8 @@ export class QueueStore {
 
 	archive(id: string): void {
 		renameSync(this.taskPath(id), join(this.archiveDir, `${id}.md`));
+		this.liveCache = null;
+		this.archiveCache = null;
 	}
 
 	/** Reverse of `archive`: move the task file back into the live queue. Throws
@@ -247,9 +288,12 @@ export class QueueStore {
 		} catch {
 			throw new Error(`task not found in archive: ${id}`);
 		}
+		this.liveCache = null;
+		this.archiveCache = null;
 	}
 
 	listArchived(): TaskInstance[] {
+		if (this.archiveCache !== null) return this.archiveCache;
 		const tasks: TaskInstance[] = [];
 		for (const file of readdirSync(this.archiveDir).sort()) {
 			if (!file.endsWith(".md")) continue;
@@ -261,13 +305,22 @@ export class QueueStore {
 				// archived junk is ignored silently
 			}
 		}
-		return tasks.sort((a, b) => a.id.localeCompare(b.id));
+		tasks.sort((a, b) => a.id.localeCompare(b.id));
+		this.archiveCache = tasks;
+		return tasks;
 	}
 
-	private write(task: TaskInstance): void {
+	private write(
+		task: TaskInstance,
+		opts?: { keepCache?: boolean },
+	): void {
 		const path = this.taskPath(task.id);
 		const tmp = `${path}.tmp`;
 		writeFileSync(tmp, serializeTaskFile(task));
 		renameSync(tmp, path);
+		if (!opts?.keepCache) {
+			// Live list is stale; archive is unchanged by a live write.
+			this.liveCache = null;
+		}
 	}
 }
