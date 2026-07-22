@@ -30,6 +30,7 @@ const sample: TaskInstance = {
 	verifyOutput: null,
 	attemptedModels: [],
 	lane: null,
+	notBefore: null,
 };
 
 describe("task file", () => {
@@ -73,6 +74,22 @@ describe("task file", () => {
 			"session: warm",
 		);
 		expect(() => parseTaskFile(bad)).toThrow();
+	});
+
+	it("round-trips notBefore (defer gate)", () => {
+		const deferred: TaskInstance = {
+			...sample,
+			notBefore: "2026-07-22T17:00:00.000Z",
+		};
+		const serialized = serializeTaskFile(deferred);
+		expect(serialized).toContain("not_before: '2026-07-22T17:00:00.000Z'");
+		expect(parseTaskFile(serialized)).toEqual(deferred);
+	});
+
+	it("defaults notBefore to null when the key is absent", () => {
+		const without = serializeTaskFile(sample).replace(/^not_before: .*\n/m, "");
+		expect(without).not.toContain("not_before:");
+		expect(parseTaskFile(without).notBefore).toBeNull();
 	});
 
 	it("round-trips the cancelled status", () => {

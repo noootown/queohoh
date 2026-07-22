@@ -403,6 +403,12 @@ impl App {
                 cmds.extend(u.cmds);
                 u.dirty
             }
+            // `d` on QUEUE: defer selected queued/running task(s) +5h.
+            A::DeferSelected => {
+                let u = self.defer_selected();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
             // `r` on WORKTREES: open the session picker for a new task on the worktree.
             A::NewTaskOnWorktree => {
                 let u = self.new_task_on_worktree();
@@ -683,6 +689,64 @@ impl App {
             dirty: true,
             cmds: vec![Cmd::RpcSeq { verb: verb.into(), calls, invalidate_defs_for: None }],
         }
+    }
+
+    /// `d` on QUEUE (and the `[d]efer` chip): push selected queued/running
+    /// task(s) +5h (Claude sliding window). ALWAYS confirms first (parity with
+    /// stop/rerun): freezes per-task `defer` RPCs and opens `Mode::Confirm`.
+    /// Running rows are stopped and re-queued with `notBefore` by the daemon;
+    /// a second confirm on an already-deferred row stacks another +5h. Terminal
+    /// / needs-input / archived are ineligible; a selection with nothing
+    /// deferrable never opens the dialog — status line instead.
+    pub(super) fn defer_selected(&mut self) -> Update {
+        let defer_ok = |s: TaskStatus| matches!(s, TaskStatus::Queued | TaskStatus::Running);
+        let Some((rows, is_bulk)) = self.queue_selection_rows() else {
+            return Update::default();
+        };
+        // Eligible rows in view order, keeping status for the confirm summary.
+        let eligible: Vec<(String, TaskStatus)> = rows
+            .into_iter()
+            .filter(|(_, s, arch)| !arch && defer_ok(*s))
+            .map(|(id, s, _)| (id, s))
+            .collect();
+        if eligible.is_empty() {
+            self.status_line = Some(if is_bulk {
+                "nothing to defer in selection".into()
+            } else {
+                "cannot defer: only queued or running tasks".into()
+            });
+            return Update { dirty: true, cmds: vec![] };
+        }
+        let running = eligible.iter().filter(|(_, s)| matches!(s, TaskStatus::Running)).count();
+        let n = eligible.len();
+        let plural = if n == 1 { "" } else { "s" };
+        let summary = if n == 1 {
+            match eligible[0].1 {
+                TaskStatus::Running => {
+                    "defer 1 running task +5h (will stop and re-queue)".to_string()
+                }
+                _ => "defer 1 queued task +5h".to_string(),
+            }
+        } else if running > 0 {
+            format!("defer {n} tasks +5h ({running} running will be stopped and re-queued)")
+        } else {
+            format!("defer {n} tasks +5h")
+        };
+        let calls: Vec<RpcCall> = eligible
+            .into_iter()
+            .map(|(id, _)| RpcCall {
+                method: "defer".into(),
+                params: serde_json::json!({ "id": id }),
+            })
+            .collect();
+        self.mode = Mode::Confirm {
+            title: format!("Defer {n} task{plural}"),
+            body: vec![summary],
+            confirm_label: "Defer +5h".into(),
+            action: ConfirmAction::DeferTasks { calls },
+            focus: crate::hit::ButtonKind::Confirm,
+        };
+        Update { dirty: true, cmds: vec![] }
     }
 
     /// `j`/`k` in list mode. When the detail pane shows the worktree lane-task

@@ -144,6 +144,7 @@ export class QueueStore {
 			verifyOutput: null,
 			attemptedModels: [],
 			lane: input.lane ?? null,
+			notBefore: null,
 		};
 		this.write(task);
 		return task;
@@ -193,6 +194,7 @@ export class QueueStore {
 				verifyOutput: null,
 				attemptedModels: [],
 				lane: step.lane ?? null,
+				notBefore: null,
 			};
 			this.write(task, { keepCache: true });
 			return task;

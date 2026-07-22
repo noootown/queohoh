@@ -466,6 +466,10 @@ impl App {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::DiscoverSelectedDef);
                         }
+                        crate::hit::PaneButton::Defer => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::DeferSelected);
+                        }
                         crate::hit::PaneButton::Cron => {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::ToggleCron);

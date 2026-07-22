@@ -80,6 +80,62 @@ fn queue_range_cancel_via_x_mixes_stop_and_skip_per_row() {
 }
 
 #[test]
+fn queue_range_defer_via_d_confirms_then_defers_each_row() {
+    // t0 running + t1 queued → one RpcSeq (verb "deferred") of two `defer`
+    // RPCs in row order. Range cleared on confirm (same shape as cancel/rerun).
+    let mut t0 = TaskInstance::default();
+    t0.id = "t0".into();
+    t0.status = TaskStatus::Running;
+    t0.target.repo = "platform".into();
+    let mut t1 = TaskInstance::default();
+    t1.id = "t1".into();
+    t1.status = TaskStatus::Queued;
+    t1.target.repo = "platform".into();
+    let snap = StateSnapshot {
+        tasks: vec![t0, t1],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.update(shift_down());
+    a.update(key('d')); // opens confirm (freezes the calls)
+    match &a.mode {
+        Mode::Confirm {
+            title,
+            body,
+            confirm_label,
+            action: ConfirmAction::DeferTasks { calls },
+            ..
+        } => {
+            assert!(title.contains("Defer 2"), "title={title}");
+            assert!(
+                body.iter().any(|l| l.contains("+5h") && l.contains("running")),
+                "body={body:?}"
+            );
+            assert_eq!(confirm_label, "Defer +5h");
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0].method, "defer");
+            assert_eq!(calls[0].params, serde_json::json!({ "id": "t0" }));
+            assert_eq!(calls[1].method, "defer");
+            assert_eq!(calls[1].params, serde_json::json!({ "id": "t1" }));
+        }
+        other => panic!("expected defer confirm, got {other:?}"),
+    }
+    let u = a.update(enter()); // confirm
+    match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
+        Cmd::RpcSeq { verb, calls, invalidate_defs_for } => {
+            assert_eq!(verb, "deferred");
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0].method, "defer");
+            assert_eq!(calls[1].method, "defer");
+            assert_eq!(*invalidate_defs_for, None);
+        }
+        _ => unreachable!(),
+    }
+    assert_eq!(a.active_ui().selections[0].anchor, None); // range cleared on confirm
+}
+
+#[test]
 fn tasks_bulk_range_via_r_refuses_not_applicable() {
     // TASKS keeps no bulk-doable verb (see `crate::hit::bulk_allowed`): a
     // multi-row range on `r` refuses with a status line instead of the old

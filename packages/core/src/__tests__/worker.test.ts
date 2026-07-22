@@ -1193,4 +1193,45 @@ describe("startRun / finalizeRun split", () => {
 		await finalizeRun(t.id, okResult, deps);
 		expect(store.get(t.id)?.startedAt).toBe(startedAt);
 	});
+
+	it("finalizeRun plain stop settles cancelled and clears a leftover notBefore", async () => {
+		// startRun clears notBefore on spawn; a past/stale stamp can still linger
+		// if something rewrote it, or from older daemons. Plain user Stop must
+		// land cancelled with notBefore null so Live never keeps a defer timer.
+		const { deps, store } = makeDeps({ isCancelled: () => true });
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		await startRun(t.id, deps);
+		// Simulate a leftover stamp that is NOT a future defer-stop (past).
+		store.update(t.id, { notBefore: "2000-01-01T00:00:00.000Z" });
+		const settled = await finalizeRun(
+			t.id,
+			{ ...okResult, exitCode: 143, signal: "SIGTERM" },
+			deps,
+		);
+		expect(settled.task.status).toBe("cancelled");
+		expect(settled.task.error).toBe("stopped by user");
+		expect(settled.task.notBefore).toBeNull();
+		expect(store.get(t.id)?.notBefore).toBeNull();
+	});
+
+	it("finalizeRun defer-stop re-queues and keeps the future notBefore", async () => {
+		// QUEUE `[d]efer` on a running task stamps notBefore then kills; settle
+		// must re-queue (not cancelled) and keep the stamp for the scheduler.
+		const until = "2099-06-01T12:00:00.000Z";
+		const { deps, store } = makeDeps({ isCancelled: () => true });
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		await startRun(t.id, deps);
+		store.update(t.id, { notBefore: until });
+		const settled = await finalizeRun(
+			t.id,
+			{ ...okResult, exitCode: 143, signal: "SIGTERM" },
+			deps,
+		);
+		expect(settled.task.status).toBe("queued");
+		expect(settled.task.error).toBeNull();
+		expect(settled.task.notBefore).toBe(until);
+		expect(store.get(t.id)?.notBefore).toBe(until);
+	});
 });

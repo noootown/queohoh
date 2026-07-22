@@ -20,6 +20,7 @@ import type {
 import {
 	buildItemFromArgs,
 	defaultExec,
+	DEFER_MS,
 	findModel,
 	globalWorkspaceDir,
 	instantiateDefinition,
@@ -903,6 +904,8 @@ export class ApiServer {
 				// would double-run) — stop it first. Terminal successes (done/
 				// skipped) revive like failures, and a `queued` retry is an
 				// idempotent no-op, so bulk rerun selections never error.
+				// Clears `notBefore` so a manual re-run is not still blocked by a
+				// prior `[d]efer` window.
 				if (task.status === "running") {
 					throw new Error(
 						`cannot retry task in status ${task.status} — stop it first`,
@@ -911,7 +914,47 @@ export class ApiServer {
 				const updated = deps.store.update(task.id, {
 					status: "queued",
 					error: null,
+					notBefore: null,
 				});
+				deps.onMutation();
+				return updated;
+			}
+			case "defer": {
+				// QUEUE `[d]efer`: push a live task +5h (Claude sliding window).
+				// Stacks: a second `d` on an already-deferred task adds another
+				// +5h onto the existing future `notBefore` (not "from now"), so
+				// operators can walk a task further out without undoing prior
+				// pushes. A past/null `notBefore` bases from now — which is also
+				// the cancel → re-queue → defer path (skip/retry clear
+				// `notBefore`, so the next defer starts the 5h window from 0).
+				// Queued → stamp `notBefore` (stays queued; scheduler skips until
+				// then). Running → stamp FIRST, then stop: finalizeRun sees the
+				// future notBefore + cancel marker and re-queues instead of
+				// settling `cancelled`. Terminal / needs-input / archived refuse.
+				const task = this.mustGet(String(params.id));
+				if (task.status !== "queued" && task.status !== "running") {
+					throw new Error(`cannot defer task in status ${task.status}`);
+				}
+				const now = Date.now();
+				const existingMs = task.notBefore
+					? Date.parse(task.notBefore)
+					: Number.NaN;
+				const base =
+					!Number.isNaN(existingMs) && existingMs > now ? existingMs : now;
+				const until = new Date(base + DEFER_MS).toISOString();
+				if (task.status === "queued") {
+					const updated = deps.store.update(task.id, { notBefore: until });
+					deps.onMutation();
+					return updated;
+				}
+				// Running: stamp intent on disk before the kill so a settle that
+				// races a daemon death still re-queues (notBefore survives on the
+				// task file; cancel marker on the run dir).
+				const updated = deps.store.update(task.id, { notBefore: until });
+				deps.engine.stopTask(task.id);
+				// No onMutation for the stop half — status flips when the kill
+				// settles (queued + notBefore). Broadcast the stamped notBefore
+				// so the TUI live column can show the scheduled time immediately.
 				deps.onMutation();
 				return updated;
 			}
@@ -922,9 +965,12 @@ export class ApiServer {
 				//    `cancelled` (terminal, stays visible, distinct from `failed`).
 				//  - an already-TERMINAL task → dismiss: archive it out of the queue.
 				if (task.status === "queued" || task.status === "needs-input") {
+					// Clear `notBefore` so a later re-queue + defer starts the 5h
+					// window from now (not stacked onto a cancel-era stamp).
 					const updated = deps.store.update(task.id, {
 						status: "cancelled",
 						error: "cancelled by user",
+						notBefore: null,
 					});
 					deps.onMutation();
 					return updated;

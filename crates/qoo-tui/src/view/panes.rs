@@ -13,12 +13,12 @@ use crate::hit::{HitMap, HitTarget, PaneButton, pane_buttons};
 use crate::ipc::types::DefinitionSummary;
 use crate::selectors::{
     COLLAPSED_H, DefColLayout, QueueColLayout, QueueRow, WorktreeRow, WtColLayout,
-    absolute_local_label, def_col_layout, elapsed_label, pad_clip,
+    absolute_local_label, def_col_layout, elapsed_label, pad_clip, remaining_label,
     pane_layout, pane_title, queue_col_layout, queue_divider_after, relative_age_label,
     wt_author_text, wt_col_layout, wt_merge_marker, WtMergeMarker,
 };
 use crate::view::theme::{
-    BTN_LABEL_ARCHIVE, BTN_LABEL_COLLAPSE, BTN_LABEL_CRON, BTN_LABEL_DISCOVER,
+    BTN_LABEL_ARCHIVE, BTN_LABEL_COLLAPSE, BTN_LABEL_CRON, BTN_LABEL_DEFER, BTN_LABEL_DISCOVER,
     BTN_LABEL_EXPAND,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_SCHEDULE,
     BTN_LABEL_STOP, BTN_LABEL_TASKS, BTN_LABEL_UNARCHIVE,
@@ -38,7 +38,7 @@ use crate::view::theme::{
 // shows only while chips from BOTH groups remain (see [`build_header`]);
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
-const QUEUE_ROW_SCOPED: usize = 4; // [r]erun [x]stop [g]oto [a]rchive · [s]chedule [z]
+const QUEUE_ROW_SCOPED: usize = 5; // [r]erun [x]stop [g]oto [a]rchive [d]efer · [s]chedule [z]
 const TASKS_ROW_SCOPED: usize = 3; // [r]un [d]iscover [c]ron · [z]
 const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [z]
 
@@ -49,6 +49,11 @@ const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [z]
 /// and hit rects stay exact.
 const GROUP_SEP: &str = " · ";
 const GROUP_SEP_EXTRA: usize = 2; // GROUP_SEP is 3 cells; the gap it replaces is 1
+
+/// Columns reserved on the right when a list pane's scrollbar shows: 1 empty
+/// gutter so the Live / `#N in lane` text never kisses the thumb (user feedback)
+/// + 1 for the track itself. Matches the detail pane's reserve.
+const LIST_SCROLLBAR_RESERVE: u16 = 2;
 
 use crate::view::{Computed, is_bulk_selection, selected_positions, selection_range, window_start};
 
@@ -113,6 +118,7 @@ fn button_chip(
         PaneButton::Tasks => ('t', BTN_LABEL_TASKS),
         PaneButton::Run => ('r', if pane == PaneId::Queue { BTN_LABEL_RERUN } else { BTN_LABEL_RUN }),
         PaneButton::Discover => ('d', BTN_LABEL_DISCOVER),
+        PaneButton::Defer => ('d', BTN_LABEL_DEFER),
         PaneButton::Cron => ('c', BTN_LABEL_CRON),
         PaneButton::Goto => ('g', BTN_LABEL_GOTO),
         PaneButton::Cancel => ('x', BTN_LABEL_STOP),
@@ -452,13 +458,17 @@ fn queue_line(
         ));
     }
     // Trailing live slot (fixed QUEUE_LIVE_W): `⏱ <elapsed>` for running rows
-    // (formatted here from start epoch + now so the App rows cache is Tick-safe)
-    // or `#N in lane` for queued rows — both are "live/now" → warn. Archived/
-    // blank rows render raw padding so the reserved cell stays aligned.
+    // (formatted here from start epoch + now so the App rows cache is Tick-safe),
+    // `⧗ <remaining>` countdown for deferred queued rows (future notBefore), or
+    // `#N in lane` for eligible queued rows — all are "live/now" → warn.
+    // Single-width hourglass (`⧗`), never the emoji ⏱/⏳. Archived/blank rows
+    // render raw padding so the reserved cell stays aligned.
     if layout.live_w > 0 {
         spans.push(Span::raw(gap));
         let live = if let Some(start) = row.running_elapsed {
             elapsed_label(start, now_epoch_s)
+        } else if let Some(until) = row.not_before_epoch_s.filter(|&e| e > now_epoch_s) {
+            remaining_label(until, now_epoch_s)
         } else {
             row.detail.clone()
         };
@@ -711,7 +721,7 @@ fn worktree_line(
     // `→ <name>` (user request: merge Next + Live; arrow replaces the old
     // `next: ` text lead). The queued COUNT is deliberately absent — the
     // leading indicator digit already carries it. Blank-padded when the row has
-    // neither signal. When both are present: `⏱ … → name` (timer first — live
+    // neither signal. When both are present: `⧗ … → name` (timer first — live
     // work is the louder signal; next drops if the remaining budget is too
     // tight for `→ ` + one name cell).
     if layout.activity_w > 0 {
@@ -1080,15 +1090,23 @@ fn render_list_pane<T, C>(
     let offset = window_start(total, cursor_disp, cap);
     let visible = cap.min(total - offset);
 
-    // Reserve the rightmost column for the vertical scrollbar when the list
-    // overflows (same condition `render_scrollbar` draws under). Column layout,
-    // row painting, and row hit targets all use this narrower `content_area` so
-    // the last data column (e.g. QUEUE's `Live` cell) is never occluded by the
-    // scrollbar; the scrollbar itself still draws over the full-width `rows_area`
-    // right edge. When the list fits, content_area == rows_area (no reservation).
+    // Reserve the right edge for the vertical scrollbar when the list overflows
+    // (same condition `render_scrollbar` draws under): 1 empty gutter so the
+    // last data column (QUEUE `Live` / `#N in lane`) never kisses the thumb
+    // (user feedback — flush right edge was hard to read) + 1 for the track.
+    // Matches the detail pane's `DETAIL_SCROLLBAR_RESERVE`. Column layout, row
+    // painting, header, and row hit targets all use this narrower `content_area`;
+    // the scrollbar still draws over the full-width `rows_area` right edge.
+    // When the list fits, content_area == rows_area (no reservation).
     let will_scroll = total > visible;
+    let sb_reserve = if will_scroll {
+        // Prefer gutter+track; fall back to track-only on very narrow panes.
+        LIST_SCROLLBAR_RESERVE.min(rows_area.width.saturating_sub(1)).max(1)
+    } else {
+        0
+    };
     let content_area = Rect {
-        width: rows_area.width.saturating_sub(u16::from(will_scroll)),
+        width: rows_area.width.saturating_sub(sb_reserve),
         ..rows_area
     };
 
@@ -1106,11 +1124,16 @@ fn render_list_pane<T, C>(
     let ctx = ctx_of(ctx_rows, content_area.width as usize);
 
     // Column headers live in the bottom-spacer row (between the hint and the
-    // data rows). Inert — no hit target — and already dim, so the spotlight
-    // patch is a no-op on top.
+    // data rows). Same width as the data rows (scrollbar gutter reserved) so
+    // the Live header sits over the Live cell, not under the thumb. Inert —
+    // no hit target — and already dim, so the spotlight patch is a no-op on top.
     if bottom_spacer {
-        let header_rect =
-            Rect { x: inner.x, y: hint_rect.y.saturating_add(1), width: inner.width, height: 1 };
+        let header_rect = Rect {
+            x: content_area.x,
+            y: hint_rect.y.saturating_add(1),
+            width: content_area.width,
+            height: 1,
+        };
         frame.render_widget(Paragraph::new(header_of(&ctx, p)), header_rect);
     }
 

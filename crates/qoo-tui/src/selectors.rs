@@ -75,11 +75,20 @@ pub struct QueueRow {
     /// empty otherwise). Running elapsed is NOT baked here — see
     /// [`Self::running_elapsed`] so a rows cache can survive Tick without
     /// freezing the timer (pane formats `elapsed_label` at paint, like worktrees).
+    /// When [`Self::not_before_epoch_s`] is still in the future the pane paints
+    /// a countdown instead of this string.
     pub detail: String,
     /// Start epoch of the CURRENT run when `running` (see [`run_start_epoch_s`]);
     /// `None` for non-running rows. The QUEUE Live column formats the timer
     /// against wall-clock `now` at draw time.
     pub running_elapsed: Option<u64>,
+    /// Epoch seconds of a future `notBefore` (QUEUE `[d]efer`). Only set for
+    /// statuses that can still be deferred (`Queued`, and `Running` mid
+    /// defer-stop). `None` for terminal/cancelled rows even if a stale stamp
+    /// remains on the wire — Live must stay empty there. Also `None` when
+    /// unset / past / old daemon. Painted as a countdown (`⧗ 4h32m`) while
+    /// still in the future; falls back to [`Self::detail`] once due.
+    pub not_before_epoch_s: Option<u64>,
     /// creation epoch seconds (parsed from the daemon ISO timestamp)
     pub created_epoch_s: u64,
     pub archived: bool,
@@ -423,6 +432,20 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             }
             _ => (String::new(), None),
         };
+        // Future notBefore only for statuses still live for defer purposes.
+        // Terminal/cancelled rows must never paint a schedule stamp even when a
+        // stale not_before remains on disk (cancel should clear it in the
+        // daemon; this is defense in depth). Running rows may carry a stamped
+        // notBefore mid-defer-stop; the paint path prefers the running timer
+        // until the kill settles.
+        let not_before_epoch_s = match task.status {
+            TaskStatus::Queued | TaskStatus::Running => task
+                .not_before
+                .as_deref()
+                .map(parse_iso_epoch_s)
+                .filter(|&e| e > 0),
+            _ => None,
+        };
         rows.push(QueueRow {
             task_id: task.id.clone(),
             glyph: status_glyph(task),
@@ -436,6 +459,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             summary: prompt_summary(&task.prompt),
             detail,
             running_elapsed,
+            not_before_epoch_s,
             created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: false,
             status: task.status,
@@ -477,6 +501,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             // Archived rows carry no detail text (the dimming + glyph convey state).
             detail: String::new(),
             running_elapsed: None,
+            not_before_epoch_s: None,
             created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: true,
             status: task.status,
@@ -737,15 +762,29 @@ pub(crate) fn lane_task_display(task: &TaskInstance) -> (char, String, bool, u64
 }
 
 /// The "Live" cell for a lane task in the worktree detail list, mirroring the
-/// QUEUE pane's live slot: `⏱ <elapsed>` for a running task, `#N in lane` for a
-/// queued task, empty for any other status. `queue_pos` is the task's 1-based
-/// position among the lane's queued tasks in creation order — the caller counts
-/// queued tasks as it walks the (creation-ordered) list; it is only read for a
-/// Queued task.
-pub(crate) fn lane_task_live(task: &TaskInstance, now_epoch_s: u64, queue_pos: usize) -> String {
+/// QUEUE pane's live slot: `⏱ <elapsed>` for a running task, `⧗ <remaining>`
+/// countdown for a deferred queued task (future `notBefore`), `#N in lane` for
+/// an eligible queued task, empty for any other status. `queue_pos` is the
+/// task's 1-based position among the lane's queued tasks in creation order —
+/// the caller counts queued tasks as it walks the (creation-ordered) list; it
+/// is only read for a non-deferred Queued task. `tz_offset_s` is unused (kept
+/// so call sites stay stable after the countdown↔stamp experiment).
+pub(crate) fn lane_task_live(
+    task: &TaskInstance,
+    now_epoch_s: u64,
+    queue_pos: usize,
+    _tz_offset_s: i32,
+) -> String {
     match task.status {
         TaskStatus::Running => elapsed_label(run_start_epoch_s(task), now_epoch_s),
-        TaskStatus::Queued => format!("#{queue_pos} in lane"),
+        TaskStatus::Queued => {
+            if let Some(until) = task.not_before.as_deref().map(parse_iso_epoch_s) {
+                if until > now_epoch_s {
+                    return remaining_label(until, now_epoch_s);
+                }
+            }
+            format!("#{queue_pos} in lane")
+        }
         _ => String::new(),
     }
 }
@@ -1163,18 +1202,46 @@ pub fn prompt_summary(prompt: &str) -> String {
     out
 }
 
-/// "⏱ 47s" / "⏱ 5m03s" (zero-padded seconds) / "⏱ 1h02m" (zero-padded minutes).
+/// Running elapsed prefix — stopwatch clock (`⏱`), must match
+/// `view::theme::GLYPH_TIMER`. Distinct from the defer countdown hourglass.
+const TIMER_GLYPH: char = '⏱';
+/// Deferred countdown prefix — single-width hourglass (`⧗`), must match
+/// `view::theme::GLYPH_DEFER` / `GLYPH_TIMED_OUT`. Not the emoji ⏳.
+const DEFER_GLYPH: char = '⧗';
+
+/// "`⏱ 47s`" / "`⏱ 5m03s`" (zero-padded seconds) / "`⏱ 1h02m`" (zero-padded
+/// minutes). Running elapsed uses the clock glyph; deferred countdown uses
+/// [`remaining_label`]'s hourglass.
 pub fn elapsed_label(created_epoch_s: u64, now_epoch_s: u64) -> String {
     let total = now_epoch_s.saturating_sub(created_epoch_s);
     let hours = total / 3600;
     let minutes = (total % 3600) / 60;
     let seconds = total % 60;
     if hours > 0 {
-        format!("⏱ {hours}h{minutes:02}m")
+        format!("{TIMER_GLYPH} {hours}h{minutes:02}m")
     } else if minutes > 0 {
-        format!("⏱ {minutes}m{seconds:02}s")
+        format!("{TIMER_GLYPH} {minutes}m{seconds:02}s")
     } else {
-        format!("⏱ {seconds}s")
+        format!("{TIMER_GLYPH} {seconds}s")
+    }
+}
+
+/// Countdown for a deferred task's `notBefore`: `⧗ 4h32m` / `⧗ 12m` / `⧗ 45s`.
+/// Hourglass prefix ([`DEFER_GLYPH`]), distinct from running's stopwatch clock.
+/// Clamps a past/equal `until` to `⧗ 0s` (caller normally falls back to
+/// `#N in lane` once due). Width stays within [`QUEUE_LIVE_W`] for single-
+/// digit hours; multi-digit hours clip at paint.
+pub fn remaining_label(until_epoch_s: u64, now_epoch_s: u64) -> String {
+    let total = until_epoch_s.saturating_sub(now_epoch_s);
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{DEFER_GLYPH} {hours}h{minutes:02}m")
+    } else if minutes > 0 {
+        format!("{DEFER_GLYPH} {minutes}m")
+    } else {
+        format!("{DEFER_GLYPH} {seconds}s")
     }
 }
 
@@ -1390,7 +1457,7 @@ pub fn cron_human(expr: &str) -> Option<String> {
 
 // ---- column layout (pure, per-frame, computed from the VISIBLE rows) ----------
 //
-// Every content glyph the list rows use (▶ ✓ ✗ ○ ? · ⛓ ⏱ ◆ ●) measures one
+// Every content glyph the list rows use (▶ ✓ ✗ ○ ? · ⛓ ⧗ ◆ ●) measures one
 // terminal cell, so column widths can be reasoned about in chars. Truncation is
 // char-based (never byte slicing) so unicode text can't panic.
 
@@ -1460,7 +1527,7 @@ pub const TIMESTAMP_W: usize = 11;
 // timer appearing or a wide value scrolling in never shifts any other column.
 // Values fit the realistic max label under `cw`.
 
-/// Live timer column (`⏱ 99h59m`: ⏱ + space + up-to-2-digit hours).
+/// Live timer column (`⧗ 99h59m`: single-width hourglass + space + up-to-2-digit hours).
 pub const TIMER_W: usize = 8;
 /// Relative-age column (`relative_age_label` max is `just now` = 8).
 pub const AGE_W: usize = 8;
@@ -1471,12 +1538,13 @@ pub const COMMIT_AGE_W: usize = 8;
 /// Open-PR column (`#<n>`): a fixed reserved width like author/commit-age.
 /// Sized for a 5-digit PR number plus the `#` (`#12345`); longer numbers clip.
 pub const PR_W: usize = 6;
-/// Shared QUEUE live slot: `⏱ 99h59m` (8) or `#N in lane` (`#9 in lane` = 10);
-/// `#10 in lane` and beyond clip.
+/// Shared QUEUE live slot: `⧗ 99h59m` (8), `#N in lane` (`#9 in lane` = 10),
+/// or a deferred countdown (`⧗ 4h32m` = 8). Sized to the widest common label
+/// (`#9 in lane` / multi-digit hour timers clip).
 pub const QUEUE_LIVE_W: usize = 10;
 /// Fixed reserved width of the worktrees combined Next/Live activity column.
 /// One trailing slot holds either `⏱ <elapsed>`, `→ <name>`, or both
-/// (`⏱ … → …`). The queued COUNT is not shown here — the leading indicator
+/// (`⧗ … → …`). The queued COUNT is not shown here — the leading indicator
 /// digit already carries it. Static 20 cells (user request) so the column never
 /// grows/shrinks with content; longer names clip with `…`.
 const WT_ACTIVITY_W: usize = 20;
@@ -2072,6 +2140,7 @@ mod tests {
             verify_exit_code: None,
             verify_output: None,
             lane: None,
+            not_before: None,
         }
     }
 
@@ -2509,6 +2578,36 @@ mod tests {
         assert_eq!(def_display_name("platform/pr-ready"), "pr-ready");
     }
 
+    #[test]
+    fn queue_rows_not_before_only_for_queued_or_running() {
+        // Queued deferred → Live can paint the schedule stamp.
+        let mut queued = task_on(TaskStatus::Queued, "01Q", "platform", Some("wt-a"));
+        queued.not_before = Some("2099-01-01T00:00:00.000Z".into());
+        // Running mid-defer-stop may also carry a stamp (paint prefers the timer).
+        let mut running = task_on(TaskStatus::Running, "01R", "platform", Some("wt-a"));
+        running.not_before = Some("2099-01-01T00:00:00.000Z".into());
+        // Cancelled with a STALE stamp must never expose not_before_epoch_s —
+        // defense in depth when the daemon left not_before on disk.
+        let mut cancelled = task_on(TaskStatus::Cancelled, "01C", "platform", Some("wt-a"));
+        cancelled.not_before = Some("2099-01-01T00:00:00.000Z".into());
+        cancelled.finished_at = Some("2026-07-08T10:05:00.000Z".into());
+        let mut failed = task_on(TaskStatus::Failed, "01F", "platform", Some("wt-a"));
+        failed.not_before = Some("2099-01-01T00:00:00.000Z".into());
+        failed.finished_at = Some("2026-07-08T10:05:00.000Z".into());
+
+        let rows = queue_rows(
+            &snap(vec![queued, running, cancelled, failed], vec![]),
+            "platform",
+        );
+        let by_id: HashMap<_, _> =
+            rows.into_iter().map(|r| (r.task_id.clone(), r)).collect();
+        let expected = parse_iso_epoch_s("2099-01-01T00:00:00.000Z");
+        assert_eq!(by_id["01Q"].not_before_epoch_s, Some(expected));
+        assert_eq!(by_id["01R"].not_before_epoch_s, Some(expected));
+        assert_eq!(by_id["01C"].not_before_epoch_s, None);
+        assert_eq!(by_id["01F"].not_before_epoch_s, None);
+    }
+
     // ---- queue section ordering + divider ----
 
     /// task_on with a priority + optional finishedAt override.
@@ -2691,24 +2790,24 @@ mod tests {
     fn lane_task_live_running_queued_and_terminal() {
         // Running → elapsed against `now` (created default is 3m12s before now).
         let running = task_on(TaskStatus::Running, "t1", "platform", Some("wt-a"));
-        assert_eq!(lane_task_live(&running, now(), 0), "⏱ 3m12s");
+        assert_eq!(lane_task_live(&running, now(), 0, 0), "⏱ 3m12s");
         // A re-run stamps `started_at` LATER than `created`: the timer anchors on
         // the re-run (47s ago), not the original creation — so it never inherits
         // the phantom elapsed that would race it to the 3h ceiling.
         let mut rerun = running.clone();
         rerun.started_at = Some("2026-07-08T10:02:25.000Z".into()); // now - 47s
-        assert_eq!(lane_task_live(&rerun, now(), 0), "⏱ 47s");
+        assert_eq!(lane_task_live(&rerun, now(), 0, 0), "⏱ 47s");
         // Queued → `#N in lane` using the caller-supplied 1-based position (the
         // elapsed clock is never consulted for a queued row).
         let queued = task_on(TaskStatus::Queued, "t2", "platform", Some("wt-a"));
-        assert_eq!(lane_task_live(&queued, now(), 1), "#1 in lane");
-        assert_eq!(lane_task_live(&queued, now(), 3), "#3 in lane");
+        assert_eq!(lane_task_live(&queued, now(), 1, 0), "#1 in lane");
+        assert_eq!(lane_task_live(&queued, now(), 3, 0), "#3 in lane");
         // Every terminal / non-live status → empty (the glyph carries the state).
         for status in
             [TaskStatus::Done, TaskStatus::Failed, TaskStatus::Cancelled, TaskStatus::NeedsInput]
         {
             let t = task_on(status, "t3", "platform", Some("wt-a"));
-            assert_eq!(lane_task_live(&t, now(), 0), "", "{status:?} has no live text");
+            assert_eq!(lane_task_live(&t, now(), 0, 0), "", "{status:?} has no live text");
         }
     }
 
@@ -2745,6 +2844,33 @@ mod tests {
         assert_eq!(elapsed_label(0, 303), "⏱ 5m03s"); // zero-padded seconds
         assert_eq!(elapsed_label(0, 3840), "⏱ 1h04m"); // zero-padded minutes
         assert_eq!(elapsed_label(100, 50), "⏱ 0s"); // clock skew clamps to 0
+    }
+
+    #[test]
+    fn remaining_label_formats_countdown() {
+        assert_eq!(remaining_label(47, 0), "⧗ 47s");
+        assert_eq!(remaining_label(12 * 60, 0), "⧗ 12m");
+        assert_eq!(remaining_label(4 * 3600 + 32 * 60, 0), "⧗ 4h32m");
+        assert_eq!(remaining_label(5 * 3600, 0), "⧗ 5h00m");
+        assert_eq!(remaining_label(50, 100), "⧗ 0s"); // past/equal clamps
+    }
+
+    #[test]
+    fn lane_task_live_shows_countdown_when_deferred() {
+        let mut t = make_task(TaskStatus::Queued);
+        t.not_before = Some("1970-01-01T05:00:00.000Z".into()); // epoch 18000
+        assert_eq!(lane_task_live(&t, 0, 1, 0), "⧗ 5h00m");
+        // Past notBefore falls back to #N in lane.
+        assert_eq!(lane_task_live(&t, 20_000, 2, 0), "#2 in lane");
+    }
+
+    #[test]
+    fn lane_task_live_ignores_stale_not_before_on_cancelled() {
+        // Status-gated: cancelled never paints a schedule stamp, even with a
+        // future not_before left on the wire after a buggy cancel path.
+        let mut t = make_task(TaskStatus::Cancelled);
+        t.not_before = Some("2099-01-01T00:00:00.000Z".into());
+        assert_eq!(lane_task_live(&t, 0, 0, 0), "");
     }
 
     #[test]
@@ -3468,6 +3594,7 @@ mod tests {
             summary: "blank page after undo".into(),
             detail: String::new(),
             running_elapsed: None,
+            not_before_epoch_s: None,
             created_epoch_s: 0,
             archived: false,
             status: TaskStatus::Queued,
@@ -3516,6 +3643,7 @@ mod tests {
             summary: summary.into(),
             detail: String::new(),
             running_elapsed: None,
+            not_before_epoch_s: None,
             created_epoch_s: 0,
             archived: false,
             status: TaskStatus::Queued,
@@ -3863,6 +3991,8 @@ mod tests {
         assert_eq!(two_digit_hour, "⏱ 99h59m");
         assert!(cw(&two_digit_hour) <= TIMER_W);
         assert!(cw(&two_digit_hour) <= QUEUE_LIVE_W);
+        // Deferred countdown shares the hourglass prefix and must fit Live.
+        assert!(cw(&remaining_label(5 * 3600, 0)) <= QUEUE_LIVE_W);
         // Relative-age buckets, including the widest ("just now").
         for (c, n) in [(100u64, 100u64), (0, 300), (0, 3600), (0, 172_800)] {
             let label = relative_age_label(c, n);
@@ -4026,6 +4156,7 @@ mod tests {
             summary: "implement the widget cache".into(),
             detail: String::new(),
             running_elapsed: if running { Some(now() - 303) } else { None },
+            not_before_epoch_s: None,
             created_epoch_s: 0,
             archived: false,
             status: if running { TaskStatus::Running } else { TaskStatus::Done },

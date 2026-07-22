@@ -120,6 +120,7 @@ export type {
 	TaskStatus,
 } from "./task.js";
 export {
+	DEFER_MS,
 	laneKey,
 	PrioritySchema,
 	parseTaskFile,

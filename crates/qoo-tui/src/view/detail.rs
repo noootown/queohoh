@@ -549,7 +549,12 @@ pub(crate) fn content_for(
                         is_def,
                         created: crate::selectors::absolute_local_label(epoch, tz_offset_s),
                         age: crate::selectors::relative_age_label(epoch, now_epoch_s),
-                        live: crate::selectors::lane_task_live(t, now_epoch_s, queue_pos),
+                        live: crate::selectors::lane_task_live(
+                            t,
+                            now_epoch_s,
+                            queue_pos,
+                            tz_offset_s,
+                        ),
                         selected: i == sel,
                     });
                 }

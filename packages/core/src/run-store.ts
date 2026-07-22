@@ -217,6 +217,15 @@ export class RunStore {
 		return existsSync(this.cancelMarkerPath(taskId));
 	}
 
+	/** Best-effort unlink of a prior Stop marker. A new attempt must not inherit
+	 * a previous run's cancel (else finalize would re-settle the fresh run as
+	 * `cancelled`). Cleared from `startRun` alongside stale `result.json`. */
+	clearCancelMarker(taskId: string): void {
+		try {
+			unlinkSync(this.cancelMarkerPath(taskId));
+		} catch {}
+	}
+
 	/** Append one line to the run's persisted attempt trail (finding 5 — the
 	 * fallback-chain hop history, e.g. "attempt 1: claude — session limit →
 	 * falling back"). Read-merge-write like `finishRun`, so it survives both a

@@ -119,8 +119,23 @@ const TaskMetaSchema = z
 		// Scheduler-lane override stamped from the definition's `lane:` at create
 		// time (additive; absent on legacy files → null). See laneKey below.
 		lane: z.string().nullable().default(null),
+		// Earliest time the scheduler may start this task (ISO, like `created`).
+		// Additive; absent on legacy files → null. Set by the QUEUE `[d]efer`
+		// verb (+5h Claude sliding-window push): a queued task with a future
+		// `not_before` stays `queued` but is invisible to `schedule()` until
+		// the clock passes it. Repeated `d` STACKS another +5h onto the
+		// existing future stamp (not "from now"); cancel (`skip`) and
+		// re-queue (`retry`) clear it so the next defer starts fresh. A
+		// running defer stamps this BEFORE stopping so finalizeRun can
+		// re-queue (keep not_before) instead of settling `cancelled`. Also
+		// cleared when the task actually starts (`startRun`).
+		not_before: z.string().nullable().default(null),
 	})
 	.strict();
+
+/** Fixed push for the QUEUE `[d]efer` verb: Claude's ~5h usage sliding window.
+ * Each press adds this duration onto `max(now, existing notBefore)`. */
+export const DEFER_MS = 5 * 60 * 60 * 1000;
 
 export interface TaskInstance {
 	id: string;
@@ -185,6 +200,10 @@ export interface TaskInstance {
 	 * per-worktree lane. Optional so pre-lane callers and test literals need
 	 * not set it. */
 	lane?: string | null;
+	/** Earliest ISO time the scheduler may start this task; null = eligible
+	 * immediately. Optional so pre-defer callers and test literals need not
+	 * set it. See `TaskMetaSchema.not_before`. */
+	notBefore?: string | null;
 }
 
 export function parseTaskFile(content: string): TaskInstance {
@@ -225,6 +244,7 @@ export function parseTaskFile(content: string): TaskInstance {
 				? m.attempted_models
 				: (m.attempted_providers ?? []),
 		lane: m.lane,
+		notBefore: m.not_before,
 	};
 }
 
@@ -256,6 +276,7 @@ export function serializeTaskFile(task: TaskInstance): string {
 		verify_output: task.verifyOutput ?? null,
 		attempted_models: task.attemptedModels ?? [],
 		lane: task.lane ?? null,
+		not_before: task.notBefore ?? null,
 	};
 	return stringifyFrontmatter(meta, task.prompt);
 }

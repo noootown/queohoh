@@ -458,6 +458,10 @@ impl App {
                 self.clear_range_and_marks(ListPane::Queue);
                 vec![Cmd::RpcSeq { verb: "reran".into(), calls, invalidate_defs_for: None }]
             }
+            ConfirmAction::DeferTasks { calls } => {
+                self.clear_range_and_marks(ListPane::Queue);
+                vec![Cmd::RpcSeq { verb: "deferred".into(), calls, invalidate_defs_for: None }]
+            }
             ConfirmAction::DiscoverDef { repo, name } => {
                 // Optimistic in-flight marker: the def row's `⌕` animates
                 // (throbber) until the repo's def summaries refetch lands

@@ -75,6 +75,14 @@ pub enum AppAction {
     /// or parked `needs-input` row archives out of it; only active queued/running
     /// rows refuse with a status line. Routes to `App::archive_selected`.
     ArchiveSelected,
+    /// Push the QUEUE pane's selected queued/running task(s) +5h (`d`, and the
+    /// queue's `[d]efer` chip): Claude sliding-window defer — always confirms
+    /// first (single or bulk), then fires frozen `defer` RPCs. Stacks: a second
+    /// confirmed press adds another +5h onto the existing future stamp. Cancel
+    /// (`x`) clears the stamp so a later re-queue + defer starts from now again.
+    /// Terminal / needs-input / archived refuse. TASKS keeps bare `d` for
+    /// Discover (pane-gated). Routes to `App::defer_selected`.
+    DeferSelected,
     /// New adhoc task on the selected WORKTREES row (`r`, and the worktrees
     /// `[r]un` chip): same form as QUEUE `[s]chedule`, with the selected
     /// worktree locked as the target (readonly). Session rows can't host a
@@ -166,7 +174,12 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
             _ => gated(PaneButton::Run, AppAction::RunSelectedDef),
         },
         // `d` is a TASKS-only chip: run the highlighted def's discovery fan-out.
-        KeyCode::Char('d') => gated(PaneButton::Discover, AppAction::DiscoverSelectedDef),
+        // `d` is pane-split: QUEUE → defer (+5h), TASKS → discover. WORKTREES
+        // has neither chip so both gates fall through to None.
+        KeyCode::Char('d') => match focus {
+            PaneId::Queue => gated(PaneButton::Defer, AppAction::DeferSelected),
+            _ => gated(PaneButton::Discover, AppAction::DiscoverSelectedDef),
+        },
         // `c` is a TASKS-only chip: toggle the highlighted def's cron on/off
         // (was `o`; key now matches the label's first letter → `[c]ron`).
         KeyCode::Char('c') => gated(PaneButton::Cron, AppAction::ToggleCron),
@@ -460,8 +473,11 @@ mod tests {
             list_mode_action(&k(KeyCode::Char('d')), PaneId::Tasks),
             AppAction::DiscoverSelectedDef
         );
-        // No Discover chip on QUEUE / WORKTREES → the gate leaves `d` inert there.
-        assert_eq!(list_mode_action(&k(KeyCode::Char('d')), PaneId::Queue), AppAction::None);
+        // QUEUE: `d` is defer (+5h Claude window). WORKTREES has neither chip.
+        assert_eq!(
+            list_mode_action(&k(KeyCode::Char('d')), PaneId::Queue),
+            AppAction::DeferSelected
+        );
         assert_eq!(list_mode_action(&k(KeyCode::Char('d')), PaneId::Worktrees), AppAction::None);
     }
 

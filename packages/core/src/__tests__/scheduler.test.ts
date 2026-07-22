@@ -13,6 +13,7 @@ function task(overrides: {
 	chainId?: string | null;
 	chainSeq?: number | null;
 	lane?: string | null;
+	notBefore?: string | null;
 }): TaskInstance {
 	seq += 1;
 	return {
@@ -41,6 +42,7 @@ function task(overrides: {
 		chainSeq: overrides.chainSeq ?? null,
 		lane: overrides.lane ?? null,
 		attemptedModels: [],
+		notBefore: overrides.notBefore ?? null,
 	};
 }
 
@@ -65,6 +67,37 @@ describe("schedule", () => {
 			task({ status, worktree: `wt-${status}` }),
 		);
 		expect(schedule(tasks, idle, { perProjectMax: 5 }).start).toEqual([]);
+	});
+
+	it("skips a queued task whose notBefore is still in the future", () => {
+		const now = Date.parse("2026-07-22T12:00:00.000Z");
+		const deferred = task({
+			notBefore: "2026-07-22T17:00:00.000Z", // +5h
+			worktree: "wt-later",
+		});
+		const ready = task({ worktree: "wt-now" });
+		const past = task({
+			notBefore: "2026-07-22T11:00:00.000Z", // already due
+			worktree: "wt-past",
+		});
+		const { start } = schedule([deferred, ready, past], idle, {
+			perProjectMax: 5,
+			nowMs: now,
+		});
+		expect(start.map((t) => t.id).sort()).toEqual([past.id, ready.id].sort());
+	});
+
+	it("starts a deferred task once notBefore has passed", () => {
+		const t = task({
+			notBefore: "2026-07-22T12:00:00.000Z",
+			worktree: "wt-a",
+		});
+		expect(
+			schedule([t], idle, {
+				perProjectMax: 3,
+				nowMs: Date.parse("2026-07-22T12:00:00.000Z"),
+			}).start,
+		).toEqual([t]);
 	});
 
 	it("orders by priority band then id", () => {

@@ -15,10 +15,12 @@ pub enum ButtonKind {
 /// `[r]erun`; WORKTREES opens the same adhoc form with the selected worktree
 /// locked in as the target), `Goto` ≡ `g` (QUEUE — resume the task's Claude
 /// session in tmux; WORKTREES — open the worktree in tmux), `Cancel` ≡ `x`
-/// (QUEUE only — skip/stop the selected task), `Remove` ≡ `x` (WORKTREES only
-/// — remove the selected worktree), `Cron` ≡ `c` (TASKS only — pause/resume
-/// the def's schedule), `Collapse` ≡ `z` (labeled collapse/expand by
-/// expanded/collapsed state).
+/// (QUEUE only — skip/stop the selected task), `Defer` ≡ `d` (QUEUE only —
+/// push the selected queued/running task +5h for the Claude usage window;
+/// TASKS keeps `d` for Discover), `Remove` ≡ `x` (WORKTREES only — remove the
+/// selected worktree), `Cron` ≡ `c` (TASKS only — pause/resume the def's
+/// schedule), `Collapse` ≡ `z` (labeled collapse/expand by expanded/collapsed
+/// state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneButton {
     /// QUEUE `[s]chedule` — opens the unified adhoc-create form (same action as
@@ -27,6 +29,10 @@ pub enum PaneButton {
     Tasks,
     Run,
     Discover,
+    /// QUEUE `[d]efer` — push selected queued/running task(s) +5h (Claude
+    /// sliding window). One key, no confirm. Same letter as TASKS Discover;
+    /// pane-gated so they never collide.
+    Defer,
     Goto,
     Cancel,
     /// QUEUE `[a]rchive` — a TOGGLE: archives the selected terminal row, or
@@ -51,8 +57,9 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
     use PaneButton::*;
     match pane {
         // Schedule (blank adhoc create) on QUEUE; WORKTREES Run is the same form
-        // with the selected worktree locked as the target.
-        PaneId::Queue => &[Run, Cancel, Goto, Archive, Schedule, Collapse],
+        // with the selected worktree locked as the target. Defer sits with the
+        // other row verbs (rerun/stop/archive) before the pane-scoped schedule.
+        PaneId::Queue => &[Run, Cancel, Goto, Archive, Defer, Schedule, Collapse],
         PaneId::Tasks => &[Run, Discover, Cron, Collapse],
         PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Collapse],
         PaneId::Detail => &[],
@@ -61,11 +68,11 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
 
 /// Whether `btn` may act on a BULK (multi-row) selection in `pane` — the only
 /// verbs that stay live during a range: QUEUE's `Run` (re-queue, `[r]erun`),
-/// `Cancel` (stop, `[x]stop`), and `Archive` (`[a]rchive`/`[a]unarchive`) each
-/// fan the RPC out over every eligible row in the range; WORKTREES' `Remove`
-/// opens its own bulk-remove menu. Everything else — including the pane-scoped
-/// `Goto`/`Schedule`/`Collapse` chips that don't even read the selection — is
-/// bulk-disabled: the title bar dims it (see
+/// `Cancel` (stop, `[x]stop`), `Archive` (`[a]rchive`/`[a]unarchive`), and
+/// `Defer` (`[d]efer` +5h) each fan the RPC out over every eligible row in the
+/// range; WORKTREES' `Remove` opens its own bulk-remove menu. Everything else
+/// — including the pane-scoped `Goto`/`Schedule`/`Collapse` chips that don't
+/// even read the selection — is bulk-disabled: the title bar dims it (see
 /// [`crate::view::panes::button_chip`]) and its key/click refuses with a status
 /// line (`App::apply_action`) instead of silently acting on just the cursor
 /// row. SINGLE SOURCE OF TRUTH for both.
@@ -76,6 +83,7 @@ pub(crate) fn bulk_allowed(pane: PaneId, btn: PaneButton) -> bool {
         (PaneId::Queue, Run)
             | (PaneId::Queue, Cancel)
             | (PaneId::Queue, Archive)
+            | (PaneId::Queue, Defer)
             | (PaneId::Worktrees, Remove)
     )
 }
@@ -171,10 +179,11 @@ mod tests {
     #[test]
     fn bulk_allowed_matrix_matches_the_doable_lists() {
         use PaneButton::*;
-        // QUEUE: rerun/stop/archive.
+        // QUEUE: rerun/stop/archive/defer.
         assert!(bulk_allowed(PaneId::Queue, Run));
         assert!(bulk_allowed(PaneId::Queue, Cancel));
         assert!(bulk_allowed(PaneId::Queue, Archive));
+        assert!(bulk_allowed(PaneId::Queue, Defer));
         for btn in [Goto, Schedule, Collapse] {
             assert!(!bulk_allowed(PaneId::Queue, btn), "{btn:?} should be bulk-disabled on QUEUE");
         }

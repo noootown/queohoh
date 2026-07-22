@@ -378,6 +378,70 @@ fn queue_x_confirms_then_stops_a_running_task() {
 }
 
 #[test]
+fn queue_d_confirms_then_defers_a_queued_task() {
+    // `d` always opens the confirm dialog first; Enter fires `defer`.
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].status = TaskStatus::Queued;
+    let mut a = app_with(snap);
+    let opened = a.update(key('d'));
+    assert!(opened.cmds.is_empty(), "d opens the dialog, dispatches nothing yet");
+    match &a.mode {
+        Mode::Confirm {
+            title,
+            body,
+            confirm_label,
+            action: ConfirmAction::DeferTasks { calls },
+            ..
+        } => {
+            assert!(title.contains("Defer 1"), "title={title}");
+            assert!(body.iter().any(|l| l.contains("+5h")), "body={body:?}");
+            assert_eq!(confirm_label, "Defer +5h");
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].method, "defer");
+            assert_eq!(calls[0].params, serde_json::json!({ "id": "t1" }));
+        }
+        other => panic!("expected defer confirm, got {other:?}"),
+    }
+    let u = a.update(enter());
+    assert!(matches!(a.mode, Mode::List));
+    match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
+        Cmd::RpcSeq { verb, calls, .. } => {
+            assert_eq!(verb, "deferred");
+            assert_eq!(calls[0].method, "defer");
+            assert_eq!(calls[0].params, serde_json::json!({ "id": "t1" }));
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn queue_d_esc_dismisses_the_confirm_without_dispatch() {
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].status = TaskStatus::Queued;
+    let mut a = app_with(snap);
+    a.update(key('d'));
+    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::DeferTasks { .. }, .. }));
+    let u = a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert!(matches!(a.mode, Mode::List), "esc dismisses");
+    assert!(u.cmds.is_empty(), "esc dispatches nothing");
+}
+
+#[test]
+fn queue_d_noop_on_terminal_sets_status_line_without_dialog() {
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].status = TaskStatus::Done;
+    let mut a = app_with(snap);
+    let u = a.update(key('d'));
+    assert!(matches!(a.mode, Mode::List), "no dialog when nothing is deferrable");
+    assert!(u.cmds.is_empty());
+    assert!(
+        a.status_line.as_deref().unwrap_or("").contains("defer"),
+        "status: {:?}",
+        a.status_line
+    );
+}
+
+#[test]
 fn queue_x_confirms_then_skips_a_queued_task() {
     let mut snap = failed_task_snapshot();
     snap.tasks[0].status = TaskStatus::Queued;

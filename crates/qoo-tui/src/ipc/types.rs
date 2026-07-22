@@ -185,6 +185,12 @@ pub struct TaskInstance {
     /// daemon scheduler both use this (via `scheduler_lane_key` / core `laneKey`)
     /// so display position matches who actually serializes with whom.
     pub lane: Option<String>,
+    /// Earliest ISO time the scheduler may start this task (`notBefore` on the
+    /// wire). Set by QUEUE `[d]efer` (+5h Claude window). `None` on an old
+    /// daemon or a task that has never been deferred — the live column then
+    /// shows the normal `#N in lane` text. When set and still in the future,
+    /// the live column shows a countdown (`⧗ 4h32m`) instead.
+    pub not_before: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]

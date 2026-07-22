@@ -17,7 +17,7 @@ expression: terminal.backend()
 "╰───────│   g               goto: tmux split juice|agent 3:1 — resume  │       │"
 "╭⚡TASKS│   x               cancel (queue) · remove worktree (worktre  │       │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]│   a               archive / unarchive selection (queue)      │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no tas│   d               discover: fan out one task per discovered  │       │"
+"│ no tas│   d               defer +5h, stacks if already deferred (qu  │       │"
 "│       │   c               cron: pause / resume schedule (tasks)      │       │"
 "╰───────│   s               schedule adhoc task (queue)                │       │"
 "╭🌲 WORK│   t               task menu (worktrees)                      │       │" Hidden by multi-width symbols: [(2, " ")]

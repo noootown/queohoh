@@ -36,7 +36,18 @@ pub const GLYPH_SESSION_LIMIT: char = '$';
 /// that hit its configured `timeout` before finishing — distinct from the
 /// generic worker `✗` so a wedged/slow task reads apart from an outright
 /// error, but the same red because it's still a failure needing attention.
+/// Same codepoint as the Live **defer countdown** prefix ([`GLYPH_DEFER`]);
+/// status-glyph red vs Live yellow disambiguates. Not the emoji ⏳.
 pub const GLYPH_TIMED_OUT: char = '⧗';
+/// Live **running** elapsed-timer prefix in the QUEUE / worktree activity
+/// columns — stopwatch clock (`⏱`). Distinct from the defer countdown's
+/// hourglass ([`GLYPH_DEFER`]): clock = time spent running, hourglass = time
+/// left until release.
+pub const GLYPH_TIMER: char = '⏱';
+/// Live **deferred** countdown prefix (`notBefore` remaining) — single-width
+/// hourglass (`⧗`), same codepoint as timed-out status. Distinct from the
+/// running stopwatch ([`GLYPH_TIMER`]). Not the emoji ⏳.
+pub const GLYPH_DEFER: char = '⧗';
 /// Out-of-budget — `$` (dollar sign), single-width, in error red. A `failed`
 /// run whose result text reported Anthropic's credit-balance/out-of-credits
 /// billing error (`worker.ts`'s `OUT_OF_BUDGET_RE`). Shares the `$` limit glyph
@@ -146,6 +157,7 @@ pub const BTN_LABEL_SCHEDULE: &str = "schedule";
 pub const BTN_LABEL_TASKS: &str = "tasks";
 pub const BTN_LABEL_RUN: &str = "run";
 pub const BTN_LABEL_DISCOVER: &str = "discover";
+pub const BTN_LABEL_DEFER: &str = "defer";
 pub const BTN_LABEL_RERUN: &str = "rerun";
 pub const BTN_LABEL_GOTO: &str = "goto";
 pub const BTN_LABEL_STOP: &str = "stop";

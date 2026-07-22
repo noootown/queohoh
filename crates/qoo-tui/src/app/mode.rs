@@ -396,6 +396,10 @@ pub enum ConfirmAction {
     /// clears the QUEUE range first. Mirror of [`Self::CancelTasks`] for the
     /// QUEUE re-queue (`r`) verb.
     RequeueTasks { calls: Vec<crate::event::RpcCall> },
+    /// The frozen per-task `defer` RPCs in one `RpcSeq` (verb "deferred");
+    /// clears the QUEUE range first. Mirror of [`Self::CancelTasks`] for the
+    /// QUEUE defer (`d`) verb (+5h Claude window; stacks on re-press).
+    DeferTasks { calls: Vec<crate::event::RpcCall> },
     /// Run discovery for def `name` in `repo` (TASKS `d` / `[d]iscover` chip).
     /// Repo + name are frozen when the dialog opens so confirm fires exactly
     /// the def the body named. On confirm: optimistic `App::discovering` insert

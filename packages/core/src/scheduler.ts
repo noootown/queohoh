@@ -47,10 +47,21 @@ function isTerminalNonSuccess(status: TaskInstance["status"]): boolean {
 export function schedule(
 	tasks: TaskInstance[],
 	live: LiveState,
-	opts: { perProjectMax: number },
+	opts: { perProjectMax: number; /** Clock for `notBefore` gating (tests). */ nowMs?: number },
 ): ScheduleDecision {
+	const nowMs = opts.nowMs ?? Date.now();
 	const eligible = tasks
-		.filter((t) => t.status === "queued")
+		.filter((t) => {
+			if (t.status !== "queued") return false;
+			// Future `notBefore` (QUEUE `[d]efer` / Claude window push): stay
+			// queued but invisible to start/resolve until the clock passes it.
+			const nb = t.notBefore;
+			if (nb) {
+				const ts = Date.parse(nb);
+				if (!Number.isNaN(ts) && ts > nowMs) return false;
+			}
+			return true;
+		})
 		.sort((a, b) => {
 			const band = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
 			return band !== 0 ? band : a.id.localeCompare(b.id);

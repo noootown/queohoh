@@ -19,6 +19,7 @@ import {
 	BUILTIN_CATALOG,
 	createResolverIO,
 	DEFAULT_PROVIDERS,
+	DEFER_MS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -1435,6 +1436,26 @@ describe("ApiServer", () => {
 		expect(store.list().map((x) => x.id)).toEqual([t.id]);
 	});
 
+	it("skip clears notBefore on a deferred queued task", async () => {
+		// Cancel must drop the defer stamp so Live goes empty and a later
+		// re-queue + defer bases from now rather than stacking on the old window.
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { notBefore: "2099-01-01T00:00:00.000Z" });
+		const updated = (await client.call("skip", { id: t.id })) as {
+			status: string;
+			notBefore: string | null;
+		};
+		expect(updated.status).toBe("cancelled");
+		expect(updated.notBefore).toBeNull();
+		expect(store.get(t.id)?.notBefore).toBeNull();
+	});
+
 	it("skip cancels a needs-input task too", async () => {
 		const { client, store } = await setup();
 		const t = store.create({
@@ -1584,6 +1605,130 @@ describe("ApiServer", () => {
 		await expect(client.call("stop", { id: t.id })).rejects.toThrow(
 			/no running child tracked/,
 		);
+	});
+
+	it("defer stamps notBefore +DEFER_MS on a queued task", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		const before = Date.now();
+		const updated = (await client.call("defer", { id: t.id })) as {
+			status: string;
+			notBefore: string | null;
+		};
+		expect(updated.status).toBe("queued");
+		expect(updated.notBefore).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+		const until = Date.parse(updated.notBefore!);
+		// DEFER_MS ± a few seconds of test overhead.
+		expect(until - before).toBeGreaterThanOrEqual(DEFER_MS - 2000);
+		expect(until - before).toBeLessThanOrEqual(DEFER_MS + 2000);
+		expect(store.get(t.id)?.notBefore).toBe(updated.notBefore);
+	});
+
+	it("defer stacks +DEFER_MS onto an existing future notBefore", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		// Far future so wall-clock during the test never races the stamp.
+		const base = "2099-01-01T00:00:00.000Z";
+		store.update(t.id, { notBefore: base });
+		const updated = (await client.call("defer", { id: t.id })) as {
+			notBefore: string | null;
+		};
+		expect(Date.parse(updated.notBefore!)).toBe(Date.parse(base) + DEFER_MS);
+	});
+
+	it("defer after cancel+retry starts a fresh +DEFER_MS from now (not stacked)", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		// Deferred far out, then cancelled — notBefore must clear so a later
+		// re-queue + defer bases from now.
+		store.update(t.id, { notBefore: "2099-01-01T00:00:00.000Z" });
+		const cancelled = (await client.call("skip", { id: t.id })) as {
+			status: string;
+			notBefore: string | null;
+		};
+		expect(cancelled.status).toBe("cancelled");
+		expect(cancelled.notBefore).toBeNull();
+		await client.call("retry", { id: t.id });
+		const before = Date.now();
+		const deferred = (await client.call("defer", { id: t.id })) as {
+			notBefore: string | null;
+		};
+		const until = Date.parse(deferred.notBefore!);
+		expect(until - before).toBeGreaterThanOrEqual(DEFER_MS - 2000);
+		expect(until - before).toBeLessThanOrEqual(DEFER_MS + 2000);
+	});
+
+	it("defer on a running task stamps notBefore then stops", async () => {
+		const { client, store, engine } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "running", error: null });
+		// No tracked child → stopTask throws after the notBefore stamp. The
+		// stamp must still land so a real settle/adopt path can re-queue.
+		await expect(client.call("defer", { id: t.id })).rejects.toThrow(
+			/no running child tracked/,
+		);
+		const stamped = store.get(t.id);
+		expect(stamped?.status).toBe("running");
+		expect(stamped?.notBefore).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+		// engine is present so the RPC path really did try to stop.
+		expect(engine).toBeTruthy();
+	});
+
+	it("defer refuses terminal / needs-input tasks", async () => {
+		const { client, store } = await setup();
+		for (const status of ["done", "failed", "needs-input", "cancelled"] as const) {
+			const t = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			store.update(t.id, { status, error: null });
+			await expect(client.call("defer", { id: t.id })).rejects.toThrow(
+				`cannot defer task in status ${status}`,
+			);
+		}
+	});
+
+	it("retry clears a prior notBefore so a manual re-run is not still gated", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "failed",
+			error: "boom",
+			notBefore: "2099-01-01T00:00:00.000Z",
+		});
+		const retried = (await client.call("retry", { id: t.id })) as {
+			status: string;
+			notBefore: string | null;
+		};
+		expect(retried.status).toBe("queued");
+		expect(retried.notBefore).toBeNull();
 	});
 
 	it("setWorktree answers needs-input and re-queues", async () => {

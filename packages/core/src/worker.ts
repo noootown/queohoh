@@ -426,6 +426,8 @@ export async function startRun(
 	// NOW (re-stamped on every re-run) so the live `⏱` timer counts from this run,
 	// not the original creation — keeping it honest against the 3h wall-clock
 	// ceiling, which the runner likewise measures fresh from this spawn.
+	// `notBefore` is cleared too: once we start, the defer gate has been honored
+	// (or the operator re-ran early) and must not re-block a later settle/retry.
 	deps.store.update(taskId, {
 		status: "running",
 		startedAt: new Date().toISOString(),
@@ -433,6 +435,7 @@ export async function startRun(
 		verified: null,
 		verifyExitCode: null,
 		verifyOutput: null,
+		notBefore: null,
 	});
 
 	const fail = (reason: string): StartRunResult => {
@@ -454,8 +457,10 @@ export async function startRun(
 	// unlinks result.json. Left in place, a daemon restart during THIS attempt
 	// would let the adoption sweep's `hasResult → "finalize"` check finalize the
 	// task with the stale result while this attempt's shim is still running.
-	// Cleared before any of this attempt's own artifacts are written.
+	// Cleared before any of this attempt's own artifacts are written. Same for
+	// a prior Stop's cancel marker — a fresh attempt must not inherit it.
 	deps.runStore.clearResultJson(taskId);
+	deps.runStore.clearCancelMarker(taskId);
 
 	deps.runStore.writeSnapshot(
 		taskId,
@@ -576,7 +581,36 @@ export async function finalizeRun(
 	// `failed` run. Else a timeout is its own outcome; else an unrequested kill
 	// signal (external/OOM) wins over exit code, since it's the truer cause;
 	// else a non-zero exit.
+	//
+	// Defer-stop: the QUEUE `[d]efer` verb stamps a future `notBefore` BEFORE
+	// killing the worker. When that stop settles we RE-QUEUE (keeping
+	// `notBefore`) instead of landing `cancelled` — the task stays in the plan,
+	// just not until the Claude window resets. A plain Stop has null/past
+	// `notBefore` (startRun clears it; only defer re-stamps on a running task)
+	// and falls through to cancelled, which must also clear any leftover stamp
+	// so the Live column and a later re-queue+defer do not inherit it.
 	if (deps.isCancelled?.(taskId)) {
+		const until = task.notBefore;
+		const untilMs = until ? Date.parse(until) : Number.NaN;
+		if (until && !Number.isNaN(untilMs) && untilMs > Date.now()) {
+			deps.runStore.finishRun(
+				taskId,
+				{
+					result,
+					outcome: "cancelled",
+					reason: `deferred until ${until}`,
+					verify: null,
+				},
+				deps.redact,
+			);
+			const task2 = deps.store.update(taskId, {
+				status: "queued",
+				error: null,
+				// Keep the stamped notBefore; clear run-local fields.
+				startedAt: null,
+			});
+			return { task: task2, retry: false };
+		}
 		outcome = "cancelled";
 		reason = "stopped by user";
 	} else if (result.timedOut) {
@@ -764,6 +798,10 @@ export async function finalizeRun(
 		// `done` clears the error; failed/cancelled/verify-failed carry their reason
 		// (the detail pane shows "stopped by user" for a cancel).
 		error: outcome === "done" ? null : reason,
+		// User cancel (plain Stop) must drop any leftover defer stamp. The
+		// defer-requeue branch above returns early and keeps `notBefore`; this
+		// only runs for a true cancelled settle (past/null notBefore at stop).
+		...(outcome === "cancelled" ? { notBefore: null } : {}),
 		// Stamp the verify verdict when the gate ran. `verify` records the command
 		// that was checked (for a definition task this stamps the definition's
 		// command onto the record); the output tail is redacted before it lands in
