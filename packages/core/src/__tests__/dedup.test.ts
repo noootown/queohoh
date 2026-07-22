@@ -92,13 +92,14 @@ describe("filterNewItems", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("retry_errored still blocks verify-failed keys (deliberate scope)", () => {
+	it("retry_errored retries verify-failed keys (incomplete done-condition)", () => {
+		// e.g. pr-fix-ci-conflicts agent exited "success" but CI gate still red.
 		const out = filterNewItems([{ number: "1" }], {
 			...base,
 			mode: "retry_errored",
 			existing: [existing("verify-failed", "1")],
 		});
-		expect(out).toEqual([]);
+		expect(out.map((o) => o.itemKey)).toEqual(["1"]);
 	});
 
 	it("none keeps everything with keys", () => {

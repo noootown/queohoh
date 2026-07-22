@@ -513,6 +513,42 @@ describe("ApiServer", () => {
 		expect(typeof state.buildId).toBe("string");
 	});
 
+	it("truncates wire prompts without splitting a UTF-16 surrogate pair", async () => {
+		// Regression: emoji at the PROMPT_WIRE_MAX boundary used to produce a
+		// lone `\ud83d` in the state JSON; serde_json then failed the whole
+		// snapshot and the TUI rendered empty defaults.
+		const { client, store } = await setup();
+		const max = 400;
+		// 🏁 is one code point / two UTF-16 units. Place it so a naive
+		// slice(0, max-1) would keep only the high surrogate.
+		const prefix = "x".repeat(max - 2); // 398 units; next unit is high of 🏁
+		const prompt = `${prefix}🏁 and more text that must be truncated`;
+		expect(prompt.length).toBeGreaterThan(max);
+		// High surrogate alone would sit at index max-2 if we cut at max-1.
+		expect(prompt.charCodeAt(max - 2)).toBeGreaterThanOrEqual(0xd800);
+		expect(prompt.charCodeAt(max - 2)).toBeLessThanOrEqual(0xdbff);
+
+		const task = store.create({
+			prompt,
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		const state = (await client.call("state")) as {
+			tasks: { id: string; prompt: string }[];
+		};
+		const wire = state.tasks.find((t) => t.id === task.id);
+		expect(wire).toBeDefined();
+		const wirePrompt = wire?.prompt ?? "";
+		expect(wirePrompt.endsWith("…")).toBe(true);
+		expect(wirePrompt.length).toBeLessThanOrEqual(max);
+		// Round-trip through JSON must not emit an unpaired high-surrogate escape.
+		const encoded = JSON.stringify(wirePrompt);
+		expect(encoded).not.toMatch(/\\u[dD][89aAbB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/);
+		// Safe cut drops the half-emoji and the ellipsis replaces it.
+		expect(wirePrompt).toBe(`${prefix}…`);
+	});
+
 	it("shutdown refuses while a task is running, then succeeds when idle", async () => {
 		let release: () => void = () => {};
 		const parked = new Promise<void>((r) => {

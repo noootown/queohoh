@@ -4,15 +4,18 @@ import { render } from "./template.js";
 export type DedupMode = "skip_seen" | "retry_errored" | "none";
 
 // Terminal statuses that make a `retry_errored` key eligible to re-enqueue. A
-// `failed` run errored; a `cancelled` run was deliberately stopped by the user —
-// both mean "no active task owns this and it was never handled", so a fresh
-// discovery should pick the key up again ("not now" ≠ "never"). `done` (handled)
-// and `verify-failed` (worker claimed success) stay blocking; any non-terminal
+// `failed` run errored; a `cancelled` run was deliberately stopped by the user;
+// a `verify-failed` run means the worker claimed success but a done-condition
+// disagreed (e.g. pr-fix-ci-conflicts still has a red CI gate) — all mean
+// "no active task owns this and it was never fully handled", so discovery may
+// pick the key up again. `done` (handled, verify ok / no verify) stays
+// blocking until the item_key changes (e.g. new head SHA). Any non-terminal
 // task (queued/running/needs-input) also blocks, since a key is only retryable
 // when EVERY task under it is in this set.
 const RETRYABLE_STATUSES: ReadonlySet<TaskStatus> = new Set([
 	"failed",
 	"cancelled",
+	"verify-failed",
 ]);
 
 export interface KeyedItem {

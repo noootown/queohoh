@@ -42,6 +42,24 @@ import { discussMetaToWire } from "./discuss-service.js";
 import type { Engine } from "./engine.js";
 import type { SettingsStore } from "./settings-store.js";
 
+/**
+ * Slice a JS string without splitting a UTF-16 surrogate pair.
+ *
+ * `String.prototype.slice` counts UTF-16 code units. Cutting between a high
+ * and low surrogate leaves an unpaired high in the result; `JSON.stringify`
+ * then emits a lone `\ud83d`-style escape, which `serde_json` rejects
+ * ("unexpected end of hex escape") and blanks the TUI to an empty snapshot.
+ */
+export function sliceUtf16Safe(s: string, end: number): string {
+	if (end <= 0) return "";
+	if (end >= s.length) return s;
+	let cut = end;
+	// If `cut` sits just after a high surrogate, drop that half-pair.
+	const prev = s.charCodeAt(cut - 1);
+	if (prev >= 0xd800 && prev <= 0xdbff) cut -= 1;
+	return s.slice(0, cut);
+}
+
 export interface StateSnapshot {
 	tasks: TaskInstance[];
 	/**
@@ -261,14 +279,17 @@ export class ApiServer {
 		if (prompt.length > ApiServer.PROMPT_WIRE_MAX) {
 			next = {
 				...next,
-				prompt: `${prompt.slice(0, ApiServer.PROMPT_WIRE_MAX - 1)}…`,
+				// UTF-16-safe: a mid-emoji slice leaves an unpaired high surrogate;
+				// JSON.stringify emits `\ud83d` and serde_json rejects the frame
+				// ("unexpected end of hex escape"), blanking the TUI to defaults.
+				prompt: `${sliceUtf16Safe(prompt, ApiServer.PROMPT_WIRE_MAX - 1)}…`,
 			};
 		}
 		// verify_output is bounded ~4 KB already on write; still clamp in case.
 		if (verifyOutput !== null && verifyOutput.length > 2048) {
 			next = {
 				...next,
-				verifyOutput: `${verifyOutput.slice(0, 2047)}…`,
+				verifyOutput: `${sliceUtf16Safe(verifyOutput, 2047)}…`,
 			};
 		}
 		return next;
