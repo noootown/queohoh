@@ -60,19 +60,20 @@ fn format_duration(ms: u64) -> String {
     if rem_min == 0 { format!("{hours}h") } else { format!("{hours}h {rem_min}m") }
 }
 
-/// `(key, value)` rows for the config sub-tab. The model row shows the FULL
-/// RESOLVED chain this def runs under the operator's active provider — the
-/// same `resolveModelChain` output the run-dialog default uses, so display and
-/// behavior can't drift. Entries are re-headed (active provider first) and
-/// joined with ` → ` (versioned catalog labels, label-only). A single-entry
-/// chain is just that label. `null` model resolves the repo's `default_models`
-/// under the active provider (group-head prepend when the pool has no active
-/// entry) and lists that chain; only a hard resolve miss renders a dash. On
-/// resolve failure of an authored spec it falls back to the authored refs.
+/// `(key, value)` rows for the definition **config** sub-tab — mirrors the
+/// authored `config.yaml` surface (every field the daemon loads), with
+/// `model` shown as the FULL RESOLVED chain under the operator's active
+/// provider (same `resolveModelChain` as the run dialog). Absent optional
+/// fields render as the dim `—` placeholder so the layout stays stable.
 fn config_rows(
     def: &TaskDefinition,
     owned: &crate::selectors::ModelResolveOwned,
 ) -> Vec<(&'static str, String)> {
+    let or_dash = |s: Option<&str>| {
+        s.filter(|v| !v.is_empty())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| EM_DASH.to_string())
+    };
     let disp = |r: &str| crate::chain::model_ref_display(&owned.catalog, r);
     let defaults = owned.default_models.refs_for(&def.repo);
     let enabled: Vec<&str> = owned.enabled_providers.iter().map(String::as_str).collect();
@@ -91,17 +92,47 @@ fn config_rows(
             None => EM_DASH.to_string(),
         },
     };
+    let discovery = match &def.discovery {
+        Some(d) => {
+            if d.item_key.is_empty() {
+                d.command.clone()
+            } else {
+                format!("{}  ·  item_key: {}", d.command, d.item_key)
+            }
+        }
+        None => EM_DASH.to_string(),
+    };
+    let purge = match def.purge_after_days {
+        Some(n) => format!("{n}d"),
+        None => EM_DASH.to_string(), // workspace default applies
+    };
     vec![
+        // Identity first so the operator sees which def the rows describe without
+        // glancing back at the TASKS list (especially with the detail pane tall
+        // enough that the selection is scrolled off).
+        ("name", def.name.clone()),
+        ("description", or_dash(def.description.as_deref())),
         ("args", if def.args.is_empty() { EM_DASH.to_string() } else { arg_summary(&def.args) }),
         ("worktree", def.worktree.clone()),
+        ("lane", or_dash(def.lane.as_deref())),
         ("dedup", def.dedup.clone()),
+        ("cron", or_dash(def.cron.as_deref())),
+        ("discovery", discovery),
         ("model", model),
         ("timeout", format_duration(def.timeout_ms)),
         ("priority", def.priority.clone()),
+        ("pre_run", or_dash(def.pre_run.as_deref())),
+        ("post_run", or_dash(def.post_run.as_deref())),
+        ("verify", or_dash(def.verify.as_deref())),
         (
-            "discovery",
-            def.discovery.as_ref().map(|d| d.command.clone()).unwrap_or_else(|| EM_DASH.to_string()),
+            "on_done",
+            def.on_done
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("stay")
+                .to_string(),
         ),
+        ("purge_after_days", purge),
     ]
 }
 
@@ -1065,18 +1096,14 @@ mod tests {
             TaskDefinition {
                 name: "pr-ready".to_string(),
                 repo: "acme".to_string(),
-                description: None,
-                discovery: None,
-                cron: None,
                 args: vec![ArgSpec { name: "situation".to_string(), ..Default::default() }],
                 dedup: "none".to_string(),
                 worktree: "auto".to_string(),
-                pre_run: None,
-                post_run: None,
                 model: Some("claude/claude-opus-4.8".into()),
                 timeout_ms: 1_800_000,
                 priority: "normal".to_string(),
                 prompt: "do the thing".to_string(),
+                ..Default::default()
             },
         );
         let mut ui = TabUiState::default();
@@ -1696,6 +1723,7 @@ mod tests {
             "claude",
         );
         let mut def = TaskDefinition {
+            name: "pr-ready".to_string(),
             model: Some(ModelRef::Many(vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()])),
             timeout_ms: 1_800_000,
             worktree: "auto".to_string(),
@@ -1704,32 +1732,45 @@ mod tests {
             ..Default::default()
         };
         let (lines, key_col) = config_view(&def, &owned);
-        // Longest key is "discovery" (9) + 2-gap → value column at char 11.
-        assert_eq!(key_col, 11);
+        // Longest key is "purge_after_days" (16) + CONFIG_KEY_GAP.
+        assert_eq!(key_col, 16 + CONFIG_KEY_GAP);
         // Every line's key column is padded to the same width.
         for line in &lines {
             assert!(line.chars().count() >= key_col, "{line:?} shorter than key column");
         }
+        // Name is the first attribute so the def identity is always visible.
+        assert!(
+            lines[0].starts_with("name") && lines[0].contains("pr-ready"),
+            "name is the first config row: {:?}",
+            lines[0]
+        );
         // Full resolved chain (active=claude, both in the pool) joined by ` → `;
-        // label-only refs, versioned catalog labels.
-        assert!(lines.iter().any(|l| l == "model      claude-opus-4.8 → grok-4.5"));
-        assert!(lines.iter().any(|l| l == "timeout    30m"));
-        assert!(lines.iter().any(|l| l == "discovery  —"));
+        // label-only refs, versioned catalog labels. Keys are left-padded.
+        let model_line = lines.iter().find(|l| l.starts_with("model")).expect("model row");
+        assert!(model_line.contains("claude-opus-4.8 → grok-4.5"), "{model_line}");
+        assert!(lines.iter().any(|l| l.starts_with("timeout") && l.contains("30m")));
+        assert!(lines.iter().any(|l| l.starts_with("discovery") && l.contains(EM_DASH)));
+        assert!(lines.iter().any(|l| l.starts_with("on_done") && l.contains("stay")));
+        assert!(lines.iter().any(|l| l.starts_with("purge_after_days") && l.contains(EM_DASH)));
         // A single-entry resolved chain is just that label (no arrow).
         def.model = Some(ModelRef::One("claude/claude-opus-4.8".into()));
         let (lines, _) = config_view(&def, &owned);
-        assert!(lines.iter().any(|l| l == "model      claude-opus-4.8"));
+        let model_line = lines.iter().find(|l| l.starts_with("model")).expect("model row");
+        assert!(
+            model_line.contains("claude-opus-4.8") && !model_line.contains("→"),
+            "{model_line}"
+        );
         // No `model:` + catalog/active present → resolves defaults/group-head
         // under the active provider (claude group head here).
         def.model = None;
         let (lines, _) = config_view(&def, &owned);
         assert!(
-            lines.iter().any(|l| l == "model      claude-opus-4.8"),
+            lines.iter().any(|l| l.starts_with("model") && l.contains("claude-opus-4.8")),
             "null model resolves under active provider: {lines:?}"
         );
         // No model + empty resolve context → dash.
         let (lines, _) = config_view(&def, &empty_owned());
-        assert!(lines.iter().any(|l| l == "model      —"));
+        assert!(lines.iter().any(|l| l.starts_with("model") && l.contains(EM_DASH)));
     }
 
     #[test]
@@ -1757,7 +1798,9 @@ mod tests {
         };
         let (lines, _) = config_view(&def, &owned);
         assert!(
-            lines.iter().any(|l| l == "model      grok-4.5 → claude-opus-4.8"),
+            lines
+                .iter()
+                .any(|l| l.starts_with("model") && l.contains("grok-4.5 → claude-opus-4.8")),
             "full re-headed chain: {lines:?}"
         );
     }

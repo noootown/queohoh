@@ -34,12 +34,17 @@ projects:
   - name: my-app
     path: ~/code/my-app
 max_concurrent_tasks: 3
-archive_after_days: 7
+# Hard-delete terminal tasks (live or archived) after N days from finished_at.
+# Definition `purge_after_days` overrides. Worktree removal purges that lane's
+# tasks immediately. See docs/lifecycle.md.
+purge_after_days: 14
 vars:
   github_user: you
 ```
 
 Task definitions live in the workspace, one directory per project: `$QUEOHOH_WORKSPACE/<project>/tasks/<name>/` (`config.yaml` + `prompt.md`). An optional `$QUEOHOH_WORKSPACE/<project>/vars.yaml` supplies per-project template vars.
+
+Task lifecycle (live → archive → purge, `on_done`, worktree teardown) is documented in **`docs/lifecycle.md`**.
 
 `vars.yaml` also holds two reserved keys that are read as settings rather than exposed as `{{var}}` placeholders:
 

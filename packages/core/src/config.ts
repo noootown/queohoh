@@ -118,7 +118,13 @@ const GlobalConfigSchema = z
 		// Per-project concurrency cap (each registered project may run up to this
 		// many tasks at once; the cap is independent per project, not a shared total).
 		max_concurrent_tasks: z.number().int().positive().default(5),
-		archive_after_days: z.number().int().positive().default(7),
+		// Hard-delete terminal tasks (live or archived) after N days from
+		// finished_at (fallback created). Def `purge_after_days` overrides.
+		// Default 14. Legacy `archive_after_days` still accepted as fallback
+		// when purge_after_days is absent (old meaning was soft-archive; we
+		// only hard-purge by age now).
+		purge_after_days: z.number().int().positive().optional(),
+		archive_after_days: z.number().int().positive().optional(),
 		vars: z.record(z.string(), z.string()).default({}),
 		// Declares which agent CLIs (claude/grok/codex/...) are enabled, in
 		// fallback order. Absent ⇒ DEFAULT_PROVIDERS. Left as `unknown` here
@@ -161,6 +167,9 @@ export interface GlobalConfig {
 	projects: { name: string; path: string }[];
 	/** Per-project concurrency cap — see `max_concurrent_tasks` above. */
 	maxConcurrentTasks: number;
+	/** Hard-delete terminal tasks after this many days (global default). */
+	purgeAfterDays: number;
+	/** @deprecated Alias of purgeAfterDays for older call sites/tests. */
 	archiveAfterDays: number;
 	vars: Record<string, string>;
 	/** Effective provider table (built-in ⊕ config.yaml `providers:`), fallback
@@ -249,7 +258,11 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 			path: expandTilde(p.path),
 		})),
 		maxConcurrentTasks: config.max_concurrent_tasks,
-		archiveAfterDays: config.archive_after_days,
+		purgeAfterDays:
+			config.purge_after_days ?? config.archive_after_days ?? 14,
+		// Keep archiveAfterDays equal for any residual readers/tests.
+		archiveAfterDays:
+			config.purge_after_days ?? config.archive_after_days ?? 14,
 		vars: config.vars,
 		providers,
 		catalog,

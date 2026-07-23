@@ -363,6 +363,12 @@ pub fn slice_cells(text: &str, lo: usize, hi: usize) -> String {
 ///   indentation preserved) — so exact-width lines never spuriously wrap.
 /// - Fenced code lines hard-break at the cell boundary (preserving every char,
 ///   including indentation); each continuation keeps the block's `Fenced` ctx.
+/// - Config `key   value` rows ([`LineCtx::Config`]) use
+///   [`wrap_config_line`]: peel the key column, wrap only the value, reattach
+///   the key (with its exact padding) on the first segment. Generic
+///   [`word_wrap`] is NOT used — it collapses the multi-space key padding via
+///   `split_whitespace`, and the styler would then paint the value's start as
+///   the accent key.
 /// - Text lines word-wrap at spaces; a single token wider than `width` (URLs!)
 ///   hard-breaks. Continuations are flush-left.
 /// - Consecutive GFM table rows (`| … |`) in prose ([`LineCtx::Text`] or a
@@ -407,25 +413,84 @@ pub fn wrap_lines(lines: &[String], ctxs: &[LineCtx], width: usize) -> Vec<Displ
             i += 1;
             continue;
         }
-        // Markdown fences word-wrap like prose; real code fences hard-break.
-        let pieces = match &ctx {
-            LineCtx::Fenced { lang } if is_markdown_lang_tag(lang) => word_wrap(line, width),
-            LineCtx::Fenced { .. } => hard_break(line, width),
-            _ => word_wrap(line, width),
-        };
-        for (j, text) in pieces.into_iter().enumerate() {
-            // A wrapped `key   value` row only has a key on its FIRST segment; the
-            // continuation is pure value (word-wrap drops the alignment padding
-            // too), so it must NOT re-color its first `key_col` chars as a key —
-            // `key_col: 0` means "value column starts at 0". Every other ctx keeps
-            // its styling across the wrap (fenced syntax, plain text).
-            let seg_ctx = match &ctx {
-                LineCtx::Config { .. } if j > 0 => LineCtx::Config { key_col: 0 },
-                other => other.clone(),
-            };
-            out.push(DisplayLine::plain(text, seg_ctx, j > 0));
+        // Config rows: dedicated wrap that keeps the key-column padding intact
+        // (see [`wrap_config_line`]). Markdown fences word-wrap like prose; real
+        // code fences hard-break. Everything else word-wraps.
+        match &ctx {
+            LineCtx::Config { key_col } => {
+                for (j, (text, seg_key_col)) in
+                    wrap_config_line(line, *key_col, width).into_iter().enumerate()
+                {
+                    out.push(DisplayLine::plain(
+                        text,
+                        LineCtx::Config {
+                            key_col: seg_key_col,
+                        },
+                        j > 0,
+                    ));
+                }
+            }
+            other => {
+                let pieces = match other {
+                    LineCtx::Fenced { lang } if is_markdown_lang_tag(lang) => {
+                        word_wrap(line, width)
+                    }
+                    LineCtx::Fenced { .. } => hard_break(line, width),
+                    _ => word_wrap(line, width),
+                };
+                for (j, text) in pieces.into_iter().enumerate() {
+                    out.push(DisplayLine::plain(text, other.clone(), j > 0));
+                }
+            }
         }
         i += 1;
+    }
+    out
+}
+
+/// Wrap a `key   value` config row without collapsing the key-column padding.
+///
+/// Generic [`word_wrap`] joins via `split_whitespace`, which turns
+/// `discovery         bash…` into `discovery bash…`. [`style_config_line`] then
+/// paints the first `key_col` chars as the accent key — including the start of
+/// the value ("bash tasks…") — which is the mis-styling operators saw on long
+/// discovery / post_run / verify rows.
+///
+/// Strategy: peel the key column (chars `[0, key_col)`), wrap only the value,
+/// reattach the key (with its exact padding) on the first segment. Continuations
+/// hang under the value column (indent = key cell width) and carry `key_col: 0`
+/// so they style wholly as value.
+fn wrap_config_line(line: &str, key_col: usize, width: usize) -> Vec<(String, usize)> {
+    let width = width.max(1);
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= key_col {
+        // Key-only / shorter than the column — nothing to peel.
+        return vec![(line.to_string(), key_col)];
+    }
+    let key: String = chars[..key_col].iter().collect();
+    let value: String = chars[key_col..].iter().collect();
+    let key_w = str_width(&key);
+    // Room left for the value on the first line. If the key alone fills `width`
+    // (pathological narrow pane), still leave 1 cell so hard_break can progress.
+    let value_w = width.saturating_sub(key_w).max(1);
+    // Continuations indent under the value column. Cap so the indent never
+    // consumes the whole width.
+    let cont_indent_w = key_w.min(width.saturating_sub(1));
+    let cont_indent = " ".repeat(cont_indent_w);
+
+    // Hard-break the value so multi-space runs inside it (e.g. `  ·  item_key:`)
+    // survive. Config values are paths / shell commands — mid-token breaks are
+    // fine; word-wrap would re-collapse those gaps.
+    let val_segs = hard_break(&value, value_w);
+    let mut out = Vec::with_capacity(val_segs.len().max(1));
+    let mut segs = val_segs.into_iter();
+    if let Some(first) = segs.next() {
+        out.push((format!("{key}{first}"), key_col));
+        for cont in segs {
+            out.push((format!("{cont_indent}{cont}"), 0));
+        }
+    } else {
+        out.push((key, key_col));
     }
     out
 }
@@ -2919,11 +2984,87 @@ mod tests {
         assert!(display.len() > 1, "the long path value wraps into continuations");
         let first = parts(&style_transcript_line(&display[0].text, &display[0].ctx, 20, &p));
         assert_eq!(first[0].1, accent(&p), "first segment keeps the accent key column");
+        // Key-column padding survives the wrap (generic word_wrap would collapse
+        // the multi-space gap between `path` and `/Users…`).
+        assert!(
+            display[0].text.starts_with("path     /"),
+            "first segment must keep key-column padding: {:?}",
+            display[0].text
+        );
         for seg in &display[1..] {
             let styled = parts(&style_transcript_line(&seg.text, &seg.ctx, 20, &p));
             assert!(
                 styled.iter().all(|(_, st)| *st != accent(&p)),
                 "continuation {:?} must not re-color any span as a key",
+                seg.text
+            );
+        }
+    }
+
+    #[test]
+    fn wrapped_config_discovery_row_does_not_paint_value_as_key() {
+        // Regression for the definition config tab: a long `discovery` value
+        // (shell command + item_key) used to go through generic word_wrap, which
+        // collapsed `discovery         bash…` → `discovery bash…`. style_config_line
+        // then painted the first key_col chars — including ` bash tas…` — accent
+        // cyan. Operators saw "discovery bash tasks" all in key color.
+        let p = Palette::default();
+        let key_col = 18; // "purge_after_days" (16) + CONFIG_KEY_GAP (2)
+        let key = format!("{:<key_col$}", "discovery");
+        let value = "bash tasks/pr-fix-ci-conflicts/discover.sh {{github_username}} {{platform_repo}}  ·  item_key: {{url}}@{{head_sha}}";
+        let line = format!("{key}{value}");
+        assert!(
+            line.chars().count() > key_col + 5,
+            "fixture must be long enough to exercise wrap"
+        );
+        let display = wrap_lines(
+            &[line],
+            &[LineCtx::Config { key_col }],
+            40, // force wrap well under the full line width
+        );
+        assert!(display.len() > 1, "long discovery value must wrap: {display:?}");
+
+        // First segment: exact key+padding prefix, then a non-empty value start.
+        assert!(
+            display[0].text.starts_with(&key),
+            "key-column padding must survive wrap: {:?}",
+            display[0].text
+        );
+        assert_eq!(
+            display[0].ctx,
+            LineCtx::Config { key_col },
+            "first segment keeps the real key_col"
+        );
+        let first = parts(&style_transcript_line(
+            &display[0].text,
+            &display[0].ctx,
+            40,
+            &p,
+        ));
+        assert_eq!(first[0], (key.clone(), accent(&p)), "only the key column is accent");
+        // Value start must not share the accent style.
+        assert!(
+            first.iter().skip(1).all(|(_, st)| *st != accent(&p)),
+            "value spans must not be accent: {first:?}"
+        );
+        assert!(
+            first.iter().skip(1).any(|(t, _)| t.starts_with("bash")),
+            "value should still start with the command: {first:?}"
+        );
+
+        // Continuations hang under the value column (indent = key_col spaces) and
+        // style wholly as value (key_col: 0).
+        for seg in &display[1..] {
+            assert_eq!(seg.ctx, LineCtx::Config { key_col: 0 });
+            assert!(
+                seg.text.starts_with(&" ".repeat(key_col)),
+                "continuation should indent under the value column: {:?}",
+                seg.text
+            );
+            let styled = parts(&style_transcript_line(&seg.text, &seg.ctx, 40, &p));
+            assert!(
+                styled.iter().all(|(_, st)| *st != accent(&p)),
+                "continuation must not re-color as key: {:?} → {styled:?}",
                 seg.text
             );
         }

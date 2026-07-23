@@ -61,8 +61,34 @@ describe("loadDefinition", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 2_700_000,
 			priority: "high",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "Review PR {{number}}.\n",
 		});
+	});
+
+	it("loads on_done and purge_after_days when set", () => {
+		const projectDir = makeRepo({
+			"mail-check": {
+				config:
+					"on_done: archive\npurge_after_days: 1\ndescription: Poll mail.\n",
+				prompt: "Check mail.\n",
+			},
+		});
+		const def = loadDefinition(projectDir, "platform", "mail-check");
+		expect(def.onDone).toBe("archive");
+		expect(def.purgeAfterDays).toBe(1);
+	});
+
+	it("maps legacy archive_on_done to on_done archive", () => {
+		const projectDir = makeRepo({
+			"mail-check": {
+				config: "archive_on_done: true\ndescription: Poll mail.\n",
+				prompt: "Check mail.\n",
+			},
+		});
+		const def = loadDefinition(projectDir, "platform", "mail-check");
+		expect(def.onDone).toBe("archive");
 	});
 
 	it("loads a verify (done-condition) command", () => {

@@ -813,6 +813,15 @@ export async function finalizeRun(
 			verifyOutput: deps.redact(verifyRun.output),
 		}),
 	});
+	// Soft-dismiss on success: def/task `on_done: archive` moves the row to
+	// the archive list immediately (track record kept until purge). Failures
+	// stay live so they can be inspected.
+	const onDone = task2.onDone ?? def?.onDone ?? "stay";
+	if (outcome === "done" && onDone === "archive") {
+		deps.store.archive(taskId);
+		const archived = deps.store.getAny(taskId) ?? task2;
+		return { task: archived, retry: false };
+	}
 	return { task: task2, retry: false };
 }
 

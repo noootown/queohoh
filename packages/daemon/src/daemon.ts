@@ -53,7 +53,7 @@ const STARTER_CONFIG = `# queohoh config (lives in your private config workspace
 #   - name: my-app
 #     path: ~/code/my-app
 # max_concurrent_tasks: 5   # per project
-# archive_after_days: 7
+# purge_after_days: 14
 # vars: {}
 `;
 

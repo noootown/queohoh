@@ -124,6 +124,7 @@ async function setup(opts?: {
 		workspace,
 		projects: [{ name: "platform", path: repoPath }],
 		maxConcurrentTasks: 3,
+		purgeAfterDays: 7,
 		archiveAfterDays: 7,
 		vars: opts?.vars ?? {},
 		catalog: BUILTIN_CATALOG,
@@ -750,8 +751,8 @@ describe("ApiServer", () => {
 	});
 
 	describe("settings", () => {
-		it("returns the merged catalog, active_provider, global default_models, and no project overrides", async () => {
-			const { client } = await setup();
+		it("returns catalog, providers, default_models, and important global knobs", async () => {
+			const { client, workspace } = await setup();
 			const settings = (await client.call("settings")) as {
 				catalog: { provider: string; id: string; label: string }[];
 				active_provider: string;
@@ -760,8 +761,14 @@ describe("ApiServer", () => {
 					projects: unknown[];
 				};
 				providers: { name: string; enabled: boolean }[];
+				workspace: string;
+				max_concurrent_tasks: number;
+				purge_after_days: number;
+				projects: string[];
 			};
-			// Full merged catalog (built-in, incl. hidden flags the TUI filters).
+			// Full merged catalog (built-in, incl. hidden flags the TUI filters
+			// from pickers — still on the wire even though the overlay no longer
+			// lists it).
 			expect(settings.catalog).toEqual(BUILTIN_CATALOG);
 			// No settings.json seeded → precedence-first enabled provider (claude).
 			expect(settings.active_provider).toBe("claude");
@@ -775,6 +782,11 @@ describe("ApiServer", () => {
 			expect(settings.providers).toEqual(
 				DEFAULT_PROVIDERS.map((p) => ({ name: p.name, enabled: p.enabled })),
 			);
+			// Important global config.yaml knobs the settings overlay surfaces.
+			expect(settings.workspace).toBe(workspace);
+			expect(settings.max_concurrent_tasks).toBe(3);
+			expect(settings.purge_after_days).toBe(7);
+			expect(settings.projects).toEqual(["platform"]);
 		});
 
 		it("settings providers include optional bin", async () => {

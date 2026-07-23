@@ -257,23 +257,22 @@ impl App {
         Field::dropdown_labeled("model", options, &default)
     }
 
-    /// Def-run model picker: a `default (<resolved-head>)` HEAD (value `""`,
-    /// label = the model this def resolves to under the operator's
-    /// `active_provider` — `resolveModelChain(def_model, …)`'s `chain[0]`,
-    /// rendered label-only) followed by the FULL visible catalog in
-    /// provider-first order ([`Self::provider_first_model_options`]).
+    /// Def-run model picker: concrete `provider/label` options only (no empty
+    /// `default (…)` row). Preselects the option that matches today's
+    /// active-provider resolution head so the dropdown lands on "whatever
+    /// would run now," not a separate default line.
     ///
-    /// The head is preselected. Leaving it untouched submits NO `model` — the
-    /// daemon runs the def's AUTHORED chain (with today's active-provider
-    /// re-heading and full fallback), so a plain Run never silently pins a
-    /// single model. Only actively selecting a concrete entry below the head
-    /// submits that exact `provider/label` ref as a hard pin (`model_pinned`).
-    /// Mirrors the new-session picker's empty-head contract.
+    /// - Def authors `model:` → only those catalog entries, authored order.
+    /// - Def omits `model:` → full visible catalog, provider-first.
+    ///
+    /// Submit always sends the selected ref as a hard pin (`model_pinned`);
+    /// there is no unpinned empty head. Picking another entry overrides.
     pub(super) fn def_model_field(&self, repo: &str, def_model: Option<&ModelRef>) -> Field {
+        let options = self.def_model_pin_options(def_model);
         let owned = self.model_resolve_owned();
         let defaults = owned.default_models.refs_for(repo);
         let enabled: Vec<&str> = owned.enabled_providers.iter().map(String::as_str).collect();
-        let head_label_refs = resolve_model_chain(
+        let resolved_head = resolve_model_chain(
             def_model,
             &owned.catalog,
             &enabled,
@@ -282,19 +281,70 @@ impl App {
         )
         .ok()
         .and_then(|c| c.into_iter().next())
-        // Label the head with the resolved-head ref, rendered label-only (drops
-        // the provider prefix); empty when the def resolves to nothing, so the
-        // head reads a bare `default`.
-        .map(|e| vec![crate::chain::model_ref_display(&owned.catalog, &e.model_ref)])
-        .unwrap_or_default();
-        let head = DropdownOption {
-            value: String::new(),
-            label: default_head_label(&head_label_refs, false),
+        .map(|e| e.model_ref);
+        let default = Self::def_model_preselect(&options, resolved_head.as_deref(), &owned.active_provider);
+        Field::dropdown_labeled("model", options, &default)
+    }
+
+    /// Preselect among pin options: exact resolved-head ref if present, else
+    /// first option for the active provider, else the first option.
+    fn def_model_preselect(
+        options: &[DropdownOption],
+        resolved_head: Option<&str>,
+        active_provider: &str,
+    ) -> String {
+        if let Some(r) = resolved_head {
+            if options.iter().any(|o| o.value == r) {
+                return r.to_string();
+            }
+        }
+        if !active_provider.is_empty() {
+            let prefix = format!("{active_provider}/");
+            if let Some(o) = options.iter().find(|o| o.value.starts_with(&prefix)) {
+                return o.value.clone();
+            }
+        }
+        options
+            .first()
+            .map(|o| o.value.clone())
+            .unwrap_or_default()
+    }
+
+    /// Pin options for the def-run model dropdown. When the def authors a
+    /// `model:` list, only those refs appear (authored order, disabled providers
+    /// dropped). When it does not — or every authored ref is unusable — fall
+    /// back to the full visible catalog so the operator still has a pin list.
+    fn def_model_pin_options(&self, def_model: Option<&ModelRef>) -> Vec<DropdownOption> {
+        let Some(spec) = def_model else {
+            return self.provider_first_model_options();
         };
-        let options = std::iter::once(head)
-            .chain(self.provider_first_model_options())
-            .collect();
-        Field::dropdown_labeled("model", options, "")
+        let catalog = self.model_catalog();
+        let disabled = self.disabled_providers();
+        let mut seen = std::collections::HashSet::new();
+        let mut opts = Vec::new();
+        for r in spec.refs() {
+            let Some(e) = crate::chain::find_model(&catalog, &r) else {
+                continue;
+            };
+            // Disabled providers are not runnable pins. Hidden entries still
+            // show when the def names them (hidden is picker-only for the full
+            // catalog, not for an explicit author choice).
+            if disabled.contains(&e.provider) {
+                continue;
+            }
+            let value = e.model_ref();
+            if !seen.insert(value.clone()) {
+                continue;
+            }
+            opts.push(DropdownOption {
+                value,
+                label: e.model_display(),
+            });
+        }
+        if opts.is_empty() {
+            return self.provider_first_model_options();
+        }
+        opts
     }
 
     /// The adhoc-create session field's display label: `New session` when no

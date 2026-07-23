@@ -144,6 +144,8 @@ export async function instantiateDefinition(
 			model: deps.model,
 			modelPinned: deps.modelPinned ?? false,
 			lane: def.lane ?? undefined,
+			onDone: def.onDone === "archive" ? "archive" : undefined,
+			purgeAfterDays: def.purgeAfterDays ?? undefined,
 		}),
 	);
 }

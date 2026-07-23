@@ -121,17 +121,23 @@ mod tests {
 
     #[test]
     fn run_button_click_hits_confirm_for_a_four_field_def() {
-        // Repro of the pr-review shape: model "" head + a required worktree
+        // Repro of the pr-review shape: model pin dropdown + a required worktree
         // combobox + two enum dropdowns (4 fields after the model-first reorder).
         // Clicking `[ Run ]` must resolve to Button(Confirm), not the inert Modal.
         use crate::view::form::DropdownOption;
         let mut model = Field::dropdown_labeled(
             "model",
             vec![
-                DropdownOption { value: String::new(), label: "default (grok-4.5)".into() },
-                DropdownOption { value: "grok/grok-4.5".into(), label: "grok-4.5 (grok)".into() },
+                DropdownOption {
+                    value: "claude/claude-opus-4.8".into(),
+                    label: "claude-opus-4.8 (claude)".into(),
+                },
+                DropdownOption {
+                    value: "grok/grok-4.5".into(),
+                    label: "grok-4.5 (grok)".into(),
+                },
             ],
-            "",
+            "grok/grok-4.5",
         );
         model.required = false;
         let mut target = Field::combobox("target", vec![], "pr:1762");

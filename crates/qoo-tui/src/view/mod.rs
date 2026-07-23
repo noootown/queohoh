@@ -938,28 +938,21 @@ mod tests {
     #[test]
     fn snapshot_settings_overlay() {
         use crate::ipc::types::{
-            CatalogEntry, DefaultModels, DefaultModelsProject, SettingsPayload, SettingsProvider,
+            DefaultModels, DefaultModelsProject, SettingsPayload, SettingsProvider,
         };
         let prov = |name: &str, enabled: bool| SettingsProvider { name: name.into(), enabled, bin: None };
-        let cat = |provider: &str, id: &str, label: &str, hidden: bool| CatalogEntry {
-            provider: provider.into(),
-            id: id.into(),
-            label: label.into(),
-            hidden,
-        };
         let mut app = fixture_app();
         app.mode = crate::app::Mode::Settings;
-        // Some(Some(_)): the post-Task-5 shape — providers (active marked), a
-        // merged catalog (hidden marked), and default-model chains (global +
-        // one project override) — exercising every row kind the overlay renders.
+        // Some(Some(_)): global knobs + providers (active marked) + default-model
+        // chains (global + one project override). Catalog is still on the wire
+        // for pickers but is no longer listed in the overlay.
         app.settings = Some(Some(SettingsPayload {
+            workspace: "/Users/me/ws".into(),
+            max_concurrent_tasks: Some(3),
+            purge_after_days: Some(14),
+            projects: vec!["platform".into(), "acme".into()],
             active_provider: "grok".into(),
             providers: vec![prov("claude", true), prov("grok", true), prov("codex", false)],
-            catalog: vec![
-                cat("claude", "claude-opus-4-8", "claude-opus-4.8", false),
-                cat("grok", "grok-4.5", "grok-4.5", false),
-                cat("grok", "grok-legacy", "legacy", true),
-            ],
             default_models: DefaultModels {
                 global: vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()],
                 projects: vec![DefaultModelsProject {
@@ -968,6 +961,7 @@ mod tests {
                     source: "acme/vars.yaml".into(),
                 }],
             },
+            ..Default::default()
         }));
         let (terminal, hits) = render_at(&app, 80, 24);
         insta::assert_snapshot!("view_settings_overlay", terminal.backend());

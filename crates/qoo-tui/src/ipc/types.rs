@@ -366,15 +366,19 @@ pub struct TaskDefinition {
     pub repo: String,
     /// One-line human description of the def, or `None` when unset (via the
     /// container `default` — also covers an old daemon that omits it). Shown in
-    /// the run detail's `info` sub-tab Config section.
+    /// the definition config sub-tab.
     pub description: Option<String>,
     pub discovery: Option<Discovery>,
     pub cron: Option<String>,
     pub args: Vec<ArgSpec>,
     pub dedup: String,
     pub worktree: String,
+    /// Scheduler-lane override (`lane:`). `None` on old daemon or unset.
+    pub lane: Option<String>,
     pub pre_run: Option<String>,
     pub post_run: Option<String>,
+    /// Done-condition shell command (`verify:`). `None` when unset.
+    pub verify: Option<String>,
     /// The def's authored `model:` — a single `provider/label` ref, an ordered
     /// fallback list of them, or `None` (no `model:` → resolves against
     /// `default_models` at run time). The definition config row renders the
@@ -388,6 +392,10 @@ pub struct TaskDefinition {
     pub model: Option<ModelRef>,
     pub timeout_ms: u64,
     pub priority: String,
+    /// Soft-dismiss on success: `stay` | `archive`. `None` on old daemon.
+    pub on_done: Option<String>,
+    /// Hard-delete terminal instances after N days; `None` → workspace default.
+    pub purge_after_days: Option<u64>,
     pub prompt: String,
 }
 
@@ -513,16 +521,17 @@ impl DefaultModels {
 /// subtree of it — deserializes to empties rather than erroring; the app stores
 /// a *failed* fetch as `Some(None)` and never reaches `from_value`, but a
 /// partial/forward-compatible payload from a mixed-version daemon still lands
-/// cleanly. Keys are single lowercase words on the wire (`models`/`defaults`/
-/// `global`/`entries`/`source`/`projects`/`repo`), so field names match 1:1 and
-/// no `rename_all` is needed.
+/// cleanly. Keys are snake_case on the wire (`active_provider` /
+/// `max_concurrent_tasks` / …), so field names match 1:1 and no `rename_all`
+/// is needed.
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 pub struct SettingsPayload {
     /// The merged, provider-precedence-grouped model catalog (Task 5). Hidden
     /// entries are INCLUDED — the model picker filters them out but still
-    /// resolves a hidden ref when named explicitly. `#[serde(default)]` so an old
-    /// daemon that omits it deserializes to an empty vec; the picker then falls
-    /// back to the built-in mirror (`form::builtin_catalog`).
+    /// resolves a hidden ref when named explicitly. Still on the wire for
+    /// pickers; the settings overlay no longer lists it. `#[serde(default)]` so
+    /// an old daemon that omits it deserializes to an empty vec; the picker then
+    /// falls back to the built-in mirror (`form::builtin_catalog`).
     #[serde(default)]
     pub catalog: Vec<CatalogEntry>,
     /// The operator's currently-active provider (`SettingsStore`). Empty string
@@ -540,6 +549,22 @@ pub struct SettingsPayload {
     /// provider — serde ignores unknown fields) deserializes cleanly.
     #[serde(default)]
     pub providers: Vec<SettingsProvider>,
+    /// Expanded workspace root from `config.yaml` (`workspace:`). Empty on an
+    /// old daemon that omits it.
+    #[serde(default)]
+    pub workspace: String,
+    /// Per-project concurrency cap (`max_concurrent_tasks:`). `None` on an old
+    /// daemon that omits the field.
+    #[serde(default)]
+    pub max_concurrent_tasks: Option<u64>,
+    /// Global hard-delete age in days (`purge_after_days:`). `None` on an old
+    /// daemon that omits the field.
+    #[serde(default)]
+    pub purge_after_days: Option<u64>,
+    /// Registered project names from `config.yaml` `projects:` (order preserved).
+    /// Empty on an old daemon that omits the field.
+    #[serde(default)]
+    pub projects: Vec<String>,
     // The pre-Task-5 top-level `models` block (alias→id defaults + global/
     // project layers) was removed entirely in this cutover — no live reader
     // consumed it (the picker reads `catalog` / `default_models` above). A
@@ -1068,9 +1093,10 @@ mod tests {
 
     #[test]
     fn settings_payload_catalog_active_provider_and_default_models_parse() {
-        // The exact shape the post-Task-5 `settings` RPC returns: a flat `catalog`
-        // (hidden included), the active provider, a `default_models` block, and
-        // `providers` reduced to name/enabled (the per-provider tier map is gone).
+        // The exact shape the modern `settings` RPC returns: a flat `catalog`
+        // (hidden included, still on the wire for pickers), the active provider,
+        // a `default_models` block, `providers` reduced to name/enabled, plus
+        // the important global knobs the settings overlay surfaces.
         let s: SettingsPayload = serde_json::from_str(
             r#"{
               "catalog": [
@@ -1091,7 +1117,11 @@ mod tests {
                 {"name": "claude", "enabled": true},
                 {"name": "grok", "enabled": true},
                 {"name": "codex", "enabled": false}
-              ]
+              ],
+              "workspace": "/Users/me/ws",
+              "max_concurrent_tasks": 3,
+              "purge_after_days": 14,
+              "projects": ["platform", "acme"]
             }"#,
         )
         .unwrap();
@@ -1115,6 +1145,11 @@ mod tests {
         assert_eq!(s.providers[0].bin, None);
         assert_eq!(s.providers[2].name, "codex");
         assert!(!s.providers[2].enabled);
+        // Global knobs.
+        assert_eq!(s.workspace, "/Users/me/ws");
+        assert_eq!(s.max_concurrent_tasks, Some(3));
+        assert_eq!(s.purge_after_days, Some(14));
+        assert_eq!(s.projects, vec!["platform", "acme"]);
     }
 
     #[test]
@@ -1149,5 +1184,10 @@ mod tests {
         assert!(s.default_models.refs_for("anything").is_empty());
         // Pre-Task-12 daemon omits `providers` entirely → empty vec, not an error.
         assert!(s.providers.is_empty());
+        // Global knobs absent on an old daemon → empty / None (overlay shows `—`).
+        assert!(s.workspace.is_empty());
+        assert_eq!(s.max_concurrent_tasks, None);
+        assert_eq!(s.purge_after_days, None);
+        assert!(s.projects.is_empty());
     }
 }

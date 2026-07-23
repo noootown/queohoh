@@ -57,7 +57,8 @@ describe("Engine default_models []→global fallback", () => {
 			workspace,
 			projects: [{ name: "platform", path: repoPath }],
 			maxConcurrentTasks: 3,
-			archiveAfterDays: 7,
+			purgeAfterDays: 7,
+		archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			// Global fallback names ONLY grok. Because the injected activeProvider

@@ -27,7 +27,6 @@ import {
 	loadProjectDefaultBranch,
 	loadProjectDefaultModels,
 	loadProjectProtectedWorktrees,
-	loadProjectTaskRetentionDays,
 	loadProjectVars,
 	parseCron,
 	projectWorkspaceDir,
@@ -612,41 +611,75 @@ export class Engine {
 			}
 		}
 
-		// Auto-archive old terminal tasks. `cancelled` is archived like `done`
-		// because it's a deliberate, resolved outcome; `failed`/`skipped` are left
-		// visible (they usually want attention or explain a stalled chain).
-		// Retention is per-project: the project's `task_retention_days` (vars.yaml)
-		// overrides the workspace `archive_after_days` default. Projects the store
-		// knows but config/vars don't (removed projects, bad values) fall back to
-		// that default. Cutoffs are memoized per repo for this sweep.
+		// Lifecycle cleanup:
+		//   archive = soft dismiss (live → archive list; track record kept)
+		//   purge   = hard delete (live or archive file removed)
+		//
+		// on_done: archive — finalizeRun primary; sweep below as backstop.
+		// purge_after_days — def stamp > live def > workspace (default 14).
+		// worktree gone — cancel live work, then purge ALL tasks for that wt
+		// (live + archived). @repo tasks never hit wt purge; they need
+		// purge_after_days (global or def).
 		const now = this.deps.now?.() ?? Date.now();
-		const cutoffByRepo = new Map<string, number>();
-		const cutoffFor = (repo: string): number => {
-			const cached = cutoffByRepo.get(repo);
-			if (cached !== undefined) return cached;
-			const days = loadProjectTaskRetentionDays(
-				projectWorkspaceDir(deps.config, repo),
-				deps.config.archiveAfterDays,
-			);
-			const cutoff = now - days * 86_400_000;
-			cutoffByRepo.set(repo, cutoff);
-			return cutoff;
+		const globalPurgeDays = deps.config.purgeAfterDays;
+		const defPurgeCache = new Map<string, number | null>();
+		const defOnDoneCache = new Map<string, "stay" | "archive">();
+		const loadDef = (definition: string) => {
+			const slash = definition.indexOf("/");
+			if (slash <= 0) return null;
+			try {
+				return resolveDefinition(
+					deps.config,
+					definition.slice(0, slash),
+					definition.slice(slash + 1),
+				);
+			} catch {
+				return null;
+			}
 		};
-		for (const t of deps.store.list()) {
+		const purgeDaysFor = (t: TaskInstance): number => {
 			if (
-				(t.status === "done" || t.status === "cancelled") &&
-				Date.parse(t.created) < cutoffFor(t.target.repo)
+				typeof t.purgeAfterDays === "number" &&
+				Number.isInteger(t.purgeAfterDays) &&
+				t.purgeAfterDays > 0
 			) {
+				return t.purgeAfterDays;
+			}
+			if (t.definition) {
+				if (!defPurgeCache.has(t.definition)) {
+					const def = loadDef(t.definition);
+					defPurgeCache.set(t.definition, def?.purgeAfterDays ?? null);
+				}
+				const d = defPurgeCache.get(t.definition);
+				if (typeof d === "number" && d > 0) return d;
+			}
+			return globalPurgeDays;
+		};
+		const onDoneFor = (t: TaskInstance): "stay" | "archive" => {
+			if (t.onDone === "archive" || t.onDone === "stay") return t.onDone;
+			if (t.definition) {
+				if (!defOnDoneCache.has(t.definition)) {
+					const def = loadDef(t.definition);
+					defOnDoneCache.set(t.definition, def?.onDone ?? "stay");
+				}
+				return defOnDoneCache.get(t.definition) ?? "stay";
+			}
+			return "stay";
+		};
+		const terminalEpoch = (t: TaskInstance): number => {
+			const iso = t.finishedAt ?? t.created;
+			const ms = Date.parse(iso);
+			return Number.isNaN(ms) ? 0 : ms;
+		};
+
+		// Soft-dismiss backstop: done + on_done: archive still on live list.
+		for (const t of deps.store.list()) {
+			if (t.status === "done" && onDoneFor(t) === "archive") {
 				deps.store.archive(t.id);
 			}
 		}
 
-		// Worktree gone: cancel live work first, then archive terminals.
-		// Deleting a worktree (RPC or external) means "I'm done with this lane"
-		// — queued/running/needs-input must not keep looking scheduled against a
-		// path that no longer exists. Running stops via stopTask when we still
-		// track a child; otherwise we force-cancel. The subsequent archive pass
-		// picks up the now-terminal rows (and any that were already terminal).
+		// Worktree gone → cancel live, then purge (live + archive).
 		const worktreeStillPresent = (repo: string, wt: string): boolean => {
 			if (!this.worktreeListingOk.has(repo)) return true; // cold cache: don't orphan
 			const known = this.worktreeCache.get(repo) ?? [];
@@ -657,9 +690,6 @@ export class Engine {
 			if (wt === null || wt === REPO_SENTINEL) continue;
 			if (worktreeStillPresent(t.target.repo, wt)) continue;
 			const names = worktreeNameAliases(t.target.repo, wt, wt);
-			// One cancel helper per orphaned task would re-scan the store; only
-			// act on this task's status here (aliases still matter for the RPC
-			// path where several name forms map to one dir).
 			if (!taskTargetsWorktreeNames(t, t.target.repo, names)) continue;
 			if (t.status === "running") {
 				try {
@@ -678,21 +708,36 @@ export class Engine {
 					error: "worktree removed",
 					notBefore: null,
 				});
+			} else if (TERMINAL_STATUSES.has(t.status)) {
+				deps.store.purge(t.id);
 			}
 		}
-		for (const t of deps.store.list()) {
+		// Archived rows for a deleted worktree (and cancelled after stop settle).
+		for (const t of [
+			...deps.store.list(),
+			...deps.store.listArchived(),
+		]) {
 			const wt = t.target.worktree;
-			if (
-				!TERMINAL_STATUSES.has(t.status) ||
-				wt === null ||
-				wt === REPO_SENTINEL ||
-				!this.worktreeListingOk.has(t.target.repo)
-			) {
-				continue;
-			}
-			const known = this.worktreeCache.get(t.target.repo) ?? [];
-			if (!known.some((w) => w.name === wt)) {
-				deps.store.archive(t.id);
+			if (wt === null || wt === REPO_SENTINEL) continue;
+			if (!this.worktreeListingOk.has(t.target.repo)) continue;
+			if (worktreeStillPresent(t.target.repo, wt)) continue;
+			const names = worktreeNameAliases(t.target.repo, wt, wt);
+			if (!taskTargetsWorktreeNames(t, t.target.repo, names)) continue;
+			if (t.status === "running") continue; // wait for cancel settle
+			if (t.status === "queued" || t.status === "needs-input") continue;
+			deps.store.purge(t.id);
+		}
+
+		// Age purge: terminal tasks past purge_after_days (live or archived).
+		for (const t of [
+			...deps.store.list(),
+			...deps.store.listArchived(),
+		]) {
+			if (!TERMINAL_STATUSES.has(t.status)) continue;
+			const days = purgeDaysFor(t);
+			const cutoff = now - days * 86_400_000;
+			if (terminalEpoch(t) < cutoff) {
+				deps.store.purge(t.id);
 			}
 		}
 

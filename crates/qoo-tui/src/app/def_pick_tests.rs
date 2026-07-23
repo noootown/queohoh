@@ -693,68 +693,50 @@ fn def_args_submit_peels_leading_model_from_positional_args() {
 }
 
 #[test]
-fn def_args_untouched_default_head_is_unpinned() {
+fn def_args_preselected_model_is_pinned_on_submit() {
     use crate::view::form::{DropdownOption, Field, FormState};
     use crossterm::event::KeyCode::*;
-    // A def-run picker like `def_model_field` builds: an empty "" head (labeled
-    // with the resolved default) followed by a concrete catalog entry.
-    let mk = |value: &str| {
-        let model = Field::dropdown_labeled(
-            "model",
-            vec![
-                DropdownOption { value: String::new(), label: "default (grok-4.5)".into() },
-                DropdownOption { value: "claude/claude-opus-4.8".into(), label: "claude-opus-4.8 (claude)".into() },
-            ],
-            value,
-        );
-        let mut app = fixture_app_one_project("platform");
-        app.mode = Mode::DefArgs {
-            state: FormState::new("deploy", "Run", vec![model]),
-            repo: "platform".into(),
-            def_name: "deploy".into(),
-            args: vec![],
-            initial_worktree: None,
-            preview_scroll: 0,
-        };
-        app
+    // Def-run picker: concrete options only (no empty default row). The value
+    // preselected for the active provider is submitted as a hard pin.
+    let model = Field::dropdown_labeled(
+        "model",
+        vec![
+            DropdownOption {
+                value: "claude/claude-opus-4.8".into(),
+                label: "claude-opus-4.8 (claude)".into(),
+            },
+            DropdownOption {
+                value: "grok/grok-4.5".into(),
+                label: "grok-4.5 (grok)".into(),
+            },
+        ],
+        "grok/grok-4.5",
+    );
+    let mut app = fixture_app_one_project("platform");
+    app.mode = Mode::DefArgs {
+        state: FormState::new("deploy", "Run", vec![model]),
+        repo: "platform".into(),
+        def_name: "deploy".into(),
+        args: vec![],
+        initial_worktree: None,
+        preview_scroll: 0,
     };
-    // Untouched default head (value ""): submit sends NO model and NO
-    // model_pinned → the daemon runs the def's authored chain (today's behavior),
-    // never a silent single-model pin.
-    let mut app = mk("");
     if let Mode::DefArgs { state, .. } = &mut app.mode {
         state.focus = state.fields.len();
     }
     match &app.update(key(Enter)).cmds[0] {
         Cmd::Rpc { call, .. } => {
             assert_eq!(call.method, "runDefinition");
-            assert!(call.params.get("model").is_none(), "untouched default sends no model");
-            assert!(
-                call.params.get("model_pinned").is_none(),
-                "untouched default must not pin"
-            );
+            assert_eq!(call.params["model"], "grok/grok-4.5");
+            assert_eq!(call.params["model_pinned"], true);
         }
         other => panic!("expected runDefinition, got {other:?}"),
     }
-    // Run is never a dead click: submit shows immediate feedback even before the
-    // async RPC resolves.
     assert!(
         app.status_line.as_deref().is_some_and(|s| s.contains("running")),
         "def-run submit must set an immediate status: {:?}",
         app.status_line
     );
-    // Actively selecting a concrete entry: submit sends the exact ref AND pins it.
-    let mut app = mk("claude/claude-opus-4.8");
-    if let Mode::DefArgs { state, .. } = &mut app.mode {
-        state.focus = state.fields.len();
-    }
-    match &app.update(key(Enter)).cmds[0] {
-        Cmd::Rpc { call, .. } => {
-            assert_eq!(call.params["model"], "claude/claude-opus-4.8");
-            assert_eq!(call.params["model_pinned"], true);
-        }
-        other => panic!("expected runDefinition, got {other:?}"),
-    }
 }
 
 #[test]

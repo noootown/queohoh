@@ -38,6 +38,7 @@ function baseConfig(workspace: string, repoPath: string): GlobalConfig {
 		workspace,
 		projects: [{ name: "platform", path: repoPath }],
 		maxConcurrentTasks: 3,
+		purgeAfterDays: 7,
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,

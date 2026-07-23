@@ -587,6 +587,7 @@ fn catalog_settings() -> SettingsPayload {
             SettingsProvider { name: "grok".into(), enabled: true, bin: None },
             SettingsProvider { name: "codex".into(), enabled: false, bin: None },
         ],
+        ..Default::default()
     }
 }
 
@@ -760,11 +761,10 @@ fn def_model_option_values(field: &Field) -> Vec<String> {
 }
 
 #[test]
-fn def_model_field_leads_with_default_head_then_full_catalog() {
-    // Def `model: [claude/claude-opus-4.8, grok/grok-4.5]`, active=grok → the picker leads
-    // with an EMPTY "" head labeled with the resolved head (grok/grok-4.5,
-    // label-only) so a plain Run leaves the def's authored chain to the daemon;
-    // the FULL visible catalog follows in provider-first order.
+fn def_model_field_lists_authored_only_and_preselects_active_provider_head() {
+    // Def `model: [claude/claude-opus-4.8, grok/grok-4.5]`, active=grok → only
+    // those two options (no empty "default" row); preselect grok-4.5 because
+    // that is the resolved chain head under the active provider.
     let app = app_with_active_grok();
     let spec = crate::ipc::types::ModelRef::Many(vec![
         "claude/claude-opus-4.8".into(),
@@ -773,36 +773,55 @@ fn def_model_field_leads_with_default_head_then_full_catalog() {
     let field = app.def_model_field("platform", Some(&spec));
     assert_eq!(
         def_model_option_values(&field),
-        vec!["", "grok/grok-4.5", "claude/claude-opus-4.8", "claude/claude-sonnet-5"]
+        vec!["claude/claude-opus-4.8", "grok/grok-4.5"]
     );
-    assert_eq!(field.value, "", "the default head is preselected → unpinned");
+    assert_eq!(field.value, "grok/grok-4.5");
     match &field.kind {
         crate::view::form::FieldKind::Dropdown { options } => {
-            assert_eq!(options[0].label, "default (grok-4.5)");
+            assert_eq!(options[0].label, "claude-opus-4.8 (claude)");
             assert_eq!(options[1].label, "grok-4.5 (grok)");
-            assert_eq!(options[2].label, "claude-opus-4.8 (claude)");
-            assert_eq!(options[3].label, "claude-sonnet-5 (claude)");
         }
         other => panic!("expected labeled Dropdown, got {other:?}"),
     }
 }
 
 #[test]
-fn def_model_field_head_labels_the_resolved_single_spec() {
-    // Def `model: claude/claude-opus-4.8` only, active=grok → resolve_model_chain prepends
-    // the grok group head, so the resolved head is grok/grok-4.5. The empty head
-    // is labeled with it (label-only) and preselected (unpinned).
+fn def_model_field_grok_only_list_does_not_offer_claude_pins() {
+    // mail-check style: model: [grok/grok-4.5] — operator must not see Claude
+    // entries; the single option is preselected.
+    let app = app_with_active_grok();
+    let spec = crate::ipc::types::ModelRef::Many(vec!["grok/grok-4.5".into()]);
+    let field = app.def_model_field("platform", Some(&spec));
+    let values = def_model_option_values(&field);
+    assert_eq!(values, vec!["grok/grok-4.5"]);
+    assert_eq!(field.value, "grok/grok-4.5");
+    assert!(
+        !values.iter().any(|v| v.starts_with("claude/")),
+        "authored grok-only list must not offer claude pins: {values:?}"
+    );
+}
+
+#[test]
+fn def_model_field_without_authored_model_offers_full_catalog() {
+    // No def model: → full visible catalog, preselect active-provider head.
+    let app = app_with_active_grok();
+    let field = app.def_model_field("platform", None);
+    assert_eq!(
+        def_model_option_values(&field),
+        vec!["grok/grok-4.5", "claude/claude-opus-4.8", "claude/claude-sonnet-5"]
+    );
+    assert_eq!(field.value, "grok/grok-4.5");
+}
+
+#[test]
+fn def_model_field_preselects_authored_when_rehead_not_in_list() {
+    // Def only `claude/claude-opus-4.8`, active=grok → resolve may re-head to
+    // grok, but grok is not an authored pin option; preselect the only entry.
     let app = app_with_active_grok();
     let spec = crate::ipc::types::ModelRef::One("claude/claude-opus-4.8".into());
     let field = app.def_model_field("platform", Some(&spec));
-    assert_eq!(field.value, "");
-    match &field.kind {
-        crate::view::form::FieldKind::Dropdown { options } => {
-            assert_eq!(options[0].value, "");
-            assert_eq!(options[0].label, "default (grok-4.5)");
-        }
-        other => panic!("expected labeled Dropdown, got {other:?}"),
-    }
+    assert_eq!(def_model_option_values(&field), vec!["claude/claude-opus-4.8"]);
+    assert_eq!(field.value, "claude/claude-opus-4.8");
 }
 
 #[test]

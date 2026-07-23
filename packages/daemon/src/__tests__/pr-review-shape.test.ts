@@ -68,6 +68,7 @@ async function setup() {
 		projects: [{ name: "platform", path: repoPath }],
 		workspace: join(base, "ws"),
 		maxConcurrentTasks: 3,
+		purgeAfterDays: 7,
 		archiveAfterDays: 7,
 		vars: { github_username: "ianchiu-jb" },
 		catalog: BUILTIN_CATALOG,

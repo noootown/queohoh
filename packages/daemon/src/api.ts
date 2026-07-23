@@ -409,7 +409,8 @@ export class ApiServer {
 				return {
 					// The merged, provider-precedence-grouped catalog (incl. each
 					// entry's `hidden` flag — the TUI filters hidden from pickers but
-					// still resolves them when referenced explicitly).
+					// still resolves them when referenced explicitly). Still on the
+					// wire for pickers; the settings overlay no longer lists it.
 					catalog: deps.config.catalog,
 					// The provider the operator is currently switched to (SettingsStore).
 					active_provider: deps.settings.activeProvider(),
@@ -427,6 +428,13 @@ export class ApiServer {
 						enabled: p.enabled,
 						...(p.bin ? { bin: p.bin } : {}),
 					})),
+					// Important global config.yaml knobs the operator greps for when
+					// something "feels wrong" (concurrency, retention, workspace).
+					// Additive — old TUIs ignore unknown keys.
+					workspace: deps.config.workspace,
+					max_concurrent_tasks: deps.config.maxConcurrentTasks,
+					purge_after_days: deps.config.purgeAfterDays,
+					projects: deps.config.projects.map((p) => p.name),
 				};
 			}
 			case "state":
@@ -642,6 +650,8 @@ export class ApiServer {
 							timeoutMs,
 							verify,
 							lane: def.lane ?? undefined,
+							onDone: def.onDone === "archive" ? "archive" : undefined,
+							purgeAfterDays: def.purgeAfterDays ?? undefined,
 						};
 					}
 					if (typeof s.prompt === "string" && s.prompt.length > 0) {

@@ -1047,12 +1047,11 @@ impl App {
     /// sends `params.ref` and does NOT also send `params.worktree`, so the
     /// daemon honors the ref (create-or-reuse) instead of the legacy worktree
     /// hint. `worktree` (the launch context) is sent only when there is no ref.
-    /// `model` is the operator's 1-entry exact pick from the def-run effective
-    /// chain (omit / empty → daemon keeps the def's authored chain). The
-    /// def-run picker never offers an empty "default" option (see
-    /// `def_model_field`), so a present `model` is always sent with
-    /// `model_pinned: true` — the daemon runs it exactly, no active-provider
-    /// re-head, no fallback.
+    /// `model` is the operator's 1-entry exact pick from the def-run model
+    /// dropdown (preselected to the active-provider head; no empty "default"
+    /// option — see `def_model_field`). A present non-empty `model` is always
+    /// sent with `model_pinned: true` — the daemon runs it exactly, no
+    /// active-provider re-head, no fallback.
     ///
     /// Always sends `bypass_dedup: true`: a human filling this form and
     /// pressing Run is explicit "run NOW" intent, so a def's configured

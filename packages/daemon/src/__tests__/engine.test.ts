@@ -59,6 +59,7 @@ function setup(
 		workspace: join(base, "ws"),
 		projects: [{ name: "platform", path: repoPath }],
 		maxConcurrentTasks: 3,
+		purgeAfterDays: 7,
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
@@ -278,7 +279,8 @@ describe("Engine.tick", () => {
 			workspace: join(base, "ws"),
 			projects: [{ name: "platform", path: repoPath }],
 			maxConcurrentTasks: 3,
-			archiveAfterDays: 7,
+			purgeAfterDays: 7,
+		archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
@@ -454,7 +456,8 @@ describe("Engine.tick", () => {
 				{ name: "other", path: repoPath },
 			],
 			maxConcurrentTasks: 3,
-			archiveAfterDays: 7,
+			purgeAfterDays: 7,
+		archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
@@ -1557,8 +1560,8 @@ describe("Engine.stopTask", () => {
 });
 
 describe("worktree-deletion archive", () => {
-	it("archives a terminal task whose worktree was deleted", async () => {
-		// Worktree "JUS-1" is gone from the listing.
+	it("purges a terminal task whose worktree was deleted", async () => {
+		// Worktree "JUS-1" is gone from the listing → hard-delete (not archive).
 		const { engine, store } = setup({
 			resolverIO: { listWorktrees: async () => [] },
 		});
@@ -1576,7 +1579,8 @@ describe("worktree-deletion archive", () => {
 		await engine.tick();
 
 		expect(store.list()).toHaveLength(0);
-		expect(store.listArchived().map((a) => a.id)).toContain(t.id);
+		expect(store.listArchived().map((a) => a.id)).not.toContain(t.id);
+		expect(store.getAny(t.id)).toBeUndefined();
 	});
 
 	it("keeps a terminal task whose worktree still exists", async () => {
@@ -1599,10 +1603,9 @@ describe("worktree-deletion archive", () => {
 		expect(store.listArchived()).toHaveLength(0);
 	});
 
-	it("cancels and archives a non-terminal task whose worktree was deleted", async () => {
-		// Worktree gone → cancel live work (queued/needs-input/running), then
-		// archive the now-terminal row. Leaving them live used to strand
-		// "scheduled" tasks on a deleted path.
+	it("cancels then purges a non-terminal task whose worktree was deleted", async () => {
+		// Worktree gone → cancel live work, then purge (hard-delete). No archive
+		// trail for a lane that no longer exists.
 		const { engine, store } = setup({
 			resolverIO: { listWorktrees: async () => [] },
 		});
@@ -1620,9 +1623,8 @@ describe("worktree-deletion archive", () => {
 		await engine.tick();
 
 		expect(store.list()).toHaveLength(0);
-		const archived = store.listArchived().find((a) => a.id === t.id);
-		expect(archived?.status).toBe("cancelled");
-		expect(archived?.error).toBe("worktree removed");
+		expect(store.listArchived().map((a) => a.id)).not.toContain(t.id);
+		expect(store.getAny(t.id)).toBeUndefined();
 	});
 
 	it("cancels queued tasks when removeWorktree is called", async () => {
@@ -1730,7 +1732,7 @@ describe("worktree-deletion archive", () => {
 		expect(store.listArchived()).toHaveLength(0);
 	});
 
-	it("archives every terminal status on worktree deletion", async () => {
+	it("purges every terminal status on worktree deletion", async () => {
 		const statuses = [
 			"done",
 			"failed",
@@ -1755,10 +1757,9 @@ describe("worktree-deletion archive", () => {
 
 			await engine.tick();
 
-			expect(store.list(), `status ${status} should be archived`).toHaveLength(
-				0,
-			);
-			expect(store.listArchived().map((a) => a.id)).toContain(t.id);
+			expect(store.list(), `status ${status} should be purged`).toHaveLength(0);
+			expect(store.listArchived().map((a) => a.id)).not.toContain(t.id);
+			expect(store.getAny(t.id)).toBeUndefined();
 		}
 	});
 

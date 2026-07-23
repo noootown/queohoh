@@ -337,6 +337,8 @@ describe("runTask", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 120_000,
 			priority: "normal",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "review {{number}}",
 		};
 		let claudeModel = "";
@@ -374,6 +376,8 @@ describe("runTask", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 120_000,
 			priority: "normal",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "review {{number}}",
 		};
 		const { deps, store, hookCalls } = makeDeps({
@@ -412,6 +416,8 @@ describe("runTask", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "p",
 		};
 		const calls: string[] = [];
@@ -535,6 +541,8 @@ describe("runTask", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "p",
 		};
 		const hookCalls: string[] = [];
@@ -578,6 +586,8 @@ describe("runTask", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "p",
 		};
 		const exec: Exec = async (_c, args) => {
@@ -869,6 +879,8 @@ describe("runTask pinned resume model resolution", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "p",
 		};
 		let seenModel = "";
@@ -948,6 +960,8 @@ describe("runTask timeout precedence", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 45_000,
 			priority: "normal",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "p",
 		};
 		let seenTimeoutMs = 0;
@@ -1108,6 +1122,8 @@ describe("runTask verify (done-condition)", () => {
 			model: "claude/claude-opus-4.8",
 			timeoutMs: 60_000,
 			priority: "normal",
+			onDone: "stay",
+			purgeAfterDays: null,
 			prompt: "p",
 		};
 		const calls: string[] = [];

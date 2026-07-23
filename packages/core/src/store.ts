@@ -1,8 +1,10 @@
 import {
+	existsSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -44,6 +46,10 @@ export interface NewTaskInput {
 	verify?: string;
 	/** Scheduler-lane override from the definition's `lane:`; see task.ts. */
 	lane?: string;
+	/** Soft-dismiss on success: stay | archive (from def `on_done`). */
+	onDone?: "stay" | "archive";
+	/** Hard-delete after N days; null/omit → workspace purge_after_days. */
+	purgeAfterDays?: number;
 }
 
 /** One step of a task chain. `definition` steps carry a rendered prompt plus the
@@ -69,6 +75,8 @@ export interface ChainStepInput {
 	verify?: string;
 	/** Scheduler-lane override from the definition's `lane:`; see task.ts. */
 	lane?: string;
+	onDone?: "stay" | "archive";
+	purgeAfterDays?: number;
 }
 
 /** Target + provenance shared by every member of a chain. `resumeSessionId`
@@ -145,6 +153,8 @@ export class QueueStore {
 			attemptedModels: [],
 			lane: input.lane ?? null,
 			notBefore: null,
+			onDone: input.onDone ?? "stay",
+			purgeAfterDays: input.purgeAfterDays ?? null,
 		};
 		this.write(task);
 		return task;
@@ -195,6 +205,8 @@ export class QueueStore {
 				attemptedModels: [],
 				lane: step.lane ?? null,
 				notBefore: null,
+				onDone: step.onDone ?? "stay",
+				purgeAfterDays: step.purgeAfterDays ?? null,
 			};
 			this.write(task, { keepCache: true });
 			return task;
@@ -275,9 +287,33 @@ export class QueueStore {
 	}
 
 	archive(id: string): void {
-		renameSync(this.taskPath(id), join(this.archiveDir, `${id}.md`));
+		const live = this.taskPath(id);
+		if (!existsSync(live)) return; // already archived / missing
+		renameSync(live, join(this.archiveDir, `${id}.md`));
 		this.liveCache = null;
 		this.archiveCache = null;
+	}
+
+	/**
+	 * Hard-delete a task from live or archive. No-op if the id is unknown.
+	 * Used for worktree teardown and age-based purge.
+	 */
+	purge(id: string): void {
+		const live = this.taskPath(id);
+		const archived = join(this.archiveDir, `${id}.md`);
+		let removed = false;
+		if (existsSync(live)) {
+			unlinkSync(live);
+			removed = true;
+		}
+		if (existsSync(archived)) {
+			unlinkSync(archived);
+			removed = true;
+		}
+		if (removed) {
+			this.liveCache = null;
+			this.archiveCache = null;
+		}
 	}
 
 	/** Reverse of `archive`: move the task file back into the live queue. Throws

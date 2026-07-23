@@ -41,7 +41,7 @@ Optional overrides: `QUEOHOH_CONFIG` (explicit config file), `QUEOHOH_STATE_DIR`
 | `crates/qoo-tui/` | The Rust ratatui TUI: `ipc/` wire layer, pure `selectors.rs` derivations, Elm-style `app/` state+update, pure `view/` render functions, event loop, hit-testing. |
 | `examples/` | Example task definitions and a minimal reference `/qoo` skill. Source of truth to copy into your workspace / skills dir — the daemon does not read this directory. |
 | `scripts/` | `daemon-ensure.sh`: build and (re)start the daemon. |
-| `docs/` | `setup.md` (install/config/run walkthrough) and supporting material. |
+| `docs/` | `setup.md` (install/config/run), `lifecycle.md` (live / archive / purge). |
 
 ## Build and run
 
@@ -75,4 +75,4 @@ mise run launchd:down    # stop the launchd daemon and remove the plist
 
 ## More
 
-`AGENTS.md` is the architecture guide — data flow, module hierarchy, and the invariants (single-writer daemon, detached-run shim, one-directional wire compat, Elm-style TUI, HitMap mouse model, fixed-width columns) that changes must preserve. `docs/setup.md` covers configuration and day-to-day operation in detail.
+`AGENTS.md` is the architecture guide — data flow, module hierarchy, and the invariants (single-writer daemon, detached-run shim, one-directional wire compat, Elm-style TUI, HitMap mouse model, fixed-width columns) that changes must preserve. `docs/setup.md` covers configuration and day-to-day operation. **`docs/lifecycle.md`** explains the task board lifecycle: live queue, soft **archive**, hard **purge**, `on_done`, `purge_after_days`, and worktree teardown.

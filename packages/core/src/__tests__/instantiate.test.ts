@@ -24,6 +24,8 @@ function def(overrides: Partial<TaskDefinition> = {}): TaskDefinition {
 		model: "claude/claude-opus-4.8",
 		timeoutMs: 1_800_000,
 		priority: "high",
+		onDone: "stay",
+		purgeAfterDays: null,
 		prompt: "Review PR {{number}} for {{github_user}}.\n",
 		...overrides,
 	};

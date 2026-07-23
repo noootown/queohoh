@@ -76,8 +76,21 @@ const DefinitionConfigSchema = z
 			.optional(),
 		timeout: z.string().default("30m"),
 		priority: PrioritySchema.default("normal"),
+		// After a successful run (`done`): `stay` on the live queue (default) or
+		// `archive` immediately (soft dismiss — still a track record). Failures
+		// always stay live until human archive or purge. Legacy `archive_on_done:
+		// true` is accepted in loadDefinition as `archive`.
+		on_done: z.enum(["stay", "archive"]).optional(),
+		archive_on_done: z.boolean().optional(), // legacy → on_done: archive
+		// Hard-delete terminal instances after N days (live or archived).
+		// Overrides workspace `purge_after_days`. Clock = finished_at ?? created.
+		purge_after_days: z.number().int().positive().optional(),
+		// Legacy aliases (ignored once on_done / purge_after_days exist).
+		task_retention_days: z.number().int().positive().optional(),
 	})
 	.strict();
+
+export type OnDone = "stay" | "archive";
 
 export interface TaskDefinition {
 	name: string;
@@ -100,6 +113,10 @@ export interface TaskDefinition {
 	model: string | string[] | null;
 	timeoutMs: number;
 	priority: Priority;
+	/** `stay` (default) or `archive` on successful `done`. */
+	onDone: OnDone;
+	/** Per-def hard-delete after N days; null = workspace `purge_after_days`. */
+	purgeAfterDays: number | null;
 	prompt: string;
 }
 
@@ -185,6 +202,13 @@ export function loadDefinition(
 		model: config.model ?? null,
 		timeoutMs: parseDuration(config.timeout),
 		priority: config.priority,
+		onDone:
+			config.on_done ??
+			(config.archive_on_done === true ? "archive" : "stay"),
+		// Prefer purge_after_days; legacy task_retention_days maps to purge age
+		// (old "leave live N days" is gone — age only hard-deletes now).
+		purgeAfterDays:
+			config.purge_after_days ?? config.task_retention_days ?? null,
 		prompt,
 	};
 }

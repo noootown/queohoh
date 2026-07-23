@@ -1,12 +1,11 @@
-//! The `,` overlay: a read-only view of the daemon's provider + model settings.
+//! The `,` overlay: a read-only view of the daemon's global + provider settings.
 //!
-//! Post-Task-5 the daemon dropped the per-provider alias table for a flat
-//! `catalog` plus an `active_provider` and `default_models` block, so this
-//! overlay reads THOSE (the legacy `models` block a modern daemon no longer
-//! sends would render empty). It surfaces: the configured providers with their
-//! enabled state (the active one marked — `p` switches it), the merged model
-//! catalog (`label (provider)` → concrete id, hidden entries marked), and the
-//! effective default-model chains (global + per-project overrides).
+//! Surfaces the knobs operators actually inspect when something feels wrong
+//! (workspace path, concurrency, purge age, registered projects), the provider
+//! table with enabled/active state (`p` switches the active one), and the
+//! effective default-model chains (global + per-project overrides). The model
+//! **catalog** stays on the wire for pickers but is no longer listed here —
+//! label→id dumps were high noise and low signal day-to-day.
 //!
 //! WHY a pure `settings_rows` splits from `render`: the layout — which sections
 //! appear and in what order — is the interesting logic, worth unit-testing
@@ -23,16 +22,51 @@ use crate::ipc::types::SettingsPayload;
 use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
-/// Rows for the settings overlay, in three sections: `providers` (precedence
-/// order, enabled state, the active one marked), `catalog` (`label (provider)` →
-/// concrete id, hidden marked), and `default models` (the global chain, then one
-/// section per project override). Pure, so the layout is unit-testable.
+/// Rows for the settings overlay, in three sections: `global` (workspace,
+/// concurrency, purge age, registered projects), `providers` (precedence order,
+/// enabled state, the active one marked), and `default models` (the global
+/// chain, then one section per project override). Pure, so the layout is
+/// unit-testable.
 ///
 /// A "section header" row is any whose left cell does NOT begin with the
 /// two-space indent — its right cell is a provenance path (or empty). `render`
 /// keys off that indent to style headers vs. value rows.
 pub(crate) fn settings_rows(p: &SettingsPayload) -> Vec<(String, String)> {
     let mut rows = Vec::new();
+
+    // Important global config.yaml knobs first — the things operators grepped
+    // for before this overlay existed. Absent fields (old daemon) render as `—`.
+    rows.push(("global".into(), String::new()));
+    rows.push((
+        "  workspace".into(),
+        if p.workspace.is_empty() {
+            "—".into()
+        } else {
+            p.workspace.clone()
+        },
+    ));
+    rows.push((
+        "  max_concurrent_tasks".into(),
+        match p.max_concurrent_tasks {
+            Some(n) => n.to_string(),
+            None => "—".into(),
+        },
+    ));
+    rows.push((
+        "  purge_after_days".into(),
+        match p.purge_after_days {
+            Some(n) => format!("{n}d"),
+            None => "—".into(),
+        },
+    ));
+    rows.push((
+        "  projects".into(),
+        if p.projects.is_empty() {
+            "—".into()
+        } else {
+            p.projects.join(" · ")
+        },
+    ));
 
     // Providers, in the payload's precedence order, with enabled state; the
     // active provider (what `p` switches) is flagged so the overlay names it.
@@ -43,15 +77,6 @@ pub(crate) fn settings_rows(p: &SettingsPayload) -> Vec<(String, String)> {
             state.push_str(" · active");
         }
         rows.push((format!("  {}", pr.name), state));
-    }
-
-    // The merged catalog: reference display `label (provider)` → concrete CLI
-    // model id. Hidden entries (picker-suppressed but still resolvable when named
-    // explicitly) are listed and marked.
-    rows.push(("catalog".into(), String::new()));
-    for e in &p.catalog {
-        let id = if e.hidden { format!("{} · hidden", e.id) } else { e.id.clone() };
-        rows.push((format!("  {}", e.model_display()), id));
     }
 
     // Effective default-model chains: the workspace-wide global chain, then one
@@ -76,7 +101,7 @@ fn chain_or_none(refs: &[String]) -> String {
     }
 }
 
-/// Two-space indent that marks an alias row (vs. a bold section header). Kept as
+/// Two-space indent that marks a value row (vs. a bold section header). Kept as
 /// one constant so `settings_rows` and `render` can never drift.
 const ALIAS_INDENT: &str = "  ";
 
@@ -94,7 +119,7 @@ fn body_lines(settings: &Option<Option<SettingsPayload>>, p: &Palette) -> Vec<Li
         ))],
         Some(Some(payload)) => {
             let rows = settings_rows(payload);
-            // Align alias → id: widest alias cell (indent included) sets the gap.
+            // Align key → value: widest left cell (indent included) sets the gap.
             let alias_w = rows
                 .iter()
                 .filter(|(left, _)| left.starts_with(ALIAS_INDENT))
@@ -104,7 +129,7 @@ fn body_lines(settings: &Option<Option<SettingsPayload>>, p: &Palette) -> Vec<Li
             rows.into_iter()
                 .map(|(left, right)| {
                     if left.starts_with(ALIAS_INDENT) {
-                        // Alias row: alias in `fg`, resolved id in `meta`
+                        // Value row: key in `fg`, value in `meta`
                         // (info/teal is reserved for timestamps).
                         Line::from(vec![
                             Span::styled(
@@ -141,8 +166,8 @@ pub fn render(
 ) {
     let lines = body_lines(settings, p);
 
-    // Width: widen enough for `alias  claude-model-id` pairs but stay bounded,
-    // matching help's clamp. Height: content + blank + [ Back ] + border(2) +
+    // Width: widen enough for `key  value` pairs but stay bounded, matching
+    // help's clamp. Height: content + blank + [ Back ] + border(2) +
     // padding(2), capped to area.
     let width = (area.width.saturating_sub(8)).clamp(20, 72);
     let height = ((lines.len() + 2) as u16 + 4).min(area.height);
@@ -158,7 +183,7 @@ pub fn render(
         .border_style(Style::default().fg(p.accent))
         .padding(MODAL_PADDING)
         .title(Span::styled(
-            " settings — providers & models ",
+            " settings — global & providers ",
             Style::default().fg(p.fg).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(popup);
@@ -177,16 +202,38 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::types::{
-        CatalogEntry, DefaultModels, DefaultModelsProject, SettingsProvider,
-    };
+    use crate::ipc::types::{DefaultModels, DefaultModelsProject, SettingsProvider};
 
     fn provider(name: &str, enabled: bool) -> SettingsProvider {
         SettingsProvider { name: name.into(), enabled, bin: None }
     }
 
-    fn entry(provider: &str, id: &str, label: &str, hidden: bool) -> CatalogEntry {
-        CatalogEntry { provider: provider.into(), id: id.into(), label: label.into(), hidden }
+    #[test]
+    fn global_section_lists_workspace_concurrency_purge_and_projects() {
+        let p = SettingsPayload {
+            workspace: "/Users/me/ws".into(),
+            max_concurrent_tasks: Some(3),
+            purge_after_days: Some(14),
+            projects: vec!["platform".into(), "acme".into()],
+            ..Default::default()
+        };
+        let rows = settings_rows(&p);
+        assert_eq!(rows[0], ("global".to_string(), String::new()));
+        assert_eq!(rows[1], ("  workspace".to_string(), "/Users/me/ws".to_string()));
+        assert_eq!(rows[2], ("  max_concurrent_tasks".to_string(), "3".to_string()));
+        assert_eq!(rows[3], ("  purge_after_days".to_string(), "14d".to_string()));
+        assert_eq!(rows[4], ("  projects".to_string(), "platform · acme".to_string()));
+    }
+
+    #[test]
+    fn global_section_dashes_when_old_daemon_omits_fields() {
+        // Empty / default payload (old daemon): every global value is `—`.
+        let rows = settings_rows(&SettingsPayload::default());
+        let g = rows.iter().position(|(l, _)| l == "global").unwrap();
+        assert_eq!(rows[g + 1], ("  workspace".to_string(), "—".to_string()));
+        assert_eq!(rows[g + 2], ("  max_concurrent_tasks".to_string(), "—".to_string()));
+        assert_eq!(rows[g + 3], ("  purge_after_days".to_string(), "—".to_string()));
+        assert_eq!(rows[g + 4], ("  projects".to_string(), "—".to_string()));
     }
 
     #[test]
@@ -201,28 +248,33 @@ mod tests {
             ..Default::default()
         };
         let rows = settings_rows(&p);
+        let prov = rows.iter().position(|(l, _)| l == "providers").unwrap();
         // Header + one row per provider, in precedence order; active marked.
-        assert_eq!(rows[0], ("providers".to_string(), String::new()));
-        assert_eq!(rows[1], ("  claude".to_string(), "enabled".to_string()));
-        assert_eq!(rows[2], ("  grok".to_string(), "enabled · active".to_string()));
-        assert_eq!(rows[3], ("  codex".to_string(), "disabled".to_string()));
+        assert_eq!(rows[prov], ("providers".to_string(), String::new()));
+        assert_eq!(rows[prov + 1], ("  claude".to_string(), "enabled".to_string()));
+        assert_eq!(rows[prov + 2], ("  grok".to_string(), "enabled · active".to_string()));
+        assert_eq!(rows[prov + 3], ("  codex".to_string(), "disabled".to_string()));
     }
 
     #[test]
-    fn catalog_section_shows_ref_display_and_marks_hidden_entries() {
+    fn settings_rows_does_not_list_the_catalog() {
+        // Catalog is still on the payload for pickers, but the overlay no longer
+        // dumps label→id rows — they were high noise for operators.
+        use crate::ipc::types::CatalogEntry;
         let p = SettingsPayload {
-            catalog: vec![
-                entry("claude", "claude-opus-4-8", "claude-opus-4.8", false),
-                entry("grok", "grok-legacy", "legacy", true),
-            ],
+            catalog: vec![CatalogEntry {
+                provider: "claude".into(),
+                id: "claude-opus-4-8".into(),
+                label: "claude-opus-4.8".into(),
+                hidden: false,
+            }],
             ..Default::default()
         };
         let rows = settings_rows(&p);
-        // The catalog header follows the (empty) providers section header.
-        let cat = rows.iter().position(|(l, _)| l == "catalog").unwrap();
-        assert_eq!(rows[cat + 1], ("  claude-opus-4.8 (claude)".to_string(), "claude-opus-4-8".to_string()));
-        // Hidden entries are listed and flagged.
-        assert_eq!(rows[cat + 2], ("  legacy (grok)".to_string(), "grok-legacy · hidden".to_string()));
+        assert!(
+            rows.iter().all(|(l, _)| l != "catalog" && !l.contains("claude-opus")),
+            "catalog must not appear in settings rows: {rows:?}"
+        );
     }
 
     #[test]

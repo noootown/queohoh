@@ -130,6 +130,15 @@ const TaskMetaSchema = z
 		// re-queue (keep not_before) instead of settling `cancelled`. Also
 		// cleared when the task actually starts (`startRun`).
 		not_before: z.string().nullable().default(null),
+		// Soft-dismiss policy on successful `done`: stay | archive. Stamped
+		// from def `on_done` (legacy archive_on_done → archive).
+		on_done: z.enum(["stay", "archive"]).default("stay"),
+		// Hard-delete after N days (terminal only); null → workspace default.
+		// Stamped from def `purge_after_days`. Legacy task_retention_days /
+		// archive_on_done still round-trip if present on old files.
+		purge_after_days: z.number().int().positive().nullable().default(null),
+		task_retention_days: z.number().int().positive().nullable().default(null),
+		archive_on_done: z.boolean().default(false),
 	})
 	.strict();
 
@@ -204,6 +213,10 @@ export interface TaskInstance {
 	 * immediately. Optional so pre-defer callers and test literals need not
 	 * set it. See `TaskMetaSchema.not_before`. */
 	notBefore?: string | null;
+	/** Soft-dismiss on successful `done`: stay | archive. */
+	onDone?: "stay" | "archive";
+	/** Hard-delete after N days; null = workspace purge_after_days. */
+	purgeAfterDays?: number | null;
 }
 
 export function parseTaskFile(content: string): TaskInstance {
@@ -245,6 +258,13 @@ export function parseTaskFile(content: string): TaskInstance {
 				: (m.attempted_providers ?? []),
 		lane: m.lane,
 		notBefore: m.not_before,
+		onDone:
+			m.on_done === "archive" || m.archive_on_done
+				? "archive"
+				: m.on_done === "stay"
+					? "stay"
+					: "stay",
+		purgeAfterDays: m.purge_after_days ?? m.task_retention_days,
 	};
 }
 
@@ -277,6 +297,8 @@ export function serializeTaskFile(task: TaskInstance): string {
 		attempted_models: task.attemptedModels ?? [],
 		lane: task.lane ?? null,
 		not_before: task.notBefore ?? null,
+		on_done: task.onDone ?? "stay",
+		purge_after_days: task.purgeAfterDays ?? null,
 	};
 	return stringifyFrontmatter(meta, task.prompt);
 }

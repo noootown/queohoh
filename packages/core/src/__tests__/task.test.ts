@@ -31,6 +31,8 @@ const sample: TaskInstance = {
 	attemptedModels: [],
 	lane: null,
 	notBefore: null,
+	onDone: "stay",
+	purgeAfterDays: null,
 };
 
 describe("task file", () => {

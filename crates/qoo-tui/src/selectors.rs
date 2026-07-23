@@ -1551,9 +1551,11 @@ fn capped_max<'a>(values: impl Iterator<Item = &'a str>, cap: usize) -> usize {
     values.map(cw).max().unwrap_or(0).min(cap)
 }
 
+/// Content cap for identity name columns across panes: QUEUE worktree, WORKTREES
+/// worktree name, and TASKS def name. Sized so long names leave room for trailing
+/// columns (summary / last-task / author / PR / model).
 pub const WORKTREE_CAP: usize = 28;
 pub const DEF_CAP: usize = 20;
-pub const NAME_CAP: usize = 48;
 /// Max width of the humanized schedule text in the TASKS pane. A raw-cron
 /// fallback longer than this is clipped with `…` rather than blowing out the
 /// row.
@@ -1805,7 +1807,7 @@ pub fn def_col_layout(
     avail: usize,
     ctx: &ModelResolveCtx<'_>,
 ) -> DefColLayout {
-    let name_w0 = capped_max(rows.iter().map(|d| d.name.as_str()), NAME_CAP);
+    let name_w0 = capped_max(rows.iter().map(|d| d.name.as_str()), WORKTREE_CAP);
     let sched_w = rows.iter().map(|d| cw(&def_sched_text(d))).max().unwrap_or(0).min(SCHED_CAP);
     // Trailing schedule column footprint (right-pinned by the desc fill): the
     // humanized cron (see `def_sched_text` — layout and render share it).
@@ -1977,7 +1979,7 @@ impl WtColLayout {
 /// the Live activity column are always candidates; dirty is static too;
 /// pr/author/commit-age stay gated on whole-pane data availability.
 pub fn wt_col_layout(rows: &[WorktreeRow], avail: usize) -> WtColLayout {
-    let name_w0 = capped_max(rows.iter().map(|r| r.name.as_str()), NAME_CAP);
+    let name_w0 = capped_max(rows.iter().map(|r| r.name.as_str()), WORKTREE_CAP);
     // Fixed marker/time widths. The `±` front slot is statically reserved
     // (blank when a row has no value); author/commit-age/activity stay gated
     // on whole-pane data availability.

@@ -20,8 +20,8 @@ expression: terminal.backend()
 "│                         ││  Details                                          │"
 "╰─────────────────────────╯│    worktree     /repos/acme.feature               │"
 "╭⚡TASKS [r] [d] [c] · [z]╮│    session      sess-abc123                       │" Hidden by multi-width symbols: [(2, " ")]
-"│                         ││    model claude-opus-4.8 (claude) ·               │"
-"│ 🔍 [/]filter            ││  claude-opus-4-8                                  │" Hidden by multi-width symbols: [(3, " ")]
+"│                         ││    model        claude-opus-4.8 (claude) · claud  │"
+"│ 🔍 [/]filter            ││                 e-opus-4-8                        │" Hidden by multi-width symbols: [(3, " ")]
 "│                         ││    exit code    0                                 │"
 "│ no task definitions     ││    cost         $0.42                             │"
 "│                         ││    tokens       199k in / 22k out                 │"

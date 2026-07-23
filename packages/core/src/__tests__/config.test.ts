@@ -37,6 +37,7 @@ describe("loadGlobalConfig", () => {
 			{ name: "platform", path: join(homedir(), "workspace/platform") },
 		]);
 		expect(config.maxConcurrentTasks).toBe(5);
+		expect(config.purgeAfterDays).toBe(7);
 		expect(config.archiveAfterDays).toBe(7);
 		expect(config.vars).toEqual({ github_user: "noootown" });
 	});
@@ -129,7 +130,8 @@ describe("resolveDefinition — project vs global", () => {
 			workspace,
 			projects: [{ name: "platform", path: "/repo/platform" }],
 			maxConcurrentTasks: 3,
-			archiveAfterDays: 7,
+			purgeAfterDays: 7,
+		archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
