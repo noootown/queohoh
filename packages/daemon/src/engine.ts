@@ -849,6 +849,16 @@ export class Engine {
 		const projectDir = projectWorkspaceDir(deps.config, def.repo);
 		try {
 			const repoVars = loadProjectVars(projectDir);
+			// Capture model under the then-active provider at fire time so a
+			// later provider switch cannot re-head tasks still waiting in queue.
+			const projectDefaults = loadProjectDefaultModels(projectDir);
+			const defaultModels =
+				projectDefaults && projectDefaults.length > 0
+					? projectDefaults
+					: deps.config.defaultModels;
+			const activeProvider =
+				this.deps.activeProvider?.() ??
+				firstEnabledProvider(deps.config.providers);
 			const created = await instantiateDefinition(
 				def,
 				def.discovery ? { mode: "discover" } : { mode: "args", values: [] },
@@ -863,6 +873,12 @@ export class Engine {
 						...deps.config.vars,
 					},
 					repoVars,
+					modelCapture: {
+						catalog: deps.config.catalog,
+						providers: deps.config.providers,
+						defaultModels,
+						activeProvider,
+					},
 				},
 			);
 			if (created.length > 0) deps.onChange?.();
@@ -1383,9 +1399,10 @@ export class Engine {
 		// model tiers and the per-project `providers:` override are gone (catalog.ts
 		// replaced them), so this is now forwarded as-is.
 		const providers = deps.config.providers;
-		// Which provider the operator has switched to (SettingsStore), read fresh
-		// so a mid-run switch re-heads the next run. Absent seam ⇒ the
-		// precedence-first enabled provider from the effective table.
+		// Active provider for LEGACY tasks that still have `model: null` (no
+		// schedule-time stamp). Newly scheduled tasks freeze their chain at
+		// enqueue/cron, so a provider switch does not re-head waiting work.
+		// Absent seam ⇒ precedence-first enabled provider from the effective table.
 		const activeProvider =
 			this.deps.activeProvider?.() ?? firstEnabledProvider(providers);
 		return {

@@ -144,3 +144,101 @@ export function resolvePinnedModel(
 	}
 	return { ok: true, chain: [toChainEntry(entry)] };
 }
+
+/**
+ * Honor a schedule-time model stamp: map the ordered ref list to chain entries
+ * WITHOUT active-provider re-head or default-model injection. Used when
+ * `task.model` was captured at enqueue/cron/instantiate — a later provider
+ * switch must not change what a deferred / lane-blocked task will run.
+ *
+ * Disabled providers are dropped (same as step 3 of `resolveModelChain`); an
+ * empty remainder is an error. Unknown refs fail fast.
+ */
+export function resolveFrozenModelChain(
+	spec: string | string[],
+	catalog: CatalogEntry[],
+	providers: ProviderConfig[],
+): ChainResult {
+	const refs = typeof spec === "string" ? [spec] : spec;
+	if (refs.length === 0) {
+		return {
+			ok: false,
+			error:
+				"no runnable model: all configured models are on disabled providers",
+		};
+	}
+	const chain: ChainEntry[] = [];
+	const seen = new Set<string>();
+	for (const ref of refs) {
+		const entry = findModel(catalog, ref);
+		if (entry === undefined) {
+			return { ok: false, error: unknownModelError(catalog, ref) };
+		}
+		if (!isEnabled(providers, entry.provider)) continue;
+		const key = `${entry.provider}/${entry.id}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		chain.push(toChainEntry(entry));
+	}
+	if (chain.length === 0) {
+		return {
+			ok: false,
+			error:
+				"no runnable model: all configured models are on disabled providers",
+		};
+	}
+	return { ok: true, chain };
+}
+
+/** Result of capturing the model a newly scheduled task will run. */
+export type CaptureModelResult =
+	| { ok: true; model: string | string[]; modelPinned: boolean }
+	| { ok: false; error: string };
+
+/**
+ * Resolve the model stamp for a task at **schedule time** under the operator's
+ * current `activeProvider`, so a later provider switch cannot re-head a task
+ * that is still queued (deferred, lane-blocked, etc.).
+ *
+ * - Explicit pin (`pinned: true` + a single string): validated and returned as
+ *   a 1-entry pin (`modelPinned: true`) — exact pick, no fallback.
+ * - Otherwise: full `resolveModelChain` under `activeProvider`, then freeze the
+ *   resulting refs onto `task.model` (`modelPinned: false`). The worker uses
+ *   `resolveFrozenModelChain` for a non-null unpinned stamp.
+ */
+export function captureModelForSchedule(
+	spec: string | string[] | null,
+	catalog: CatalogEntry[],
+	providers: ProviderConfig[],
+	defaultModels: string[],
+	activeProvider: string,
+	opts?: { pinned?: boolean },
+): CaptureModelResult {
+	if (opts?.pinned === true && typeof spec === "string") {
+		const pinned = resolvePinnedModel(spec, catalog, providers);
+		if (!pinned.ok) return pinned;
+		// Canonical ref (provider/label) so the stamp matches catalog display.
+		return {
+			ok: true,
+			model: pinned.chain[0]!.ref,
+			modelPinned: true,
+		};
+	}
+	const resolved = resolveModelChain(
+		spec,
+		catalog,
+		providers,
+		defaultModels,
+		activeProvider,
+	);
+	if (!resolved.ok) return resolved;
+	const refs = resolved.chain.map((e) => e.ref);
+	return {
+		ok: true,
+		model: refs.length === 1 ? refs[0]! : refs,
+		// Single-string operator pick without an explicit pin still freezes as
+		// a non-pinned stamp (order is fixed; head is the scheduled provider).
+		// Explicit pin is handled above.
+		modelPinned: false,
+	};
+}

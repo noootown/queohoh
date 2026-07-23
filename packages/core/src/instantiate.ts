@@ -1,6 +1,9 @@
+import type { CatalogEntry } from "./catalog.js";
+import type { ProviderConfig } from "./config.js";
 import { filterNewItems } from "./dedup.js";
 import type { TaskDefinition } from "./definition.js";
 import { discoverItems } from "./discovery.js";
+import { captureModelForSchedule } from "./models.js";
 import { extractRef, formatRef, parseRef } from "./ref.js";
 import type { Exec } from "./resolver-io.js";
 import type { QueueStore } from "./store.js";
@@ -55,16 +58,28 @@ export interface InstantiateDeps {
 	repoVars?: Record<string, string>;
 	refOverride?: string;
 	resumeSessionId?: string;
-	/** Optional model override stamped onto each created task. Worker resolves
-	 * `task.model ?? def?.model`, so a TUI def-run exact pick (or enqueue-style
-	 * override) beats the definition's authored list when set. Absent → task
-	 * keeps `model: null` and the def's list (or `default_models`) applies. */
+	/** Optional model override stamped onto each created task. When set (and
+	 * with `modelCapture` present) it is resolved under the then-active
+	 * provider and frozen onto the task so a later provider switch cannot
+	 * re-head a still-queued run. Beats the definition's authored list. */
 	model?: string | string[];
 	/** True when `model` is an explicit TUI dialog pick that must run EXACTLY
 	 * that ref — no active-provider re-head, no fallback chain (see
-	 * `TaskInstance.modelPinned`). Absent/false keeps today's re-heading
-	 * behavior. */
+	 * `TaskInstance.modelPinned`). */
 	modelPinned?: boolean;
+	/**
+	 * When set, resolve `model ?? def.model` under `activeProvider` at create
+	 * time and stamp the result onto every task (schedule-time capture). Cron
+	 * and TUI/MCP def-runs always pass this in production so deferred /
+	 * lane-blocked tasks keep the model they were scheduled with. Tests may
+	 * omit it to leave `model` as the raw override (or null).
+	 */
+	modelCapture?: {
+		catalog: CatalogEntry[];
+		providers: ProviderConfig[];
+		defaultModels: string[];
+		activeProvider: string;
+	};
 	/** True for an explicit TUI dialog def-run — run NOW, ignore dedup. A human
 	 * filling the run form and pressing Run means "run this now", even if the
 	 * exact item was already seen (possibly failed, possibly still queued
@@ -126,6 +141,30 @@ export async function instantiateDefinition(
 		existing,
 	});
 
+	// Schedule-time model capture: freeze the resolved chain under the
+	// then-active provider onto every created task. Without `modelCapture`
+	// (tests), keep the raw override / null so the worker may still re-head.
+	let model: string | string[] | undefined = deps.model;
+	let modelPinned = deps.modelPinned ?? false;
+	if (deps.modelCapture) {
+		const captured = captureModelForSchedule(
+			deps.model ?? def.model,
+			deps.modelCapture.catalog,
+			deps.modelCapture.providers,
+			deps.modelCapture.defaultModels,
+			deps.modelCapture.activeProvider,
+			{
+				pinned:
+					deps.modelPinned === true && typeof deps.model === "string",
+			},
+		);
+		if (!captured.ok) {
+			throw new Error(captured.error);
+		}
+		model = captured.model;
+		modelPinned = captured.modelPinned;
+	}
+
 	return fresh.map(({ item, itemKey }) =>
 		deps.store.create({
 			prompt: render(def.prompt, globalVars, repoVars, item),
@@ -139,10 +178,8 @@ export async function instantiateDefinition(
 			item,
 			itemKey,
 			resumeSessionId: deps.resumeSessionId,
-			// Operator/TUI override only — do not copy def.model here; leaving
-			// task.model null lets worker fall through to the def's authored list.
-			model: deps.model,
-			modelPinned: deps.modelPinned ?? false,
+			model,
+			modelPinned,
 			lane: def.lane ?? undefined,
 			onDone: def.onDone === "archive" ? "archive" : undefined,
 			purgeAfterDays: def.purgeAfterDays ?? undefined,

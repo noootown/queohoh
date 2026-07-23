@@ -11,6 +11,7 @@ import {
 	globalWorkspaceDir,
 	instantiateDefinition,
 	loadGlobalConfig,
+	loadProjectDefaultModels,
 	loadProjectVars,
 	makeRedactor,
 	projectWorkspaceDir,
@@ -179,6 +180,11 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 				}
 				try {
 					const def = resolveDefinition(config, repo, name);
+					const projectDefaults = loadProjectDefaultModels(projectDir);
+					const defaultModels =
+						projectDefaults && projectDefaults.length > 0
+							? projectDefaults
+							: config.defaultModels;
 					const created = await instantiateDefinition(
 						def,
 						{ mode: "args", values: args },
@@ -195,6 +201,13 @@ export async function startDaemon(): Promise<{ stop: () => Promise<void> }> {
 							repoVars: loadProjectVars(projectDir),
 							// Operator-initiated promote is "run NOW" — never silent-dedup.
 							bypassDedup: true,
+							// Freeze model at schedule under the then-active provider.
+							modelCapture: {
+								catalog: config.catalog,
+								providers: config.providers,
+								defaultModels,
+								activeProvider: settings.activeProvider(),
+							},
 						},
 					);
 					return created[0] ? { id: created[0].id } : null;

@@ -14,9 +14,12 @@ import type {
 } from "@queohoh/core";
 import {
 	buildDiscussTurnPrompt,
+	captureModelForSchedule,
 	executeRun as defaultExecuteRun,
 	findModel,
 	groupHead,
+	loadProjectDefaultModels,
+	projectWorkspaceDir,
 	runDiscussTurn,
 } from "@queohoh/core";
 import type { SettingsStore } from "./settings-store.js";
@@ -327,6 +330,7 @@ export class DiscussService {
 			ref: `worktree:${worktree}`,
 			source: "tui",
 			session: "fresh",
+			...this.scheduleModelStamp(repo),
 		});
 		return { task_id: task.id };
 	}
@@ -374,6 +378,7 @@ export class DiscussService {
 				ref: `worktree:${worktree}`,
 				source: "tui",
 				session: "fresh",
+				...this.scheduleModelStamp(repo),
 			});
 			return { task_id: task.id };
 		}
@@ -397,8 +402,42 @@ export class DiscussService {
 			ref: `worktree:${worktree}`,
 			source: "tui",
 			session: "fresh",
+			...this.scheduleModelStamp(repo),
 		});
 		return { task_id: task.id };
+	}
+
+	/**
+	 * Schedule-time model freeze for ad-hoc promote enqueues (def path captures
+	 * inside instantiate). Uses the then-active provider so a later switch
+	 * cannot re-head a still-queued promote task. On capture failure leaves
+	 * model unset (legacy run-time resolve) rather than blocking promote.
+	 */
+	private scheduleModelStamp(repo: string): {
+		model?: string | string[];
+		modelPinned?: boolean;
+	} {
+		const projectDefaults = loadProjectDefaultModels(
+			projectWorkspaceDir(this.config, repo),
+		);
+		const defaultModels =
+			projectDefaults && projectDefaults.length > 0
+				? projectDefaults
+				: this.config.defaultModels;
+		const captured = captureModelForSchedule(
+			null,
+			this.config.catalog,
+			this.config.providers,
+			defaultModels,
+			this.settings.activeProvider(),
+		);
+		if (!captured.ok) {
+			console.warn(
+				`[discuss] schedule model capture failed for ${repo}: ${captured.error}`,
+			);
+			return {};
+		}
+		return { model: captured.model, modelPinned: captured.modelPinned };
 	}
 
 	// ── internals ──────────────────────────────────────────────────────────

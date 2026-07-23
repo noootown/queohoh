@@ -61,8 +61,13 @@ export { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
 export { execHook } from "./hooks.js";
 export type { InstantiateDeps, Trigger } from "./instantiate.js";
 export { buildItemFromArgs, instantiateDefinition } from "./instantiate.js";
-export type { ChainEntry, ChainResult } from "./models.js";
-export { resolveModelChain, resolvePinnedModel } from "./models.js";
+export type { CaptureModelResult, ChainEntry, ChainResult } from "./models.js";
+export {
+	captureModelForSchedule,
+	resolveFrozenModelChain,
+	resolveModelChain,
+	resolvePinnedModel,
+} from "./models.js";
 export * from "./providers/index.js";
 export type { Redactor } from "./redact.js";
 export { buildSecretMap, makeRedactor, redact } from "./redact.js";

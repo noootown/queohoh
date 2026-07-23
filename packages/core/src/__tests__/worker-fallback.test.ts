@@ -355,11 +355,10 @@ describe("runTask activeProvider vs resume pin", () => {
 		expect(seenProviders).toEqual(["grok"]);
 	});
 
-	it("a non-pinned task.model naming another provider still re-heads onto active (today's behavior)", async () => {
-		// task.model explicitly names claude/claude-opus-4.8, but no model_pinned stamp —
-		// resolveModelChain still injects the active provider's (grok) default
-		// from the pool (grok/grok-4.5), exactly like the model-less case above.
-		// Contrast with the next test, where model_pinned suppresses the re-head.
+	it("a non-pinned task.model stamp is frozen — no active-provider re-head", async () => {
+		// Schedule-time capture stamps task.model under the then-active provider.
+		// A later switch (activeProvider=grok here) must NOT re-head a still-queued
+		// task — the frozen stamp runs exactly the captured ref/chain order.
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: okResult,
 			model: "claude/claude-opus-4.8",
@@ -367,7 +366,7 @@ describe("runTask activeProvider vs resume pin", () => {
 		});
 		const out = await runTask(taskId, { ...deps, providers });
 		expect(out.status).toBe("done");
-		expect(seenProviders).toEqual(["grok"]);
+		expect(seenProviders).toEqual(["claude"]);
 	});
 
 	it("model_pinned suppresses the active-provider re-head — runs exactly the pinned ref", async () => {

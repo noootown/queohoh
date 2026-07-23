@@ -19,6 +19,7 @@ import type {
 } from "@queohoh/core";
 import {
 	buildItemFromArgs,
+	captureModelForSchedule,
 	defaultExec,
 	DEFER_MS,
 	findModel,
@@ -503,9 +504,7 @@ export class ApiServer {
 				const model = this.coerceModel(deps.config.catalog, params.model);
 				// Explicit model pick: TUI dialogs send `model_pinned: true`; a
 				// single-string `model` (MCP /qoo skill, ad-hoc enqueue) is also
-				// pinned so active-provider re-head cannot override a host-session
-				// handoff (Grok→grok, Claude→claude). A fallback LIST stays
-				// unpinned so resolveModelChain still re-heads / walks the chain.
+				// treated as a pin for capture (exact ref, no fallback).
 				const modelPinned =
 					params.model_pinned === true || typeof model === "string";
 				const verify =
@@ -535,6 +534,9 @@ export class ApiServer {
 				if (repo.length === 0) {
 					throw new Error("enqueue requires repo or cwd");
 				}
+				// Freeze the model under the operator's *current* active provider so
+				// a later switch cannot re-head this task while it waits in queue.
+				const stamped = this.stampScheduleModel(repo, model, modelPinned);
 				const task = deps.store.create({
 					prompt: String(params.prompt ?? ""),
 					repo,
@@ -543,8 +545,8 @@ export class ApiServer {
 					priority: (params.priority as "low" | "normal" | "high") ?? "normal",
 					session: "fresh",
 					resumeSessionId,
-					model,
-					modelPinned,
+					model: stamped.model,
+					modelPinned: stamped.modelPinned,
 					timeoutMs,
 					verify,
 				});
@@ -555,7 +557,7 @@ export class ApiServer {
 					deps.lineage,
 					deps.config.catalog,
 					resumeSessionId,
-					model,
+					stamped.model,
 				);
 				deps.onMutation();
 				return task;
@@ -574,7 +576,7 @@ export class ApiServer {
 				// ref or a fallback list; every ref is validated against the catalog.
 				const model = this.coerceModel(deps.config.catalog, params.model);
 				// Same pin rule as enqueue: single-string model = exact pick on
-				// every step; a fallback list stays unpinned.
+				// every step. Capture freezes the schedule-time chain either way.
 				const modelPinned =
 					params.model_pinned === true || typeof model === "string";
 				const timeoutMs =
@@ -619,6 +621,13 @@ export class ApiServer {
 					...deps.config.vars,
 				};
 				const repoVars = loadProjectVars(projectDir);
+				// Chain-level model (when set) is captured once and shared by every
+				// step. Steps without a chain-level model capture their own def /
+				// default under the then-active provider.
+				const chainStamp =
+					model !== undefined
+						? this.stampScheduleModel(repo, model, modelPinned)
+						: null;
 				const steps: ChainStepInput[] = rawSteps.map((raw, i) => {
 					const s = (raw ?? {}) as {
 						definition?: unknown;
@@ -637,16 +646,19 @@ export class ApiServer {
 						const def = resolveDefinition(deps.config, repo, s.definition);
 						const values = Array.isArray(s.args) ? s.args.map(String) : [];
 						const item = buildItemFromArgs(def, values);
+						const stamped =
+							chainStamp ??
+							this.stampScheduleModel(repo, def.model, false);
 						return {
 							prompt: render(def.prompt, globalVars, repoVars, item),
 							definition: `${repo}/${def.name}`,
 							item,
-							// Chain-level model stamps task.model (worker: task beats
-							// def). Timeout still uses def-first precedence in the
-							// worker. Priority is the chain's (shared), applied
-							// uniformly by createChain so members schedule together.
-							model,
-							modelPinned,
+							// Schedule-time stamp on task.model (worker: frozen).
+							// Timeout still uses def-first precedence in the worker.
+							// Priority is the chain's (shared), applied uniformly by
+							// createChain so members schedule together.
+							model: stamped.model,
+							modelPinned: stamped.modelPinned,
 							timeoutMs,
 							verify,
 							lane: def.lane ?? undefined,
@@ -655,10 +667,12 @@ export class ApiServer {
 						};
 					}
 					if (typeof s.prompt === "string" && s.prompt.length > 0) {
+						const stamped =
+							chainStamp ?? this.stampScheduleModel(repo, null, false);
 						return {
 							prompt: s.prompt,
-							model,
-							modelPinned,
+							model: stamped.model,
+							modelPinned: stamped.modelPinned,
 							timeoutMs,
 							verify,
 						};
@@ -678,7 +692,7 @@ export class ApiServer {
 					deps.lineage,
 					deps.config.catalog,
 					resumeSessionId,
-					model,
+					chainStamp?.model ?? model,
 				);
 				deps.onMutation();
 				return created;
@@ -857,6 +871,8 @@ export class ApiServer {
 						resumeSessionId,
 						model,
 						modelPinned,
+						// Freeze model under the then-active provider at schedule time.
+						modelCapture: this.modelCaptureCtx(repo),
 						bypassDedup,
 					},
 				);
@@ -902,6 +918,9 @@ export class ApiServer {
 							...deps.config.vars,
 						},
 						repoVars: loadProjectVars(projectDir),
+						// Capture model at discover-schedule time under the then-active
+						// provider — same freeze as runDefinition / enqueue.
+						modelCapture: this.modelCaptureCtx(repo),
 					},
 				);
 				deps.onMutation();
@@ -1368,6 +1387,57 @@ export class ApiServer {
 		const entry = findModel(catalog, model);
 		if (entry === undefined) return;
 		lineage.recordProvider(resumeSessionId, entry.provider);
+	}
+
+	/**
+	 * Effective catalog / providers / default_models / active provider for
+	 * schedule-time model capture on `repo` (project vars override global
+	 * defaults when non-empty).
+	 */
+	private modelCaptureCtx(repo: string): {
+		catalog: CatalogEntry[];
+		providers: GlobalConfig["providers"];
+		defaultModels: string[];
+		activeProvider: string;
+	} {
+		const { deps } = this;
+		const projectDefaults = loadProjectDefaultModels(
+			projectWorkspaceDir(deps.config, repo),
+		);
+		const defaultModels =
+			projectDefaults && projectDefaults.length > 0
+				? projectDefaults
+				: deps.config.defaultModels;
+		return {
+			catalog: deps.config.catalog,
+			providers: deps.config.providers,
+			defaultModels,
+			activeProvider: deps.settings.activeProvider(),
+		};
+	}
+
+	/**
+	 * Resolve `model` under the operator's current active provider and return
+	 * the freeze stamp for `task.model` / `task.modelPinned`. Throws on unknown
+	 * refs or no-runnable-model (enqueue must fail rather than queue a task
+	 * that can never run).
+	 */
+	private stampScheduleModel(
+		repo: string,
+		model: string | string[] | null | undefined,
+		pinned: boolean,
+	): { model: string | string[]; modelPinned: boolean } {
+		const ctx = this.modelCaptureCtx(repo);
+		const result = captureModelForSchedule(
+			model ?? null,
+			ctx.catalog,
+			ctx.providers,
+			ctx.defaultModels,
+			ctx.activeProvider,
+			{ pinned: pinned && typeof model === "string" },
+		);
+		if (!result.ok) throw new Error(result.error);
+		return { model: result.model, modelPinned: result.modelPinned };
 	}
 
 	/**

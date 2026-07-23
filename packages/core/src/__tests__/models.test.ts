@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { BUILTIN_CATALOG, unknownModelError } from "../catalog.js";
 import type { ProviderConfig } from "../config.js";
-import { resolveModelChain, resolvePinnedModel } from "../models.js";
+import {
+	captureModelForSchedule,
+	resolveFrozenModelChain,
+	resolveModelChain,
+	resolvePinnedModel,
+} from "../models.js";
 
 const PROVIDERS: ProviderConfig[] = [
 	{ name: "claude", enabled: true },
@@ -313,5 +318,75 @@ describe("resolvePinnedModel", () => {
 			expect(result.error).toContain("codex/gpt-5.6-sol");
 			expect(result.error).toContain("codex");
 		}
+	});
+});
+
+describe("resolveFrozenModelChain", () => {
+	it("honors stamp order without re-heading onto another provider", () => {
+		// Stamped claude-first while the operator may now be on grok — frozen
+		// chain must keep claude first (no inject of grok default).
+		expect(
+			resolveFrozenModelChain(
+				["claude/claude-opus-4.8", "grok/grok-4.5"],
+				BUILTIN_CATALOG,
+				PROVIDERS,
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
+			],
+		});
+	});
+
+	it("drops disabled providers from the stamp", () => {
+		const result = resolveFrozenModelChain(
+			["codex/gpt-5.6-sol", "claude/claude-opus-4.8"],
+			BUILTIN_CATALOG,
+			PROVIDERS,
+		);
+		expect(result).toEqual({
+			ok: true,
+			chain: [
+				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+			],
+		});
+	});
+});
+
+describe("captureModelForSchedule", () => {
+	const defaults = ["claude/claude-opus-4.8", "grok/grok-4.5"];
+
+	it("freezes the re-headed chain under the then-active provider", () => {
+		// Active=grok re-heads the default list; stamp freezes that order.
+		const captured = captureModelForSchedule(
+			null,
+			BUILTIN_CATALOG,
+			PROVIDERS,
+			defaults,
+			"grok",
+		);
+		expect(captured).toEqual({
+			ok: true,
+			model: ["grok/grok-4.5", "claude/claude-opus-4.8"],
+			modelPinned: false,
+		});
+	});
+
+	it("explicit pin returns a single pinned ref", () => {
+		const captured = captureModelForSchedule(
+			"claude/claude-opus-4.8",
+			BUILTIN_CATALOG,
+			PROVIDERS,
+			defaults,
+			"grok",
+			{ pinned: true },
+		);
+		expect(captured).toEqual({
+			ok: true,
+			model: "claude/claude-opus-4.8",
+			modelPinned: true,
+		});
 	});
 });

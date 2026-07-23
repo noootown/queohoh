@@ -65,23 +65,15 @@ const TaskMetaSchema = z
 		error: z.string().nullable().default(null),
 		session: SessionModeSchema.default("fresh"),
 		resume_session_id: z.string().nullable().default(null),
-		// A single `provider/label` ref, an ordered fallback list, or null.
-		// Worker resolves `task.model ?? def?.model ?? default_models` so a
-		// stamped override (TUI def-run pick / enqueue) beats the def list —
-		// model catalog design spec Section 2. Bare tier aliases are no longer
-		// accepted; a legacy value is validated (and rejected) at resolution
-		// time by `resolveModelChain`/`findModel`, not here.
+		// Schedule-time stamp: single `provider/label` ref, ordered fallback
+		// list, or null. Non-null is frozen at run time (no active-provider
+		// re-head). Null = legacy/uncaptured → def/default under current active.
 		model: z
 			.union([z.string(), z.array(z.string())])
 			.nullable()
 			.default(null),
-		// True when `model` was an explicit pick that must run EXACTLY that
-		// ref: no active-provider re-head (resolveModelChain's step 5
-		// group-head prepend), no fallback chain — see `resolvePinnedModel` in
-		// models.ts. Set by TUI dialog picks and by enqueue when a single-string
-		// model is stamped (MCP /qoo host handoff). Absent/false on legacy
-		// task files and on tasks whose model came from a definition list or
-		// default_models without an explicit pin.
+		// Explicit TUI dialog single-ref pick (no fallback). Unpinned non-null
+		// model is still frozen schedule order — see captureModelForSchedule.
 		model_pinned: z.boolean().default(false),
 		// Per-task hard wall-clock ceiling override, in ms (additive; absent on
 		// legacy files → null). Set from the MCP `timeout` param (enqueue_task /
@@ -167,16 +159,15 @@ export interface TaskInstance {
 	session: SessionMode;
 	resumeSessionId: string | null;
 	/** Requested model(s): a single `provider/label` (or `provider/id`) ref, an
-	 * ordered fallback list (top→bottom priority — a single-entry list, and a
-	 * bare string, never rotate), or null. Worker resolves
-	 * `task.model ?? def?.model ?? default_models` so a stamped override beats
-	 * the def list. See `models.ts`'s `resolveModelChain`. */
+	 * ordered fallback list, or null. Newly scheduled tasks stamp the chain
+	 * resolved under the then-active provider (`captureModelForSchedule`) so a
+	 * later provider switch cannot re-head deferred / lane-blocked work. The
+	 * worker freezes a non-null stamp; only null (legacy / uncaptured) falls
+	 * through to `def?.model` + re-head under the current active provider. */
 	model: string | string[] | null;
-	/** True when `model` was an explicit TUI dialog pick that must run EXACTLY
-	 * that ref (no active-provider re-head, no fallback chain) — see
-	 * `resolvePinnedModel` in models.ts. Optional so pre-pin callers and test
-	 * literals need not set it; absent reads as false (today's re-heading
-	 * behavior preserved for def-authored `model:` and `default_models`). */
+	/** True when `model` is an explicit TUI dialog pick that must run EXACTLY
+	 * that single ref (no fallback). A non-null unpinned `model` is still
+	 * frozen at schedule time (ordered chain, no re-head). */
 	modelPinned?: boolean;
 	/** Per-task hard wall-clock ceiling override, in ms; null = fall back to the
 	 * definition's `timeout:` (if any) or the daemon default. See

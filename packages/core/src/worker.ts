@@ -9,6 +9,7 @@ import type { TaskDefinition } from "./definition.js";
 import { execHook } from "./hooks.js";
 import {
 	type ChainEntry,
+	resolveFrozenModelChain,
 	resolveModelChain,
 	resolvePinnedModel,
 } from "./models.js";
@@ -221,34 +222,32 @@ async function resolveRunContext(
 			return { fail: `definition not found: ${task.definition}` };
 	}
 
-	// Chain resolution (design spec §4). `deps.providers`/`deps.catalog`/
-	// `deps.defaultModels` are already the effective (built-in ⊕ global ⊕
-	// project) tables — the caller's (engine, Task 5) job, not this function's.
-	// A task/definition with no `model:` of its own passes `null`, so the chain
-	// comes from `deps.defaultModels` (headed onto `activeProvider`).
+	// Chain resolution (design spec §4 + schedule-time capture).
+	// `deps.providers`/`deps.catalog`/`deps.defaultModels` are already the
+	// effective tables — the caller's (engine) job, not this function's.
 	//
-	// Precedence is task.model first: a TUI def-run exact pick (or enqueue)
-	// stamps an override on the task and must beat the def's authored list.
-	// Without a stamp, fall through to def.model, then default_models.
+	// Schedule-time capture (api/instantiate/cron): every newly scheduled task
+	// stamps `task.model` under the then-active provider. A later provider
+	// switch must NOT re-head a task still sitting in the queue (deferred,
+	// lane-blocked, etc.). Resolution order:
+	//   1. model_pinned + single string → exact pin (TUI dialog pick).
+	//   2. non-null task.model (unpinned) → frozen schedule stamp (no re-head).
+	//   3. null task.model (legacy / test creates) → def/default under the
+	//      *current* activeProvider (re-head still applies for uncaptured tasks).
 	const providers: ProviderConfig[] = deps.providers ?? DEFAULT_PROVIDERS;
 	const modelSpec = task.model ?? def?.model ?? null;
-	// `model_pinned` (TUI dialog pick, or enqueue single-string model) bypasses
-	// resolveModelChain entirely: it must run EXACTLY the stamped ref, with no
-	// active-provider re-head and no fallback chain. Def-authored `model:`
-	// chains and default_models keep re-heading — only a stamped pin skips it.
-	// A pin with a non-string `task.model` (a fallback LIST) can't happen from
-	// the wire (it always stamps a single ref), but falls through to the normal
-	// chain resolution defensively rather than crashing.
 	const chainResult =
 		task.modelPinned === true && typeof task.model === "string"
 			? resolvePinnedModel(task.model, deps.catalog, providers)
-			: resolveModelChain(
-					modelSpec,
-					deps.catalog,
-					providers,
-					deps.defaultModels,
-					deps.activeProvider,
-				);
+			: task.model !== null
+				? resolveFrozenModelChain(task.model, deps.catalog, providers)
+				: resolveModelChain(
+						modelSpec,
+						deps.catalog,
+						providers,
+						deps.defaultModels,
+						deps.activeProvider,
+					);
 	if (!chainResult.ok) return { fail: chainResult.error };
 
 	// Drop entries already attempted for this task, so a retry (or an adopted
