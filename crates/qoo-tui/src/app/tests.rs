@@ -396,18 +396,16 @@ fn jk_move_the_worktree_detail_row_cursor_and_reset_on_selection_change() {
     press(&mut app, KeyCode::Tab); // focus worktrees; cursor 0 = acme.feature lane
     assert_eq!(app.ui().last_list_pane, ListPane::Worktrees);
     assert_eq!(app.ui().detail_row, 0);
-    // acme.feature's lane has two tasks (running + queued): j advances the detail
-    // row cursor and clamps at the last row.
+    // acme.feature's lane has two tasks (running + queued): j advances circularly
+    // (same wrap as left-pane arrows — j on last → first, k on first → last).
     press(&mut app, KeyCode::Char('j'));
     assert_eq!(app.ui().detail_row, 1);
-    press(&mut app, KeyCode::Char('j')); // clamp (2 tasks → last index 1)
-    assert_eq!(app.ui().detail_row, 1);
-    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Char('j')); // wrap (2 tasks → back to 0)
     assert_eq!(app.ui().detail_row, 0);
-    // Move it back down, then change the WORKTREES selection → the detail row
-    // cursor resets (the lane-task list changed out from under it).
-    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('k')); // wrap back to last
     assert_eq!(app.ui().detail_row, 1);
+    // Change the WORKTREES selection → the detail row cursor resets (the
+    // lane-task list changed out from under it).
     press(&mut app, KeyCode::Down); // worktree cursor 0 → 1
     assert_eq!(app.ui().detail_row, 0);
 }

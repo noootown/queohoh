@@ -750,8 +750,9 @@ impl App {
     }
 
     /// `j`/`k` in list mode. When the detail pane shows the worktree lane-task
-    /// list, move its row cursor (clamped to the task count); otherwise the vim
-    /// keys never go dead — they scroll the detail one line like the wheel.
+    /// list, move its row cursor circularly over the tasks (same wrap as the
+    /// left-pane arrows: k on first → last, j on last → first); otherwise the
+    /// vim keys never go dead — they scroll the detail one line like the wheel.
     pub(super) fn detail_row_move(&mut self, d: i32) -> bool {
         // Only the worktree lane-task list has a row cursor; anything else (or an
         // empty list) scrolls the detail one line so j/k are never dead.
@@ -761,8 +762,8 @@ impl App {
             }
             _ => return self.detail_scroll(d),
         };
-        let cur = self.ui().detail_row.min(len - 1);
-        let next = (cur as i64 + d as i64).clamp(0, len as i64 - 1) as usize;
+        let cur = self.ui().detail_row.min(len - 1) as i64;
+        let next = (cur + d as i64).rem_euclid(len as i64) as usize;
         // A stale (out-of-range) stored value re-clamps to `next` too, so compare
         // against the raw stored value to still repaint in that case.
         let changed = next != self.ui().detail_row;
