@@ -1599,7 +1599,10 @@ describe("worktree-deletion archive", () => {
 		expect(store.listArchived()).toHaveLength(0);
 	});
 
-	it("does not archive a non-terminal task with a deleted worktree", async () => {
+	it("cancels and archives a non-terminal task whose worktree was deleted", async () => {
+		// Worktree gone → cancel live work (queued/needs-input/running), then
+		// archive the now-terminal row. Leaving them live used to strand
+		// "scheduled" tasks on a deleted path.
 		const { engine, store } = setup({
 			resolverIO: { listWorktrees: async () => [] },
 		});
@@ -1616,8 +1619,79 @@ describe("worktree-deletion archive", () => {
 
 		await engine.tick();
 
-		expect(store.list()[0]?.status).toBe("needs-input");
-		expect(store.listArchived()).toHaveLength(0);
+		expect(store.list()).toHaveLength(0);
+		const archived = store.listArchived().find((a) => a.id === t.id);
+		expect(archived?.status).toBe("cancelled");
+		expect(archived?.error).toBe("worktree removed");
+	});
+
+	it("cancels queued tasks when removeWorktree is called", async () => {
+		const { engine, store } = setup({
+			resolverIO: {
+				listWorktrees: async () => [
+					{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" },
+				],
+				removeWorktree: async () => {},
+			},
+		});
+		const queued = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		store.update(queued.id, {
+			status: "queued",
+			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			notBefore: "2099-01-01T00:00:00.000Z",
+		});
+		const other = store.create({
+			prompt: "other",
+			repo: "platform",
+			ref: "worktree:JUS-2",
+			source: "tui",
+		});
+		store.update(other.id, {
+			status: "queued",
+			target: { repo: "platform", ref: "worktree:JUS-2", worktree: "JUS-2" },
+		});
+
+		await engine.removeWorktree("platform", "JUS-1");
+
+		const cancelled = store.get(queued.id);
+		expect(cancelled?.status).toBe("cancelled");
+		expect(cancelled?.error).toBe("worktree removed");
+		expect(cancelled?.notBefore).toBeNull();
+		expect(store.get(other.id)?.status).toBe("queued");
+	});
+
+	it("force-cancels a running task with no tracked child on removeWorktree", async () => {
+		// Running on disk but no childPids entry (prior daemon) — stopTask would
+		// throw; remove must still cancel so the lane is cleared.
+		const { engine, store } = setup({
+			resolverIO: {
+				listWorktrees: async () => [
+					{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" },
+				],
+				removeWorktree: async () => {},
+			},
+		});
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "running",
+			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+		});
+
+		await engine.removeWorktree("platform", "JUS-1");
+
+		const after = store.get(t.id);
+		expect(after?.status).toBe("cancelled");
+		expect(after?.error).toBe("worktree removed");
 	});
 
 	it("does not archive @repo or null-worktree terminal tasks", async () => {

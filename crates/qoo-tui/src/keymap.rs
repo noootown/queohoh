@@ -99,7 +99,7 @@ pub enum AppAction {
     /// `App::goto_queue`.
     GotoQueue,
     /// Remove the selected WORKTREES row (`x`, and the worktrees `[x]remove`
-    /// chip): opens `Mode::Confirm`. Session rows / busy worktrees are a
+    /// chip): opens `Mode::Confirm`. Session rows / protected worktrees are a
     /// no-op with a status line. Routes to `App::remove_selected_worktree`.
     RemoveSelectedWorktree,
     /// Open the unified adhoc-create form (`s` on QUEUE, and the queue's

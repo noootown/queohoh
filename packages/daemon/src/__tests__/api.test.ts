@@ -2304,7 +2304,9 @@ describe("ApiServer", () => {
 			expect(execCalls.some((c) => c.command === "wt")).toBe(true);
 		});
 
-		it("rejects when a task is running on the worktree's lane", async () => {
+		it("cancels running tasks on the worktree then removes it", async () => {
+			// Manual worktree delete dismisses the lane: force-cancel live work
+			// (no tracked child in this test) so nothing stays "scheduled".
 			const { client, store } = await setup({ worktrees: WT });
 			const task = store.create({
 				prompt: "p",
@@ -2318,9 +2320,15 @@ describe("ApiServer", () => {
 				status: "running",
 				target: { ...task.target, worktree: "platform.fix-x" },
 			});
-			await expect(
-				client.call("removeWorktree", { repo: "platform", name: "fix-x" }),
-			).rejects.toThrow(/busy/);
+			expect(
+				await client.call("removeWorktree", {
+					repo: "platform",
+					name: "fix-x",
+				}),
+			).toBe(true);
+			const after = store.get(task.id);
+			expect(after?.status).toBe("cancelled");
+			expect(after?.error).toBe("worktree removed");
 		});
 
 		it("rejects unknown worktree and unknown repo", async () => {

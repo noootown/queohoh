@@ -60,14 +60,11 @@ impl App {
                     crate::view::selected_positions(&visible, &sel, marks, |r| r.raw_name.clone())
                         .into_iter()
                         .filter_map(|pos| visible.get(pos).copied())
-                        // Eligibility is applied AFTER selection (a session row, a
-                        // busy worktree, or a protected worktree can be marked; it
-                        // just isn't removable).
-                        .filter(|r| {
-                            !r.is_session
-                                && !matches!(r.state, crate::selectors::WtState::Busy)
-                                && !r.protected
-                        })
+                        // Eligibility is applied AFTER selection (a session row
+                        // or a protected worktree can be marked; it just isn't
+                        // removable). Busy is allowed — daemon cancels live
+                        // tasks on each worktree before teardown.
+                        .filter(|r| !r.is_session && !r.protected)
                         .map(|r| r.raw_name.clone())
                         .collect();
                 if remove_names.is_empty() {
@@ -85,8 +82,10 @@ impl App {
     /// exceeds 8. Used by the direct bulk-open path in `open_bulk_menu`.
     fn bulk_remove_confirm_mode(repo: String, names: Vec<String>) -> Mode {
         let extra = names.len().saturating_sub(8);
-        let mut body =
-            vec!["discards uncommitted changes and deletes each local branch".to_string()];
+        let mut body = vec![
+            "discards uncommitted changes, deletes each local branch,".to_string(),
+            "and cancels running/queued tasks on those worktrees".to_string(),
+        ];
         body.extend(names.iter().take(8).map(|name| format!("  {name}")));
         if extra > 0 {
             body.push(format!("  …and {extra} more"));

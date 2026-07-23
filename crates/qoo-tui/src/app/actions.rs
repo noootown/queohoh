@@ -1419,8 +1419,9 @@ impl App {
     /// opens the bulk remove confirm dialog directly (eligibility frozen at
     /// open time via [`Self::open_bulk_menu`]); a single row confirms removing
     /// just that worktree (opens `Mode::Confirm`; the `y` handler dispatches
-    /// the `removeWorktree` RPC). A session row isn't a worktree and a busy
-    /// worktree has a task running → status line, no confirm.
+    /// the `removeWorktree` RPC). A session row isn't a worktree → status line.
+    /// Busy is allowed: the daemon cancels running/queued tasks on that
+    /// worktree before tearing it down (manual delete = dismiss the lane).
     pub(super) fn remove_selected_worktree(&mut self) -> Update {
         let Some(repo) = self.active_repo() else {
             return Update::default();
@@ -1446,10 +1447,6 @@ impl App {
             self.status_line = Some("worktree is protected".into());
             return Update { dirty: true, cmds: vec![] };
         }
-        if matches!(row.state, crate::selectors::WtState::Busy) {
-            self.status_line = Some("a task is running here".into());
-            return Update { dirty: true, cmds: vec![] };
-        }
         let worktree = row.raw_name.clone();
         let branch = row.branch.clone();
         let branch_line =
@@ -1459,7 +1456,8 @@ impl App {
             // No leading spaces — the modal's interior padding provides the inset.
             body: vec![
                 format!("Remove {worktree}{branch_line}?"),
-                "This discards uncommitted changes and deletes the local branch.".into(),
+                "Discards uncommitted changes, deletes the local branch,".into(),
+                "and cancels running/queued tasks on this worktree.".into(),
             ],
             confirm_label: "Remove".into(),
             action: ConfirmAction::RemoveWorktree { repo, worktree },

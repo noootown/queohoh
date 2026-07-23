@@ -89,14 +89,22 @@ pub struct QueueRow {
     /// unset / past / old daemon. Painted as a countdown (`⧗ 4h32m`) while
     /// still in the future; falls back to [`Self::detail`] once due.
     pub not_before_epoch_s: Option<u64>,
+    /// Scheduler lane key for Queued rows (see [`scheduler_lane_key`]) — ACTIVE
+    /// ready-queue sort groups by this, then [`Self::lane_position`]. Empty for
+    /// non-queued rows.
+    pub lane_key: String,
+    /// 1-based `#N in lane` position for Queued rows; `None` otherwise. Sort
+    /// key within a lane group (ASC).
+    pub lane_position: Option<usize>,
     /// creation epoch seconds (parsed from the daemon ISO timestamp)
     pub created_epoch_s: u64,
     pub archived: bool,
     /// task status — drives the ACTIVE-section status ordering and the
     /// active/finished section split (see [`queue_rows`]).
     pub status: TaskStatus,
-    /// task priority string (`high`/`normal`/`low`) — the second ACTIVE-section
-    /// sort key after status.
+    /// task priority string (`high`/`normal`/`low`) — still on the wire/row for
+    /// detail; ACTIVE queue sort no longer keys on it (running → ready lane →
+    /// deferred).
     pub priority: String,
     /// completion epoch seconds (parsed from the daemon `finishedAt`), `None`
     /// until the task finishes / on an old daemon — the FINISHED-section sort key.
@@ -288,8 +296,10 @@ fn scheduler_lane_key(task: &TaskInstance) -> String {
     format!("{}:{}", task.target.repo, wt)
 }
 
-/// ACTIVE-section status priority: running first, then needs-input, then queued.
-/// Finished statuses share the max rank (they never sort in the active section).
+/// ACTIVE-section coarse rank for lane-detail task lists (and as a fallback):
+/// running first, then needs-input, then queued. Finished statuses share the
+/// max rank. QUEUE pane ACTIVE sort uses [`active_queue_bucket`] instead so
+/// ready vs deferred queued split into separate bands.
 fn status_active_rank(status: TaskStatus) -> u8 {
     match status {
         TaskStatus::Running => 0,
@@ -299,13 +309,15 @@ fn status_active_rank(status: TaskStatus) -> u8 {
     }
 }
 
-/// Priority sort rank: high first, then normal, then low (an unknown priority
-/// string sorts with `normal`).
-fn priority_rank(priority: &str) -> u8 {
-    match priority {
-        "high" => 0,
-        "low" => 2,
-        _ => 1, // "normal" and any unrecognized value
+/// ACTIVE QUEUE bands (user-requested order):
+/// 0 running · 1 needs-input · 2 ready `#N in lane` · 3 deferred (future notBefore).
+fn active_queue_bucket(row: &QueueRow) -> u8 {
+    match row.status {
+        TaskStatus::Running => 0,
+        TaskStatus::NeedsInput => 1,
+        TaskStatus::Queued if row.not_before_epoch_s.is_some() => 3,
+        TaskStatus::Queued => 2,
+        _ => 4,
     }
 }
 
@@ -340,15 +352,18 @@ pub fn queue_divider_after(rows: &[QueueRow]) -> Option<usize> {
     }
 }
 
-/// Comparator ordering the queue rows into two sections. ACTIVE
-/// (running/needs-input/queued) sorts first — by status, then priority, then id
-/// (ULID, stable). FINISHED (done/failed/cancelled/skipped/unknown + the archived
-/// tail) sorts after
-/// — live rows before the dimmed ARCHIVED rows (user request: archived is
-/// dismissed clutter, it must never interleave with finished tasks that still
-/// want a look), then within each half by completion timestamp DESCENDING
-/// (most recently finished first); a row without `finished_epoch_s` falls back
-/// to its id, newest first.
+/// Comparator ordering the queue rows into two sections.
+///
+/// **ACTIVE** (running / needs-input / ready-queued / deferred-queued) first:
+/// 1. **Running** — newest run start first (`running_elapsed` desc, then id desc).
+/// 2. **Needs-input** — id ascending (stable; rare band).
+/// 3. **Ready queued** (`#N in lane`, no future notBefore) — group by scheduler
+///    lane key ASC, then `#N` ASC, then id ASC.
+/// 4. **Deferred** (queued with `notBefore`) — wake time earlier→later
+///    (`not_before_epoch_s` ASC), then id ASC.
+///
+/// **FINISHED** (done/failed/cancelled/skipped/unknown + archived) after:
+/// live before dimmed ARCHIVED, then completion DESC, then id DESC.
 fn queue_sort(a: &QueueRow, b: &QueueRow) -> std::cmp::Ordering {
     let (fa, fb) = (queue_row_finished(a), queue_row_finished(b));
     fa.cmp(&fb).then_with(|| {
@@ -362,11 +377,37 @@ fn queue_sort(a: &QueueRow, b: &QueueRow) -> std::cmp::Ordering {
                 })
                 .then_with(|| b.task_id.cmp(&a.task_id))
         } else {
-            // Both active: status, then priority, then id ascending (stable).
-            status_active_rank(a.status)
-                .cmp(&status_active_rank(b.status))
-                .then_with(|| priority_rank(&a.priority).cmp(&priority_rank(&b.priority)))
-                .then_with(|| a.task_id.cmp(&b.task_id))
+            let ba = active_queue_bucket(a);
+            let bb = active_queue_bucket(b);
+            ba.cmp(&bb).then_with(|| match ba {
+                0 => {
+                    // Running: newest start at top.
+                    b.running_elapsed
+                        .unwrap_or(0)
+                        .cmp(&a.running_elapsed.unwrap_or(0))
+                        .then_with(|| b.task_id.cmp(&a.task_id))
+                }
+                2 => {
+                    // Ready `#N in lane`: group by lane, position ASC.
+                    a.lane_key
+                        .cmp(&b.lane_key)
+                        .then_with(|| {
+                            a.lane_position
+                                .unwrap_or(0)
+                                .cmp(&b.lane_position.unwrap_or(0))
+                        })
+                        .then_with(|| a.task_id.cmp(&b.task_id))
+                }
+                3 => {
+                    // Deferred: earlier wake first.
+                    a.not_before_epoch_s
+                        .unwrap_or(0)
+                        .cmp(&b.not_before_epoch_s.unwrap_or(0))
+                        .then_with(|| a.task_id.cmp(&b.task_id))
+                }
+                // needs-input (1) and unknown active (4): stable id.
+                _ => a.task_id.cmp(&b.task_id),
+            })
         }
     })
 }
@@ -422,15 +463,20 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
         // position for Queued. Done/Failed/NeedsInput/Unknown carry NOTHING —
         // the ✓/✗/? glyph already says the outcome and the full error/status
         // lives in the DETAIL pane; a trailing "done"/"exit code 1" duplicated it.
-        let (detail, running_elapsed) = match task.status {
-            TaskStatus::Running => (String::new(), Some(run_start_epoch_s(task))),
+        let (detail, running_elapsed, lane_key, lane_position) = match task.status {
+            TaskStatus::Running => (String::new(), Some(run_start_epoch_s(task)), String::new(), None),
             TaskStatus::Queued => {
                 let lane = scheduler_lane_key(task);
                 let position = queued_position.get(&lane).copied().unwrap_or(0) + 1;
-                queued_position.insert(lane, position);
-                (format!("#{position} in lane"), None)
+                queued_position.insert(lane.clone(), position);
+                (
+                    format!("#{position} in lane"),
+                    None,
+                    lane,
+                    Some(position),
+                )
             }
-            _ => (String::new(), None),
+            _ => (String::new(), None, String::new(), None),
         };
         // Future notBefore only for statuses still live for defer purposes.
         // Terminal/cancelled rows must never paint a schedule stamp even when a
@@ -460,6 +506,8 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             detail,
             running_elapsed,
             not_before_epoch_s,
+            lane_key,
+            lane_position,
             created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: false,
             status: task.status,
@@ -502,6 +550,8 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             detail: String::new(),
             running_elapsed: None,
             not_before_epoch_s: None,
+            lane_key: String::new(),
+            lane_position: None,
             created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: true,
             status: task.status,
@@ -2624,27 +2674,61 @@ mod tests {
     }
 
     #[test]
-    fn queue_active_section_orders_by_status_then_priority_then_id() {
-        // Scrambled input; expect running → needs-input → queued(high,normal,low),
-        // with id as the final (stable) tiebreak inside the queued run.
+    fn queue_active_section_orders_running_ready_lane_then_deferred() {
+        // ACTIVE bands: running (newest start first) → needs-input → ready
+        // `#N in lane` (group by lane ASC, # ASC) → deferred (notBefore ASC).
+        // Priority is no longer a sort key. Deferred sit on their own lane so
+        // they do not steal #N from the ready-lane assertions.
+        let mut run_old = qtask(TaskStatus::Running, "01RUN_OLD", "high", None);
+        run_old.started_at = Some("2026-07-09T10:00:00.000Z".into());
+        let mut run_new = qtask(TaskStatus::Running, "01RUN_NEW", "low", None);
+        run_new.started_at = Some("2026-07-09T12:00:00.000Z".into());
+        // Snapshot order of ready queued sets #N: A1 then A2 on wt-a; B alone.
+        // Display groups lane key ASC → platform:wt-a before platform:wt-b.
+        let ready_a1 = task_on(TaskStatus::Queued, "01READY_A1", "platform", Some("wt-a"));
+        let ready_a2 = task_on(TaskStatus::Queued, "01READY_A2", "platform", Some("wt-a"));
+        let ready_b = task_on(TaskStatus::Queued, "01READY_B", "platform", Some("wt-b"));
+        let mut def_late = task_on(TaskStatus::Queued, "01DEF_LATE", "platform", Some("wt-d"));
+        def_late.not_before = Some("2099-06-01T00:00:00.000Z".into());
+        def_late.priority = "high".into();
+        let mut def_early = task_on(TaskStatus::Queued, "01DEF_EARLY", "platform", Some("wt-d"));
+        def_early.not_before = Some("2099-01-01T00:00:00.000Z".into());
+        def_early.priority = "low".into();
+
         let rows = queue_rows(
             &snap(
                 vec![
-                    qtask(TaskStatus::Queued, "01Q_LOW", "low", None),
-                    qtask(TaskStatus::Running, "01RUNNING", "normal", None),
-                    qtask(TaskStatus::Queued, "01Q_NORMAL", "normal", None),
+                    ready_b, // scrambled input order
+                    def_late,
+                    run_old,
+                    ready_a2,
                     qtask(TaskStatus::NeedsInput, "01NEEDS", "normal", None),
-                    qtask(TaskStatus::Queued, "01Q_HIGH", "high", None),
+                    def_early,
+                    ready_a1,
+                    run_new,
                 ],
                 vec![],
             ),
             "platform",
         );
+        // Ready #N follows snapshot order among Queued: first ready_b in the
+        // vec is not first overall — positions are assigned in iteration order
+        // of ALL queued (ready+deferred). Walk: ready_b → #1 wt-b; def_late →
+        // #1 wt-d; ready_a2 → #1 wt-a; def_early → #2 wt-d; ready_a1 → #2 wt-a.
+        // So ready display by (lane, #): wt-a #1=A2, #2=A1; wt-b #1=B.
         assert_eq!(
             rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
-            vec!["01RUNNING", "01NEEDS", "01Q_HIGH", "01Q_NORMAL", "01Q_LOW"]
+            vec![
+                "01RUN_NEW",   // running, newer start
+                "01RUN_OLD",   // running, older start
+                "01NEEDS",     // needs-input
+                "01READY_A2",  // lane wt-a #1 (seen before A1 in snapshot)
+                "01READY_A1",  // lane wt-a #2
+                "01READY_B",   // lane wt-b #1
+                "01DEF_EARLY", // deferred, earlier wake
+                "01DEF_LATE",  // deferred, later wake
+            ]
         );
-        // None of the active rows are in the FINISHED section, so no divider.
         assert_eq!(queue_divider_after(&rows), None);
     }
 
@@ -3595,6 +3679,8 @@ mod tests {
             detail: String::new(),
             running_elapsed: None,
             not_before_epoch_s: None,
+            lane_key: String::new(),
+            lane_position: None,
             created_epoch_s: 0,
             archived: false,
             status: TaskStatus::Queued,
@@ -3644,6 +3730,8 @@ mod tests {
             detail: String::new(),
             running_elapsed: None,
             not_before_epoch_s: None,
+            lane_key: String::new(),
+            lane_position: None,
             created_epoch_s: 0,
             archived: false,
             status: TaskStatus::Queued,
@@ -4157,6 +4245,8 @@ mod tests {
             detail: String::new(),
             running_elapsed: if running { Some(now() - 303) } else { None },
             not_before_epoch_s: None,
+            lane_key: String::new(),
+            lane_position: None,
             created_epoch_s: 0,
             archived: false,
             status: if running { TaskStatus::Running } else { TaskStatus::Done },

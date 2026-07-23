@@ -217,6 +217,55 @@ const TERMINAL_STATUSES: ReadonlySet<TaskInstance["status"]> = new Set([
 	"verify-failed",
 ]);
 
+/**
+ * Name forms that all mean the same worktree directory: full `repo.branch`,
+ * stripped display name, and the caller's request string. Used when cancelling
+ * tasks that target a worktree being removed.
+ */
+export function worktreeNameAliases(
+	repo: string,
+	canonicalName: string,
+	requestName: string,
+): Set<string> {
+	const names = new Set<string>([canonicalName, requestName]);
+	const prefix = `${repo}.`;
+	if (canonicalName.startsWith(prefix)) {
+		names.add(canonicalName.slice(prefix.length));
+	} else {
+		names.add(`${prefix}${canonicalName}`);
+	}
+	if (requestName && requestName !== canonicalName) {
+		if (requestName.startsWith(prefix)) {
+			names.add(requestName.slice(prefix.length));
+		} else {
+			names.add(`${prefix}${requestName}`);
+		}
+	}
+	return names;
+}
+
+/**
+ * Whether a task is bound to one of the worktree names (resolved
+ * `target.worktree`, or an unresolved `worktree:<name>` ref that would land
+ * there). Does not use `laneKey` — a shared definition lane on another
+ * worktree must not be cancelled when this worktree is removed.
+ */
+export function taskTargetsWorktreeNames(
+	task: TaskInstance,
+	repo: string,
+	names: ReadonlySet<string>,
+): boolean {
+	if (task.target.repo !== repo) return false;
+	const wt = task.target.worktree;
+	if (wt !== null && wt !== REPO_SENTINEL && names.has(wt)) return true;
+	// Unresolved yet: ref still points at a worktree name that is going away.
+	if (wt === null) {
+		const m = /^worktree:(.+)$/.exec(task.target.ref);
+		if (m?.[1] && names.has(m[1])) return true;
+	}
+	return false;
+}
+
 export interface EngineDeps {
 	store: QueueStore;
 	runStore: RunStore;
@@ -389,10 +438,16 @@ export class Engine {
 	 * Remove a worktree by name. `name` may be the full directory name
 	 * (`<repo>.<branch>`) or the TUI's display name with the `<repo>.` prefix
 	 * stripped — both are accepted because rows only carry the stripped form.
-	 * Refuses while a task is running on the worktree's lane. The removal itself
-	 * force-cleans the worktree, removes it via `wt`, then deletes the local
-	 * branch (mirrors agent247's cleanup-worktree.sh) — this discards any
-	 * uncommitted changes.
+	 *
+	 * Cancels live work on that worktree first (queued / needs-input immediately;
+	 * running via stopTask, or force-cancelled if no child is tracked). Leaving
+	 * those tasks alive after the dir is gone used to strand them as orphans
+	 * that still looked "scheduled" while the worktree-deletion archive sweep
+	 * only picked up already-terminal rows.
+	 *
+	 * The removal itself force-cleans the worktree, removes it via `wt`, then
+	 * deletes the local branch (mirrors agent247's cleanup-worktree.sh) —
+	 * this discards any uncommitted changes.
 	 */
 	async removeWorktree(repo: string, name: string): Promise<void> {
 		const repoPath = this.repoPath(repo);
@@ -410,13 +465,50 @@ export class Engine {
 				`Worktree "${wt.name}" is protected and cannot be removed`,
 			);
 		}
-		const lanes = new Set([`${repo}:${wt.name}`, `${repo}:${name}`]);
-		const busy = this.deps.store
-			.list()
-			.some((t) => t.status === "running" && lanes.has(laneKey(t) ?? ""));
-		if (busy) throw new Error(`worktree busy: a task is running on ${wt.name}`);
+		this.cancelLiveTasksForWorktree(
+			repo,
+			worktreeNameAliases(repo, wt.name, name),
+			"worktree removed",
+		);
 		await this.deps.resolverIO.removeWorktree(repoPath, wt);
 		this.worktreeCache.delete(repo);
+	}
+
+	/**
+	 * Cancel queued / needs-input / running tasks that target a worktree about
+	 * to disappear (or already gone). Matches by `target.worktree` name aliases
+	 * and by unresolved `worktree:<name>` refs — not by `laneKey`, so a
+	 * definition-level lane override (e.g. testing1-stack) on another worktree
+	 * is not cancelled when this one is removed.
+	 */
+	private cancelLiveTasksForWorktree(
+		repo: string,
+		names: ReadonlySet<string>,
+		reason: string,
+	): void {
+		for (const t of this.deps.store.list()) {
+			if (!taskTargetsWorktreeNames(t, repo, names)) continue;
+			if (t.status === "running") {
+				try {
+					this.stopTask(t.id);
+				} catch {
+					// No tracked child (prior-daemon run, or spawn never reported) —
+					// force terminal so the next archive sweep can dismiss it.
+					this.deps.store.update(t.id, {
+						status: "cancelled",
+						error: reason,
+						notBefore: null,
+						startedAt: null,
+					});
+				}
+			} else if (t.status === "queued" || t.status === "needs-input") {
+				this.deps.store.update(t.id, {
+					status: "cancelled",
+					error: reason,
+					notBefore: null,
+				});
+			}
+		}
 	}
 
 	/**
@@ -549,10 +641,45 @@ export class Engine {
 			}
 		}
 
-		// Archive terminal tasks whose spawned worktree has been deleted. Deleting
-		// a worktree is a deliberate act (only the removeWorktree RPC), so it reads
-		// as "I'm done with this" and outranks the age sweep's "keep failed
-		// visible" — this catches the failed/skipped set the age timer never sweeps.
+		// Worktree gone: cancel live work first, then archive terminals.
+		// Deleting a worktree (RPC or external) means "I'm done with this lane"
+		// — queued/running/needs-input must not keep looking scheduled against a
+		// path that no longer exists. Running stops via stopTask when we still
+		// track a child; otherwise we force-cancel. The subsequent archive pass
+		// picks up the now-terminal rows (and any that were already terminal).
+		const worktreeStillPresent = (repo: string, wt: string): boolean => {
+			if (!this.worktreeListingOk.has(repo)) return true; // cold cache: don't orphan
+			const known = this.worktreeCache.get(repo) ?? [];
+			return known.some((w) => w.name === wt);
+		};
+		for (const t of deps.store.list()) {
+			const wt = t.target.worktree;
+			if (wt === null || wt === REPO_SENTINEL) continue;
+			if (worktreeStillPresent(t.target.repo, wt)) continue;
+			const names = worktreeNameAliases(t.target.repo, wt, wt);
+			// One cancel helper per orphaned task would re-scan the store; only
+			// act on this task's status here (aliases still matter for the RPC
+			// path where several name forms map to one dir).
+			if (!taskTargetsWorktreeNames(t, t.target.repo, names)) continue;
+			if (t.status === "running") {
+				try {
+					this.stopTask(t.id);
+				} catch {
+					deps.store.update(t.id, {
+						status: "cancelled",
+						error: "worktree removed",
+						notBefore: null,
+						startedAt: null,
+					});
+				}
+			} else if (t.status === "queued" || t.status === "needs-input") {
+				deps.store.update(t.id, {
+					status: "cancelled",
+					error: "worktree removed",
+					notBefore: null,
+				});
+			}
+		}
 		for (const t of deps.store.list()) {
 			const wt = t.target.worktree;
 			if (
