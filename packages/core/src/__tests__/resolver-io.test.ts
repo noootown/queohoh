@@ -58,6 +58,16 @@ describe("createResolverIO", () => {
 		expect(list.map((w) => w.name)).toEqual(["platform", "JUS-1423"]);
 	});
 
+	it("listWorktrees throws on non-zero exit so the engine keeps last-known list", async () => {
+		const exec = fakeExec({
+			"git worktree list --porcelain": { stdout: "", exitCode: 128 },
+		});
+		const io = createResolverIO(exec);
+		await expect(io.listWorktrees("/repo")).rejects.toThrow(
+			/git worktree list failed/,
+		);
+	});
+
 	it("prBranch returns headRefName on success, null on failure", async () => {
 		const exec = fakeExec({
 			"gh pr view 1423 --json headRefName": {

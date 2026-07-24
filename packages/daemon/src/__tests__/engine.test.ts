@@ -757,7 +757,7 @@ describe("Engine.refreshWorktreeCache failure handling", () => {
 		expect(engine.worktreesByRepo().platform).toHaveLength(1);
 	});
 
-	it("records an empty list for a repo that has never listed successfully", async () => {
+	it("leaves cache unset for a repo that has never listed successfully", async () => {
 		const { engine } = setup({
 			resolverIO: {
 				listWorktrees: async () => {
@@ -766,7 +766,8 @@ describe("Engine.refreshWorktreeCache failure handling", () => {
 			},
 		});
 		await engine.tick();
-		expect(engine.worktreesByRepo().platform).toEqual([]);
+		// Do not seed a trusted empty list — that falsely orphans every worktree.
+		expect(engine.worktreesByRepo().platform ?? []).toEqual([]);
 	});
 });
 
@@ -1560,10 +1561,17 @@ describe("Engine.stopTask", () => {
 });
 
 describe("worktree-deletion archive", () => {
+	/** Successful list that no longer includes the ticket worktree (primary still
+	 * present). Empty `[]` is intentionally untrusted for purge — real git always
+	 * lists the primary checkout. */
+	const onlyPrimary = [
+		{ name: "platform", path: "/repo/platform", branch: "main" },
+	];
+
 	it("purges a terminal task whose worktree was deleted", async () => {
 		// Worktree "JUS-1" is gone from the listing → hard-delete (not archive).
 		const { engine, store } = setup({
-			resolverIO: { listWorktrees: async () => [] },
+			resolverIO: { listWorktrees: async () => onlyPrimary },
 		});
 		const t = store.create({
 			prompt: "p",
@@ -1607,7 +1615,7 @@ describe("worktree-deletion archive", () => {
 		// Worktree gone → cancel live work, then purge (hard-delete). No archive
 		// trail for a lane that no longer exists.
 		const { engine, store } = setup({
-			resolverIO: { listWorktrees: async () => [] },
+			resolverIO: { listWorktrees: async () => onlyPrimary },
 		});
 		const t = store.create({
 			prompt: "p",
@@ -1698,7 +1706,7 @@ describe("worktree-deletion archive", () => {
 
 	it("does not archive @repo or null-worktree terminal tasks", async () => {
 		const { engine, store } = setup({
-			resolverIO: { listWorktrees: async () => [] },
+			resolverIO: { listWorktrees: async () => onlyPrimary },
 		});
 		const sentinel = store.create({
 			prompt: "p",
@@ -1742,7 +1750,7 @@ describe("worktree-deletion archive", () => {
 		] as const;
 		for (const status of statuses) {
 			const { engine, store } = setup({
-				resolverIO: { listWorktrees: async () => [] },
+				resolverIO: { listWorktrees: async () => onlyPrimary },
 			});
 			const t = store.create({
 				prompt: "p",
@@ -1764,8 +1772,8 @@ describe("worktree-deletion archive", () => {
 	});
 
 	it("does not archive when the repo has never listed successfully", async () => {
-		// listWorktrees always throws → refreshWorktreeCache seeds [] for the repo,
-		// but the listing never succeeded, so "absent" must NOT count as deleted.
+		// listWorktrees always throws → listing never succeeds, so "absent"
+		// must NOT count as deleted (and we must not seed a trusted empty list).
 		const { engine, store } = setup({
 			resolverIO: {
 				listWorktrees: async () => {
@@ -1796,7 +1804,7 @@ describe("worktree-deletion archive", () => {
 		// throws (transient git hiccup) → refreshWorktreeCache's catch branch
 		// keeps the last-known list instead of clobbering it with []. The
 		// worktree must still be found in that last-known list, so the task
-		// must NOT be archived on the second tick.
+		// must NOT be purged on the second tick.
 		let shouldThrow = false;
 		const { engine, store } = setup({
 			resolverIO: {
@@ -1826,5 +1834,99 @@ describe("worktree-deletion archive", () => {
 
 		expect(store.list().map((x) => x.id)).toContain(t.id);
 		expect(store.listArchived()).toHaveLength(0);
+	});
+
+	it("does not purge a surviving worktree's tasks when another worktree is removed", async () => {
+		// Regression: removeWorktree used to worktreeCache.delete(repo), leaving
+		// listingOk true + empty/missing cache. The next purge sweep then treated
+		// every other ticket worktree (e.g. long-lived JUS-1946) as gone.
+		const all = [
+			{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" },
+			{ name: "platform.JUS-1946", path: "/wt/platform.JUS-1946", branch: "JUS-1946" },
+		];
+		let jus1Gone = false;
+		const { engine, store } = setup({
+			resolverIO: {
+				listWorktrees: async () =>
+					jus1Gone ? all.filter((w) => w.name !== "JUS-1") : all,
+				removeWorktree: async () => {
+					jus1Gone = true;
+				},
+			},
+		});
+		const doomed = store.create({
+			prompt: "gone",
+			repo: "platform",
+			ref: "worktree:JUS-1",
+			source: "tui",
+		});
+		store.update(doomed.id, {
+			status: "done",
+			finishedAt: new Date().toISOString(),
+			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+		});
+		const survivor = store.create({
+			prompt: "keep",
+			repo: "platform",
+			ref: "worktree:platform.JUS-1946",
+			source: "tui",
+		});
+		store.update(survivor.id, {
+			status: "done",
+			finishedAt: new Date().toISOString(),
+			target: {
+				repo: "platform",
+				ref: "worktree:platform.JUS-1946",
+				worktree: "platform.JUS-1946",
+			},
+		});
+
+		// Seed cache via a successful list (both present).
+		await engine.tick();
+		expect(store.get(doomed.id)).toBeDefined();
+		expect(store.get(survivor.id)).toBeDefined();
+
+		await engine.removeWorktree("platform", "JUS-1");
+		// Purge sweep for the removed WT (and survivor must remain).
+		await engine.tick();
+
+		expect(store.getAny(doomed.id)).toBeUndefined();
+		expect(store.get(survivor.id)?.status).toBe("done");
+		expect(store.list().map((t) => t.id)).toContain(survivor.id);
+	});
+
+	it("does not mass-purge when listWorktrees returns empty after prior success", async () => {
+		// Empty listing is untrusted (real git always includes the primary). A
+		// transient [] must not wipe every ticket worktree's history.
+		let empty = false;
+		const { engine, store } = setup({
+			resolverIO: {
+				listWorktrees: async (path) => {
+					if (empty) return [];
+					return [
+						{ name: "platform.JUS-1946", path: `${path}/platform.JUS-1946`, branch: "JUS-1946" },
+					];
+				},
+			},
+		});
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "worktree:platform.JUS-1946",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "done",
+			finishedAt: new Date().toISOString(),
+			target: {
+				repo: "platform",
+				ref: "worktree:platform.JUS-1946",
+				worktree: "platform.JUS-1946",
+			},
+		});
+		await engine.tick();
+		empty = true;
+		await engine.tick();
+		expect(store.get(t.id)?.status).toBe("done");
 	});
 });

@@ -470,7 +470,19 @@ export class Engine {
 			"worktree removed",
 		);
 		await this.deps.resolverIO.removeWorktree(repoPath, wt);
-		this.worktreeCache.delete(repo);
+		// Drop only the removed worktree from the cache. Clearing the whole repo
+		// list left listingOk true + empty/missing cache until the next refresh,
+		// so the purge sweep treated *every* other worktree as gone.
+		const cached = this.worktreeCache.get(repo);
+		if (cached) {
+			this.worktreeCache.set(
+				repo,
+				cached.filter((w) => w.name !== wt.name && w.path !== wt.path),
+			);
+		} else {
+			// No cache to patch — drop listingOk so we don't purge until re-list.
+			this.worktreeListingOk.delete(repo);
+		}
 	}
 
 	/**
@@ -526,7 +538,10 @@ export class Engine {
 			throw new Error(`worktree already exists: ${name}`);
 		}
 		const spawned = await this.deps.resolverIO.spawnWorktree(repoPath, name);
+		// Invalidate listing trust until the next successful refresh (do not leave
+		// listingOk + missing cache — that falsely orphans every WT).
 		this.worktreeCache.delete(repo);
+		this.worktreeListingOk.delete(repo);
 		return spawned.path;
 	}
 
@@ -680,9 +695,15 @@ export class Engine {
 		}
 
 		// Worktree gone → cancel live, then purge (live + archive).
+		// Presence must be conservative: only purge when we have a *successful,
+		// non-empty* listing that omits this worktree. Empty/missing cache after
+		// removeWorktree/cache invalidation or a failed list must NOT look like
+		// "every worktree is gone" (that wiped long-lived ticket WTs when the
+		// operator cleaned up *other* worktrees).
 		const worktreeStillPresent = (repo: string, wt: string): boolean => {
-			if (!this.worktreeListingOk.has(repo)) return true; // cold cache: don't orphan
-			const known = this.worktreeCache.get(repo) ?? [];
+			if (!this.worktreeListingOk.has(repo)) return true; // cold / untrusted
+			const known = this.worktreeCache.get(repo);
+			if (known === undefined || known.length === 0) return true;
 			return known.some((w) => w.name === wt);
 		};
 		for (const t of deps.store.list()) {
@@ -892,20 +913,17 @@ export class Engine {
 	private async refreshWorktreeCache(): Promise<void> {
 		for (const project of this.deps.config.projects) {
 			try {
-				this.worktreeCache.set(
-					project.name,
-					await this.deps.resolverIO.listWorktrees(project.path),
-				);
+				const list = await this.deps.resolverIO.listWorktrees(project.path);
+				this.worktreeCache.set(project.name, list);
+				// Only trust presence/absence for purge after a successful list.
 				this.worktreeListingOk.add(project.name);
 			} catch {
 				// Transient git failure (e.g. index.lock contention): KEEP the
-				// last-known list instead of clobbering it with [] — the clobber
-				// made every visible row of the repo vanish for a tick, which the
-				// user saw as flashing. A repo with no prior entry still records
-				// [] so downstream lookups see it as known-empty.
-				if (!this.worktreeCache.has(project.name)) {
-					this.worktreeCache.set(project.name, []);
-				}
+				// last-known list. Do NOT seed [] when missing — empty + listingOk
+				// is a false "all worktrees deleted" and hard-purges history for
+				// still-existing ticket worktrees. Never mark listingOk here.
+				// (defaultExec used to surface git failure as exit≠0 + []; that
+				// path now throws from listWorktrees so this catch runs.)
 			}
 		}
 	}
@@ -1305,7 +1323,10 @@ export class Engine {
 					target: { ...task.target, worktree: resolution.worktree },
 					ephemeralWorktree: resolution.ephemeral,
 				});
-				this.worktreeCache.delete(task.target.repo); // stale after spawn
+				// Stale after spawn — drop listing trust too (missing cache +
+				// listingOk would look like every worktree is gone).
+				this.worktreeCache.delete(task.target.repo);
+				this.worktreeListingOk.delete(task.target.repo);
 				// A chain resolves its worktree ONCE, at the head: stamp it onto the
 				// tail members so they land on the same lane and never re-resolve
 				// (which for a `temp` chain would spawn N worktrees).

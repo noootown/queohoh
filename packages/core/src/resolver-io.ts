@@ -49,7 +49,15 @@ export function createResolverIO(exec: Exec): ResolverIO {
 			["worktree", "list", "--porcelain"],
 			{ cwd: repoPath },
 		);
-		if (exitCode !== 0) return [];
+		// Fail loud so Engine.refreshWorktreeCache can KEEP the last-known list.
+		// Returning [] on error (with listingOk still true) made every worktree
+		// look deleted and hard-purged terminal tasks for still-existing WTs
+		// (e.g. long-lived platform.JUS-1946 while cleaning up other branches).
+		if (exitCode !== 0) {
+			throw new Error(
+				`git worktree list failed in ${repoPath} (exit ${exitCode})`,
+			);
+		}
 		return parseWorktreePorcelain(stdout);
 	}
 
