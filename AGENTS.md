@@ -37,20 +37,22 @@ crates/qoo-tui/         The TUI — strictly layered, one-way data flow
   src/ipc/                Wire layer: types.rs mirrors TS types
                           (serde camelCase, `default` for old daemons),
                           client.rs the socket client
-  src/selectors.rs        PURE derivation layer: snapshot → rows, column
-                          layouts (*ColLayout), labels. Biggest file, most
-                          unit tests. No rendering, no I/O.
+  src/selectors/          PURE derivation layer: snapshot → rows, column
+                          layouts (*ColLayout), labels. Split via include!
+                          (rows/labels/cols + tests_a/b) so private helpers
+                          stay private. No rendering, no I/O.
+  src/markup/             Transcript/report styling (sanitize, wrap, fence
+                          + markdown paint); tests co-located.
   src/app/                State + update: update.rs consumes Events and
                           returns Cmds; mouse.rs routes clicks via the HitMap;
                           actions.rs/menus.rs the action-menu flows
   src/view/               Pure render functions of App+Computed: panes.rs
-                          (list panes), detail.rs, menu/modal/args_form,
+                          (list panes), detail/, menu/modal/args_form,
                           theme.rs (Palette)
   src/event.rs            The event loop + Cmd executor (all side effects,
                           spawned off the UI thread)
   src/hit.rs              HitMap: per-frame (Rect, HitTarget) registry;
                           reverse scan = topmost wins
-  src/markup.rs           Line styling/wrapping (transcripts, key/value)
 
 examples/               Example task definitions + reference skill (NOT read by
                         the daemon — copy into a workspace's tasks / skills dir)
@@ -67,7 +69,7 @@ Dependency direction: `view → selectors → ipc/types`, `app/update → select
 - **Wire compat is one-directional.** Every field a newer daemon adds must be `Option` in `ipc/types.rs` so an old daemon keeps working (container-level `serde(default)`). Never remove/rename wire fields.
 - **TUI is Elm-style and single-threaded.** State changes only in `App::update`; side effects only via `Cmd` variants executed in `event.rs::execute` (fire-and-forget, off the UI thread). Views are pure.
 - **Mouse = HitMap.** Views register hit rects painter's-order each frame; `hit()` scans in reverse so the topmost wins. Sub-rects (chips, links) must be registered AFTER the row/pane beneath them; overlays own every click while open via early returns in `app/mouse.rs`.
-- **Fixed-width column model.** Pane columns (`selectors.rs`) are fixed widths, pane-gated on data availability, degraded in a documented drop order; one FILL column absorbs slack. Never size a column from row data (rows shifting as data changed was explicit user feedback). A renderer needing a cell's x-offset shares the layout's arithmetic (see `WtColLayout::pr_col_x`), never re-derives it.
+- **Fixed-width column model.** Pane columns (`selectors/`) are fixed widths, pane-gated on data availability, degraded in a documented drop order; one FILL column absorbs slack. Never size a column from row data (rows shifting as data changed was explicit user feedback). A renderer needing a cell's x-offset shares the layout's arithmetic (see `WtColLayout::pr_col_x`), never re-derives it.
 
 ## Commands
 
@@ -78,5 +80,5 @@ Dependency direction: `view → selectors → ipc/types`, `app/update → select
 ## Conventions
 
 - Dense doc comments carrying the WHY (often user feedback) — match the voice of neighboring code; a field/variant without a rationale comment is incomplete.
-- `selectors.rs` holds pure, unit-testable derivations; keep view files free of business logic.
+- `selectors/` holds pure, unit-testable derivations; keep view files free of business logic.
 - No new dependencies without strong cause (clipboard is hand-rolled OSC 52, URL-opening shells to `open`/`xdg-open`, rather than crates).
