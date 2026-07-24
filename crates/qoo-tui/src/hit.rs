@@ -28,6 +28,10 @@ pub enum PaneButton {
     Schedule,
     Tasks,
     Run,
+    /// TASKS `[d]iscover` — confirm then fan out one task per discovered item.
+    /// Inert (status line, no dialog/RPC) when the selected def has no
+    /// discovery block; the title-bar chip greys out in that case (same
+    /// dim-when-inert pattern as [`Self::Cron`]).
     Discover,
     /// QUEUE `[d]efer` — push selected queued/running task(s) +5h (Claude
     /// sliding window). One key, no confirm. Same letter as TASKS Discover;

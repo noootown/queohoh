@@ -111,6 +111,11 @@ fn button_chip(
     // selected def has no `cron:` — the toggle is inert for that row, so the chip
     // reflects it. Ignored by every non-Cron chip. See [`render_list_pane`].
     cron_missing: bool,
+    // The TASKS `[d]iscover` chip dims the same way when the selected def has no
+    // discovery block (`has_discovery: false`) — `d` refuses with a status line
+    // rather than opening a dialog, so the chip greys out. Ignored by every
+    // non-Discover chip.
+    discovery_missing: bool,
     p: &Palette,
 ) -> (Vec<Span<'static>>, u16) {
     let (key, label) = match b {
@@ -131,7 +136,8 @@ fn button_chip(
         }
     };
     let disabled = (bulk && !crate::hit::bulk_allowed(pane, b))
-        || (matches!(b, PaneButton::Cron) && cron_missing);
+        || (matches!(b, PaneButton::Cron) && cron_missing)
+        || (matches!(b, PaneButton::Discover) && discovery_missing);
     let key_style = if disabled {
         p.dim_style()
     } else {
@@ -212,6 +218,9 @@ fn build_header(
     // Dims the TASKS `[c]ron` chip when the selected def has no cron (see
     // `button_chip`).
     cron_missing: bool,
+    // Dims the TASKS `[d]iscover` chip when the selected def has no discovery
+    // block (see `button_chip`).
+    discovery_missing: bool,
     p: &Palette,
 ) -> (Line<'static>, Vec<(Rect, PaneButton)>) {
     let x0 = area.x + 1;
@@ -229,14 +238,34 @@ fn build_header(
     let labeled: Vec<(Vec<Span<'static>>, usize)> = buttons
         .iter()
         .map(|&b| {
-            let (spans, w) = button_chip(b, pane, collapsed, true, bulk, archive_unarchive, cron_missing, p);
+            let (spans, w) = button_chip(
+                b,
+                pane,
+                collapsed,
+                true,
+                bulk,
+                archive_unarchive,
+                cron_missing,
+                discovery_missing,
+                p,
+            );
             (spans, w as usize)
         })
         .collect();
     let compact: Vec<(Vec<Span<'static>>, usize)> = buttons
         .iter()
         .map(|&b| {
-            let (spans, w) = button_chip(b, pane, collapsed, false, bulk, archive_unarchive, cron_missing, p);
+            let (spans, w) = button_chip(
+                b,
+                pane,
+                collapsed,
+                false,
+                bulk,
+                archive_unarchive,
+                cron_missing,
+                discovery_missing,
+                p,
+            );
             (spans, w as usize)
         })
         .collect();
@@ -377,6 +406,7 @@ fn render_collapsed_pane(
         bulk,
         false,
         false, // collapsed bar shows only Collapse — no Cron chip
+        false, // no Discover chip either
         p,
     );
     if dimmed {
@@ -970,6 +1000,10 @@ fn render_list_pane<T, C>(
     // so the chip greys out). Queue/Worktrees pass `|_| false`; they have no Cron
     // chip, so the resulting `cron_missing` is never read there.
     cron_present: impl Fn(&T) -> bool,
+    // Whether a row has a discovery block — drives the TASKS `[d]iscover` chip's
+    // dim-when-inert state (mirror of `cron_present` above). Queue/Worktrees
+    // pass `|_| false`; they have no Discover chip.
+    discovery_present: impl Fn(&T) -> bool,
     running_of: impl Fn(&T) -> bool,
     // The row's STABLE identity — the mark key. Must match what
     // `App::row_identity` produces for this pane, or a marked row won't
@@ -1006,6 +1040,13 @@ fn render_list_pane<T, C>(
         .min()
         .map(|&i| !cron_present(&rows[i]))
         .unwrap_or(true);
+    // Same anchor for `[d]iscover`: dim when the selected def has no discovery
+    // block (or nothing is selected). Only the TASKS pane carries the chip.
+    let discovery_missing = sel_positions
+        .iter()
+        .min()
+        .map(|&i| !discovery_present(&rows[i]))
+        .unwrap_or(true);
     let (mut header, rects) = build_header(
         area,
         &title,
@@ -1018,6 +1059,7 @@ fn render_list_pane<T, C>(
         bulk,
         archive_unarchive,
         cron_missing,
+        discovery_missing,
         p,
     );
     if dimmed {
@@ -1329,6 +1371,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             queue_header,
             |row| row.archived,
             |_| false, // QUEUE has no Cron chip
+            |_| false, // QUEUE has no Discover chip
             |row| row.running,
             |row| row.task_id.clone(),
             spotlight && !c.searching[0],
@@ -1396,6 +1439,8 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             |_| false,
             // A def has a cron iff `cron` is set → drives the `[c]ron` chip dim.
             |d| d.cron.is_some(),
+            // A def has discovery iff `has_discovery` → drives the `[d]iscover` chip dim.
+            |d| d.has_discovery,
             // "Running" here = the def's `d`-discover RPC is in flight — the
             // generic throbber paints over the row's front `⌕`-marker cell.
             |d| app.discovering.contains(&format!("{}/{}", d.repo, d.name)),
@@ -1449,6 +1494,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             wt_header,
             |_| false,
             |_| false, // WORKTREES has no Cron chip
+            |_| false, // WORKTREES has no Discover chip
             |_| false,
             |row| row.raw_name.clone(),
             spotlight && !c.searching[2],
@@ -1653,7 +1699,7 @@ mod tests {
         // (row-scoped [g]oto first, then [s]chedule [z]).
         let area = Rect { x: 0, y: 0, width: 30, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, false, &p);
         assert_eq!(rects.len(), 3);
         // avail=28, title "Q"=1, each compact chip=3 cells, base strip=3*(1+3)=12,
         // plus the ` · ` divider (+2, both groups shown) = 14. filler=28-1-14=13.
@@ -1676,7 +1722,7 @@ mod tests {
         // order (row-scoped [g]oto first, then [s]chedule [z]).
         let area = Rect { x: 0, y: 0, width: 60, height: 8 };
         let (line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, false, &p);
         assert_eq!(rects.len(), 3);
         // Labeled widths — `[g]oto`/`[s]chedule` merge the key into the word
         // (goto 3+3=6, schedule 3+7=10); collapse fuses the same way
@@ -1713,6 +1759,7 @@ mod tests {
             true, // bulk
             false,
             false, // cron_missing (only the TASKS Cron chip reads it)
+            false, // discovery_missing (only the TASKS Discover chip reads it)
             &p,
         );
         let accent_key = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
@@ -1736,10 +1783,74 @@ mod tests {
             false, // no bulk selection
             false,
             false, // cron_missing (only the TASKS Cron chip reads it)
+            false, // discovery_missing
             &p,
         );
         let key_spans: Vec<&Span> = line.spans.iter().filter(|s| s.content.starts_with('[')).collect();
         assert!(key_spans.iter().all(|s| s.style == accent_key), "no dimming without a bulk selection");
+    }
+
+    #[test]
+    fn discover_and_cron_chips_dim_when_selected_def_lacks_them() {
+        // TASKS chips that are inert for the selected row grey out — same
+        // de-emphasis as a bulk-disabled chip — so the operator sees the
+        // affordance is unavailable before pressing `d`/`c`.
+        let p = Palette::default();
+        let area = Rect { x: 0, y: 0, width: 80, height: 8 };
+        let accent_key = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+        let dim = p.dim_style();
+        let key_style = |line: &Line| -> Vec<Style> {
+            line.spans
+                .iter()
+                .filter(|s| s.content.starts_with('['))
+                .map(|s| s.style)
+                .collect()
+        };
+
+        // Both missing → Discover + Cron dim; Run + Collapse stay live.
+        let (line, _) = build_header(
+            area,
+            "TASKS",
+            None,
+            false,
+            PaneId::Tasks,
+            pane_buttons(PaneId::Tasks),
+            3, // Run, Discover, Cron | Collapse
+            false,
+            false,
+            false,
+            true,  // cron_missing
+            true,  // discovery_missing
+            &p,
+        );
+        let styles = key_style(&line);
+        assert_eq!(styles.len(), 4, "TASKS chip set: r d c z");
+        assert_eq!(styles[0], accent_key, "[r]un stays live");
+        assert_eq!(styles[1], dim, "[d]iscover dims without discovery");
+        assert_eq!(styles[2], dim, "[c]ron dims without cron");
+        assert_eq!(styles[3], accent_key, "[z]collapse stays live");
+
+        // Discovery present, cron present → both chips lit.
+        let (line, _) = build_header(
+            area,
+            "TASKS",
+            None,
+            false,
+            PaneId::Tasks,
+            pane_buttons(PaneId::Tasks),
+            3,
+            false,
+            false,
+            false,
+            false, // cron present
+            false, // discovery present
+            &p,
+        );
+        let styles = key_style(&line);
+        assert!(
+            styles.iter().all(|s| *s == accent_key),
+            "all chips live when def has discovery + cron"
+        );
     }
 
     #[test]
@@ -1748,7 +1859,7 @@ mod tests {
         // Five chips: row-scoped [r]un [g]oto [x]remove [t]asks · pane-scoped [z].
         let area = Rect { x: 0, y: 0, width: 110, height: 8 };
         let (line, rects) =
-            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, false, &p);
+            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, false, false, &p);
         assert_eq!(rects.len(), 5);
         assert_eq!(rects[0].1, PaneButton::Run);
         assert_eq!(rects[1].1, PaneButton::Goto);
@@ -1819,7 +1930,7 @@ mod tests {
         // Only the leftmost (row-scoped [g]oto) stays.
         let area = Rect { x: 0, y: 0, width: 10, height: 8 };
         let (_line, rects) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, false, &p);
         assert_eq!(rects.len(), 1, "only the leftmost (goto) button survives");
         assert_eq!(rects[0].1, PaneButton::Goto);
     }
@@ -1830,7 +1941,7 @@ mod tests {
         // Title alone overflows the 6-cell interior → no buttons; title truncates.
         let area = Rect { x: 0, y: 0, width: 8, height: 8 };
         let (_line, rects) =
-            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, false, &p);
+            build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, false, false, &p);
         assert!(rects.is_empty());
     }
 
@@ -1839,9 +1950,9 @@ mod tests {
         let p = Palette::default();
         let area = Rect { x: 0, y: 0, width: 40, height: 8 };
         let (expanded, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, false, false, false, false, false, &p);
         let (collapsed, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, true, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Goto, PaneButton::Schedule, PaneButton::Collapse], 1, true, false, false, false, false, &p);
         let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text(&expanded).contains(BTN_LABEL_COLLAPSE));
         assert!(text(&collapsed).contains(BTN_LABEL_EXPAND));
@@ -1858,11 +1969,11 @@ mod tests {
         // bracketed key splits the label so "archive" isn't a raw substring).
         let text = |l: &Line| l.spans.iter().map(|s| s.content.clone()).collect::<String>();
         let (archive, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Archive], 1, false, false, false, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Archive], 1, false, false, false, false, false, &p);
         assert!(text(&archive).contains("[a]rchive"), "default: {}", text(&archive));
         assert!(!text(&archive).contains("[a]unarchive"));
         let (unarchive, _) =
-            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Archive], 1, false, false, true, false, &p);
+            build_header(area, "Q", None, false, PaneId::Queue, &[PaneButton::Archive], 1, false, false, true, false, false, &p);
         assert!(text(&unarchive).contains("[a]unarchive"), "flipped: {}", text(&unarchive));
     }
 }
