@@ -1,10 +1,14 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Exec, GlobalConfig, ResolverIO } from "@queohoh/core";
+import type {
+	Exec,
+	GlobalConfig,
+	ProviderConfig,
+	ResolverIO,
+} from "@queohoh/core";
 import {
 	BUILTIN_CATALOG,
-	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -13,6 +17,14 @@ import {
 } from "@queohoh/core";
 import { describe, expect, it } from "vitest";
 import { Engine } from "../engine.js";
+
+/** Working provider table for tests that need a multi-provider chain.
+ * Production DEFAULT_PROVIDERS ships every provider disabled (opt-in). */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
 const noopResolverIO: ResolverIO = {
 	listWorktrees: async () => [],
@@ -44,7 +56,7 @@ function workspaceWith(cronExpr: string) {
 		vars: {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
-		providers: DEFAULT_PROVIDERS,
+		providers: TEST_PROVIDERS,
 	};
 	return { workspace, config };
 }

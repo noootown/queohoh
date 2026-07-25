@@ -4,13 +4,13 @@ import { join } from "node:path";
 import type {
 	Exec,
 	GlobalConfig,
+	ProviderConfig,
 	ResolverIO,
 	RunResult,
 	SpawnSpec,
 } from "@queohoh/core";
 import {
 	BUILTIN_CATALOG,
-	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -20,6 +20,14 @@ import {
 import { describe, expect, it } from "vitest";
 import { Engine } from "../engine.js";
 import type { ShimSpawner } from "../shim-host.js";
+
+/** Working provider table for tests that need a multi-provider chain.
+ * Production DEFAULT_PROVIDERS ships every provider disabled (opt-in). */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
 const okResult: RunResult = {
 	exitCode: 0,
@@ -58,7 +66,7 @@ describe("Engine default_models []→global fallback", () => {
 			projects: [{ name: "platform", path: repoPath }],
 			maxConcurrentTasks: 3,
 			purgeAfterDays: 7,
-		archiveAfterDays: 7,
+			archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			// Global fallback names ONLY grok. Because the injected activeProvider
@@ -67,7 +75,7 @@ describe("Engine default_models []→global fallback", () => {
 			// default_models: fall back to the global list → grok runs; use the
 			// project's literal empty list → an empty chain → the task fails.
 			defaultModels: ["grok/grok-4.5"],
-			providers: DEFAULT_PROVIDERS,
+			providers: TEST_PROVIDERS,
 		};
 
 		const specs: SpawnSpec[] = [];

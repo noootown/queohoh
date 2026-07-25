@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import type {
 	Exec,
 	GlobalConfig,
+	ProviderConfig,
 	ProviderUsage,
 	ResolverIO,
 	RunResult,
@@ -18,7 +19,6 @@ import type {
 import {
 	BUILTIN_CATALOG,
 	createResolverIO,
-	DEFAULT_PROVIDERS,
 	DEFER_MS,
 	makeRedactor,
 	QueueStore,
@@ -32,6 +32,14 @@ import { ApiClient } from "../client.js";
 import { Engine } from "../engine.js";
 import { settingsPath } from "../paths.js";
 import { SettingsStore } from "../settings-store.js";
+
+/** Working provider table for tests that need a multi-provider chain.
+ * Production DEFAULT_PROVIDERS ships every provider disabled (opt-in). */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -129,7 +137,7 @@ async function setup(opts?: {
 		vars: opts?.vars ?? {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
-		providers: opts?.providers ?? DEFAULT_PROVIDERS,
+		providers: opts?.providers ?? TEST_PROVIDERS,
 	};
 	const stateDir = join(base, "state");
 	if (opts?.activeProviderSeed !== undefined) {
@@ -546,7 +554,9 @@ describe("ApiServer", () => {
 		expect(wirePrompt.length).toBeLessThanOrEqual(max);
 		// Round-trip through JSON must not emit an unpaired high-surrogate escape.
 		const encoded = JSON.stringify(wirePrompt);
-		expect(encoded).not.toMatch(/\\u[dD][89aAbB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/);
+		expect(encoded).not.toMatch(
+			/\\u[dD][89aAbB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/,
+		);
 		// Safe cut drops the half-emoji and the ellipsis replaces it.
 		expect(wirePrompt).toBe(`${prefix}…`);
 	});
@@ -780,7 +790,7 @@ describe("ApiServer", () => {
 			// Providers carry name/enabled (and optional bin when configured);
 			// no per-provider model tiers — models live in the flat catalog.
 			expect(settings.providers).toEqual(
-				DEFAULT_PROVIDERS.map((p) => ({ name: p.name, enabled: p.enabled })),
+				TEST_PROVIDERS.map((p) => ({ name: p.name, enabled: p.enabled })),
 			);
 			// Important global config.yaml knobs the settings overlay surfaces.
 			expect(settings.workspace).toBe(workspace);
@@ -791,7 +801,7 @@ describe("ApiServer", () => {
 
 		it("settings providers include optional bin", async () => {
 			const { client } = await setup({
-				providers: DEFAULT_PROVIDERS.map((p) =>
+				providers: TEST_PROVIDERS.map((p) =>
 					p.name === "grok" ? { ...p, bin: "/tmp/grok-bin" } : p,
 				),
 			});
@@ -945,7 +955,7 @@ describe("ApiServer", () => {
 
 		it("rejects a disabled provider without persisting", async () => {
 			const { client, stateDir } = await setup();
-			// codex is disabled in DEFAULT_PROVIDERS.
+			// codex is disabled in TEST_PROVIDERS.
 			await expect(
 				client.call("set_active_provider", { provider: "codex" }),
 			).rejects.toThrow(/disabled: codex/);
@@ -964,7 +974,7 @@ describe("ApiServer", () => {
 			await client.call("set_active_provider", { provider: "grok" });
 			await server.close();
 			// A fresh store (a daemon restart / config load) reads the persisted value.
-			const reloaded = new SettingsStore(stateDir, DEFAULT_PROVIDERS);
+			const reloaded = new SettingsStore(stateDir, TEST_PROVIDERS);
 			expect(reloaded.activeProvider()).toBe("grok");
 		});
 	});
@@ -1334,7 +1344,10 @@ describe("ApiServer", () => {
 		// A single `provider/label` ref is forwarded verbatim.
 		const opusDir = join(workspace, "platform", "tasks", "opusdef");
 		mkdirSync(opusDir, { recursive: true });
-		writeFileSync(join(opusDir, "config.yaml"), "model: claude/claude-opus-4.8\n");
+		writeFileSync(
+			join(opusDir, "config.yaml"),
+			"model: claude/claude-opus-4.8\n",
+		);
 		writeFileSync(join(opusDir, "prompt.md"), "hi\n");
 		const opus = (await client.call("definition", {
 			repo: "platform",
@@ -1708,7 +1721,12 @@ describe("ApiServer", () => {
 
 	it("defer refuses terminal / needs-input tasks", async () => {
 		const { client, store } = await setup();
-		for (const status of ["done", "failed", "needs-input", "cancelled"] as const) {
+		for (const status of [
+			"done",
+			"failed",
+			"needs-input",
+			"cancelled",
+		] as const) {
 			const t = store.create({
 				prompt: "p",
 				repo: "platform",

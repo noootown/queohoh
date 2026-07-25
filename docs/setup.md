@@ -40,6 +40,14 @@ max_concurrent_tasks: 3
 purge_after_days: 14
 vars:
   github_user: you
+# Agent CLIs start disabled — list each one you use to opt in (listing a
+# name defaults `enabled: true`). Unlisted built-ins stay off and do not
+# appear in the TUI top-right provider chips.
+providers:
+  - name: claude
+  # - name: grok
+  #   bin: /path/to/grok   # optional pin when the CLI is not on PATH
+  # - name: codex
 ```
 
 Task definitions live in the workspace, one directory per project: `$QUEOHOH_WORKSPACE/<project>/tasks/<name>/` (`config.yaml` + `prompt.md`). An optional `$QUEOHOH_WORKSPACE/<project>/vars.yaml` supplies per-project template vars.

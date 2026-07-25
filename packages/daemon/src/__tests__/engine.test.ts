@@ -5,13 +5,13 @@ import type {
 	ClaudeExecutor,
 	Exec,
 	GlobalConfig,
+	ProviderConfig,
 	ResolverIO,
 	RunResult,
 	VerifyExecutor,
 } from "@queohoh/core";
 import {
 	BUILTIN_CATALOG,
-	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -20,6 +20,14 @@ import {
 } from "@queohoh/core";
 import { describe, expect, it } from "vitest";
 import { adoptionDecision, Engine } from "../engine.js";
+
+/** Working provider table for tests that need a multi-provider chain.
+ * Production DEFAULT_PROVIDERS ships every provider disabled (opt-in). */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
 const okResult: RunResult = {
 	exitCode: 0,
@@ -64,7 +72,7 @@ function setup(
 		vars: {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
-		providers: DEFAULT_PROVIDERS,
+		providers: TEST_PROVIDERS,
 		...overrides.config,
 	};
 	const resolverIO: ResolverIO = {
@@ -280,11 +288,11 @@ describe("Engine.tick", () => {
 			projects: [{ name: "platform", path: repoPath }],
 			maxConcurrentTasks: 3,
 			purgeAfterDays: 7,
-		archiveAfterDays: 7,
+			archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
-			providers: DEFAULT_PROVIDERS,
+			providers: TEST_PROVIDERS,
 		};
 		let claudeRan = false;
 		const resolverIO: ResolverIO = {
@@ -457,11 +465,11 @@ describe("Engine.tick", () => {
 			],
 			maxConcurrentTasks: 3,
 			purgeAfterDays: 7,
-		archiveAfterDays: 7,
+			archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
-			providers: DEFAULT_PROVIDERS,
+			providers: TEST_PROVIDERS,
 		};
 		const lineage = new SessionLineageStore(join(base, "session-lineage.json"));
 		const engine = new Engine({
@@ -1842,7 +1850,11 @@ describe("worktree-deletion archive", () => {
 		// every other ticket worktree (e.g. long-lived JUS-1946) as gone.
 		const all = [
 			{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" },
-			{ name: "platform.JUS-1946", path: "/wt/platform.JUS-1946", branch: "JUS-1946" },
+			{
+				name: "platform.JUS-1946",
+				path: "/wt/platform.JUS-1946",
+				branch: "JUS-1946",
+			},
 		];
 		let jus1Gone = false;
 		const { engine, store } = setup({
@@ -1904,7 +1916,11 @@ describe("worktree-deletion archive", () => {
 				listWorktrees: async (path) => {
 					if (empty) return [];
 					return [
-						{ name: "platform.JUS-1946", path: `${path}/platform.JUS-1946`, branch: "JUS-1946" },
+						{
+							name: "platform.JUS-1946",
+							path: `${path}/platform.JUS-1946`,
+							branch: "JUS-1946",
+						},
 					];
 				},
 			},

@@ -1,10 +1,15 @@
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Exec, GlobalConfig, ResolverIO, RunResult } from "@queohoh/core";
+import type {
+	Exec,
+	GlobalConfig,
+	ProviderConfig,
+	ResolverIO,
+	RunResult,
+} from "@queohoh/core";
 import {
 	BUILTIN_CATALOG,
-	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -16,6 +21,14 @@ import { ApiServer } from "../api.js";
 import { ApiClient } from "../client.js";
 import { Engine } from "../engine.js";
 import { SettingsStore } from "../settings-store.js";
+
+/** Working provider table for tests that need a multi-provider chain.
+ * Production DEFAULT_PROVIDERS ships every provider disabled (opt-in). */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -73,7 +86,7 @@ async function setup() {
 		vars: { github_username: "ianchiu-jb" },
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
-		providers: DEFAULT_PROVIDERS,
+		providers: TEST_PROVIDERS,
 	};
 	const okResult: RunResult = {
 		exitCode: 0,

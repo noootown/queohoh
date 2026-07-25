@@ -1,10 +1,14 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GlobalConfig, ProviderAdapter, RunResult } from "@queohoh/core";
+import type {
+	GlobalConfig,
+	ProviderAdapter,
+	ProviderConfig,
+	RunResult,
+} from "@queohoh/core";
 import {
 	BUILTIN_CATALOG,
-	DEFAULT_PROVIDERS,
 	DiscussStore,
 	makeRedactor,
 	QueueStore,
@@ -18,6 +22,14 @@ import { ApiClient } from "../client.js";
 import { DiscussService } from "../discuss-service.js";
 import { Engine } from "../engine.js";
 import { SettingsStore } from "../settings-store.js";
+
+/** Working provider table for tests that need a multi-provider chain.
+ * Production DEFAULT_PROVIDERS ships every provider disabled (opt-in). */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -78,7 +90,7 @@ async function setup(opts?: {
 		vars: {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
-		providers: opts?.providers ?? DEFAULT_PROVIDERS,
+		providers: opts?.providers ?? TEST_PROVIDERS,
 	};
 	const settings = new SettingsStore(stateDir, config.providers);
 	if (opts?.activeProvider) {

@@ -1,10 +1,9 @@
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GlobalConfig, NewTaskInput } from "@queohoh/core";
+import type { GlobalConfig, NewTaskInput, ProviderConfig } from "@queohoh/core";
 import {
 	BUILTIN_CATALOG,
-	DEFAULT_PROVIDERS,
 	DiscussStore,
 	definitionExists,
 	makeRedactor,
@@ -19,6 +18,14 @@ import { ApiClient } from "../client.js";
 import { DiscussService } from "../discuss-service.js";
 import { Engine } from "../engine.js";
 import { SettingsStore } from "../settings-store.js";
+
+/** Working provider table for tests that need a multi-provider chain.
+ * Production DEFAULT_PROVIDERS ships every provider disabled (opt-in). */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -43,7 +50,7 @@ function baseConfig(workspace: string, repoPath: string): GlobalConfig {
 		vars: {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-4.8"],
-		providers: DEFAULT_PROVIDERS,
+		providers: TEST_PROVIDERS,
 	};
 }
 
@@ -314,8 +321,9 @@ describe("DiscussService.promotePrReply", () => {
 
 describe("extractCommentBody / inline prompt helpers", () => {
 	it("extracts operator section from juice structured draft", async () => {
-		const { extractCommentBody, buildAdHocInlineCommentPrompt } =
-			await import("../discuss-service.js");
+		const { extractCommentBody, buildAdHocInlineCommentPrompt } = await import(
+			"../discuss-service.js"
+		);
 		const draft = [
 			"## Focus line",
 			"",

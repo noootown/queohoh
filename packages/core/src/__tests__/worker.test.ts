@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BUILTIN_CATALOG } from "../catalog.js";
+import type { ProviderConfig } from "../config.js";
 import type { TaskDefinition } from "../definition.js";
 import { makeRedactor } from "../redact.js";
 import type { Exec } from "../resolver-io.js";
@@ -30,6 +31,13 @@ const okResult: RunResult = {
 	},
 };
 
+/** Working provider table — production DEFAULT_PROVIDERS is all-disabled. */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
+
 function makeDeps(overrides: Partial<WorkerDeps> = {}) {
 	const base = mkdtempSync(join(tmpdir(), "qo-worker-"));
 	const store = new QueueStore(join(base, "state"));
@@ -56,6 +64,8 @@ function makeDeps(overrides: Partial<WorkerDeps> = {}) {
 		// maps `claude/claude-sonnet-5` → `claude-sonnet-5` (the id these tests assert on).
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-sonnet-5"],
+		// Opt-in providers (production defaults are all-disabled).
+		providers: TEST_PROVIDERS,
 		activeProvider: "claude",
 		...overrides,
 	};
@@ -690,9 +700,8 @@ describe("runTask model_pinned (explicit TUI pick)", () => {
 	});
 
 	it("pinned ref on a disabled provider fails fast — no fallback", async () => {
-		// codex is disabled by default (DEFAULT_PROVIDERS); a pin to it must
-		// fail the task outright rather than silently substituting the active
-		// provider's chain.
+		// codex is disabled in TEST_PROVIDERS; a pin to it must fail the task
+		// outright rather than silently substituting the active provider's chain.
 		let executed = false;
 		const { deps, store } = makeDeps({
 			executeClaude: async (opts) => {

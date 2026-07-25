@@ -36,13 +36,15 @@ export interface ProviderConfig {
 	args?: string[];
 }
 
-/** Built-in provider table (Section 7 of the design spec): claude and grok
- * enabled, codex disabled (no subscription on this machine yet). Fallback
- * order is claude, grok, codex. This is the base every `effectiveProviders`
- * call layers onto — absent `providers:` in config.yaml yields exactly this. */
+/** Built-in provider table: known names in fallback precedence order
+ * (claude → grok → codex), every entry **disabled** until the operator opts
+ * in via config.yaml `providers:`. Listing a name without `enabled:` opts it
+ * in (schema default `true`); unmentioned built-ins stay off. This is the
+ * base every `effectiveProviders` call layers onto — absent `providers:` in
+ * config.yaml yields exactly this (nothing enabled). */
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
-	{ name: "claude", enabled: true },
-	{ name: "grok", enabled: true },
+	{ name: "claude", enabled: false },
+	{ name: "grok", enabled: false },
 	{ name: "codex", enabled: false },
 ];
 
@@ -54,8 +56,9 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
  * merges per-name: global wins on `enabled`/`bin`/`systemPrompt`/`args`. A
  * name global introduces that isn't in the defaults becomes a new provider
  * entry. Ordering follows `global`'s array order when `global` is given, with
- * any default-only names appended after (still present, still
- * fallback-eligible); otherwise the default order.
+ * any default-only names appended after (still present, still disabled unless
+ * listed); otherwise the default order. Enablement is opt-in: built-ins start
+ * disabled, and only an explicit config entry turns one on.
  */
 export function effectiveProviders(
 	global: ProviderConfig[] | undefined,
@@ -127,11 +130,12 @@ const GlobalConfigSchema = z
 		archive_after_days: z.number().int().positive().optional(),
 		vars: z.record(z.string(), z.string()).default({}),
 		// Declares which agent CLIs (claude/grok/codex/...) are enabled, in
-		// fallback order. Absent ⇒ DEFAULT_PROVIDERS. Left as `unknown` here
-		// (validated separately in loadGlobalConfig via ProviderConfigSchema.
-		// safeParse) so a malformed block warns and falls back rather than
-		// failing the whole-config `.parse()` and wedging boot — mirrors the
-		// `catalog:` tolerance below.
+		// fallback order. Built-ins start disabled — list a name (and/or set
+		// `enabled: true`) to opt in. Absent ⇒ DEFAULT_PROVIDERS (all off).
+		// Left as `unknown` here (validated separately in loadGlobalConfig via
+		// ProviderConfigSchema.safeParse) so a malformed block warns and falls
+		// back rather than failing the whole-config `.parse()` and wedging
+		// boot — mirrors the `catalog:` tolerance below.
 		//
 		// NOTE: `goto_command` was removed — first-class TUI goto (new tmux
 		// window + left|right split) replaced the workspace init-tab override.
@@ -258,8 +262,7 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 			path: expandTilde(p.path),
 		})),
 		maxConcurrentTasks: config.max_concurrent_tasks,
-		purgeAfterDays:
-			config.purge_after_days ?? config.archive_after_days ?? 14,
+		purgeAfterDays: config.purge_after_days ?? config.archive_after_days ?? 14,
 		// Keep archiveAfterDays equal for any residual readers/tests.
 		archiveAfterDays:
 			config.purge_after_days ?? config.archive_after_days ?? 14,

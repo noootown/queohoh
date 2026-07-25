@@ -4,13 +4,13 @@ import { join } from "node:path";
 import type {
 	Exec,
 	GlobalConfig,
+	ProviderConfig,
 	ResolverIO,
 	RunResult,
 	SpawnSpec,
 } from "@queohoh/core";
 import {
 	BUILTIN_CATALOG,
-	DEFAULT_PROVIDERS,
 	makeRedactor,
 	QueueStore,
 	RunStore,
@@ -20,6 +20,14 @@ import {
 import { describe, expect, it } from "vitest";
 import { Engine } from "../engine.js";
 import type { ShimSpawner } from "../shim-host.js";
+
+/** Working provider table for tests that need a multi-provider chain.
+ * Production DEFAULT_PROVIDERS ships every provider disabled (opt-in). */
+const TEST_PROVIDERS: ProviderConfig[] = [
+	{ name: "claude", enabled: true },
+	{ name: "grok", enabled: true },
+	{ name: "codex", enabled: false },
+];
 
 /** An availability-failure result matching claude's `classifyUnavailable`
  * (`SESSION_LIMIT_RE`) — exit 1 with the session-limit wording in the result
@@ -101,9 +109,9 @@ function setup(overrides: {
 		vars: {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
-		// Default table: claude + grok enabled (codex disabled), fallback order
-		// claude -> grok -> codex — exactly the chain this suite exercises.
-		providers: DEFAULT_PROVIDERS,
+		// Working table (claude + grok on, codex off) — production defaults are
+		// all-disabled; this suite needs a multi-provider fallback chain.
+		providers: TEST_PROVIDERS,
 		...overrides.config,
 	};
 	const resolverIO: ResolverIO = {

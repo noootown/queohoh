@@ -81,9 +81,10 @@ export interface WorkerDeps {
 	 * engine's decision at wiring time (Task 5), not the worker's. */
 	defaultModels: string[];
 	/** Effective provider table (fallback order), already layered by the
-	 * caller (built-in ⊕ global config.yaml ⊕ project vars.yaml — see
-	 * `effectiveProviders` in config.ts). Absent ⇒ `DEFAULT_PROVIDERS` (old
-	 * callers, or a caller that hasn't wired provider config yet). */
+	 * caller (built-in ⊕ global config.yaml — see `effectiveProviders` in
+	 * config.ts). Absent ⇒ `DEFAULT_PROVIDERS` (all disabled; old callers or
+	 * a caller that hasn't wired provider config yet — production always
+	 * passes the config-resolved table). */
 	providers?: ProviderConfig[];
 	/** Which provider the operator has currently switched to (design spec §4
 	 * chain resolution's `activeProvider`). Required: it re-heads the fallback
