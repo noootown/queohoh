@@ -324,7 +324,7 @@ export class Engine {
 	// Cron fire-timing dedup: definition key ("repo/name") -> epoch ms of last
 	// evaluation. In-memory by design — survives macOS sleep (process suspended,
 	// not restarted); a true restart re-seeds to `now`, which is why nothing fires
-	// on boot / hot-reload. See docs/superpowers/specs/2026-07-14-cron-scheduler-design.md.
+	// on boot / hot-reload.
 	private cronCursor = new Map<string, number>();
 	// Definitions whose async fire has not yet settled — guards a slow discovery
 	// from being fired twice on consecutive ticks.
