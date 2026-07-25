@@ -1194,6 +1194,36 @@ describe("ApiServer", () => {
 		expect(created[0]?.prompt).toBe("Say hi to world.\n");
 	});
 
+	// Uses the same setup() harness and platform/greet def as
+	// "runDefinition with args instantiates" in api.test.ts.
+	it("runDefinition accepts not_before and stamps task.notBefore", async () => {
+		const { client } = await setup();
+		const until = "2099-07-01T07:00:00.000Z";
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "greet",
+			args: ["world"],
+			source: "mcp",
+			not_before: until,
+		})) as { id: string; notBefore: string | null }[];
+
+		expect(created).toHaveLength(1);
+		expect(created[0]?.notBefore).toBe(until);
+	});
+
+	it("runDefinition rejects malformed not_before", async () => {
+		const { client } = await setup();
+		await expect(
+			client.call("runDefinition", {
+				repo: "platform",
+				name: "greet",
+				args: ["world"],
+				source: "mcp",
+				not_before: "not-a-date",
+			}),
+		).rejects.toThrow(/not_before/i);
+	});
+
 	it("runDefinition attributes source: mcp when requested", async () => {
 		const { client } = await setup();
 		const created = (await client.call("runDefinition", {

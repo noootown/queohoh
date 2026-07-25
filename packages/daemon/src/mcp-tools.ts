@@ -136,6 +136,7 @@ export function mcpRunTaskDefinition(
 		worktree?: string;
 		ref?: string;
 		resume_session_id?: string;
+		not_before?: string;
 	},
 ): Promise<ToolResult> {
 	return withPort(caller, (port) =>
@@ -148,6 +149,7 @@ export function mcpRunTaskDefinition(
 			worktree: args.worktree,
 			ref: args.ref,
 			resume_session_id: args.resume_session_id,
+			not_before: args.not_before,
 		}),
 	);
 }

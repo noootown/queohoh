@@ -861,6 +861,67 @@
     }
 
     #[test]
+    fn item_args_summary_sorted_key_equals_value() {
+        let mut m = std::collections::HashMap::new();
+        m.insert("mode".into(), "ready".into());
+        m.insert("pr".into(), "257".into());
+        assert_eq!(item_args_summary(&m), "mode=ready pr=257");
+        assert_eq!(item_args_summary(&std::collections::HashMap::new()), "");
+    }
+
+    #[test]
+    fn task_summary_args_or_blank_never_adhoc_sentinel() {
+        let mut t = make_task(TaskStatus::Queued);
+        t.prompt = "You are the review worker — boilerplate…".into();
+        t.definition = Some("platform/pr-ready".into());
+        t.item = Some(std::collections::HashMap::from([
+            ("pr".into(), "257".into()),
+            ("mode".into(), "ready".into()),
+        ]));
+        assert_eq!(task_summary(&t), "mode=ready pr=257");
+        t.item = None;
+        t.item_key = Some("pr:257".into());
+        assert_eq!(task_summary(&t), "pr:257");
+        // Daemon sentinel for arg-less runs — hide it.
+        t.item_key = Some("adhoc".into());
+        assert_eq!(task_summary(&t), "");
+        t.item_key = None;
+        assert_eq!(task_summary(&t), "");
+        // True ad-hoc freeform: still blank (no item args).
+        t.definition = None;
+        assert_eq!(task_summary(&t), "");
+    }
+
+    #[test]
+    fn queue_rows_summary_shows_item_args() {
+        let mut t = make_task(TaskStatus::Queued);
+        t.definition = Some("platform/pr-ready".into());
+        t.prompt = "You are the review worker".into();
+        t.item = Some(std::collections::HashMap::from([(
+            "pr".into(),
+            "257".into(),
+        )]));
+        t.target.repo = "platform".into();
+        t.target.worktree = Some("@repo".into());
+        let rows = queue_rows(&snap(vec![t], vec![]), "platform");
+        assert_eq!(rows[0].def_name.as_deref(), Some("pr-ready"));
+        assert_eq!(rows[0].summary, "pr=257");
+    }
+
+    #[test]
+    fn queue_rows_summary_blank_when_def_has_no_args() {
+        let mut t = make_task(TaskStatus::Queued);
+        t.definition = Some("platform/nightly".into());
+        t.prompt = "You are the nightly worker".into();
+        t.item = None;
+        t.item_key = None;
+        t.target.repo = "platform".into();
+        t.target.worktree = Some("@repo".into());
+        let rows = queue_rows(&snap(vec![t], vec![]), "platform");
+        assert_eq!(rows[0].summary, "");
+    }
+
+    #[test]
     fn strip_repo_prefix_cases() {
         assert_eq!(strip_repo_prefix("platform.dedup-dependabot-run", "platform"), "dedup-dependabot-run");
         assert_eq!(strip_repo_prefix("platform", "platform"), "platform"); // bare repo kept

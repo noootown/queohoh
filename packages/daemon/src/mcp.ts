@@ -211,6 +211,10 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.describe(
 					"Provider-native session id to resume for the created task(s)",
 				),
+			not_before: z
+				.string()
+				.optional()
+				.describe("ISO timestamp; task stays queued until then"),
 		},
 		async (args) => toCallResult(mcpRunTaskDefinition(caller, args)),
 	);

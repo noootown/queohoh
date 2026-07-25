@@ -848,6 +848,22 @@ export class ApiServer {
 					}
 					refOverride = `worktree:${resolved.worktree}`;
 				}
+				// Optional schedule gate: ISO (or Date.parse-able) stamp; empty/omit
+				// → no gate. Past stamps are stamped as-is (scheduler treats past as
+				// eligible). Invalid non-empty → clear error for MCP/TUI callers.
+				let notBefore: string | null | undefined;
+				if (
+					params.not_before !== undefined &&
+					params.not_before !== null &&
+					params.not_before !== ""
+				) {
+					const raw = String(params.not_before);
+					const ms = Date.parse(raw);
+					if (Number.isNaN(ms)) {
+						throw new Error(`invalid not_before: ${raw}`);
+					}
+					notBefore = new Date(ms).toISOString();
+				}
 				const created = await instantiateDefinition(
 					def,
 					// Always args mode: zero args fill from declared defaults, a
@@ -874,6 +890,7 @@ export class ApiServer {
 						// Freeze model under the then-active provider at schedule time.
 						modelCapture: this.modelCaptureCtx(repo),
 						bypassDedup,
+						notBefore,
 					},
 				);
 				deps.onMutation();

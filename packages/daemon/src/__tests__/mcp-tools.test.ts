@@ -251,6 +251,7 @@ describe("mcpRunTaskDefinition", () => {
 					worktree: undefined,
 					ref: undefined,
 					resume_session_id: undefined,
+					not_before: undefined,
 				},
 			},
 		]);
@@ -276,6 +277,29 @@ describe("mcpRunTaskDefinition", () => {
 			worktree: "repo.feat-a",
 			ref: "temp",
 			resume_session_id: "sess-2",
+			not_before: undefined,
+		});
+	});
+
+	it("passes not_before through to runDefinition", async () => {
+		const { caller, calls } = fakeCaller(() => [{ id: "01D" }]);
+		const until = "2099-07-01T07:00:00.000Z";
+		await mcpRunTaskDefinition(caller, {
+			repo: "platform",
+			name: "greet",
+			args: ["world"],
+			not_before: until,
+		});
+		expect(calls[0]?.params).toEqual({
+			repo: "platform",
+			name: "greet",
+			args: ["world"],
+			source: "mcp",
+			cwd: undefined,
+			worktree: undefined,
+			ref: undefined,
+			resume_session_id: undefined,
+			not_before: until,
 		});
 	});
 });

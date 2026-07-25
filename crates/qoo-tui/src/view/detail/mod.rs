@@ -18,7 +18,7 @@ use crate::markup::{
     DisplayLine, LineCtx, fence_states, fence_states_from, style_display_line,
     wrap_lines,
 };
-use crate::selectors::arg_summary;
+use crate::selectors::{arg_summary, item_args_summary};
 use crate::view::Computed;
 use crate::view::theme::{Palette, TITLE_DETAIL};
 
@@ -185,6 +185,20 @@ fn worktree_rows(
     ]
 }
 
+/// Resolved definition args for a run (`item` map), else a non-sentinel
+/// `item_key`, else `—`. Never surfaces the daemon's `"adhoc"` placeholder.
+fn run_args_display(task: &TaskInstance) -> String {
+    if let Some(item) = task.item.as_ref().filter(|m| !m.is_empty()) {
+        return item_args_summary(item);
+    }
+    task.item_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("adhoc"))
+        .map(str::to_string)
+        .unwrap_or_else(|| EM_DASH.to_string())
+}
+
 /// Wire status → the lowercase label shown in the `info` tab's Run section
 /// (mirrors the daemon's kebab-case wire values).
 fn status_label(status: TaskStatus) -> &'static str {
@@ -255,6 +269,7 @@ fn run_info_lines(
         ("id", task.id.clone()),
         ("definition", task.definition.clone().unwrap_or_else(|| "adhoc".to_string())),
         ("status", status_label(task.status).to_string()),
+        ("args", run_args_display(task)),
     ];
     if let Some(err) = task.error.as_deref().filter(|e| !e.is_empty()) {
         run.push(("error", err.to_string()));
@@ -496,7 +511,36 @@ pub(crate) fn content_for(
                 let ctxs = fence_states_from(&lines, starts_in_fence);
                 (lines, ctxs, "(no transcript yet)")
             }
-            2 => fenced(task.prompt.split('\n').map(str::to_string).collect(), "(no prompt)"),
+            2 => {
+                // Args (resolved item) above the full rendered prompt so the
+                // operator sees what the def was called with without scrolling
+                // past template boilerplate.
+                let mut lines: Vec<String> = Vec::new();
+                let mut ctxs: Vec<LineCtx> = Vec::new();
+                let args = run_args_display(task);
+                let has_args = args != EM_DASH;
+                if has_args {
+                    lines.push("Args".to_string());
+                    ctxs.push(LineCtx::Header);
+                    lines.push(args);
+                    ctxs.push(LineCtx::Text);
+                    lines.push(String::new());
+                    ctxs.push(LineCtx::Text);
+                }
+                lines.push("Prompt".to_string());
+                ctxs.push(LineCtx::Header);
+                let prompt_lines: Vec<String> =
+                    task.prompt.split('\n').map(str::to_string).collect();
+                let fence = fence_states(&prompt_lines);
+                lines.extend(prompt_lines);
+                ctxs.extend(fence);
+                let ph = if task.prompt.trim().is_empty() && !has_args {
+                    "(no prompt)"
+                } else {
+                    ""
+                };
+                (lines, ctxs, ph)
+            }
             // Always render from the live task — even before a run dir/`data.json`
             // exists (queued / just-started). Missing meta fields dash out; the
             // Config section only appears once a def snapshot is recorded.

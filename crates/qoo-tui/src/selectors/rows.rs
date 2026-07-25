@@ -502,7 +502,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             )
             .to_string(),
             def_name: task.definition.as_deref().map(def_display_name),
-            summary: prompt_summary(&task.prompt),
+            summary: task_summary(task),
             detail,
             running_elapsed,
             not_before_epoch_s,
@@ -545,7 +545,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             )
             .to_string(),
             def_name: task.definition.as_deref().map(def_display_name),
-            summary: prompt_summary(&task.prompt),
+            summary: task_summary(task),
             // Archived rows carry no detail text (the dimming + glyph convey state).
             detail: String::new(),
             running_elapsed: None,
@@ -892,10 +892,26 @@ fn cmp_worktree_rows(a: &WorktreeRow, b: &WorktreeRow, github_id: Option<&str>) 
 /// display name (`true`), else the first prompt line clipped to `cap` chars
 /// (`false`). Shared by the head-of-lane and last-finished columns; the bool
 /// drives mauve (def) vs fg (prompt) coloring in the worktree row.
+/// Definition rows append resolved `item` args when present (e.g. `review · pr=257`).
 fn lane_task_display_name(task: &TaskInstance, cap: usize) -> (String, bool) {
     match task.definition.as_deref() {
-        Some(def) => (def_display_name(def), true),
-        None => (clip(&prompt_summary(&task.prompt), cap), false),
+        Some(def) => {
+            let base = def_display_name(def);
+            let name = match task.item.as_ref().filter(|m| !m.is_empty()) {
+                Some(item) => format!("{base} · {}", item_args_summary(item)),
+                None => match task
+                    .item_key
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty() && !k.eq_ignore_ascii_case("adhoc"))
+                {
+                    Some(key) => format!("{base} · {key}"),
+                    None => base,
+                },
+            };
+            (clip(&name, cap), true)
+        }
+        None => (clip(&task_summary(task), cap), false),
     }
 }
 

@@ -1,32 +1,32 @@
 ---
-source: crates/qoo-tui/src/view/detail.rs
+source: crates/qoo-tui/src/view/detail/tests.rs
 expression: terminal.backend()
 ---
 " 1:acme (1)                                      ● running 0/3  ↯ claude  ↯ grok"
 "╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│    Worktr…  Prompt      ││  Run                                              │"
+"│    Worktr…  Prompt/Args ││  Run                                              │"
 "│ ○  feature  implement … ││    id          01RUN                              │"
 "│                         ││    definition  pr-fix-ci-conflicts                │"
 "│                         ││    status      queued                             │"
+"│                         ││    args        —                                  │"
 "│                         ││                                                   │"
 "│                         ││  Timing                                           │"
 "│                         ││    created     07/09 07:00 (5m ago)               │"
 "│                         ││    started     —                                  │"
 "│                         ││    finished    —                                  │"
-"│                         ││    duration    —                                  │"
-"╰─────────────────────────╯│                                                   │"
-"╭⚡TASKS [r] [d] [c] · [z]╮│  Details                                          │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]filter            ││    worktree    acme.feature                       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no task definitions     ││    session     —                                  │"
+"╰─────────────────────────╯│    duration    —                                  │"
+"╭⚡TASKS [r] [d] [c] · [z]╮│                                                   │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]filter            ││  Details                                          │" Hidden by multi-width symbols: [(3, " ")]
+"│ no task definitions     ││    worktree    acme.feature                       │"
+"│                         ││    session     —                                  │"
 "│                         ││    model       claude-opus-4.8 (claude) · claude  │"
-"│                         ││                -opus-4-8                          │"
-"╰─────────────────────────╯│    exit code   —                                  │"
-"╭🌲 WORKTREES─ [r] [g] [x]╮│    cost        —                                  │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]filter            ││    tokens      —                                  │" Hidden by multi-width symbols: [(3, " ")]
-"│ 1 feature               ││    turns       —                                  │"
-"│ ● hotfix                ││                                                   │"
+"╰─────────────────────────╯│                -opus-4-8                          │"
+"╭🌲 WORKTREES─ [r] [g] [x]╮│    exit code   —                                  │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]filter            ││    cost        —                                  │" Hidden by multi-width symbols: [(3, " ")]
+"│ 1 feature               ││    tokens      —                                  │"
+"│ ● hotfix                ││    turns       —                                  │"
 "│ ● feature               ││                                                   │"
 "╰─────────────────────────╯╰───────────────────────────────────────────────────╯"
 "[1-9/0 · ctrl+s n/p]tab · [ctrl+x/z]sub-tab · [?]help · [q]uit                  "

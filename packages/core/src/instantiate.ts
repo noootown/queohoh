@@ -87,6 +87,8 @@ export interface InstantiateDeps {
 	 * Absent/false keeps the definition's configured `dedup` mode. Cron and
 	 * MCP-driven runs never set this — they stay deduped. */
 	bypassDedup?: boolean;
+	/** Optional delayed start (ISO). Passed through to store.create. */
+	notBefore?: string | null;
 }
 
 export async function instantiateDefinition(
@@ -183,6 +185,7 @@ export async function instantiateDefinition(
 			lane: def.lane ?? undefined,
 			onDone: def.onDone === "archive" ? "archive" : undefined,
 			purgeAfterDays: def.purgeAfterDays ?? undefined,
+			notBefore: deps.notBefore ?? undefined,
 		}),
 	);
 }

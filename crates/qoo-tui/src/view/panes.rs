@@ -529,7 +529,8 @@ fn queue_header(layout: &QueueColLayout, p: &Palette) -> Line<'static> {
     if layout.def_w > 0 {
         header_col(&mut spans, "Task", layout.def_w, p);
     }
-    header_col(&mut spans, "Prompt", layout.summary_w, p);
+    // Resolved item args when present; otherwise first prompt line.
+    header_col(&mut spans, "Prompt/Args", layout.summary_w, p);
     if layout.show_timestamp {
         header_col(&mut spans, "Created", crate::selectors::TIMESTAMP_W, p);
     }

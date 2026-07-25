@@ -224,6 +224,45 @@ pub fn lane_key(repo: &str, worktree: &str) -> String {
     format!("{repo}:{worktree}")
 }
 
+/// Queue-row summary (`Prompt/Args` column):
+/// - resolved `item` map → `pr=257 mode=ready`
+/// - otherwise **blank** (never prompt boilerplate, never the daemon's
+///   sentinel `item_key: "adhoc"` for arg-less / ad-hoc runs)
+pub fn task_summary(task: &TaskInstance) -> String {
+    if let Some(item) = task.item.as_ref() {
+        if !item.is_empty() {
+            return item_args_summary(item);
+        }
+    }
+    // `item_key` is only useful when it encodes real args (discovery keys).
+    // The daemon stamps plain `"adhoc"` for many def runs with no args — hide it.
+    if let Some(key) = task.item_key.as_deref() {
+        let key = key.trim();
+        if !key.is_empty() && !key.eq_ignore_ascii_case("adhoc") {
+            return key.to_string();
+        }
+    }
+    String::new()
+}
+
+/// `pr=257 mode=ready` — sorted keys so the queue stays stable.
+/// Empty values render as the bare key.
+pub fn item_args_summary(item: &std::collections::HashMap<String, String>) -> String {
+    let mut keys: Vec<&String> = item.keys().collect();
+    keys.sort();
+    keys.into_iter()
+        .map(|k| {
+            let v = item.get(k).map(String::as_str).unwrap_or("").trim();
+            if v.is_empty() {
+                k.clone()
+            } else {
+                format!("{k}={v}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// First non-blank line of the prompt, trimmed, clipped to ≤240 chars with `…`.
 /// The generous cap only bounds pathological one-line prompts — the queue's
 /// summary column does the real width-fitting per frame, so the summary can

@@ -50,6 +50,8 @@ export interface NewTaskInput {
 	onDone?: "stay" | "archive";
 	/** Hard-delete after N days; null/omit → workspace purge_after_days. */
 	purgeAfterDays?: number;
+	/** Earliest start time (ISO). Null/omit → eligible immediately. */
+	notBefore?: string | null;
 }
 
 /** One step of a task chain. `definition` steps carry a rendered prompt plus the
@@ -152,7 +154,7 @@ export class QueueStore {
 			verifyOutput: null,
 			attemptedModels: [],
 			lane: input.lane ?? null,
-			notBefore: null,
+			notBefore: input.notBefore ?? null,
 			onDone: input.onDone ?? "stay",
 			purgeAfterDays: input.purgeAfterDays ?? null,
 		};

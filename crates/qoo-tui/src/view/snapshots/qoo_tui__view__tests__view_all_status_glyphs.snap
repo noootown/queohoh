@@ -6,7 +6,7 @@ expression: terminal.backend()
 "╭📋 QUEUE──── [r] [x] [g] [a] [d]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
 "│                                ││ 1:report  2:transcript  3:prompt  4:info                       │"
 "│ 🔍 [/]filter                   ││                                                                │" Hidden by multi-width symbols: [(3, " ")]
-"│    Prompt         Live         ││  (no report yet)                                               │"
+"│    Prompt/Args    Live         ││  (no report yet)                                               │"
 "│ ‼  ipt task                  ▲ ││                                                                │"
 "│ ○  que task       #1 in lane █ ││                                                                │"
 "│ ──────── finished ────────── █ ││                                                                │"
