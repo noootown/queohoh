@@ -52,8 +52,8 @@ describe("resolveTarget", () => {
 
 	it("pr ref: matches existing worktree by branch", async () => {
 		const io = stubIO({
-			prBranch: async () => "JUS-1423-fix-auth",
-			listWorktrees: async () => [wt("anything", "JUS-1423-fix-auth")],
+			prBranch: async () => "TICK-1423-fix-auth",
+			listWorktrees: async () => [wt("anything", "TICK-1423-fix-auth")],
 		});
 		expect(await resolveTarget("pr:1423", ctx, io)).toEqual({
 			outcome: "resolved",
@@ -63,25 +63,25 @@ describe("resolveTarget", () => {
 	});
 
 	it("pr ref: spawns a branch-named worktree", async () => {
-		const io = stubIO({ prBranch: async () => "JUS-1423-fix-auth" });
+		const io = stubIO({ prBranch: async () => "TICK-1423-fix-auth" });
 		expect(await resolveTarget("pr:1423", ctx, io)).toEqual({
 			outcome: "resolved",
-			worktree: "JUS-1423-fix-auth",
+			worktree: "TICK-1423-fix-auth",
 			ephemeral: false,
 		});
 		expect(io.spawned).toEqual([
-			{ name: "JUS-1423-fix-auth", branch: "JUS-1423-fix-auth" },
+			{ name: "TICK-1423-fix-auth", branch: "TICK-1423-fix-auth" },
 		]);
 	});
 
 	it("pr ref: reuses an existing worktree named like the branch", async () => {
 		const io = stubIO({
-			prBranch: async () => "JUS-1423-fix-auth",
-			listWorktrees: async () => [wt("JUS-1423-fix-auth", "other-branch")],
+			prBranch: async () => "TICK-1423-fix-auth",
+			listWorktrees: async () => [wt("TICK-1423-fix-auth", "other-branch")],
 		});
 		expect(await resolveTarget("pr:1423", ctx, io)).toEqual({
 			outcome: "resolved",
-			worktree: "JUS-1423-fix-auth",
+			worktree: "TICK-1423-fix-auth",
 			ephemeral: false,
 		});
 		expect(io.spawned).toEqual([]);
@@ -110,10 +110,10 @@ describe("resolveTarget", () => {
 	});
 
 	it("ticket ref: uses existing worktree named by ticket", async () => {
-		const io = stubIO({ listWorktrees: async () => [wt("JUS-77")] });
-		expect(await resolveTarget("ticket:JUS-77", ctx, io)).toEqual({
+		const io = stubIO({ listWorktrees: async () => [wt("TICK-77")] });
+		expect(await resolveTarget("ticket:TICK-77", ctx, io)).toEqual({
 			outcome: "resolved",
-			worktree: "JUS-77",
+			worktree: "TICK-77",
 			ephemeral: false,
 		});
 		expect(io.spawned).toEqual([]);
@@ -121,12 +121,12 @@ describe("resolveTarget", () => {
 
 	it("ticket ref: spawns when absent", async () => {
 		const io = stubIO();
-		expect(await resolveTarget("ticket:JUS-77", ctx, io)).toEqual({
+		expect(await resolveTarget("ticket:TICK-77", ctx, io)).toEqual({
 			outcome: "resolved",
-			worktree: "JUS-77",
+			worktree: "TICK-77",
 			ephemeral: false,
 		});
-		expect(io.spawned).toEqual([{ name: "JUS-77", branch: undefined }]);
+		expect(io.spawned).toEqual([{ name: "TICK-77", branch: undefined }]);
 	});
 
 	it("temp ref: spawns ephemeral with generated name", async () => {
@@ -193,29 +193,29 @@ describe("isProtectedWorktree", () => {
 			isProtectedWorktree(
 				"/repos/platform",
 				"platform",
-				["legal-lake"],
-				mkWt("legal-lake", "/repos/platform.legal-lake"),
+				["long-lived"],
+				mkWt("long-lived", "/repos/platform.long-lived"),
 			),
 		).toBe(true);
 	});
 
 	it("matches a display-name entry against the repo-prefixed worktree name", () => {
-		// vars.yaml says `legal-lake` (the TUI's stripped display name); the
-		// actual worktree directory is `platform.legal-lake`. Both forms match.
+		// vars.yaml says `long-lived` (the TUI's stripped display name); the
+		// actual worktree directory is `platform.long-lived`. Both forms match.
 		expect(
 			isProtectedWorktree(
 				"/repos/platform",
 				"platform",
-				["legal-lake"],
-				mkWt("platform.legal-lake", "/repos/platform.legal-lake"),
+				["long-lived"],
+				mkWt("platform.long-lived", "/repos/platform.long-lived"),
 			),
 		).toBe(true);
 		expect(
 			isProtectedWorktree(
 				"/repos/platform",
 				"platform",
-				["platform.legal-lake"],
-				mkWt("platform.legal-lake", "/repos/platform.legal-lake"),
+				["platform.long-lived"],
+				mkWt("platform.long-lived", "/repos/platform.long-lived"),
 			),
 		).toBe(true);
 	});
@@ -225,18 +225,18 @@ describe("isProtectedWorktree", () => {
 			isProtectedWorktree(
 				"/repos/platform",
 				"platform",
-				["legal-lake"],
-				mkWt("JUS-1", "/repos/platform.JUS-1"),
+				["long-lived"],
+				mkWt("TICK-1", "/repos/platform.TICK-1"),
 			),
 		).toBe(false);
 	});
 
 	it("tolerates a null repoPath (no path match, list still applies)", () => {
-		expect(isProtectedWorktree(null, "platform", [], mkWt("JUS-1", "/x"))).toBe(
+		expect(isProtectedWorktree(null, "platform", [], mkWt("TICK-1", "/x"))).toBe(
 			false,
 		);
 		expect(
-			isProtectedWorktree(null, "platform", ["JUS-1"], mkWt("JUS-1", "/x")),
+			isProtectedWorktree(null, "platform", ["TICK-1"], mkWt("TICK-1", "/x")),
 		).toBe(true);
 	});
 });

@@ -314,7 +314,7 @@
             task_id: "t1".into(),
             glyph: '○',
             running: false,
-            worktree: "JUS-1966".into(),
+            worktree: "TICK-1966".into(),
             def_name: Some("intake".into()),
             summary: "blank page after undo".into(),
             detail: String::new(),
@@ -330,7 +330,7 @@
         };
         let hay = queue_search_text(&row);
         assert!(hay.contains("intake"));
-        assert!(hay.contains("JUS-1966"));
+        assert!(hay.contains("TICK-1966"));
         assert!(hay.contains("blank page after undo"));
         // Filter by task (def) name
         assert_eq!(filter_rows(&[row.clone()], "intake", queue_search_text), vec![0]);
@@ -531,13 +531,13 @@
             "platform".to_string(),
             vec![
                 WorktreeInfo {
-                    name: "legal-lake".into(),
-                    path: "/repos/platform.legal-lake".into(),
-                    branch: "legal-lake".into(),
+                    name: "long-lived".into(),
+                    path: "/repos/platform.long-lived".into(),
+                    branch: "long-lived".into(),
                     protected: true,
                     ..Default::default()
                 },
-                wt("JUS-1", "/repos/platform.JUS-1", "JUS-1"),
+                wt("TICK-1", "/repos/platform.TICK-1", "TICK-1"),
             ],
         );
         let s = StateSnapshot {
@@ -548,8 +548,8 @@
         let rows = worktree_rows(&s, "platform");
         let by: HashMap<_, _> =
             rows.iter().map(|r| (r.raw_name.clone(), r.protected)).collect();
-        assert!(by["legal-lake"]);
-        assert!(!by["JUS-1"]);
+        assert!(by["long-lived"]);
+        assert!(!by["TICK-1"]);
     }
 
     #[test]
@@ -601,13 +601,13 @@
         let list = wts.get_mut("platform").unwrap();
         list[0].dirty = Some(true);
         list[0].last_commit_epoch = Some(1_752_000_000);
-        list[0].last_commit_author = Some("koshea".into());
+        list[0].last_commit_author = Some("bob".into());
         s.worktrees = wts;
         let rows = worktree_rows(&s, "platform");
         let a = rows.iter().find(|r| r.name == "wt-a").unwrap();
         assert_eq!(
             (a.dirty, a.last_commit_epoch, a.last_commit_author.as_deref()),
-            (Some(true), Some(1_752_000_000), Some("koshea"))
+            (Some(true), Some(1_752_000_000), Some("bob"))
         );
         let b = rows.iter().find(|r| r.name == "wt-b").unwrap();
         assert_eq!((b.dirty, b.last_commit_epoch, b.last_commit_author.as_deref()), (None, None, None));
@@ -631,7 +631,7 @@
             last: Some(('✓', "pr-ready".into(), now() - 7200, true)), // "✓ pr-ready 2h ago" = 17
             dirty: Some(true),                       // ± = 1
             merged: Some(true),                      // ↣ = 1
-            last_commit_author: Some("koshea".into()), // author column fixed AUTHOR_W
+            last_commit_author: Some("bob".into()), // author column fixed AUTHOR_W
             last_commit_epoch: Some(now() - 3 * 86_400), // commit-age fixed COMMIT_AGE_W
             ..Default::default()
         };
@@ -681,7 +681,7 @@
             state: WtState::Busy,
             last: Some(('✓', "pr-ready".into(), now() - 7200, true)),
             dirty: Some(true),
-            last_commit_author: Some("koshea".into()),
+            last_commit_author: Some("bob".into()),
             last_commit_epoch: Some(now() - 3 * 86_400),
             pr_number: Some(42),
             pr_url: Some("https://github.com/o/r/pull/42".into()),
@@ -733,7 +733,7 @@
         assert!(cw("#9 in lane") <= QUEUE_LIVE_W);
         // A representative author name fits AUTHOR_W; a longer name clips in the
         // renderer (pad_clip), so the column width itself is the invariant.
-        let author_row = WorktreeRow { last_commit_author: Some("koshea".into()), ..Default::default() };
+        let author_row = WorktreeRow { last_commit_author: Some("bob".into()), ..Default::default() };
         assert!(cw(&wt_author_text(&author_row).unwrap()) <= AUTHOR_W);
         // Absolute timestamp.
         assert!(cw(&absolute_local_label(now(), 0)) <= TIMESTAMP_W);
@@ -743,21 +743,21 @@
     fn wt_author_text_prefers_pr_author_over_last_commit_author() {
         // The PR author is the person who opened the PR; the local last-commit
         // author on a squash-merged branch is an automation merge commit
-        // ("Ian Chiu"), so `pr_author` must win the Author column.
+        // ("Alice Example"), so `pr_author` must win the Author column.
         let both = WorktreeRow {
-            last_commit_author: Some("Ian Chiu".into()),
-            pr_author: Some("Tim Kuminecz".into()),
+            last_commit_author: Some("Alice Example".into()),
+            pr_author: Some("Carol Reviewer".into()),
             ..Default::default()
         };
-        assert_eq!(wt_author_text(&both).as_deref(), Some("Tim Kuminecz"));
+        assert_eq!(wt_author_text(&both).as_deref(), Some("Carol Reviewer"));
 
         // No PR author (old daemon / no PR) → fall back to the last-commit author.
         let only_commit = WorktreeRow {
-            last_commit_author: Some("Ian Chiu".into()),
+            last_commit_author: Some("Alice Example".into()),
             pr_author: None,
             ..Default::default()
         };
-        assert_eq!(wt_author_text(&only_commit).as_deref(), Some("Ian Chiu"));
+        assert_eq!(wt_author_text(&only_commit).as_deref(), Some("Alice Example"));
 
         // Neither present → None (the whole Author column is omitted pane-wide).
         let neither = WorktreeRow::default();

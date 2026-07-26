@@ -116,7 +116,7 @@ function setup(overrides: {
 	};
 	const resolverIO: ResolverIO = {
 		listWorktrees: async () => [
-			{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+			{ name: "TICK-1", path: join(base, "wt-tick1"), branch: "TICK-1" },
 		],
 		prBranch: async () => null,
 		spawnWorktree: async (_r, name) => ({
@@ -165,7 +165,7 @@ describe("Engine provider fallback", () => {
 		store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 
@@ -205,7 +205,7 @@ describe("Engine provider fallback", () => {
 		store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 

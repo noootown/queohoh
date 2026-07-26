@@ -105,7 +105,7 @@ pub struct ProviderUsage {
 pub struct Project {
     pub name: String,
     /// The project's optional author identity (its `vars.yaml` `github_id:` key,
-    /// e.g. `noootown`). `None` on an old daemon that omits it (via the container
+    /// e.g. `alice`). `None` on an old daemon that omits it (via the container
     /// `default`), or when the project has no `github_id` configured. The
     /// WORKTREES pane matches it against each worktree's last-commit author
     /// email/name to sort "my" worktrees first; absent → that tier is a no-op.
@@ -625,10 +625,10 @@ mod tests {
           }],
           "running": ["01TASKAAA000000000000000000"],
           "maxConcurrent": 3,
-          "projects": [{"name": "platform", "githubId": "noootown"}, {"name": "web"}],
+          "projects": [{"name": "platform", "githubId": "alice"}, {"name": "web"}],
           "worktrees": {"platform": [{"name": "platform.feat-a", "path": "/wt/platform.feat-a", "branch": "feat-a",
-            "dirty": true, "lastCommitEpoch": 1751970000, "lastCommitAuthor": "Kevin O'Shea",
-            "lastCommitAuthorEmail": "kevin@justicebid.com"}]},
+            "dirty": true, "lastCommitEpoch": 1751970000, "lastCommitAuthor": "Bob Example",
+            "lastCommitAuthorEmail": "bob@example.com"}]},
           "buildId": "1751970000000"
         }"#
     }
@@ -665,7 +665,7 @@ mod tests {
         assert_eq!(
             s.projects,
             vec![
-                Project { name: "platform".into(), github_id: Some("noootown".into()) },
+                Project { name: "platform".into(), github_id: Some("alice".into()) },
                 Project { name: "web".into(), github_id: None },
             ]
         );
@@ -673,8 +673,8 @@ mod tests {
         assert_eq!(wt.branch, "feat-a");
         assert_eq!(wt.dirty, Some(true));
         assert_eq!(wt.last_commit_epoch, Some(1_751_970_000));
-        assert_eq!(wt.last_commit_author_email.as_deref(), Some("kevin@justicebid.com"));
-        assert_eq!(wt.last_commit_author.as_deref(), Some("Kevin O'Shea"));
+        assert_eq!(wt.last_commit_author_email.as_deref(), Some("bob@example.com"));
+        assert_eq!(wt.last_commit_author.as_deref(), Some("Bob Example"));
         assert_eq!(s.build_id.as_deref(), Some("1751970000000"));
     }
 
@@ -872,20 +872,20 @@ mod tests {
         // A modern daemon sends camelCase `prAuthor` (the PR author display name,
         // which for a squash-merged branch differs from lastCommitAuthor)...
         let with: WorktreeInfo = serde_json::from_str(
-            r#"{"name":"a","path":"/a","branch":"a","lastCommitAuthor":"Ian Chiu",
-                "prAuthor":"Tim Kuminecz"}"#,
+            r#"{"name":"a","path":"/a","branch":"a","lastCommitAuthor":"Alice Example",
+                "prAuthor":"Carol Reviewer"}"#,
         )
         .unwrap();
-        assert_eq!(with.pr_author.as_deref(), Some("Tim Kuminecz"));
-        assert_eq!(with.last_commit_author.as_deref(), Some("Ian Chiu"));
+        assert_eq!(with.pr_author.as_deref(), Some("Carol Reviewer"));
+        assert_eq!(with.last_commit_author.as_deref(), Some("Alice Example"));
         // ...and an old daemon that omits it defaults to None (container `default`),
         // leaving lastCommitAuthor intact.
         let without: WorktreeInfo = serde_json::from_str(
-            r#"{"name":"a","path":"/a","branch":"a","lastCommitAuthor":"Ian Chiu"}"#,
+            r#"{"name":"a","path":"/a","branch":"a","lastCommitAuthor":"Alice Example"}"#,
         )
         .unwrap();
         assert_eq!(without.pr_author, None);
-        assert_eq!(without.last_commit_author.as_deref(), Some("Ian Chiu"));
+        assert_eq!(without.last_commit_author.as_deref(), Some("Alice Example"));
     }
 
     #[test]
@@ -1078,7 +1078,7 @@ mod tests {
                 "defaults": {"opus": "claude-opus-4-8"},
                 "default_model": "opus",
                 "global": {"entries": {"sonnet": "claude-sonnet-4-6"},
-                           "source": "/home/ian/.config/qoo/config.yaml"},
+                           "source": "/home/me/.config/qoo/config.yaml"},
                 "projects": [{"repo": "acme", "entries": {"opus": "claude-opus-4-9"},
                               "default_model": "sonnet", "source": "/repos/acme/vars.yaml"}]
             }}"#,

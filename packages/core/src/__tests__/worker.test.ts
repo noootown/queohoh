@@ -477,7 +477,7 @@ describe("runTask", () => {
 		const exec: Exec = async (cmd, args) => {
 			if (cmd === "git") {
 				if (args.join(" ").includes("rev-parse"))
-					return { stdout: "jus-1008-fix-thing\n", exitCode: 0 };
+					return { stdout: "tick-1008-fix-thing\n", exitCode: 0 };
 				return { stdout: "", exitCode: 0 };
 			}
 			return { stdout: "", exitCode: 0 };
@@ -499,9 +499,9 @@ describe("runTask", () => {
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("done");
-		// worktree name is "tmp-x" (from withWorktree); ticket derived JUS-1008.
+		// worktree name is "tmp-x" (from withWorktree); ticket derived TICK-1008.
 		expect(claudePrompt).toBe(
-			"work jus-1008-fix-thing for JUS-1008 in tmp-x\n",
+			"work tick-1008-fix-thing for TICK-1008 in tmp-x\n",
 		);
 	});
 
@@ -559,7 +559,7 @@ describe("runTask", () => {
 		const exec: Exec = async (cmd, args) => {
 			if (cmd === "git") {
 				if (args.join(" ").includes("rev-parse"))
-					return { stdout: "jus-99-x\n", exitCode: 0 };
+					return { stdout: "tick-99-x\n", exitCode: 0 };
 				return { stdout: "", exitCode: 0 };
 			}
 			hookCalls.push(args.join(" ").replace("-lc ", ""));
@@ -575,8 +575,8 @@ describe("runTask", () => {
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("done");
-		// ticket JUS-99 + worktree tmp-x come from context; branch overridden.
-		expect(hookCalls).toEqual(["run JUS-99 override-branch tmp-x"]);
+		// ticket TICK-99 + worktree tmp-x come from context; branch overridden.
+		expect(hookCalls).toEqual(["run TICK-99 override-branch tmp-x"]);
 	});
 
 	it("post_run failure after done stays done but logs the failure", async () => {
@@ -1138,7 +1138,7 @@ describe("runTask verify (done-condition)", () => {
 		const calls: string[] = [];
 		const exec: Exec = async (cmd, args) => {
 			if (cmd === "git" && args.join(" ").includes("rev-parse"))
-				return { stdout: "jus-42-x\n", exitCode: 0 };
+				return { stdout: "tick-42-x\n", exitCode: 0 };
 			return { stdout: "", exitCode: 0 };
 		};
 		const { deps, store } = makeDeps({
@@ -1151,7 +1151,7 @@ describe("runTask verify (done-condition)", () => {
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("done");
 		// worktree name is "tmp-x" (withWorktree); ticket derived from the branch.
-		expect(calls).toEqual(["check JUS-42 tmp-x"]);
+		expect(calls).toEqual(["check TICK-42 tmp-x"]);
 		// The definition's command is stamped onto the task record.
 		expect(result.verify).toBe("check {{ticket}} {{worktree}}");
 	});

@@ -298,9 +298,9 @@ describe("laneKey", () => {
 		expect(
 			laneKey({
 				...sample,
-				target: { ...sample.target, worktree: "JUS-1423" },
+				target: { ...sample.target, worktree: "TICK-1423" },
 			}),
-		).toBe("platform:JUS-1423");
+		).toBe("platform:TICK-1423");
 	});
 });
 

@@ -93,7 +93,7 @@ describe("filterNewItems", () => {
 	});
 
 	it("retry_errored retries verify-failed keys (incomplete done-condition)", () => {
-		// e.g. pr-fix-ci-conflicts agent exited "success" but CI gate still red.
+		// e.g. fix-ci-conflicts agent exited "success" but CI gate still red.
 		const out = filterNewItems([{ number: "1" }], {
 			...base,
 			mode: "retry_errored",

@@ -5,8 +5,8 @@ use crate::selectors::WorktreeRow;
 
 /// Map classified refs (`pr:N`, `ticket:ID`) → existing worktree `raw_name` that
 /// already covers that PR/ticket. Used by the schedule/run combobox so typing
-/// `JUS-1924` or `1938` does not offer a synthetic "use ticket/PR (new worktree)"
-/// row when the operator can already pick `platform.JUS-1924` / the PR's branch
+/// `TICK-1924` or `1938` does not offer a synthetic "use ticket/PR (new worktree)"
+/// row when the operator can already pick `platform.TICK-1924` / the PR's branch
 /// worktree. First write wins when multiple worktrees share a ticket token.
 pub fn worktree_ref_aliases(rows: &[WorktreeRow]) -> HashMap<String, String> {
     let mut m = HashMap::new();
@@ -155,26 +155,26 @@ mod tests {
 
     #[test]
     fn extract_ticket_cases() {
-        assert_eq!(extract_ticket("JUS-1008").as_deref(), Some("JUS-1008"));
-        assert_eq!(extract_ticket("jus-1008-fix-thing").as_deref(), Some("JUS-1008"));
-        assert_eq!(extract_ticket("jus-1008").as_deref(), Some("JUS-1008"));
+        assert_eq!(extract_ticket("TICK-1008").as_deref(), Some("TICK-1008"));
+        assert_eq!(extract_ticket("tick-1008-fix-thing").as_deref(), Some("TICK-1008"));
+        assert_eq!(extract_ticket("tick-1008").as_deref(), Some("TICK-1008"));
         assert_eq!(extract_ticket("main"), None);
         assert_eq!(extract_ticket("feature/no-number"), None);
         assert_eq!(extract_ticket(""), None);
-        assert_eq!(extract_ticket("jus-1008-then-abc-42").as_deref(), Some("JUS-1008"));
+        assert_eq!(extract_ticket("tick-1008-then-abc-42").as_deref(), Some("TICK-1008"));
     }
 
     #[test]
     fn worktree_ref_aliases_map_pr_and_ticket_to_raw_name() {
         let rows = vec![
-            wt("platform.JUS-1924", "JUS-1924-fix-thing", false),
+            wt("platform.TICK-1924", "TICK-1924-fix-thing", false),
             WorktreeRow {
                 pr_number: Some(1938),
                 ..wt("platform.feat-pr", "feat-pr", false)
             },
         ];
         let a = worktree_ref_aliases(&rows);
-        assert_eq!(a.get("ticket:JUS-1924").map(String::as_str), Some("platform.JUS-1924"));
+        assert_eq!(a.get("ticket:TICK-1924").map(String::as_str), Some("platform.TICK-1924"));
         assert_eq!(a.get("pr:1938").map(String::as_str), Some("platform.feat-pr"));
         assert!(a.get("ticket:OTHER-1").is_none());
     }
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn validate_branch_table() {
         assert_eq!(validate_branch("feature-x"), None);
-        assert_eq!(validate_branch("JUS-1423/fix-auth"), None);
+        assert_eq!(validate_branch("TICK-1423/fix-auth"), None);
         assert!(validate_branch("").unwrap().contains("required"));
         assert!(validate_branch("fix login").unwrap().contains("whitespace"));
         assert!(validate_branch("fix\tlogin").unwrap().contains("whitespace"));
@@ -197,8 +197,8 @@ mod tests {
     #[test]
     fn context_arg_values_cases() {
         assert_eq!(
-            context_arg_values("jus-1008-fix-thing"),
-            map(&[("source", "jus-1008-fix-thing"), ("branch", "jus-1008-fix-thing"), ("ticket", "JUS-1008")])
+            context_arg_values("tick-1008-fix-thing"),
+            map(&[("source", "tick-1008-fix-thing"), ("branch", "tick-1008-fix-thing"), ("ticket", "TICK-1008")])
         );
         assert_eq!(
             context_arg_values("feature/no-number"),
@@ -224,7 +224,7 @@ mod tests {
     }
     fn rows() -> Vec<WorktreeRow> {
         vec![
-            wt("a", "jus-1-a", false),
+            wt("a", "tick-1-a", false),
             wt("main", "main", false),
             wt("b", "feat-b", false),
             wt("sess", "", true),
@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn ambient_context_arg_values_cases() {
         assert_eq!(
-            ambient_context_arg_values(Some(&wt("a", "jus-1008-fix", false))),
-            map(&[("source", "jus-1008-fix"), ("branch", "jus-1008-fix"), ("ticket", "JUS-1008")])
+            ambient_context_arg_values(Some(&wt("a", "tick-1008-fix", false))),
+            map(&[("source", "tick-1008-fix"), ("branch", "tick-1008-fix"), ("ticket", "TICK-1008")])
         );
         assert!(ambient_context_arg_values(Some(&wt("s", "", true))).is_empty()); // session row
         assert!(ambient_context_arg_values(Some(&wt("x", "", false))).is_empty()); // branchless
@@ -253,7 +253,7 @@ mod tests {
             Some(&r[0]),
         );
         assert_eq!(args[0].name, "source");
-        assert_eq!(args[0].options.as_deref(), Some(&["jus-1-a".to_string(), "feat-b".to_string()][..]));
+        assert_eq!(args[0].options.as_deref(), Some(&["tick-1-a".to_string(), "feat-b".to_string()][..]));
         assert_eq!(args[1].name, "target");
         assert_eq!(args[1].options, None);
         assert_eq!(args[1].default.as_deref(), Some("main"));
@@ -263,9 +263,9 @@ mod tests {
     fn ambient_run_args_injects_for_branch_and_prefills_initial() {
         let r = rows();
         let (args, _) = ambient_run_args(&[arg("branch")], &r, Some(&r[0]));
-        assert_eq!(args[0].options.as_deref(), Some(&["jus-1-a".to_string(), "feat-b".to_string()][..]));
+        assert_eq!(args[0].options.as_deref(), Some(&["tick-1-a".to_string(), "feat-b".to_string()][..]));
         let (_, initial) = ambient_run_args(&[arg("source")], &r, Some(&r[0]));
-        assert_eq!(initial, map(&[("source", "jus-1-a"), ("branch", "jus-1-a"), ("ticket", "JUS-1")]));
+        assert_eq!(initial, map(&[("source", "tick-1-a"), ("branch", "tick-1-a"), ("ticket", "TICK-1")]));
     }
 
     #[test]

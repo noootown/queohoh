@@ -7,9 +7,9 @@ const PORCELAIN = [
 	"HEAD abc123",
 	"branch refs/heads/main",
 	"",
-	"worktree /Users/me/ws/platform-worktrees/JUS-1423",
+	"worktree /Users/me/ws/platform-worktrees/TICK-1423",
 	"HEAD def456",
-	"branch refs/heads/JUS-1423-fix-auth",
+	"branch refs/heads/TICK-1423-fix-auth",
 	"",
 	"worktree /Users/me/ws/platform-worktrees/detached",
 	"HEAD 999999",
@@ -22,9 +22,9 @@ describe("parseWorktreePorcelain", () => {
 		expect(parseWorktreePorcelain(PORCELAIN)).toEqual([
 			{ name: "platform", path: "/Users/me/ws/platform", branch: "main" },
 			{
-				name: "JUS-1423",
-				path: "/Users/me/ws/platform-worktrees/JUS-1423",
-				branch: "JUS-1423-fix-auth",
+				name: "TICK-1423",
+				path: "/Users/me/ws/platform-worktrees/TICK-1423",
+				branch: "TICK-1423-fix-auth",
 			},
 		]);
 	});
@@ -55,7 +55,7 @@ describe("createResolverIO", () => {
 		});
 		const io = createResolverIO(exec);
 		const list = await io.listWorktrees("/repo");
-		expect(list.map((w) => w.name)).toEqual(["platform", "JUS-1423"]);
+		expect(list.map((w) => w.name)).toEqual(["platform", "TICK-1423"]);
 	});
 
 	it("listWorktrees throws on non-zero exit so the engine keeps last-known list", async () => {
@@ -71,18 +71,18 @@ describe("createResolverIO", () => {
 	it("prBranch returns headRefName on success, null on failure", async () => {
 		const exec = fakeExec({
 			"gh pr view 1423 --json headRefName": {
-				stdout: '{"headRefName":"JUS-1423-fix-auth"}',
+				stdout: '{"headRefName":"TICK-1423-fix-auth"}',
 				exitCode: 0,
 			},
 		});
 		const io = createResolverIO(exec);
-		expect(await io.prBranch("/repo", 1423)).toBe("JUS-1423-fix-auth");
+		expect(await io.prBranch("/repo", 1423)).toBe("TICK-1423-fix-auth");
 		expect(await io.prBranch("/repo", 9999)).toBeNull();
 	});
 
 	it("spawnWorktree runs wt then finds the new worktree", async () => {
 		const before = PORCELAIN;
-		const after = `${PORCELAIN}worktree /Users/me/ws/platform-worktrees/JUS-77\nHEAD aaa\nbranch refs/heads/JUS-77\n\n`;
+		const after = `${PORCELAIN}worktree /Users/me/ws/platform-worktrees/TICK-77\nHEAD aaa\nbranch refs/heads/TICK-77\n\n`;
 		let wtRan = false;
 		const exec: Exec = async (command, args) => {
 			const key = [command, ...args].join(" ");
@@ -90,15 +90,15 @@ describe("createResolverIO", () => {
 				// The new worktree only appears after `wt switch` has run.
 				return { stdout: wtRan ? after : before, exitCode: 0 };
 			}
-			if (key === "wt --yes switch --no-cd -c JUS-77") {
+			if (key === "wt --yes switch --no-cd -c TICK-77") {
 				wtRan = true;
 				return { stdout: "", exitCode: 0 };
 			}
 			return { stdout: "", exitCode: 1 };
 		};
 		const io = createResolverIO(exec);
-		const spawned = await io.spawnWorktree("/repo", "JUS-77");
-		expect(spawned.name).toBe("JUS-77");
+		const spawned = await io.spawnWorktree("/repo", "TICK-77");
+		expect(spawned.name).toBe("TICK-77");
 	});
 
 	it("spawnWorktree with a branch fetches + tracks it and switches WITHOUT -c", async () => {
@@ -134,7 +134,7 @@ describe("createResolverIO", () => {
 			"git worktree list --porcelain": { stdout: PORCELAIN, exitCode: 0 },
 		});
 		const io = createResolverIO(exec);
-		await expect(io.spawnWorktree("/repo", "JUS-77")).rejects.toThrow(
+		await expect(io.spawnWorktree("/repo", "TICK-77")).rejects.toThrow(
 			/failed to spawn worktree/,
 		);
 	});
@@ -147,15 +147,15 @@ describe("createResolverIO", () => {
 		};
 		const io = createResolverIO(exec);
 		await io.removeWorktree("/repo", {
-			name: "JUS-77",
-			path: "/wt/JUS-77",
-			branch: "JUS-77-fix",
+			name: "TICK-77",
+			path: "/wt/TICK-77",
+			branch: "TICK-77-fix",
 		});
 		expect(records).toEqual([
-			{ key: "git reset --hard HEAD", cwd: "/wt/JUS-77" },
-			{ key: "git clean -fd", cwd: "/wt/JUS-77" },
-			{ key: "wt --yes remove JUS-77-fix", cwd: "/repo" },
-			{ key: "git branch -D JUS-77-fix", cwd: "/repo" },
+			{ key: "git reset --hard HEAD", cwd: "/wt/TICK-77" },
+			{ key: "git clean -fd", cwd: "/wt/TICK-77" },
+			{ key: "wt --yes remove TICK-77-fix", cwd: "/repo" },
+			{ key: "git branch -D TICK-77-fix", cwd: "/repo" },
 		]);
 	});
 
@@ -170,12 +170,12 @@ describe("createResolverIO", () => {
 		const io = createResolverIO(exec);
 		await expect(
 			io.removeWorktree("/repo", {
-				name: "JUS-77",
-				path: "/wt/JUS-77",
-				branch: "JUS-77-fix",
+				name: "TICK-77",
+				path: "/wt/TICK-77",
+				branch: "TICK-77-fix",
 			}),
-		).rejects.toThrow(/failed to remove worktree: JUS-77/);
-		expect(keys).not.toContain("git branch -D JUS-77-fix");
+		).rejects.toThrow(/failed to remove worktree: TICK-77/);
+		expect(keys).not.toContain("git branch -D TICK-77-fix");
 	});
 
 	it("removeWorktree tolerates reset/clean failures and still runs wt remove", async () => {
@@ -191,11 +191,11 @@ describe("createResolverIO", () => {
 		};
 		const io = createResolverIO(exec);
 		await io.removeWorktree("/repo", {
-			name: "JUS-77",
-			path: "/wt/JUS-77",
-			branch: "JUS-77-fix",
+			name: "TICK-77",
+			path: "/wt/TICK-77",
+			branch: "TICK-77-fix",
 		});
-		expect(keys).toContain("wt --yes remove JUS-77-fix");
-		expect(keys).toContain("git branch -D JUS-77-fix");
+		expect(keys).toContain("wt --yes remove TICK-77-fix");
+		expect(keys).toContain("git branch -D TICK-77-fix");
 	});
 });

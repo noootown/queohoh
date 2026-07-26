@@ -34,7 +34,7 @@ fn app() -> App {
         vec![WorktreeInfo {
             name: "platform.wt-a".into(),
             path: "/wt/wt-a".into(),
-            branch: "jus-42".into(),
+            branch: "tick-42".into(),
             ..Default::default()
         }],
     );
@@ -185,7 +185,7 @@ fn adhoc_s_on_queue_pane_opens_blank_ignoring_selected_task() {
         vec![WorktreeInfo {
             name: "platform.wt-a".into(),
             path: "/wt/wt-a".into(),
-            branch: "jus-42".into(),
+            branch: "tick-42".into(),
             ..Default::default()
         }],
     );

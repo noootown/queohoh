@@ -729,7 +729,7 @@ fn worktree_line(
         }
     }
     // Last-commit author name (plain fg — a full column of teal read as noise);
-    // pairs with the commit-age to read `koshea  3d ago` = who · when. Clipped
+    // pairs with the commit-age to read `bob  3d ago` = who · when. Clipped
     // with `…` past AUTHOR_W.
     if layout.author_w > 0 {
         spans.push(Span::raw(gap.clone()));
@@ -1565,20 +1565,20 @@ mod tests {
         // Protected AND dirty: both single-cell front markers show at once
         // (the old 🔒 replaced the ± slot; the ⛨ column is independent).
         let protected = WorktreeRow {
-            name: "legal-lake".into(),
-            raw_name: "legal-lake".into(),
+            name: "long-lived".into(),
+            raw_name: "long-lived".into(),
             path: "/x".into(),
-            branch: "legal-lake".into(),
+            branch: "long-lived".into(),
             protected: true,
             dirty: Some(true),
             merged: Some(true),
             ..Default::default()
         };
         let plain = WorktreeRow {
-            name: "JUS-1".into(),
-            raw_name: "JUS-1".into(),
+            name: "TICK-1".into(),
+            raw_name: "TICK-1".into(),
             path: "/y".into(),
-            branch: "JUS-1".into(),
+            branch: "TICK-1".into(),
             ..Default::default()
         };
         let rows = vec![protected.clone(), plain.clone()];
@@ -1600,9 +1600,10 @@ mod tests {
         assert!(!plain_text.contains(GLYPH_MERGED));
         // Both markers are single-width and the slots are statically reserved,
         // so the name lands at the same char offset on every row.
+        // Name first letters: long-lived → 'l', TICK-1 → 'T'. Same column offset.
         assert_eq!(
             prot_text.chars().position(|c| c == 'l').unwrap(),
-            plain_text.chars().position(|c| c == 'J').unwrap()
+            plain_text.chars().position(|c| c == 'T').unwrap()
         );
     }
 
@@ -1612,20 +1613,20 @@ mod tests {
         let p = Palette::default();
         // Approved but not merged → the ✓ marker shows (and no ↣).
         let approved = WorktreeRow {
-            name: "JUS-2".into(),
-            raw_name: "JUS-2".into(),
+            name: "TICK-2".into(),
+            raw_name: "TICK-2".into(),
             path: "/a".into(),
-            branch: "JUS-2".into(),
+            branch: "TICK-2".into(),
             merged: Some(false),
             approved: Some(true),
             ..Default::default()
         };
         // Merged AND approved → merged wins; ↣ shows, ✓ does not.
         let merged = WorktreeRow {
-            name: "JUS-3".into(),
-            raw_name: "JUS-3".into(),
+            name: "TICK-3".into(),
+            raw_name: "TICK-3".into(),
             path: "/m".into(),
-            branch: "JUS-3".into(),
+            branch: "TICK-3".into(),
             merged: Some(true),
             approved: Some(true),
             ..Default::default()
@@ -1652,10 +1653,10 @@ mod tests {
         use crate::selectors::{wt_col_layout, WorktreeRow};
         let p = Palette::default();
         let ready = WorktreeRow {
-            name: "JUS-r".into(),
-            raw_name: "JUS-r".into(),
+            name: "TICK-r".into(),
+            raw_name: "TICK-r".into(),
             path: "/r".into(),
-            branch: "JUS-r".into(),
+            branch: "TICK-r".into(),
             merged: Some(false),
             approved: Some(false),
             ready_for_review: Some(true),
@@ -1663,10 +1664,10 @@ mod tests {
             ..Default::default()
         };
         let wip = WorktreeRow {
-            name: "JUS-w".into(),
-            raw_name: "JUS-w".into(),
+            name: "TICK-w".into(),
+            raw_name: "TICK-w".into(),
             path: "/w".into(),
-            branch: "JUS-w".into(),
+            branch: "TICK-w".into(),
             merged: Some(false),
             approved: Some(false),
             ready_for_review: Some(false),

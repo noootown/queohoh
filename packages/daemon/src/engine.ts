@@ -445,7 +445,7 @@ export class Engine {
 	 * only picked up already-terminal rows.
 	 *
 	 * The removal itself force-cleans the worktree, removes it via `wt`, then
-	 * deletes the local branch (mirrors agent247's cleanup-worktree.sh) —
+	 * deletes the local branch (mirrors a typical cleanup-worktree script) —
 	 * this discards any uncommitted changes.
 	 */
 	async removeWorktree(repo: string, name: string): Promise<void> {

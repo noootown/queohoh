@@ -850,8 +850,8 @@ pub(crate) fn lane_task_order_rank(status: TaskStatus) -> u8 {
 /// (case-insensitive) is a SUBSTRING of the last-commit author email OR the
 /// author name. `None`/empty `github_id` → always `false` (the mine-first sort
 /// tier becomes a no-op). Substring on both fields per docs/setup.md (its example
-/// `Ian Chiu <noootown@gmail.com>` matches `noootown` in the email and `Ian`/
-/// `Chiu` in the name).
+/// `Alice Example <alice@example.com>` matches `alice` in the email and `Alice`/
+/// `Example` in the name).
 fn worktree_is_mine(row: &WorktreeRow, github_id: Option<&str>) -> bool {
     let Some(id) = github_id.filter(|s| !s.is_empty()) else {
         return false;
@@ -893,6 +893,8 @@ fn cmp_worktree_rows(a: &WorktreeRow, b: &WorktreeRow, github_id: Option<&str>) 
 /// (`false`). Shared by the head-of-lane and last-finished columns; the bool
 /// drives mauve (def) vs fg (prompt) coloring in the worktree row.
 /// Definition rows append resolved `item` args when present (e.g. `review · pr=257`).
+/// Freeform (no def) still uses the prompt — the queue's Prompt/Args column
+/// blanks freeform on purpose, but the worktree lane needs a visible label.
 fn lane_task_display_name(task: &TaskInstance, cap: usize) -> (String, bool) {
     match task.definition.as_deref() {
         Some(def) => {
@@ -911,7 +913,7 @@ fn lane_task_display_name(task: &TaskInstance, cap: usize) -> (String, bool) {
             };
             (clip(&name, cap), true)
         }
-        None => (clip(&task_summary(task), cap), false),
+        None => (clip(&prompt_summary(&task.prompt), cap), false),
     }
 }
 

@@ -45,7 +45,7 @@ const LEGEND_ROWS: [(&str, &str); 8] = [
     ("→", "next queued task on that lane (head of the queue)"),
     ("±", "worktree has uncommitted changes"),
     ("↣ / ✓", "PR merged into the default branch / PR approved (not yet merged)"),
-    ("ian · 3d ago", "last commit author · last commit age"),
+    ("alice · 3d ago", "last commit author · last commit age"),
 ];
 
 pub fn render(frame: &mut ratatui::Frame, area: Rect, hits: &mut HitMap, p: &Palette) {

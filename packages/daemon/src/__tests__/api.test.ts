@@ -260,7 +260,7 @@ describe("ApiServer", () => {
 		// then assert it survives JSON serialization to the wire as camelCase.
 		const exec: Exec = async (command, args) => {
 			if (command === "git" && args[2] === "log") {
-				return { stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 };
+				return { stdout: "1\tAlice Example\ti@x\tabc123\n", exitCode: 0 };
 			}
 			if (command === "gh") {
 				const stateIdx = args.indexOf("--state");
@@ -273,7 +273,7 @@ describe("ApiServer", () => {
 								headRefName: "wt-a",
 								url: "https://github.com/o/r/pull/55",
 								state: "MERGED",
-								author: { name: "Tim Kuminecz", login: "tkuminecz" },
+								author: { name: "Carol Reviewer", login: "carol" },
 							},
 						]),
 						exitCode: 0,
@@ -293,7 +293,7 @@ describe("ApiServer", () => {
 			worktrees: Record<string, { prAuthor?: string; prState?: string }[]>;
 		};
 		expect(state.worktrees.platform?.[0]).toMatchObject({
-			prAuthor: "Tim Kuminecz",
+			prAuthor: "Carol Reviewer",
 			prState: "MERGED",
 		});
 	});
@@ -321,13 +321,13 @@ describe("ApiServer", () => {
 		const { client, workspace } = await setup();
 		writeFileSync(
 			join(workspace, "platform", "vars.yaml"),
-			"github_id: noootown\n",
+			"github_id: alice\n",
 		);
 		const state = (await client.call("state")) as {
 			projects: { name: string; githubId?: string }[];
 		};
 		expect(state.projects).toEqual([
-			{ name: "platform", githubId: "noootown" },
+			{ name: "platform", githubId: "alice" },
 		]);
 	});
 
@@ -582,7 +582,7 @@ describe("ApiServer", () => {
 			},
 		};
 		const { client, store, engine } = await setup({
-			worktrees: [{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" }],
+			worktrees: [{ name: "TICK-1", path: "/wt/TICK-1", branch: "TICK-1" }],
 			executeClaude: async () => {
 				await parked;
 				return okResult;
@@ -592,7 +592,7 @@ describe("ApiServer", () => {
 		store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		await engine.tick(); // resolve
@@ -634,9 +634,9 @@ describe("ApiServer", () => {
 		const task = (await client.call("enqueue", {
 			prompt: "fix it",
 			repo: "platform",
-			ref: "ticket:JUS-1756",
+			ref: "ticket:TICK-1756",
 		})) as { target: { ref: string } };
-		expect(task.target.ref).toBe("ticket:JUS-1756");
+		expect(task.target.ref).toBe("ticket:TICK-1756");
 	});
 
 	it("enqueue with resume_session_id pins the session", async () => {

@@ -36,12 +36,12 @@ afterEach(async () => {
 });
 
 const DISCOVER_SH = `#!/bin/bash
-# stub of agent247 discover.sh — emits one PR shaped like the real script's output.
+# stub discover.sh — emits one PR shaped like the real script's output.
 # Validates its args so an unrendered template ({{github_username}} etc) fails loudly.
-if [ "$1" != "ianchiu-jb" ] || [ "$2" != "justicebid/platform" ]; then
+if [ "$1" != "alice" ] || [ "$2" != "acme/platform" ]; then
   echo "unrendered or wrong args: $1 $2" >&2; exit 1
 fi
-echo '[{"number": 1423, "title": "Fix auth", "url": "https://github.com/justicebid/platform/pull/1423", "additions": 10, "deletions": 2, "headRefName": "JUS-1423-fix-auth", "baseRefName": "main", "author_login": "kevin", "total_changes": 12, "worktree_path": "/x"}]'
+echo '[{"number": 1423, "title": "Fix auth", "url": "https://github.com/acme/platform/pull/1423", "additions": 10, "deletions": 2, "headRefName": "TICK-1423-fix-auth", "baseRefName": "main", "author_login": "bob", "total_changes": 12, "worktree_path": "/x"}]'
 `;
 
 const CONFIG_YAML = `discovery:
@@ -70,7 +70,7 @@ async function setup() {
 	chmodSync(join(taskDir, "discover.sh"), 0o755);
 	writeFileSync(
 		join(base, "ws", "platform", "vars.yaml"),
-		"platform_repo: justicebid/platform\nplatform_repo_path: /repo/path\n",
+		"platform_repo: acme/platform\nplatform_repo_path: /repo/path\n",
 	);
 
 	const store = new QueueStore(join(base, "state"));
@@ -83,7 +83,7 @@ async function setup() {
 		maxConcurrentTasks: 3,
 		purgeAfterDays: 7,
 		archiveAfterDays: 7,
-		vars: { github_username: "ianchiu-jb" },
+		vars: { github_username: "alice" },
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
 		providers: TEST_PROVIDERS,
@@ -150,7 +150,7 @@ async function setup() {
 	return { client, store };
 }
 
-describe("agent247 pr-review port shape", () => {
+describe("pr-review port shape", () => {
 	it("lists the definition from the workspace", async () => {
 		const { client } = await setup();
 		const defs = (await client.call("definitions")) as {
@@ -194,14 +194,14 @@ describe("agent247 pr-review port shape", () => {
 		const task = store.list()[0];
 		expect(task?.definition).toBe("platform/pr-review");
 		expect(task?.itemKey).toBe(
-			"https://github.com/justicebid/platform/pull/1423",
+			"https://github.com/acme/platform/pull/1423",
 		);
 		expect(task?.target.ref).toBe("pr:1423");
 		expect(task?.prompt).toContain(
-			"reviewing PR #1423 on justicebid/platform as ianchiu-jb",
+			"reviewing PR #1423 on acme/platform as alice",
 		);
 		expect(task?.prompt).toContain("Fix auth (12 changes)");
-		expect(task?.item?.headRefName).toBe("JUS-1423-fix-auth");
+		expect(task?.item?.headRefName).toBe("TICK-1423-fix-auth");
 	});
 
 	it("re-running dedups on url", async () => {

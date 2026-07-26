@@ -99,7 +99,7 @@ export function extractRef(text: string): TargetRef | null {
 		if (id) return { kind: "ticket", id };
 	}
 
-	// Leading token only — strip trailing punctuation (`JUS-1821:` from a
+	// Leading token only — strip trailing punctuation (`TICK-1821:` from a
 	// sentence lead-in) before testing for a full ticket id.
 	const leadToken = text.trim().split(/\s+/)[0] ?? "";
 	const firstToken = leadToken.replace(/[.,:]+$/, "");

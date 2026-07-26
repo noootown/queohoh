@@ -912,13 +912,13 @@ mod tests {
             ],
         );
         // Seed last-commit author + epoch on the acme worktrees so the WORKTREES
-        // AUTHOR column renders (`koshea  3d ago` = who · when), and mark the
+        // AUTHOR column renders (`bob  3d ago` = who · when), and mark the
         // first worktree dirty + protected so the `±` and `⛨` front markers
         // render side by side. Local to this snapshot, not the shared fixture.
         if let Some(snap) = app.snapshot.as_mut()
             && let Some(wts) = snap.worktrees.get_mut("acme") {
                 if let Some(w) = wts.get_mut(0) {
-                    w.last_commit_author = Some("koshea".into());
+                    w.last_commit_author = Some("bob".into());
                     w.last_commit_epoch = Some(app.now_epoch_s - 3 * 86_400);
                     w.dirty = Some(true);
                     w.protected = true;

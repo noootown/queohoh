@@ -1037,8 +1037,8 @@
         // Regression for the worktree info `path` row rendering `/Users…` blue.
         let p = Palette::default();
         assert_eq!(
-            config("/Users/noootown/Downloads", 0, &p),
-            vec![("/Users/noootown/Downloads".into(), Style::default())]
+            config("/Users/me/Downloads", 0, &p),
+            vec![("/Users/me/Downloads".into(), Style::default())]
         );
     }
 
@@ -1049,7 +1049,7 @@
         // (no accent-colored prefix). Reproduces the worktree `path` bug — a short
         // value (branch) never wraps, so only long values (paths) were affected.
         let p = Palette::default();
-        let lines = vec!["path     /Users/noootown/Downloads/agent247/queohoh".to_string()];
+        let lines = vec!["path     /Users/me/ws/queohoh".to_string()];
         let ctxs = vec![LineCtx::Config { key_col: 9 }];
         let display = wrap_lines(&lines, &ctxs, 20);
         assert!(display.len() > 1, "the long path value wraps into continuations");
@@ -1082,7 +1082,7 @@
         let p = Palette::default();
         let key_col = 18; // "purge_after_days" (16) + CONFIG_KEY_GAP (2)
         let key = format!("{:<key_col$}", "discovery");
-        let value = "bash tasks/pr-fix-ci-conflicts/discover.sh {{github_username}} {{platform_repo}}  ·  item_key: {{url}}@{{head_sha}}";
+        let value = "bash tasks/fix-ci-conflicts/discover.sh {{github_username}} {{platform_repo}}  ·  item_key: {{url}}@{{head_sha}}";
         let line = format!("{key}{value}");
         assert!(
             line.chars().count() > key_col + 5,

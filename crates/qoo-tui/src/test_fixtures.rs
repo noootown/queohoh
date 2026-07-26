@@ -57,6 +57,9 @@ fn task(
 /// one archived), two worktrees, and a main session. `created` timestamps are
 /// fixed ISO strings so elapsed labels are deterministic against `now_epoch_s`.
 pub fn fixture_snapshot() -> StateSnapshot {
+    // Queue Prompt/Args shows resolved `item` (not prompt boilerplate). Put
+    // searchable tokens in `item` so /filter tests that look for "cache"/"do"
+    // still hit rows after the args-only summary change.
     let tasks = vec![
         {
             let mut t = task(
@@ -70,18 +73,23 @@ pub fn fixture_snapshot() -> StateSnapshot {
                 None,
             );
             t.definition = Some("squash-merge".to_string());
+            t.item = Some(HashMap::from([("topic".into(), "widget-cache".into())]));
             t
         },
-        task(
-            "01QUE",
-            TaskStatus::Queued,
-            "acme",
-            Some("acme.feature"),
-            "write docs for the cache",
-            "fresh",
-            "2026-07-09T12:04:00.000Z",
-            None,
-        ),
+        {
+            let mut t = task(
+                "01QUE",
+                TaskStatus::Queued,
+                "acme",
+                Some("acme.feature"),
+                "write docs for the cache",
+                "fresh",
+                "2026-07-09T12:04:00.000Z",
+                None,
+            );
+            t.item = Some(HashMap::from([("topic".into(), "docs-cache".into())]));
+            t
+        },
         {
             let mut t = task(
                 "01FAIL",
@@ -116,7 +124,7 @@ pub fn fixture_snapshot() -> StateSnapshot {
             WorktreeInfo {
                 name: "acme.feature".to_string(),
                 path: "/repos/acme.feature".to_string(),
-                branch: "feature/JB-1200-cache".to_string(),
+                branch: "feature/TICK-1200-cache".to_string(),
                 ..Default::default()
             },
             WorktreeInfo {

@@ -57,7 +57,7 @@ Task lifecycle (live → archive → purge, `on_done`, worktree teardown) is doc
 `vars.yaml` also holds two reserved keys that are read as settings rather than exposed as `{{var}}` placeholders:
 
 - `default_models:` — an ordered fallback list of `provider/label` model refs (e.g. `[claude/claude-opus-4.8, grok/grok-4.5]`) that overrides the global `default_models:` for this project's tasks/defs that don't set their own `model:`.
-- `github_id:` — your author identity, e.g. `github_id: noootown`. The TUI uses it to sort your own worktrees first. A worktree counts as **yours** when `github_id` is a case-insensitive **substring of the last-commit author email**, OR a case-insensitive **substring of the author name**. So pick a value that appears in the email or name of the commits you author — e.g. the login embedded in a GitHub noreply email (`12345+noootown@users.noreply.github.com` → `noootown`), or a distinctive token of your name/email if you commit as `Ian Chiu <noootown@gmail.com>` (here `noootown` matches the email, `Ian` or `Chiu` matches the name; your work GitHub login would match neither). Optional and parsed leniently — an absent, empty, or non-string value simply disables the "mine-first" sort.
+- `github_id:` — your author identity, e.g. `github_id: alice`. The TUI uses it to sort your own worktrees first. A worktree counts as **yours** when `github_id` is a case-insensitive **substring of the last-commit author email**, OR a case-insensitive **substring of the author name**. So pick a value that appears in the email or name of the commits you author — e.g. the login embedded in a GitHub noreply email (`12345+alice@users.noreply.github.com` → `alice`), or a distinctive token of your name/email if you commit as `Alice Example <alice@example.com>` (here `alice` matches the email, `Alice` or `Example` matches the name; your work GitHub login would match neither). Optional and parsed leniently — an absent, empty, or non-string value simply disables the "mine-first" sort.
 
 ### Builtin vars
 
@@ -73,7 +73,7 @@ Resolved at **execution time** (in the task's actual worktree), via a second ren
 - `{{worktree}}` — the resolved worktree/lane name.
 - `{{worktree_path}}` — its absolute path.
 - `{{branch}}` — `git rev-parse --abbrev-ref HEAD` in that worktree (empty if it can't be read).
-- `{{ticket}}` — the ticket id derived from the branch name (convention: the branch is named after its ticket, so `jus-1008-fix-thing` → `JUS-1008`; empty when the branch has no ticket-shaped token).
+- `{{ticket}}` — the ticket id derived from the branch name (convention: the branch is named after its ticket, so `tick-1008-fix-thing` → `TICK-1008`; empty when the branch has no ticket-shaped token).
 
 ### Done conditions (`verify`)
 

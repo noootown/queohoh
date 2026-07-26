@@ -7,8 +7,8 @@ import { encodeProjectDir, listClaudeSessions } from "../claude-sessions.js";
 describe("encodeProjectDir", () => {
 	it("replaces slashes and dots with dashes", () => {
 		expect(
-			encodeProjectDir("/Users/n/Downloads/agent247/queohoh.action-menu"),
-		).toBe("-Users-n-Downloads-agent247-queohoh-action-menu");
+			encodeProjectDir("/Users/me/ws/queohoh.action-menu"),
+		).toBe("-Users-me-ws-queohoh-action-menu");
 	});
 });
 

@@ -107,7 +107,7 @@
         // last WRAPPED segment.
         let mut lines: Vec<String> = (0..24).map(|i| format!("line {i}")).collect();
         lines.push(
-            "See https://github.com/justicebid/monorepo/pull/1234/files#diff-0a1b2c3d4e5f done"
+            "See https://github.com/acme/monorepo/pull/1234/files#diff-0a1b2c3d4e5f done"
                 .to_string(),
         );
         let (terminal, _hits) = render_at(&detail_app_transcript(lines, 1), 80, 24);
@@ -182,7 +182,7 @@
             .and_then(|wts| wts.iter_mut().find(|w| w.name == "acme.feature"))
         {
             w.last_commit_hash = Some("a1b2c3d".to_string());
-            w.last_commit_author = Some("Ian Chiu".to_string());
+            w.last_commit_author = Some("Alice Example".to_string());
             w.last_commit_epoch = Some(now - 3 * 86_400);
             w.pr_number = Some(42);
         }
@@ -1043,7 +1043,7 @@
         if let Some(snap) = app.snapshot.as_mut() {
             let mut t = snap.tasks[0].clone();
             t.status = TaskStatus::Queued;
-            t.definition = Some("pr-fix-ci-conflicts".to_string());
+            t.definition = Some("fix-ci-conflicts".to_string());
             t.created = "2026-07-09T12:00:00.000Z".to_string();
             t.model = Some(crate::ipc::types::ModelRef::One("claude-opus-4-8".to_string()));
             t.finished_at = None;
@@ -1065,7 +1065,7 @@
         for header in ["Run", "Timing", "Details"] {
             assert!(body.contains(header), "{header} section present while scheduling");
         }
-        assert!(body.contains("pr-fix-ci-conflicts"), "definition from live task");
+        assert!(body.contains("fix-ci-conflicts"), "definition from live task");
         assert!(body.contains("queued"), "status from live task");
         assert!(!body.contains("(no run recorded yet)"), "no empty placeholder");
         assert!(!body.contains("Config"), "no Config without a def snapshot");

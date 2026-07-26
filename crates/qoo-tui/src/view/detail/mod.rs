@@ -216,7 +216,7 @@ fn status_label(status: TaskStatus) -> &'static str {
 }
 
 /// Section header + indented `key   value` rows for the run `info` sub-tab, in
-/// the agent247-dashboard shape. Identity/status come from the LIVE `task`
+/// the run-info dashboard shape. Identity/status come from the LIVE `task`
 /// (freshest); timing, usage, and the def config come from the run's `data.json`
 /// snapshot (`meta`). Absent values render the dim `—`. `now_epoch_s`/`tz_offset_s`
 /// drive each timing stamp's absolute local time + relative age. Lines are

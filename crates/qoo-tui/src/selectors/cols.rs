@@ -312,7 +312,7 @@ pub fn wt_merge_marker(row: &WorktreeRow) -> Option<WtMergeMarker> {
 ///   `→ <name>`, right-pinned by the fill). The PR column sits immediately
 ///   LEFT of the author (between the fill and author) so the open-PR chip
 ///   reads before the who·when pair; the author sits right before the
-///   commit-age so the pair reads `koshea  3d ago` = who · when.
+///   commit-age so the pair reads `bob  3d ago` = who · when.
 ///
 /// The marker/time columns (`dirty`, `protected`, `pr`, `author`,
 /// `commit_age`, `activity`) are FIXED widths — never sized from row data — so a

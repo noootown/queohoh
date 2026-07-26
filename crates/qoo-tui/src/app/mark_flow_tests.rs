@@ -196,13 +196,14 @@ fn esc_clears_range_and_marks_together_in_one_press() {
 fn esc_clears_marks_alone_before_falling_through_to_search() {
     // Marks with no range still occupy Esc's first stage — the search filter is
     // only cleared by a SECOND Esc, matching how a range behaves today.
-    // (The rows need a non-empty `summary` — derived from `prompt` — for a
-    // non-empty filter to keep any of them visible; `three_queued`'s default
-    // `TaskInstance` has an empty prompt, so it's set here to something that
-    // matches "t".)
+    // (Queue summary is resolved `item` args, not prompt boilerplate — stamp an
+    // item so filter "t" keeps the rows visible.)
     let mut snap = three_queued();
     for t in snap.tasks.iter_mut() {
-        t.prompt = format!("{} task", t.id);
+        t.item = Some(std::collections::HashMap::from([(
+            "note".into(),
+            format!("{} task", t.id),
+        )]));
     }
     let mut a = app_with(snap);
     a.update(key('/'));

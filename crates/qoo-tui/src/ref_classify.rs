@@ -105,7 +105,7 @@ mod tests {
             classify_ref("https://github.com/o/r/pull/45").as_deref(),
             Some("pr:45"),
         );
-        assert_eq!(classify_ref("JUS-1756").as_deref(), Some("ticket:JUS-1756"));
+        assert_eq!(classify_ref("TICK-1756").as_deref(), Some("ticket:TICK-1756"));
         assert_eq!(classify_ref("feature-x").as_deref(), None); // literal worktree name
         assert_eq!(classify_ref("").as_deref(), None);
     }
@@ -115,8 +115,8 @@ mod tests {
         // Already-canonical forms (what the combobox popup emits) round-trip so a
         // second classify pass on submit is idempotent, not `worktree:pr:N`.
         assert_eq!(classify_ref("pr:1925").as_deref(), Some("pr:1925"));
-        assert_eq!(classify_ref("ticket:jus-1756").as_deref(), Some("ticket:JUS-1756"));
-        assert_eq!(classify_ref("ticket:JUS-1756").as_deref(), Some("ticket:JUS-1756"));
+        assert_eq!(classify_ref("ticket:tick-1756").as_deref(), Some("ticket:TICK-1756"));
+        assert_eq!(classify_ref("ticket:TICK-1756").as_deref(), Some("ticket:TICK-1756"));
         assert_eq!(classify_ref("worktree:my-branch").as_deref(), Some("worktree:my-branch"));
         // Malformed suffixes are NOT refs — fall through to worktree-name (None).
         assert_eq!(classify_ref("pr:abc").as_deref(), None);

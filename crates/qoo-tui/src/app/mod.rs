@@ -702,7 +702,7 @@ impl App {
         };
         // A worktree-scoped menu lists only defs that CONSUME the selected
         // worktree (user request — repo-pinned no-arg defs like sanitize-project
-        // read as runnable "on JUS-1816" when the context means nothing to
+        // read as runnable "on TICK-1816" when the context means nothing to
         // them). Contextless opens keep the full list.
         let defs: Vec<_> = if worktree.is_some() {
             defs.into_iter().filter(def_uses_worktree_context).collect()

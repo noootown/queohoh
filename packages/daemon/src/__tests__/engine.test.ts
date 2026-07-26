@@ -77,7 +77,7 @@ function setup(
 	};
 	const resolverIO: ResolverIO = {
 		listWorktrees: async () => [
-			{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+			{ name: "TICK-1", path: join(base, "wt-tick1"), branch: "TICK-1" },
 		],
 		prBranch: async () => null,
 		spawnWorktree: async (_r, name) => ({
@@ -132,11 +132,11 @@ describe("Engine.tick", () => {
 		store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		await engine.tick(); // resolve pass
-		expect(store.list()[0]?.target.worktree).toBe("JUS-1");
+		expect(store.list()[0]?.target.worktree).toBe("TICK-1");
 		await engine.tick(); // start pass
 		await engine.drain();
 		expect(store.list()[0]?.status).toBe("done");
@@ -152,7 +152,7 @@ describe("Engine.tick", () => {
 		store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 			resumeSessionId: "pin-1",
 		});
@@ -297,7 +297,7 @@ describe("Engine.tick", () => {
 		let claudeRan = false;
 		const resolverIO: ResolverIO = {
 			listWorktrees: async () => [
-				{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+				{ name: "TICK-1", path: join(base, "wt-tick1"), branch: "TICK-1" },
 			],
 			prBranch: async () => null,
 			spawnWorktree: async (_r, name) => ({
@@ -330,7 +330,7 @@ describe("Engine.tick", () => {
 		store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		await engine.tick(); // resolve
@@ -347,7 +347,7 @@ describe("Engine.tick", () => {
 		store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 			// A `provider/label` ref resolves against the catalog to its concrete
 			// provider-specific id (there is no alias table anymore).
@@ -373,7 +373,7 @@ describe("Engine.tick", () => {
 		});
 		store.update(t.id, {
 			status: "running",
-			target: { repo: "platform", ref: "temp", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "temp", worktree: "TICK-1" },
 		});
 		await engine.tick();
 		expect(store.get(t.id)?.status).toBe("failed");
@@ -390,7 +390,7 @@ describe("Engine.tick", () => {
 		});
 		store.update(t.id, {
 			status: "running",
-			target: { repo: "platform", ref: "temp", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "temp", worktree: "TICK-1" },
 		});
 		const rs = new RunStore(join(base, "runs"));
 		rs.writeResultJson(t.id, { ...okResult, resultText: "done" });
@@ -412,7 +412,7 @@ describe("Engine.tick", () => {
 		});
 		store.update(t.id, {
 			status: "running",
-			target: { repo: "platform", ref: "temp", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "temp", worktree: "TICK-1" },
 		});
 		new RunStore(join(base, "runs")).writeWorkerPid(t.id, 999999);
 		await engine.tick();
@@ -556,7 +556,7 @@ describe("Engine.removeWorktree protection", () => {
 		mkdirSync(wsProject, { recursive: true });
 		writeFileSync(
 			join(wsProject, "vars.yaml"),
-			"protected_worktrees:\n  - legal-lake\n  - testing1\n",
+			"protected_worktrees:\n  - long-lived\n  - testing1\n",
 		);
 		let removed: string | null = null;
 		const { engine } = setup({
@@ -568,9 +568,9 @@ describe("Engine.removeWorktree protection", () => {
 				listWorktrees: async () => [
 					{ name: "platform", path: repoPath, branch: "main" },
 					{
-						name: "legal-lake",
+						name: "long-lived",
 						path: join(base, "wt-ll"),
-						branch: "legal-lake",
+						branch: "long-lived",
 					},
 					// Real-world shape: the worktree directory (and thus its name)
 					// carries the `<repo>.` prefix while vars.yaml lists the
@@ -580,7 +580,7 @@ describe("Engine.removeWorktree protection", () => {
 						path: join(base, "wt-t1"),
 						branch: "testing1",
 					},
-					{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+					{ name: "TICK-1", path: join(base, "wt-tick1"), branch: "TICK-1" },
 				],
 				removeWorktree: async (_r, wt) => {
 					removed = wt.name;
@@ -601,7 +601,7 @@ describe("Engine.removeWorktree protection", () => {
 	it("refuses to remove a configured protected worktree", async () => {
 		const { engine, removed } = protSetup();
 		await expect(
-			engine.removeWorktree("platform", "legal-lake"),
+			engine.removeWorktree("platform", "long-lived"),
 		).rejects.toThrow(/protected/);
 		expect(removed()).toBeNull();
 	});
@@ -617,8 +617,8 @@ describe("Engine.removeWorktree protection", () => {
 
 	it("still removes an unprotected worktree", async () => {
 		const { engine, removed } = protSetup();
-		await engine.removeWorktree("platform", "JUS-1");
-		expect(removed()).toBe("JUS-1");
+		await engine.removeWorktree("platform", "TICK-1");
+		expect(removed()).toBe("TICK-1");
 	});
 });
 
@@ -667,16 +667,16 @@ describe("Engine.worktreesByRepo", () => {
 		await engine.tick();
 		await engine.refreshGitEnrichment();
 		// With the default all-zero-exit / empty-stdout exec stub: status "" → not
-		// dirty; the `merge-base --is-ancestor` probe (branch "JUS-1" ≠ default
+		// dirty; the `merge-base --is-ancestor` probe (branch "TICK-1" ≠ default
 		// "main") exits 0 → merged true; log "" → epoch parseInt(NaN) → null, empty
 		// author/hash → null; and `gh pr list` "" → JSON.parse throws → prNumber/prUrl
 		// null (failure-tolerant).
 		expect(engine.worktreesByRepo()).toEqual({
 			platform: [
 				{
-					name: "JUS-1",
-					path: join(base, "wt-jus1"),
-					branch: "JUS-1",
+					name: "TICK-1",
+					path: join(base, "wt-tick1"),
+					branch: "TICK-1",
 					dirty: false,
 					merged: true,
 					lastCommitEpoch: null,
@@ -705,7 +705,7 @@ describe("Engine.worktreesByRepo", () => {
 		mkdirSync(wsProject, { recursive: true });
 		writeFileSync(
 			join(wsProject, "vars.yaml"),
-			"protected_worktrees:\n  - legal-lake\n  - testing1\n",
+			"protected_worktrees:\n  - long-lived\n  - testing1\n",
 		);
 		const { engine } = setup({
 			config: {
@@ -716,9 +716,9 @@ describe("Engine.worktreesByRepo", () => {
 				listWorktrees: async () => [
 					{ name: "platform", path: repoPath, branch: "main" },
 					{
-						name: "legal-lake",
+						name: "long-lived",
 						path: join(base, "wt-ll"),
-						branch: "legal-lake",
+						branch: "long-lived",
 					},
 					// Real-world shape: worktree name carries the `<repo>.` prefix
 					// while vars.yaml lists the stripped display name.
@@ -727,7 +727,7 @@ describe("Engine.worktreesByRepo", () => {
 						path: join(base, "wt-t1"),
 						branch: "testing1",
 					},
-					{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+					{ name: "TICK-1", path: join(base, "wt-tick1"), branch: "TICK-1" },
 				],
 			},
 		});
@@ -736,9 +736,9 @@ describe("Engine.worktreesByRepo", () => {
 		const byName = Object.fromEntries(list.map((w) => [w.name, w.protected]));
 		expect(byName).toEqual({
 			platform: true,
-			"legal-lake": true,
+			"long-lived": true,
 			"platform.testing1": true,
-			"JUS-1": false,
+			"TICK-1": false,
 		});
 	});
 });
@@ -754,7 +754,7 @@ describe("Engine.refreshWorktreeCache failure handling", () => {
 					calls++;
 					if (calls > 1) throw new Error("index.lock contention");
 					return [
-						{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
+						{ name: "TICK-1", path: join(base, "wt-tick1"), branch: "TICK-1" },
 					];
 				},
 			},
@@ -814,7 +814,7 @@ describe("Engine git enrichment", () => {
 			// one call: "<epoch>\t<author>\t<email>\t<hash>"
 			log: () => ({
 				stdout:
-					"1700000000\tKevin O'Shea\t12345+koshea@users.noreply.github.com\t9f3ac1d\n",
+					"1700000000\tBob Example\t12345+bob@users.noreply.github.com\t9f3ac1d\n",
 				exitCode: 0,
 			}),
 		});
@@ -825,8 +825,8 @@ describe("Engine git enrichment", () => {
 		expect(wt).toMatchObject({
 			dirty: true,
 			lastCommitEpoch: 1700000000,
-			lastCommitAuthor: "Kevin O'Shea",
-			lastCommitAuthorEmail: "12345+koshea@users.noreply.github.com",
+			lastCommitAuthor: "Bob Example",
+			lastCommitAuthorEmail: "12345+bob@users.noreply.github.com",
 			lastCommitHash: "9f3ac1d",
 		});
 	});
@@ -951,7 +951,7 @@ describe("Engine git enrichment", () => {
 					},
 					{
 						number: 42,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						baseRefName: "main",
 						url: "https://github.com/o/r/pull/42",
 					},
@@ -975,7 +975,7 @@ describe("Engine git enrichment", () => {
 		const exec = gitExec({
 			log: () => ({ stdout: "1\tHopper\th@x\tabc123\n", exitCode: 0 }),
 			gh: () => ({
-				stdout: JSON.stringify([{ number: 42, headRefName: "JUS-1" }]),
+				stdout: JSON.stringify([{ number: 42, headRefName: "TICK-1" }]),
 				exitCode: 0,
 			}),
 		});
@@ -1010,17 +1010,17 @@ describe("Engine git enrichment", () => {
 		// (merge-base exit 1), and its local HEAD author is an automation merge
 		// commit — but the merged-PR list still carries the true state + author.
 		const exec = gitExec({
-			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			log: () => ({ stdout: "1\tAlice Example\ti@x\tabc123\n", exitCode: 0 }),
 			"merge-base": () => ({ stdout: "", exitCode: 1 }), // local: NOT an ancestor
 			"gh:open": () => ({ stdout: "[]", exitCode: 0 }),
 			"gh:merged": () => ({
 				stdout: JSON.stringify([
 					{
 						number: 55,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/55",
 						state: "MERGED",
-						author: { name: "Tim Kuminecz", login: "tkuminecz" },
+						author: { name: "Carol Reviewer", login: "carol" },
 					},
 				]),
 				exitCode: 0,
@@ -1035,8 +1035,8 @@ describe("Engine git enrichment", () => {
 			prNumber: 55,
 			prUrl: "https://github.com/o/r/pull/55",
 			prState: "MERGED",
-			// prAuthor is the PR author (Tim), NOT the local merge-commit author (Ian).
-			prAuthor: "Tim Kuminecz",
+			// prAuthor is the PR author (Carol), NOT the local merge-commit author (Alice).
+			prAuthor: "Carol Reviewer",
 			// The row carries no reviewDecision → a PR exists but isn't approved.
 			approved: false,
 			// No labels on the fixture → PR exists without the marker labels.
@@ -1049,16 +1049,16 @@ describe("Engine git enrichment", () => {
 		// A reused branch name can appear in BOTH lists; the currently-open PR is
 		// the live one, so it wins the number/url/author/state.
 		const exec = gitExec({
-			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			log: () => ({ stdout: "1\tAlice Example\ti@x\tabc123\n", exitCode: 0 }),
 			"merge-base": () => ({ stdout: "", exitCode: 1 }),
 			"gh:open": () => ({
 				stdout: JSON.stringify([
 					{
 						number: 10,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/10",
 						state: "OPEN",
-						author: { name: "Ian Chiu", login: "noootown" },
+						author: { name: "Alice Example", login: "alice" },
 					},
 				]),
 				exitCode: 0,
@@ -1067,10 +1067,10 @@ describe("Engine git enrichment", () => {
 				stdout: JSON.stringify([
 					{
 						number: 9,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/9",
 						state: "MERGED",
-						author: { name: "Tim Kuminecz", login: "tkuminecz" },
+						author: { name: "Carol Reviewer", login: "carol" },
 					},
 				]),
 				exitCode: 0,
@@ -1083,7 +1083,7 @@ describe("Engine git enrichment", () => {
 			prNumber: 10,
 			prUrl: "https://github.com/o/r/pull/10",
 			prState: "OPEN",
-			prAuthor: "Ian Chiu",
+			prAuthor: "Alice Example",
 			// Open PR + local-not-ancestor → not merged (the OPEN state does not fold true).
 			merged: false,
 		});
@@ -1097,7 +1097,7 @@ describe("Engine git enrichment", () => {
 				stdout: JSON.stringify([
 					{
 						number: 7,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/7",
 						state: "MERGED",
 						author: { name: "", login: "octocat" },
@@ -1146,16 +1146,16 @@ describe("Engine git enrichment", () => {
 	it("stamps approved=true from an OPEN PR whose reviewDecision is APPROVED (green marker, not merged)", async () => {
 		// The approved-but-not-yet-merged case the green marker exists for.
 		const exec = gitExec({
-			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			log: () => ({ stdout: "1\tAlice Example\ti@x\tabc123\n", exitCode: 0 }),
 			"merge-base": () => ({ stdout: "", exitCode: 1 }), // not merged locally
 			"gh:open": () => ({
 				stdout: JSON.stringify([
 					{
 						number: 42,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/42",
 						state: "OPEN",
-						author: { name: "Ian Chiu", login: "noootown" },
+						author: { name: "Alice Example", login: "alice" },
 						reviewDecision: "APPROVED",
 					},
 				]),
@@ -1177,16 +1177,16 @@ describe("Engine git enrichment", () => {
 
 	it("stamps approved=false when the PR's reviewDecision is CHANGES_REQUESTED", async () => {
 		const exec = gitExec({
-			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			log: () => ({ stdout: "1\tAlice Example\ti@x\tabc123\n", exitCode: 0 }),
 			"merge-base": () => ({ stdout: "", exitCode: 1 }),
 			"gh:open": () => ({
 				stdout: JSON.stringify([
 					{
 						number: 43,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/43",
 						state: "OPEN",
-						author: { name: "Ian Chiu", login: "noootown" },
+						author: { name: "Alice Example", login: "alice" },
 						reviewDecision: "CHANGES_REQUESTED",
 					},
 				]),
@@ -1205,16 +1205,16 @@ describe("Engine git enrichment", () => {
 
 	it("stamps wip=true from an OPEN PR with the WIP label", async () => {
 		const exec = gitExec({
-			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			log: () => ({ stdout: "1\tAlice Example\ti@x\tabc123\n", exitCode: 0 }),
 			"merge-base": () => ({ stdout: "", exitCode: 1 }),
 			"gh:open": () => ({
 				stdout: JSON.stringify([
 					{
 						number: 44,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/44",
 						state: "OPEN",
-						author: { name: "Ian Chiu", login: "noootown" },
+						author: { name: "Alice Example", login: "alice" },
 						labels: [{ name: "WIP" }],
 					},
 				]),
@@ -1236,16 +1236,16 @@ describe("Engine git enrichment", () => {
 
 	it("stamps readyForReview=true from an OPEN PR with the ready-for-review label", async () => {
 		const exec = gitExec({
-			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			log: () => ({ stdout: "1\tAlice Example\ti@x\tabc123\n", exitCode: 0 }),
 			"merge-base": () => ({ stdout: "", exitCode: 1 }),
 			"gh:open": () => ({
 				stdout: JSON.stringify([
 					{
 						number: 45,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/45",
 						state: "OPEN",
-						author: { name: "Ian Chiu", login: "noootown" },
+						author: { name: "Alice Example", login: "alice" },
 						labels: [{ name: "ready-for-review" }, { name: "WIP" }],
 					},
 				]),
@@ -1267,16 +1267,16 @@ describe("Engine git enrichment", () => {
 
 	it("stamps wip/readyForReview false when a PR exists without those labels", async () => {
 		const exec = gitExec({
-			log: () => ({ stdout: "1\tIan Chiu\ti@x\tabc123\n", exitCode: 0 }),
+			log: () => ({ stdout: "1\tAlice Example\ti@x\tabc123\n", exitCode: 0 }),
 			"merge-base": () => ({ stdout: "", exitCode: 1 }),
 			"gh:open": () => ({
 				stdout: JSON.stringify([
 					{
 						number: 46,
-						headRefName: "JUS-1",
+						headRefName: "TICK-1",
 						url: "https://github.com/o/r/pull/46",
 						state: "OPEN",
-						author: { name: "Ian Chiu", login: "noootown" },
+						author: { name: "Alice Example", login: "alice" },
 						labels: [{ name: "bug" }],
 					},
 				]),
@@ -1332,7 +1332,7 @@ describe("Engine git enrichment", () => {
 					stdout: JSON.stringify([
 						{
 							number: 5,
-							headRefName: "JUS-1",
+							headRefName: "TICK-1",
 							url: "https://github.com/o/r/pull/5",
 						},
 					]),
@@ -1347,8 +1347,8 @@ describe("Engine git enrichment", () => {
 			exec,
 			resolverIO: {
 				listWorktrees: async () => [
-					{ name: "JUS-1", path: join(base, "wt-jus1"), branch: "JUS-1" },
-					{ name: "JUS-2", path: join(base, "wt-jus2"), branch: "JUS-2" },
+					{ name: "TICK-1", path: join(base, "wt-tick1"), branch: "TICK-1" },
+					{ name: "TICK-2", path: join(base, "wt-tick2"), branch: "TICK-2" },
 				],
 			},
 		});
@@ -1360,12 +1360,12 @@ describe("Engine git enrichment", () => {
 		expect(counts.log).toBe(2);
 		// The matching branch got the PR; the other stayed null.
 		const list = engine.worktreesByRepo().platform ?? [];
-		expect(list.find((w) => w.branch === "JUS-1")?.prNumber).toBe(5);
-		expect(list.find((w) => w.branch === "JUS-1")?.prUrl).toBe(
+		expect(list.find((w) => w.branch === "TICK-1")?.prNumber).toBe(5);
+		expect(list.find((w) => w.branch === "TICK-1")?.prUrl).toBe(
 			"https://github.com/o/r/pull/5",
 		);
-		expect(list.find((w) => w.branch === "JUS-2")?.prNumber).toBeNull();
-		expect(list.find((w) => w.branch === "JUS-2")?.prUrl).toBeNull();
+		expect(list.find((w) => w.branch === "TICK-2")?.prNumber).toBeNull();
+		expect(list.find((w) => w.branch === "TICK-2")?.prUrl).toBeNull();
 	});
 
 	it("marks a branch merged when its HEAD is an ancestor of the default branch (merge-base exit 0)", async () => {
@@ -1460,7 +1460,7 @@ describe("Engine git enrichment", () => {
 		);
 		await engine.tick();
 		await engine.refreshGitEnrichment();
-		// JUS-1 ≠ develop, so the probe ran and targeted the configured branch.
+		// TICK-1 ≠ develop, so the probe ran and targeted the configured branch.
 		expect(mergeBaseTarget).toBe("develop");
 		expect(engine.worktreesByRepo().platform?.[0]?.merged).toBe(true);
 	});
@@ -1500,7 +1500,7 @@ describe("Engine task chains", () => {
 		const { engine, store } = setup();
 		const [head, tail] = store.createChain(
 			[{ prompt: "one\n" }, { prompt: "two\n" }],
-			{ repo: "platform", ref: "worktree:JUS-1", source: "mcp" },
+			{ repo: "platform", ref: "worktree:TICK-1", source: "mcp" },
 		);
 		// Simulate the head having failed (e.g. stopped or errored).
 		store.update(head?.id ?? "", { status: "failed", error: "boom" });
@@ -1515,8 +1515,8 @@ describe("Engine.laneOfCwd", () => {
 	it("prefix-matches worktree paths after a tick", async () => {
 		const { engine, base } = setup();
 		await engine.tick();
-		expect(engine.laneOfCwd(join(base, "wt-jus1", "src"))).toBe(
-			"platform:JUS-1",
+		expect(engine.laneOfCwd(join(base, "wt-tick1", "src"))).toBe(
+			"platform:TICK-1",
 		);
 		expect(engine.laneOfCwd("/elsewhere")).toBeNull();
 	});
@@ -1551,7 +1551,7 @@ describe("Engine.stopTask", () => {
 		const task = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		await engine.tick(); // resolve
@@ -1577,19 +1577,19 @@ describe("worktree-deletion archive", () => {
 	];
 
 	it("purges a terminal task whose worktree was deleted", async () => {
-		// Worktree "JUS-1" is gone from the listing → hard-delete (not archive).
+		// Worktree "TICK-1" is gone from the listing → hard-delete (not archive).
 		const { engine, store } = setup({
 			resolverIO: { listWorktrees: async () => onlyPrimary },
 		});
 		const t = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		store.update(t.id, {
 			status: "failed",
-			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 		});
 
 		await engine.tick();
@@ -1600,17 +1600,17 @@ describe("worktree-deletion archive", () => {
 	});
 
 	it("keeps a terminal task whose worktree still exists", async () => {
-		// Default listWorktrees returns [{ name: "JUS-1", … }] — worktree present.
+		// Default listWorktrees returns [{ name: "TICK-1", … }] — worktree present.
 		const { engine, store } = setup();
 		const t = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		store.update(t.id, {
 			status: "failed",
-			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 		});
 
 		await engine.tick();
@@ -1628,12 +1628,12 @@ describe("worktree-deletion archive", () => {
 		const t = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		store.update(t.id, {
 			status: "needs-input",
-			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 		});
 
 		await engine.tick();
@@ -1647,7 +1647,7 @@ describe("worktree-deletion archive", () => {
 		const { engine, store } = setup({
 			resolverIO: {
 				listWorktrees: async () => [
-					{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" },
+					{ name: "TICK-1", path: "/wt/TICK-1", branch: "TICK-1" },
 				],
 				removeWorktree: async () => {},
 			},
@@ -1655,26 +1655,26 @@ describe("worktree-deletion archive", () => {
 		const queued = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		store.update(queued.id, {
 			status: "queued",
-			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 			notBefore: "2099-01-01T00:00:00.000Z",
 		});
 		const other = store.create({
 			prompt: "other",
 			repo: "platform",
-			ref: "worktree:JUS-2",
+			ref: "worktree:TICK-2",
 			source: "tui",
 		});
 		store.update(other.id, {
 			status: "queued",
-			target: { repo: "platform", ref: "worktree:JUS-2", worktree: "JUS-2" },
+			target: { repo: "platform", ref: "worktree:TICK-2", worktree: "TICK-2" },
 		});
 
-		await engine.removeWorktree("platform", "JUS-1");
+		await engine.removeWorktree("platform", "TICK-1");
 
 		const cancelled = store.get(queued.id);
 		expect(cancelled?.status).toBe("cancelled");
@@ -1689,7 +1689,7 @@ describe("worktree-deletion archive", () => {
 		const { engine, store } = setup({
 			resolverIO: {
 				listWorktrees: async () => [
-					{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" },
+					{ name: "TICK-1", path: "/wt/TICK-1", branch: "TICK-1" },
 				],
 				removeWorktree: async () => {},
 			},
@@ -1697,15 +1697,15 @@ describe("worktree-deletion archive", () => {
 		const t = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		store.update(t.id, {
 			status: "running",
-			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 		});
 
-		await engine.removeWorktree("platform", "JUS-1");
+		await engine.removeWorktree("platform", "TICK-1");
 
 		const after = store.get(t.id);
 		expect(after?.status).toBe("cancelled");
@@ -1763,12 +1763,12 @@ describe("worktree-deletion archive", () => {
 			const t = store.create({
 				prompt: "p",
 				repo: "platform",
-				ref: "worktree:JUS-1",
+				ref: "worktree:TICK-1",
 				source: "tui",
 			});
 			store.update(t.id, {
 				status,
-				target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+				target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 			});
 
 			await engine.tick();
@@ -1792,12 +1792,12 @@ describe("worktree-deletion archive", () => {
 		const t = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		store.update(t.id, {
 			status: "failed",
-			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 		});
 
 		await engine.tick();
@@ -1818,19 +1818,19 @@ describe("worktree-deletion archive", () => {
 			resolverIO: {
 				listWorktrees: async (path) => {
 					if (shouldThrow) throw new Error("git unavailable");
-					return [{ name: "JUS-1", path, branch: "JUS-1" }];
+					return [{ name: "TICK-1", path, branch: "TICK-1" }];
 				},
 			},
 		});
 		const t = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		store.update(t.id, {
 			status: "failed",
-			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 		});
 
 		await engine.tick();
@@ -1847,20 +1847,20 @@ describe("worktree-deletion archive", () => {
 	it("does not purge a surviving worktree's tasks when another worktree is removed", async () => {
 		// Regression: removeWorktree used to worktreeCache.delete(repo), leaving
 		// listingOk true + empty/missing cache. The next purge sweep then treated
-		// every other ticket worktree (e.g. long-lived JUS-1946) as gone.
+		// every other ticket worktree (e.g. long-lived TICK-1946) as gone.
 		const all = [
-			{ name: "JUS-1", path: "/wt/JUS-1", branch: "JUS-1" },
+			{ name: "TICK-1", path: "/wt/TICK-1", branch: "TICK-1" },
 			{
-				name: "platform.JUS-1946",
-				path: "/wt/platform.JUS-1946",
-				branch: "JUS-1946",
+				name: "platform.TICK-1946",
+				path: "/wt/platform.TICK-1946",
+				branch: "TICK-1946",
 			},
 		];
 		let jus1Gone = false;
 		const { engine, store } = setup({
 			resolverIO: {
 				listWorktrees: async () =>
-					jus1Gone ? all.filter((w) => w.name !== "JUS-1") : all,
+					jus1Gone ? all.filter((w) => w.name !== "TICK-1") : all,
 				removeWorktree: async () => {
 					jus1Gone = true;
 				},
@@ -1869,18 +1869,18 @@ describe("worktree-deletion archive", () => {
 		const doomed = store.create({
 			prompt: "gone",
 			repo: "platform",
-			ref: "worktree:JUS-1",
+			ref: "worktree:TICK-1",
 			source: "tui",
 		});
 		store.update(doomed.id, {
 			status: "done",
 			finishedAt: new Date().toISOString(),
-			target: { repo: "platform", ref: "worktree:JUS-1", worktree: "JUS-1" },
+			target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
 		});
 		const survivor = store.create({
 			prompt: "keep",
 			repo: "platform",
-			ref: "worktree:platform.JUS-1946",
+			ref: "worktree:platform.TICK-1946",
 			source: "tui",
 		});
 		store.update(survivor.id, {
@@ -1888,8 +1888,8 @@ describe("worktree-deletion archive", () => {
 			finishedAt: new Date().toISOString(),
 			target: {
 				repo: "platform",
-				ref: "worktree:platform.JUS-1946",
-				worktree: "platform.JUS-1946",
+				ref: "worktree:platform.TICK-1946",
+				worktree: "platform.TICK-1946",
 			},
 		});
 
@@ -1898,7 +1898,7 @@ describe("worktree-deletion archive", () => {
 		expect(store.get(doomed.id)).toBeDefined();
 		expect(store.get(survivor.id)).toBeDefined();
 
-		await engine.removeWorktree("platform", "JUS-1");
+		await engine.removeWorktree("platform", "TICK-1");
 		// Purge sweep for the removed WT (and survivor must remain).
 		await engine.tick();
 
@@ -1917,9 +1917,9 @@ describe("worktree-deletion archive", () => {
 					if (empty) return [];
 					return [
 						{
-							name: "platform.JUS-1946",
-							path: `${path}/platform.JUS-1946`,
-							branch: "JUS-1946",
+							name: "platform.TICK-1946",
+							path: `${path}/platform.TICK-1946`,
+							branch: "TICK-1946",
 						},
 					];
 				},
@@ -1928,7 +1928,7 @@ describe("worktree-deletion archive", () => {
 		const t = store.create({
 			prompt: "p",
 			repo: "platform",
-			ref: "worktree:platform.JUS-1946",
+			ref: "worktree:platform.TICK-1946",
 			source: "tui",
 		});
 		store.update(t.id, {
@@ -1936,8 +1936,8 @@ describe("worktree-deletion archive", () => {
 			finishedAt: new Date().toISOString(),
 			target: {
 				repo: "platform",
-				ref: "worktree:platform.JUS-1946",
-				worktree: "platform.JUS-1946",
+				ref: "worktree:platform.TICK-1946",
+				worktree: "platform.TICK-1946",
 			},
 		});
 		await engine.tick();

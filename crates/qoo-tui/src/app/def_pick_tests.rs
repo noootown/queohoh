@@ -191,7 +191,7 @@ fn tasks_pane_r_with_args_opens_run_form_with_ambient_overlay() {
     let mut app = fixture_app_with_defs_and_worktree(
         "platform",
         vec![dsum("platform", "deploy", "project", vec![arg("source")])],
-        ("wt-a", "jus-9-x"),
+        ("wt-a", "tick-9-x"),
     );
     app.set_focus(PaneId::Tasks);
     let update = app.update(key(KeyCode::Char('r')));
@@ -201,9 +201,9 @@ fn tasks_pane_r_with_args_opens_run_form_with_ambient_overlay() {
             assert_eq!(state.fields[0].label, "model");
             // The ambient overlay injects the worktree branch as the source arg's
             // only option → field 1 is a seeded Dropdown, prefilled from the row.
-            assert_eq!(args[0].options.as_deref(), Some(&["jus-9-x".to_string()][..]));
+            assert_eq!(args[0].options.as_deref(), Some(&["tick-9-x".to_string()][..]));
             assert!(matches!(&state.fields[1].kind, crate::view::form::FieldKind::Dropdown { .. }));
-            assert_eq!(state.fields[1].value, "jus-9-x");
+            assert_eq!(state.fields[1].value, "tick-9-x");
             assert_eq!(*initial_worktree, None);
         }
         other => panic!("expected DefArgs, got {other:?}"),
@@ -246,14 +246,14 @@ fn task_menu_from_worktrees_pane_carries_worktree_and_branch() {
     let mut app = fixture_app_with_defs_and_worktree(
         "platform",
         vec![dsum("platform", "autotest", "project", vec![])],
-        ("wt-a", "jus-4-x"),
+        ("wt-a", "tick-4-x"),
     );
     app.set_focus(PaneId::Worktrees);
     app.update(key(KeyCode::Char('t')));
     match &app.mode {
         Mode::DefPick { worktree, branch, .. } => {
             assert_eq!(worktree.as_deref(), Some("platform.wt-a"));
-            assert_eq!(branch.as_deref(), Some("jus-4-x"));
+            assert_eq!(branch.as_deref(), Some("tick-4-x"));
         }
         other => panic!("expected DefPick, got {other:?}"),
     }
@@ -288,7 +288,7 @@ fn task_menu_on_a_worktree_hides_worktree_agnostic_defs() {
     let mut app = fixture_app_with_defs_and_worktree(
         "platform",
         vec![repo_noargs.clone(), auto, repo_source],
-        ("wt-a", "jus-4-x"),
+        ("wt-a", "tick-4-x"),
     );
     app.set_focus(PaneId::Worktrees);
     app.update(key(KeyCode::Char('t')));
@@ -320,7 +320,7 @@ fn task_menu_on_a_worktree_hides_worktree_agnostic_defs() {
 fn task_menu_on_a_worktree_with_only_agnostic_defs_refuses() {
     let repo_noargs =
         DefinitionSummary { worktree: Some("repo".into()), ..dsum("platform", "seed-data-sync", "project", vec![]) };
-    let mut app = fixture_app_with_defs_and_worktree("platform", vec![repo_noargs], ("wt-a", "jus-4-x"));
+    let mut app = fixture_app_with_defs_and_worktree("platform", vec![repo_noargs], ("wt-a", "tick-4-x"));
     app.set_focus(PaneId::Worktrees);
     let update = app.update(key(KeyCode::Char('t')));
     assert!(matches!(app.mode, Mode::List));
@@ -366,7 +366,7 @@ fn task_menu_prefetches_highlighted_def_prompt_once() {
 // --- Mode::DefPick navigation + close ---
 #[test]
 fn def_pick_moves_circularly_and_closes_on_esc() {
-    let mut app = fixture_def_pick(vec!["a", "b"], Some("platform.wt"), Some("jus-1-x"));
+    let mut app = fixture_def_pick(vec!["a", "b"], Some("platform.wt"), Some("tick-1-x"));
     app.update(key(KeyCode::Down)); // 0 -> 1
     assert!(matches!(app.mode, Mode::DefPick { index: 1, .. }));
     app.update(key(KeyCode::Down)); // wraps -> 0
@@ -437,7 +437,7 @@ fn def_pick_enter_zero_arg_opens_run_form_with_worktree() {
     let mut app = fixture_def_pick_defs(
         vec![dsum("platform", "autotest", "project", vec![])],
         Some("platform.wt-a".into()),
-        Some("jus-1-x".into()),
+        Some("tick-1-x".into()),
     );
     let update = app.update(key(KeyCode::Enter));
     match &app.mode {
@@ -464,7 +464,7 @@ fn def_pick_enter_with_args_opens_def_args_with_fixed_context() {
             ArgSpec { default: Some("main".into()), ..arg("target") },
         ])],
         Some("platform.wt-a".into()),
-        Some("jus-9-x".into()),
+        Some("tick-9-x".into()),
     );
     app.update(key(KeyCode::Enter));
     match &app.mode {
@@ -474,7 +474,7 @@ fn def_pick_enter_with_args_opens_def_args_with_fixed_context() {
             // `source` is fixed from the worktree branch → a read-only field
             // prefilled with the branch; `target` is editable from its default.
             assert!(state.fields[1].readonly);
-            assert_eq!(state.fields[1].value, "jus-9-x");
+            assert_eq!(state.fields[1].value, "tick-9-x");
             assert!(!state.fields[2].readonly);
             assert_eq!(state.fields[2].value, "main"); // target from default (editable)
             assert_eq!(state.focus, 0); // focus starts on the model picker
@@ -984,15 +984,15 @@ fn def_args_worktree_combobox_empty_blocks_submit() {
 #[test]
 fn def_args_combobox_submits_worktree_ref_for_existing_name() {
     use crossterm::event::KeyCode::*;
-    // Typed "JUS-1756" matches an existing worktree → worktree:<name> wins over
+    // Typed "TICK-1756" matches an existing worktree → worktree:<name> wins over
     // the ticket classifier.
-    let mut app = def_args_worktree_submit_app(vec!["JUS-1756".into()], vec!["JUS-1756"]);
-    for c in "JUS-1756".chars() { app.update(key(Char(c))); }
+    let mut app = def_args_worktree_submit_app(vec!["TICK-1756".into()], vec!["TICK-1756"]);
+    for c in "TICK-1756".chars() { app.update(key(Char(c))); }
     app.update(key(Tab));
     let update = app.update(key(Enter));
     match &update.cmds[0] {
         Cmd::Rpc { call, .. } => {
-            assert_eq!(call.params["ref"], "worktree:JUS-1756");
+            assert_eq!(call.params["ref"], "worktree:TICK-1756");
             assert!(call.params.get("worktree").is_none());
         }
         other => panic!("expected runDefinition, got {other:?}"),

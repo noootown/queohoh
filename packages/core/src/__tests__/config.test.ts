@@ -29,7 +29,7 @@ describe("loadGlobalConfig", () => {
 				"  - name: platform",
 				"    path: ~/workspace/platform",
 				"vars:",
-				"  github_user: noootown",
+				"  github_user: alice",
 			].join("\n"),
 		);
 		const config = loadGlobalConfig(path);
@@ -37,9 +37,10 @@ describe("loadGlobalConfig", () => {
 			{ name: "platform", path: join(homedir(), "workspace/platform") },
 		]);
 		expect(config.maxConcurrentTasks).toBe(5);
-		expect(config.purgeAfterDays).toBe(7);
-		expect(config.archiveAfterDays).toBe(7);
-		expect(config.vars).toEqual({ github_user: "noootown" });
+		// Schema default is 14 (legacy archive_after_days falls back the same).
+		expect(config.purgeAfterDays).toBe(14);
+		expect(config.archiveAfterDays).toBe(14);
+		expect(config.vars).toEqual({ github_user: "alice" });
 	});
 
 	it("throws on missing file", () => {
@@ -180,10 +181,10 @@ describe("loadProjectVars", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"repo: justicebid/platform\nport: 3000\n",
+			"repo: acme/platform\nport: 3000\n",
 		);
 		expect(loadProjectVars(dir)).toEqual({
-			repo: "justicebid/platform",
+			repo: "acme/platform",
 			port: "3000",
 		});
 	});
@@ -199,45 +200,45 @@ describe("loadProjectVars", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: JUS-1\nmodels:\n  sonnet: claude-sonnet-4-6\n",
+			"ticket: TICK-1\nmodels:\n  sonnet: claude-sonnet-4-6\n",
 		);
-		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
 
 	it("skips the reserved github_id key instead of exposing it as a var", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: JUS-1\ngithub_id: noootown\n",
+			"ticket: TICK-1\ngithub_id: alice\n",
 		);
-		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
 
 	it("skips the reserved default_model key instead of exposing it as a var", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: JUS-1\ndefault_model: opus\n",
+			"ticket: TICK-1\ndefault_model: opus\n",
 		);
-		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
 
 	it("skips the reserved task_retention_days key instead of exposing it as a var", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: JUS-1\ntask_retention_days: 15\n",
+			"ticket: TICK-1\ntask_retention_days: 15\n",
 		);
-		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
 
 	it("skips the reserved default_models key instead of exposing it as a var", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: JUS-1\ndefault_models:\n  - claude/claude-opus-4.8\n",
+			"ticket: TICK-1\ndefault_models:\n  - claude/claude-opus-4.8\n",
 		);
-		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
 });
 
@@ -246,7 +247,7 @@ describe("loadProjectTaskRetentionDays", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"task_retention_days: 15\ngithub_id: noootown\n",
+			"task_retention_days: 15\ngithub_id: alice\n",
 		);
 		expect(loadProjectTaskRetentionDays(dir, 7)).toBe(15);
 	});
@@ -256,7 +257,7 @@ describe("loadProjectTaskRetentionDays", () => {
 		expect(loadProjectTaskRetentionDays(absent, 7)).toBe(7);
 
 		const noKey = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
-		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: TICK-1\n");
 		expect(loadProjectTaskRetentionDays(noKey, 7)).toBe(7);
 	});
 
@@ -280,7 +281,7 @@ describe("loadProjectTaskRetentionDays", () => {
 
 	it("returns the given fallback verbatim, not a hardcoded 7", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-trd-"));
-		writeFileSync(join(dir, "vars.yaml"), "ticket: JUS-1\n");
+		writeFileSync(join(dir, "vars.yaml"), "ticket: TICK-1\n");
 		expect(loadProjectTaskRetentionDays(dir, 30)).toBe(30);
 	});
 });
@@ -290,7 +291,7 @@ describe("loadProjectDefaultBranch", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-db-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"default_branch: develop\ngithub_id: noootown\n",
+			"default_branch: develop\ngithub_id: alice\n",
 		);
 		expect(loadProjectDefaultBranch(dir)).toBe("develop");
 	});
@@ -300,7 +301,7 @@ describe("loadProjectDefaultBranch", () => {
 		expect(loadProjectDefaultBranch(absent)).toBe("main");
 
 		const noKey = mkdtempSync(join(tmpdir(), "queohoh-db-"));
-		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: TICK-1\n");
 		expect(loadProjectDefaultBranch(noKey)).toBe("main");
 
 		const blank = mkdtempSync(join(tmpdir(), "queohoh-db-"));
@@ -322,9 +323,9 @@ describe("loadProjectDefaultBranch", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-db-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: JUS-1\ndefault_branch: develop\n",
+			"ticket: TICK-1\ndefault_branch: develop\n",
 		);
-		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
 });
 
@@ -333,9 +334,9 @@ describe("loadProjectGithubId", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: JUS-1\ngithub_id: noootown\n",
+			"ticket: TICK-1\ngithub_id: alice\n",
 		);
-		expect(loadProjectGithubId(dir)).toBe("noootown");
+		expect(loadProjectGithubId(dir)).toBe("alice");
 	});
 
 	it("returns undefined for absent file, absent key, empty string, or non-string", () => {
@@ -343,7 +344,7 @@ describe("loadProjectGithubId", () => {
 		expect(loadProjectGithubId(absent)).toBeUndefined();
 
 		const noKey = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
-		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: TICK-1\n");
 		expect(loadProjectGithubId(noKey)).toBeUndefined();
 
 		const blank = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
@@ -533,7 +534,7 @@ describe("loadProjectDefaultModels", () => {
 		expect(loadProjectDefaultModels(absent)).toBeUndefined();
 
 		const noKey = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
-		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: TICK-1\n");
 		expect(loadProjectDefaultModels(noKey)).toBeUndefined();
 
 		const scalar = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
@@ -556,10 +557,10 @@ describe("loadProjectProtectedWorktrees", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"protected_worktrees:\n  - legal-lake\n  - testing1\n",
+			"protected_worktrees:\n  - long-lived\n  - testing1\n",
 		);
 		expect(loadProjectProtectedWorktrees(dir)).toEqual([
-			"legal-lake",
+			"long-lived",
 			"testing1",
 		]);
 	});
@@ -569,7 +570,7 @@ describe("loadProjectProtectedWorktrees", () => {
 		expect(loadProjectProtectedWorktrees(absent)).toEqual([]);
 
 		const noKey = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
-		writeFileSync(join(noKey, "vars.yaml"), "ticket: JUS-1\n");
+		writeFileSync(join(noKey, "vars.yaml"), "ticket: TICK-1\n");
 		expect(loadProjectProtectedWorktrees(noKey)).toEqual([]);
 	});
 
@@ -577,16 +578,16 @@ describe("loadProjectProtectedWorktrees", () => {
 		const scalar = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
 		writeFileSync(
 			join(scalar, "vars.yaml"),
-			"protected_worktrees: legal-lake\n",
+			"protected_worktrees: long-lived\n",
 		);
 		expect(loadProjectProtectedWorktrees(scalar)).toEqual([]);
 
 		const mixed = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
 		writeFileSync(
 			join(mixed, "vars.yaml"),
-			"protected_worktrees:\n  - legal-lake\n  - ''\n  - 12345\n",
+			"protected_worktrees:\n  - long-lived\n  - ''\n  - 12345\n",
 		);
-		expect(loadProjectProtectedWorktrees(mixed)).toEqual(["legal-lake"]);
+		expect(loadProjectProtectedWorktrees(mixed)).toEqual(["long-lived"]);
 
 		const notMap = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
 		writeFileSync(join(notMap, "vars.yaml"), "[not, a, map]\n");
@@ -597,8 +598,8 @@ describe("loadProjectProtectedWorktrees", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pw-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: JUS-1\nprotected_worktrees:\n  - legal-lake\n",
+			"ticket: TICK-1\nprotected_worktrees:\n  - long-lived\n",
 		);
-		expect(loadProjectVars(dir)).toEqual({ ticket: "JUS-1" });
+		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
 });

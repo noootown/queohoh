@@ -169,7 +169,7 @@ fn three_worktrees() -> StateSnapshot {
 fn worktrees_with_protected() -> StateSnapshot {
     let mut wts = HashMap::new();
     wts.insert("platform".into(), vec![
-        WorktreeInfo { name: "legal-lake".into(), path: "/wt/ll".into(), branch: "legal-lake".into(), protected: true, ..Default::default() },
+        WorktreeInfo { name: "long-lived".into(), path: "/wt/ll".into(), branch: "long-lived".into(), protected: true, ..Default::default() },
         WorktreeInfo { name: "wt-b".into(), path: "/wt/b".into(), branch: "wt-b".into(), ..Default::default() },
     ]);
     StateSnapshot { projects: vec![Project { name: "platform".into(), github_id: None }], worktrees: wts, ..Default::default() }
@@ -180,7 +180,7 @@ fn single_remove_refuses_a_protected_worktree() {
     let mut a = app_with(worktrees_with_protected());
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → tasks
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → worktrees
-    // cursor on row 0 (legal-lake, protected) — press x
+    // cursor on row 0 (long-lived, protected) — press x
     let u = a.update(key('x'));
     assert!(matches!(a.mode, Mode::List), "no confirm dialog opens");
     assert_eq!(a.status_line.as_deref(), Some("worktree is protected"));
@@ -192,7 +192,7 @@ fn bulk_remove_drops_protected_rows() {
     let mut a = app_with(worktrees_with_protected());
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → tasks
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → worktrees
-    a.update(shift_down()); // 2-row range: legal-lake(protected) + wt-b
+    a.update(shift_down()); // 2-row range: long-lived(protected) + wt-b
     a.update(key('x')); // opens bulk confirm with only eligible rows
     match &a.mode {
         Mode::Confirm { action: ConfirmAction::BulkRemoveWorktrees { names, .. }, .. } => {

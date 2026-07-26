@@ -35,10 +35,10 @@ describe("SessionRegistry", () => {
 	it("registers and persists workers, reloads from disk", () => {
 		const path = file();
 		const reg = new SessionRegistry(path);
-		reg.registerWorker("t1", "platform:JUS-1", 111);
+		reg.registerWorker("t1", "platform:TICK-1", 111);
 		const reloaded = new SessionRegistry(path);
 		expect(reloaded.list()).toHaveLength(1);
-		expect(reloaded.list()[0]?.lane).toBe("platform:JUS-1");
+		expect(reloaded.list()[0]?.lane).toBe("platform:TICK-1");
 	});
 
 	it("unregisters workers", () => {
@@ -80,10 +80,10 @@ describe("buildLiveState", () => {
 		const reg = new SessionRegistry(file());
 		reg.upsertInteractive("/wt/main", null);
 		reg.upsertInteractive("/wt/unknown", null);
-		const live = buildLiveState(reg.list(), [runningTask("JUS-1")], (cwd) =>
+		const live = buildLiveState(reg.list(), [runningTask("TICK-1")], (cwd) =>
 			cwd === "/wt/main" ? "platform:main" : null,
 		);
-		expect(live.runningLanes).toEqual(new Set(["platform:JUS-1"]));
+		expect(live.runningLanes).toEqual(new Set(["platform:TICK-1"]));
 		expect(live.interactiveLanes).toEqual(new Set(["platform:main"]));
 		expect(live.runningByRepo).toEqual(new Map([["platform", 1]]));
 	});

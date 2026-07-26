@@ -1,5 +1,5 @@
 ---
-source: crates/qoo-tui/src/view/detail.rs
+source: crates/qoo-tui/src/view/detail/tests.rs
 expression: terminal.backend()
 ---
 " 1:acme                                          ● running 0/3  ↯ claude  ↯ grok"
@@ -7,7 +7,7 @@ expression: terminal.backend()
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
 "│    Worktr…  Prompt/Args ││  Result                                           │"
-"│ $  feature  implement … ││                                                   │"
+"│ $  feature  topic=widg… ││                                                   │"
 "│                         ││  You've hit your session limit · resets 1pm       │"
 "│                         ││  (America/Chicago)                                │"
 "│                         ││                                                   │"

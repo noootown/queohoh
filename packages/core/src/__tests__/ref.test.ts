@@ -4,9 +4,9 @@ import { extractRef, extractTicketId, formatRef, parseRef } from "../ref.js";
 describe("parseRef", () => {
 	it("parses each kind", () => {
 		expect(parseRef("pr:1423")).toEqual({ kind: "pr", number: 1423 });
-		expect(parseRef("ticket:JUS-1423")).toEqual({
+		expect(parseRef("ticket:TICK-1423")).toEqual({
 			kind: "ticket",
-			id: "JUS-1423",
+			id: "TICK-1423",
 		});
 		expect(parseRef("worktree:main")).toEqual({
 			kind: "worktree",
@@ -22,17 +22,17 @@ describe("parseRef", () => {
 	});
 
 	it("anchors the ticket guard to the full string", () => {
-		expect(() => parseRef("ticket:xxJUS-123")).toThrow(
-			"invalid ref: ticket:xxJUS-123",
+		expect(() => parseRef("ticket:xxTICK-123")).toThrow(
+			"invalid ref: ticket:xxTICK-123",
 		);
-		expect(parseRef("ticket:JUS-123")).toEqual({
+		expect(parseRef("ticket:TICK-123")).toEqual({
 			kind: "ticket",
-			id: "JUS-123",
+			id: "TICK-123",
 		});
 	});
 
 	it("accepts a bare ticket id", () => {
-		expect(parseRef("JUS-1821")).toEqual({ kind: "ticket", id: "JUS-1821" });
+		expect(parseRef("TICK-1821")).toEqual({ kind: "ticket", id: "TICK-1821" });
 		expect(parseRef("ABC2-99")).toEqual({ kind: "ticket", id: "ABC2-99" });
 	});
 
@@ -57,23 +57,23 @@ describe("parseRef", () => {
 	});
 
 	it("parses Linear issue URLs into the ticket id", () => {
-		const want = { kind: "ticket", id: "JUS-1821" };
-		expect(parseRef("https://linear.app/justicebid/issue/JUS-1821")).toEqual(
+		const want = { kind: "ticket", id: "TICK-1821" };
+		expect(parseRef("https://linear.app/acme/issue/TICK-1821")).toEqual(
 			want,
 		);
 		expect(
-			parseRef("https://linear.app/justicebid/issue/JUS-1821-fix-the-thing"),
+			parseRef("https://linear.app/acme/issue/TICK-1821-fix-the-thing"),
 		).toEqual(want);
 		expect(
-			parseRef("linear.app/justicebid/issue/JUS-1821-slug?foo=bar#c1"),
+			parseRef("linear.app/acme/issue/TICK-1821-slug?foo=bar#c1"),
 		).toEqual(want);
 	});
 
 	it("trims surrounding whitespace before parsing", () => {
 		expect(parseRef("  pr:1423  ")).toEqual({ kind: "pr", number: 1423 });
-		expect(parseRef("\tJUS-1821\n")).toEqual({
+		expect(parseRef("\tTICK-1821\n")).toEqual({
 			kind: "ticket",
-			id: "JUS-1821",
+			id: "TICK-1821",
 		});
 		expect(parseRef("  https://github.com/acme/widgets/pull/1821  ")).toEqual({
 			kind: "pr",
@@ -87,8 +87,8 @@ describe("parseRef", () => {
 			"invalid ref: https://github.com/acme/widgets",
 		);
 		expect(() =>
-			parseRef("https://linear.app/justicebid/issue/no-ticket"),
-		).toThrow("invalid ref: https://linear.app/justicebid/issue/no-ticket");
+			parseRef("https://linear.app/acme/issue/no-ticket"),
+		).toThrow("invalid ref: https://linear.app/acme/issue/no-ticket");
 	});
 });
 
@@ -96,7 +96,7 @@ describe("formatRef", () => {
 	it("round-trips", () => {
 		for (const raw of [
 			"pr:1423",
-			"ticket:JUS-1423",
+			"ticket:TICK-1423",
 			"worktree:main",
 			"temp",
 			"repo",
@@ -121,33 +121,33 @@ describe("extractRef", () => {
 	it("finds a Linear issue URL anywhere in prose", () => {
 		expect(
 			extractRef(
-				"context in https://linear.app/justicebid/issue/JUS-123-fix-it thanks",
+				"context in https://linear.app/acme/issue/TICK-123-fix-it thanks",
 			),
-		).toEqual({ kind: "ticket", id: "JUS-123" });
+		).toEqual({ kind: "ticket", id: "TICK-123" });
 	});
 
 	it("prefers a PR URL over a Linear URL or a leading ticket", () => {
 		expect(
 			extractRef(
-				"JUS-1 see https://linear.app/jb/issue/JUS-2 and github.com/a/b/pull/3",
+				"TICK-1 see https://linear.app/acme/issue/TICK-2 and github.com/a/b/pull/3",
 			),
 		).toEqual({ kind: "pr", number: 3 });
 	});
 
 	it("prefers a Linear URL over a leading ticket when no PR URL", () => {
 		expect(
-			extractRef("JUS-1 details at https://linear.app/jb/issue/JUS-2"),
-		).toEqual({ kind: "ticket", id: "JUS-2" });
+			extractRef("TICK-1 details at https://linear.app/acme/issue/TICK-2"),
+		).toEqual({ kind: "ticket", id: "TICK-2" });
 	});
 
 	it("extracts a leading ticket id with trailing punctuation stripped", () => {
-		expect(extractRef("JUS-1821: rework the extraction")).toEqual({
+		expect(extractRef("TICK-1821: rework the extraction")).toEqual({
 			kind: "ticket",
-			id: "JUS-1821",
+			id: "TICK-1821",
 		});
-		expect(extractRef("JUS-1821 rework the extraction")).toEqual({
+		expect(extractRef("TICK-1821 rework the extraction")).toEqual({
 			kind: "ticket",
-			id: "JUS-1821",
+			id: "TICK-1821",
 		});
 	});
 
@@ -166,7 +166,7 @@ describe("extractRef", () => {
 
 describe("extractTicketId", () => {
 	it("finds ticket ids in branch names", () => {
-		expect(extractTicketId("JUS-1423-fix-auth")).toBe("JUS-1423");
+		expect(extractTicketId("TICK-1423-fix-auth")).toBe("TICK-1423");
 		expect(extractTicketId("feature/ABC2-99")).toBe("ABC2-99");
 		expect(extractTicketId("no-ticket-here")).toBeNull();
 	});

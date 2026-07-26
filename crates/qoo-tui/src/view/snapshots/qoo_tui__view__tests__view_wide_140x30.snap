@@ -7,11 +7,11 @@ expression: terminal.backend()
 "│                                                                                                    ││ 1:report  2:transcript  3:prompt  4│"
 "│ 🔍 [/]filter                                                                                       ││                                    │" Hidden by multi-width symbols: [(3, " ")]
 "│    Worktr…  Task          Prompt/Args                            Created      Age       Live       ││  (no report yet)                   │"
-"│ ⠯  feature  squash-merge  implement the widget cache             07/09 07:00  just now  ⏱ 0s       ││                                    │"
-"│ ○  feature                write docs for the cache               07/09 07:04  just now  #1 in lane ││                                    │"
+"│ ⠯  feature  squash-merge  topic=widget-cache                     07/09 07:00  just now  ⏱ 0s       ││                                    │"
+"│ ○  feature                topic=docs-cache                       07/09 07:04  just now  #1 in lane ││                                    │"
 "│ ──────── finished ──────────────────────────────────────────────────────────────────────────────── ││                                    │"
-"│ ✗  main                   flaky migration                        07/09 06:50  just now             ││                                    │"
-"│ ●  main                   earlier cleanup task                   07/09 05:00  just now             ││                                    │"
+"│ ✗  main                                                          07/09 06:50  just now             ││                                    │"
+"│ ●  main                                                          07/09 05:00  just now             ││                                    │"
 "│                                                                                                    ││                                    │"
 "│                                                                                                    ││                                    │"
 "│                                                                                                    ││                                    │"
@@ -27,7 +27,7 @@ expression: terminal.backend()
 "╭🌲 WORKTREES · 1 busy · 2 total──────────────────────── [r]un [g]oto [x]remove [t]asks · [z]collapse╮│                                    │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter                                                                                       ││                                    │" Hidden by multi-width symbols: [(3, " ")]
 "│         Name     Last Task                          Author          Commit    Live                 ││                                    │"
-"│ 2 ± ⛨ ↣ feature                                     koshea          3d ago    ⏱ 0s → write docs f… ││                                    │"
+"│ 2 ± ⛨ ↣ feature                                     bob             3d ago    ⏱ 0s → write docs f… ││                                    │"
 "│ ●       hotfix                                      ada             6h ago                         ││                                    │"
 "│ ●       feature                                                                                    ││                                    │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────╯"

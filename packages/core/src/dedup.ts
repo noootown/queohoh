@@ -6,7 +6,7 @@ export type DedupMode = "skip_seen" | "retry_errored" | "none";
 // Terminal statuses that make a `retry_errored` key eligible to re-enqueue. A
 // `failed` run errored; a `cancelled` run was deliberately stopped by the user;
 // a `verify-failed` run means the worker claimed success but a done-condition
-// disagreed (e.g. pr-fix-ci-conflicts still has a red CI gate) — all mean
+// disagreed (e.g. fix-ci-conflicts still has a red CI gate) — all mean
 // "no active task owns this and it was never fully handled", so discovery may
 // pick the key up again. `done` (handled, verify ok / no verify) stays
 // blocking until the item_key changes (e.g. new head SHA). Any non-terminal

@@ -12,7 +12,7 @@ const task: TaskInstance = {
 	definition: "platform/pr-review",
 	item: { number: "257" },
 	itemKey: "257",
-	target: { repo: "platform", ref: "pr:257", worktree: "JUS-257" },
+	target: { repo: "platform", ref: "pr:257", worktree: "TICK-257" },
 	priority: "normal",
 	created: "2026-07-08T10:00:00.000Z",
 	finishedAt: null,
@@ -38,18 +38,18 @@ describe("RunStore", () => {
 			{
 				task,
 				definition: null,
-				resolvedWorktree: "JUS-257",
-				resolvedWorktreePath: "/wt/platform.JUS-257",
+				resolvedWorktree: "TICK-257",
+				resolvedWorktreePath: "/wt/platform.TICK-257",
 				prompt: task.prompt,
 				model: "opus",
 			},
 			redact,
 		);
 		const meta = rs.readRunMeta(task.id);
-		expect(meta?.resolved_worktree).toBe("JUS-257");
+		expect(meta?.resolved_worktree).toBe("TICK-257");
 		// The absolute path the run executed in — the TUI's "Resume" action uses
 		// it as the tmux window cwd (name alone → tmux falls back to $HOME).
-		expect(meta?.resolved_worktree_path).toBe("/wt/platform.JUS-257");
+		expect(meta?.resolved_worktree_path).toBe("/wt/platform.TICK-257");
 		expect(meta?.model).toBe("opus");
 		expect(typeof meta?.started_at).toBe("string");
 		const prompt = readFileSync(
@@ -74,8 +74,8 @@ describe("RunStore", () => {
 			{
 				task,
 				definition: null,
-				resolvedWorktree: "JUS-257",
-				resolvedWorktreePath: "/wt/platform.JUS-257",
+				resolvedWorktree: "TICK-257",
+				resolvedWorktreePath: "/wt/platform.TICK-257",
 				prompt: task.prompt,
 				model: "opus",
 			},
@@ -135,8 +135,8 @@ describe("RunStore", () => {
 			{
 				task,
 				definition: null,
-				resolvedWorktree: "JUS-257",
-				resolvedWorktreePath: "/wt/platform.JUS-257",
+				resolvedWorktree: "TICK-257",
+				resolvedWorktreePath: "/wt/platform.TICK-257",
 				prompt: task.prompt,
 				model: "grok-composer-2.5-fast",
 				provider: "grok",
@@ -199,8 +199,8 @@ describe("RunStore attempt trail (fallback hops)", () => {
 			{
 				task,
 				definition: null,
-				resolvedWorktree: "JUS-257",
-				resolvedWorktreePath: "/wt/platform.JUS-257",
+				resolvedWorktree: "TICK-257",
+				resolvedWorktreePath: "/wt/platform.TICK-257",
 				prompt: task.prompt,
 				model: "opus",
 			},

@@ -291,7 +291,7 @@
         // Three self-review-e2e-style tasks: same definition lane override
         // (`testing1-stack`), different worktrees. Scheduler serializes them on
         // one key; the Live column must share one #N counter (not #1 per worktree).
-        let mut running = task_on(TaskStatus::Running, "t1", "platform", Some("JUS-1927"));
+        let mut running = task_on(TaskStatus::Running, "t1", "platform", Some("TICK-1927"));
         running.lane = Some("testing1-stack".into());
         let mut q1 = task_on(TaskStatus::Queued, "t2", "platform", Some("qoo-small"));
         q1.lane = Some("testing1-stack".into());
@@ -315,8 +315,8 @@
 
     #[test]
     fn scheduler_lane_key_prefers_override_over_worktree() {
-        let mut t = task_on(TaskStatus::Queued, "t", "platform", Some("JUS-1"));
-        assert_eq!(scheduler_lane_key(&t), "platform:JUS-1");
+        let mut t = task_on(TaskStatus::Queued, "t", "platform", Some("TICK-1"));
+        assert_eq!(scheduler_lane_key(&t), "platform:TICK-1");
         t.lane = Some("testing1-stack".into());
         assert_eq!(scheduler_lane_key(&t), "platform:testing1-stack");
     }
@@ -1076,14 +1076,14 @@
         // Match on EMAIL substring, case-insensitive (the GitHub noreply form).
         let mut by_email = wtrow("a");
         by_email.last_commit_author_email =
-            Some("12345+NOOOTOWN@users.noreply.github.com".into());
-        assert!(worktree_is_mine(&by_email, Some("noootown")));
+            Some("12345+ALICE@users.noreply.github.com".into());
+        assert!(worktree_is_mine(&by_email, Some("alice")));
 
         // Match on author NAME substring (email absent), case-insensitive.
         let mut by_name = wtrow("b");
-        by_name.last_commit_author = Some("Ian Chiu".into());
-        assert!(worktree_is_mine(&by_name, Some("ian")));
-        assert!(worktree_is_mine(&by_name, Some("chiu")));
+        by_name.last_commit_author = Some("Alice Example".into());
+        assert!(worktree_is_mine(&by_name, Some("alice")));
+        assert!(worktree_is_mine(&by_name, Some("example")));
 
         // No substring match anywhere → not mine.
         assert!(!worktree_is_mine(&by_email, Some("someoneelse")));
@@ -1165,7 +1165,7 @@
         // the snapshot and both mine rows (email- and name-matched) precede the
         // fresher non-mine row; mine rows keep their input order (stable).
         let mut s = snap(vec![], vec![]);
-        s.projects = vec![Project { name: "platform".into(), github_id: Some("noootown".into()) }];
+        s.projects = vec![Project { name: "platform".into(), github_id: Some("alice".into()) }];
         s.worktrees = HashMap::from([(
             "platform".to_string(),
             vec![
@@ -1178,12 +1178,12 @@
                 {
                     let mut w = wt("mine-email", "/wt/mine-email", "m1"); // mine by email
                     w.last_commit_author_email =
-                        Some("12345+NOOOTOWN@users.noreply.github.com".into());
+                        Some("12345+ALICE@users.noreply.github.com".into());
                     w
                 },
                 {
                     let mut w = wt("mine-name", "/wt/mine-name", "m2"); // mine by name
-                    w.last_commit_author = Some("noootown dev".into());
+                    w.last_commit_author = Some("alice dev".into());
                     w
                 },
             ],

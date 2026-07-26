@@ -155,7 +155,7 @@ pub(crate) fn textarea_rows(value: &str, width: usize) -> u16 {
 }
 
 /// Human hint labeling a synthetic combobox ref row in the open popup:
-/// `pr:45` → "use PR #45", `ticket:JUS-1756` → "use ticket JUS-1756".
+/// `pr:45` → "use PR #45", `ticket:TICK-1756` → "use ticket TICK-1756".
 fn ref_hint(r: &str) -> String {
     if let Some(n) = r.strip_prefix("pr:") {
         format!("use PR #{n}")
@@ -166,7 +166,7 @@ fn ref_hint(r: &str) -> String {
     }
 }
 
-/// Open-list label for a seeded worktree option: `platform.JUS-1924 #1938`
+/// Open-list label for a seeded worktree option: `platform.TICK-1924 #1938`
 /// when a `pr:N` alias points at this worktree, else the bare name. No parens —
 /// the `#N` is painted yellow by [`paint_dropdown_option`]. The pick VALUE stays
 /// the raw name; only the rendered row is decorated.
@@ -187,7 +187,7 @@ pub(crate) fn worktree_option_label(
 }
 
 /// Split a trailing ` #digits` PR suffix off a dropdown label (e.g.
-/// `platform.JUS-1924 #1938` → `("platform.JUS-1924", "#1938")`).
+/// `platform.TICK-1924 #1938` → `("platform.TICK-1924", "#1938")`).
 fn split_pr_suffix(label: &str) -> Option<(&str, &str)> {
     let (head, rest) = label.rsplit_once(' ')?;
     if rest.starts_with('#')
@@ -537,14 +537,14 @@ impl FormState {
     /// The FILTERED option rows for the focused Combobox, in display order:
     /// every seeded option whose text contains the typed value (case-
     /// insensitive) **or** that is the target of a `ref_aliases` entry matching
-    /// the query (so typing `1938` lists `platform.JUS-1924` when
-    /// `pr:1938 → platform.JUS-1924` — without this, the synthetic `pr:1938`
+    /// the query (so typing `1938` lists `platform.TICK-1924` when
+    /// `pr:1938 → platform.TICK-1924` — without this, the synthetic `pr:1938`
     /// row is suppressed by the alias and the worktree never appears because
     /// its name doesn't contain the digits). Each row is paired with its
     /// original option index. PLUS a synthetic ref row `(usize::MAX, "<ref>")`
     /// when `classify_ref(value)` is `Some`, no seeded option already equals
     /// that ref, AND no existing worktree covers it via [`Self::ref_aliases`]
-    /// (so typing `JUS-1924` when `platform.JUS-1924` already exists only lists
+    /// (so typing `TICK-1924` when `platform.TICK-1924` already exists only lists
     /// the worktree — never a redundant "use ticket… (new worktree)" row).
     /// `usize::MAX` marks the synthetic row so the renderer can label it
     /// ("← use PR #45"). Empty (or an empty vec) off a Combobox.
@@ -569,7 +569,7 @@ impl FormState {
                     alias_hits.insert(wt.as_str());
                     continue;
                 }
-                // Bare body: "1938" hits `pr:1938`; "jus-1924" hits `ticket:JUS-1924`.
+                // Bare body: "1938" hits `pr:1938`; "tick-1924" hits `ticket:TICK-1924`.
                 let body = key
                     .strip_prefix("pr:")
                     .or_else(|| key.strip_prefix("ticket:"))
@@ -1452,7 +1452,7 @@ mod tests {
     #[test]
     fn combobox_filters_and_accepts_typed_ref() {
         let mut f = FormState::new("t","OK", vec![Field::combobox(
-            "target", vec!["JUS-1756".into(),"acme".into()], "")]);
+            "target", vec!["TICK-1756".into(),"acme".into()], "")]);
         f.focus = 0;
         for c in "ac".chars() { f.insert_char(c); }
         let view = f.combobox_filtered();
@@ -1465,27 +1465,27 @@ mod tests {
 
     #[test]
     fn combobox_suppresses_synthetic_ref_when_alias_covers_existing_worktree() {
-        // Typing JUS-1924 when platform.JUS-1924 exists (alias ticket:JUS-1924)
+        // Typing TICK-1924 when platform.TICK-1924 exists (alias ticket:TICK-1924)
         // must list only the worktree — no "use ticket… (new worktree)" row.
-        // Same worktree also has PR 1938 — mirrors platform.JUS-1924 #1938.
+        // Same worktree also has PR 1938 — mirrors platform.TICK-1924 #1938.
         let mut f = FormState::new(
             "t",
             "OK",
             vec![Field::combobox(
                 "target",
-                vec!["platform.JUS-1924".into(), "platform.other".into()],
+                vec!["platform.TICK-1924".into(), "platform.other".into()],
                 "",
             )],
         );
         f.ref_aliases
-            .insert("ticket:JUS-1924".into(), "platform.JUS-1924".into());
+            .insert("ticket:TICK-1924".into(), "platform.TICK-1924".into());
         f.ref_aliases
-            .insert("pr:1938".into(), "platform.JUS-1924".into());
+            .insert("pr:1938".into(), "platform.TICK-1924".into());
         f.focus = 0;
-        f.set_field_value(0, "JUS-1924");
+        f.set_field_value(0, "TICK-1924");
         let view = f.combobox_filtered();
         assert!(
-            view.iter().any(|(_, s)| s == "platform.JUS-1924"),
+            view.iter().any(|(_, s)| s == "platform.TICK-1924"),
             "existing worktree still listed: {view:?}"
         );
         assert!(
@@ -1493,7 +1493,7 @@ mod tests {
             "no synthetic ticket row when alias covers it: {view:?}"
         );
         assert!(
-            !FormState::is_new_worktree_target("JUS-1924", &["platform.JUS-1924".into()], &f.ref_aliases),
+            !FormState::is_new_worktree_target("TICK-1924", &["platform.TICK-1924".into()], &f.ref_aliases),
             "closed field must not show (new worktree) for a covered ticket"
         );
         // Bare PR number covered by pr_number alias: list the worktree (name
@@ -1501,7 +1501,7 @@ mod tests {
         f.set_field_value(0, "1938");
         let view = f.combobox_filtered();
         assert!(
-            view.iter().any(|(_, s)| s == "platform.JUS-1924"),
+            view.iter().any(|(_, s)| s == "platform.TICK-1924"),
             "PR digits must surface the aliased worktree: {view:?}"
         );
         assert!(
@@ -1509,12 +1509,12 @@ mod tests {
             "no synthetic pr row when alias covers it: {view:?}"
         );
         assert_eq!(
-            worktree_option_label("platform.JUS-1924", &f.ref_aliases),
-            "platform.JUS-1924 #1938"
+            worktree_option_label("platform.TICK-1924", &f.ref_aliases),
+            "platform.TICK-1924 #1938"
         );
         assert_eq!(
-            split_pr_suffix("platform.JUS-1924 #1938"),
-            Some(("platform.JUS-1924", "#1938"))
+            split_pr_suffix("platform.TICK-1924 #1938"),
+            Some(("platform.TICK-1924", "#1938"))
         );
         // Uncovered PR still offers the synthetic create path.
         f.set_field_value(0, "9999");
@@ -1556,7 +1556,7 @@ mod tests {
     #[test]
     fn readonly_fields_are_focus_skipped_and_not_edited() {
         let mut f = FormState::new("t", "OK", vec![
-            Field::readonly("target", "JUS-1"),
+            Field::readonly("target", "TICK-1"),
             Field::input("name", "", true),
         ]);
         assert_eq!(f.focus_kind(), FocusKind::Field(1)); // starts past the readonly

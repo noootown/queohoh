@@ -52,7 +52,7 @@ export function createResolverIO(exec: Exec): ResolverIO {
 		// Fail loud so Engine.refreshWorktreeCache can KEEP the last-known list.
 		// Returning [] on error (with listingOk still true) made every worktree
 		// look deleted and hard-purged terminal tasks for still-existing WTs
-		// (e.g. long-lived platform.JUS-1946 while cleaning up other branches).
+		// (e.g. long-lived platform.TICK-1946 while cleaning up other branches).
 		if (exitCode !== 0) {
 			throw new Error(
 				`git worktree list failed in ${repoPath} (exit ${exitCode})`,
@@ -117,7 +117,7 @@ export function createResolverIO(exec: Exec): ResolverIO {
 
 		async removeWorktree(repoPath, worktree) {
 			// Force the worktree clean so `wt remove` can proceed (mirrors
-			// agent247's cleanup-worktree.sh — this deliberately discards
+			// a cleanup-worktree script — this deliberately discards
 			// uncommitted changes). `exec` never rejects, so reset/clean are
 			// inherently best-effort; only `wt remove`'s exit code is load-bearing.
 			await exec("git", ["reset", "--hard", "HEAD"], { cwd: worktree.path });

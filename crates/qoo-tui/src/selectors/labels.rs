@@ -171,7 +171,7 @@ pub fn filter_rows<T>(rows: &[T], filter: &str, text_of: impl Fn(&T) -> String) 
 
 /// Haystack for QUEUE pane `/` search. Includes definition name (task name),
 /// worktree, and prompt summary so a query like `intake` or `pr-ready` or a
-/// worktree `JUS-1966` hits the right rows — not just freeform prompt text.
+/// worktree `TICK-1966` hits the right rows — not just freeform prompt text.
 pub fn queue_search_text(row: &QueueRow) -> String {
     let mut s = String::with_capacity(
         row.def_name.as_ref().map(|d| d.len() + 1).unwrap_or(0)

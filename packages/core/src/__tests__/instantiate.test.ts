@@ -38,7 +38,7 @@ function deps(store: QueueStore, stdout: string) {
 		exec,
 		cwd: "/repo",
 		source: "cron" as const,
-		globalVars: { github_user: "noootown" },
+		globalVars: { github_user: "alice" },
 	};
 }
 
@@ -64,7 +64,7 @@ describe("instantiateDefinition — discover", () => {
 			worktree: null,
 		});
 		expect(first?.priority).toBe("high");
-		expect(first?.prompt).toBe("Review PR 257 for noootown.\n");
+		expect(first?.prompt).toBe("Review PR 257 for alice.\n");
 		expect(store.list()).toHaveLength(2);
 	});
 
@@ -119,11 +119,11 @@ describe("instantiateDefinition — discover", () => {
 				exec,
 				cwd: "/repo",
 				source: "cron",
-				globalVars: { github_user: "noootown" },
+				globalVars: { github_user: "alice" },
 				repoVars: { repo_slug: "org/repo" },
 			},
 		);
-		expect(capturedArgs).toEqual(["-lc", "bash discover.sh noootown org/repo"]);
+		expect(capturedArgs).toEqual(["-lc", "bash discover.sh alice org/repo"]);
 	});
 
 	it("throws when definition has no discovery", async () => {
@@ -249,11 +249,11 @@ describe("instantiateDefinition — args", () => {
 			}),
 			{
 				mode: "args",
-				values: ["see https://linear.app/jb/issue/JUS-123-fix-it"],
+				values: ["see https://linear.app/acme/issue/TICK-123-fix-it"],
 			},
 			deps(store, "[]"),
 		);
-		expect(created[0]?.target.ref).toBe("ticket:JUS-123");
+		expect(created[0]?.target.ref).toBe("ticket:TICK-123");
 	});
 
 	it("derives a ticket ref from a leading bare ticket under worktree auto", async () => {
@@ -266,10 +266,10 @@ describe("instantiateDefinition — args", () => {
 				worktree: "auto",
 				prompt: "{{situation}}\n",
 			}),
-			{ mode: "args", values: ["JUS-1821: rework the extraction"] },
+			{ mode: "args", values: ["TICK-1821: rework the extraction"] },
 			deps(store, "[]"),
 		);
-		expect(created[0]?.target.ref).toBe("ticket:JUS-1821");
+		expect(created[0]?.target.ref).toBe("ticket:TICK-1821");
 	});
 
 	it("falls back to temp when auto finds no ref in plain prose", async () => {
