@@ -21,7 +21,7 @@ describe("BUILTIN_CATALOG", () => {
 	it("is grouped by provider in precedence order, each group most->least powerful", () => {
 		expect(BUILTIN_CATALOG).toEqual([
 			{ provider: "claude", id: "claude-fable-5", label: "claude-fable-5" },
-			{ provider: "claude", id: "claude-opus-4-8", label: "claude-opus-4.8" },
+			{ provider: "claude", id: "claude-opus-5", label: "claude-opus-5" },
 			{ provider: "claude", id: "claude-sonnet-5", label: "claude-sonnet-5" },
 			{ provider: "claude", id: "claude-haiku-4-5", label: "claude-haiku-4.5" },
 			{ provider: "grok", id: "grok-4.5", label: "grok-4.5" },
@@ -45,7 +45,7 @@ describe("effectiveCatalog", () => {
 
 	it("merges an overlay entry onto an existing built-in without reordering the group", () => {
 		const overlay: CatalogEntry[] = [
-			{ provider: "claude", id: "claude-opus-4-8", label: "opus-renamed" },
+			{ provider: "claude", id: "claude-opus-5", label: "opus-renamed" },
 		];
 		const result = effectiveCatalog(overlay);
 		expect(result).not.toHaveProperty("error");
@@ -55,13 +55,13 @@ describe("effectiveCatalog", () => {
 		// Position unchanged (still 2nd in the claude group), only the label field updated.
 		expect(claudeGroup.map((e) => e.id)).toEqual([
 			"claude-fable-5",
-			"claude-opus-4-8",
+			"claude-opus-5",
 			"claude-sonnet-5",
 			"claude-haiku-4-5",
 		]);
 		expect(claudeGroup[1]).toEqual({
 			provider: "claude",
-			id: "claude-opus-4-8",
+			id: "claude-opus-5",
 			label: "opus-renamed",
 		});
 	});
@@ -134,28 +134,28 @@ describe("effectiveCatalog", () => {
 
 	it("errors on a duplicate label within one provider", () => {
 		const overlay: CatalogEntry[] = [
-			{ provider: "claude", id: "claude-new-model", label: "claude-opus-4.8" },
+			{ provider: "claude", id: "claude-new-model", label: "claude-opus-5" },
 		];
 		expect(effectiveCatalog(overlay)).toEqual({
-			error: "catalog: duplicate label claude-opus-4.8 in provider claude",
+			error: "catalog: duplicate label claude-opus-5 in provider claude",
 		});
 	});
 });
 
 describe("findModel", () => {
 	it("matches by label within the referenced provider", () => {
-		expect(findModel(BUILTIN_CATALOG, "claude/claude-opus-4.8")).toEqual({
+		expect(findModel(BUILTIN_CATALOG, "claude/claude-opus-5")).toEqual({
 			provider: "claude",
-			id: "claude-opus-4-8",
-			label: "claude-opus-4.8",
+			id: "claude-opus-5",
+			label: "claude-opus-5",
 		});
 	});
 
 	it("matches by exact id when no label matches", () => {
-		expect(findModel(BUILTIN_CATALOG, "claude/claude-opus-4-8")).toEqual({
+		expect(findModel(BUILTIN_CATALOG, "claude/claude-opus-5")).toEqual({
 			provider: "claude",
-			id: "claude-opus-4-8",
-			label: "claude-opus-4.8",
+			id: "claude-opus-5",
+			label: "claude-opus-5",
 		});
 	});
 
@@ -163,12 +163,12 @@ describe("findModel", () => {
 		const catalog: CatalogEntry[] = [
 			{
 				provider: "claude",
-				id: "claude-opus-4-8",
-				label: "claude-opus-4.8",
+				id: "claude-opus-5",
+				label: "claude-opus-5",
 				hidden: true,
 			},
 		];
-		expect(findModel(catalog, "claude/claude-opus-4.8")).toEqual(catalog[0]);
+		expect(findModel(catalog, "claude/claude-opus-5")).toEqual(catalog[0]);
 	});
 
 	it("returns undefined for an unknown ref", () => {
@@ -186,8 +186,8 @@ describe("findModel", () => {
 		// resolveModelChain → model_w=0).
 		expect(findModel(BUILTIN_CATALOG, "claude/opus")).toEqual({
 			provider: "claude",
-			id: "claude-opus-4-8",
-			label: "claude-opus-4.8",
+			id: "claude-opus-5",
+			label: "claude-opus-5",
 		});
 		expect(findModel(BUILTIN_CATALOG, "claude/sonnet")).toEqual({
 			provider: "claude",
@@ -214,10 +214,10 @@ describe("findModel", () => {
 			id: "claude-sonnet-5",
 			label: "claude-sonnet-5",
 		});
-		expect(findModel(BUILTIN_CATALOG, "claude/opus-4.8")).toEqual({
+		expect(findModel(BUILTIN_CATALOG, "claude/opus-5")).toEqual({
 			provider: "claude",
-			id: "claude-opus-4-8",
-			label: "claude-opus-4.8",
+			id: "claude-opus-5",
+			label: "claude-opus-5",
 		});
 	});
 
@@ -229,14 +229,14 @@ describe("findModel", () => {
 
 describe("unknownModelError", () => {
 	it("suggests provider/label when the bare ref matches a label in some provider", () => {
-		expect(unknownModelError(BUILTIN_CATALOG, "claude-opus-4.8")).toBe(
-			"unknown model: claude-opus-4.8 (did you mean claude/claude-opus-4.8?)",
+		expect(unknownModelError(BUILTIN_CATALOG, "claude-opus-5")).toBe(
+			"unknown model: claude-opus-5 (did you mean claude/claude-opus-5?)",
 		);
 	});
 
 	it("suggests provider/label when the part after / matches a label or id", () => {
-		expect(unknownModelError(BUILTIN_CATALOG, "grok/claude-opus-4.8")).toBe(
-			"unknown model: grok/claude-opus-4.8 (did you mean claude/claude-opus-4.8?)",
+		expect(unknownModelError(BUILTIN_CATALOG, "grok/claude-opus-5")).toBe(
+			"unknown model: grok/claude-opus-5 (did you mean claude/claude-opus-5?)",
 		);
 	});
 
@@ -264,15 +264,15 @@ describe("groupHead", () => {
 describe("formatModel / modelRef", () => {
 	const entry: CatalogEntry = {
 		provider: "claude",
-		id: "claude-opus-4-8",
-		label: "claude-opus-4.8",
+		id: "claude-opus-5",
+		label: "claude-opus-5",
 	};
 
 	it("formatModel renders 'label (provider)'", () => {
-		expect(formatModel(entry)).toBe("claude-opus-4.8 (claude)");
+		expect(formatModel(entry)).toBe("claude-opus-5 (claude)");
 	});
 
 	it("modelRef renders 'provider/label'", () => {
-		expect(modelRef(entry)).toBe("claude/claude-opus-4.8");
+		expect(modelRef(entry)).toBe("claude/claude-opus-5");
 	});
 });

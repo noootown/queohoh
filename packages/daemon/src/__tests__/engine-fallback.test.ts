@@ -108,7 +108,7 @@ function setup(overrides: {
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+		defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
 		// Working table (claude + grok on, codex off) — production defaults are
 		// all-disabled; this suite needs a multi-provider fallback chain.
 		providers: TEST_PROVIDERS,

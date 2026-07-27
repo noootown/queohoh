@@ -89,7 +89,7 @@ async function setup(opts?: {
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+		defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
 		providers: opts?.providers ?? TEST_PROVIDERS,
 	};
 	const settings = new SettingsStore(stateDir, config.providers);

@@ -71,7 +71,7 @@ function setup(
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+		defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
 		providers: TEST_PROVIDERS,
 		...overrides.config,
 	};
@@ -291,7 +291,7 @@ describe("Engine.tick", () => {
 			archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
-			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+			defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
 			providers: TEST_PROVIDERS,
 		};
 		let claudeRan = false;
@@ -468,7 +468,7 @@ describe("Engine.tick", () => {
 			archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
-			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+			defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
 			providers: TEST_PROVIDERS,
 		};
 		const lineage = new SessionLineageStore(join(base, "session-lineage.json"));

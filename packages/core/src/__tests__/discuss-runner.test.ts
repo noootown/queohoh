@@ -156,7 +156,7 @@ describe("runDiscussTurn", () => {
 			turnId: "turn-2",
 			prompt: "And this?",
 			systemPrompt: "SYS",
-			model: "claude-opus-4-8",
+			model: "claude-opus-5",
 			provider: "claude",
 			cwd: wt,
 			timeoutMs: 5000,

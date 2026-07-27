@@ -135,7 +135,7 @@ describe("resolveDefinition — project vs global", () => {
 		archiveAfterDays: 7,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
-			defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+			defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
 			providers: DEFAULT_PROVIDERS,
 		};
 	}
@@ -236,7 +236,7 @@ describe("loadProjectVars", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"ticket: TICK-1\ndefault_models:\n  - claude/claude-opus-4.8\n",
+			"ticket: TICK-1\ndefault_models:\n  - claude/claude-opus-5\n",
 		);
 		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
@@ -416,7 +416,7 @@ describe("loadGlobalConfig — catalog overlay", () => {
 				"projects: []",
 				"catalog:",
 				"  - provider: claude",
-				"    id: claude-opus-4-8",
+				"    id: claude-opus-5",
 				"    label: claude-sonnet-5", // collides with the built-in claude/claude-sonnet-5 label
 			].join("\n"),
 		);
@@ -442,12 +442,12 @@ describe("loadGlobalConfig — catalog overlay", () => {
 });
 
 describe("loadGlobalConfig — default_models", () => {
-	it("defaults to claude/claude-opus-4.8, grok/grok-4.5 when absent", () => {
+	it("defaults to claude/claude-opus-5, grok/grok-4.5 when absent", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-cfg-dm-"));
 		const path = join(dir, "config.yaml");
 		writeFileSync(path, "projects: []\n");
 		expect(loadGlobalConfig(path).defaultModels).toEqual([
-			"claude/claude-opus-4.8",
+			"claude/claude-opus-5",
 			"grok/grok-4.5",
 		]);
 	});
@@ -521,10 +521,10 @@ describe("loadProjectDefaultModels", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"default_models:\n  - claude/claude-opus-4.8\n  - grok/grok-4.5\n",
+			"default_models:\n  - claude/claude-opus-5\n  - grok/grok-4.5\n",
 		);
 		expect(loadProjectDefaultModels(dir)).toEqual([
-			"claude/claude-opus-4.8",
+			"claude/claude-opus-5",
 			"grok/grok-4.5",
 		]);
 	});
@@ -538,7 +538,7 @@ describe("loadProjectDefaultModels", () => {
 		expect(loadProjectDefaultModels(noKey)).toBeUndefined();
 
 		const scalar = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
-		writeFileSync(join(scalar, "vars.yaml"), "default_models: claude/claude-opus-4.8\n");
+		writeFileSync(join(scalar, "vars.yaml"), "default_models: claude/claude-opus-5\n");
 		expect(loadProjectDefaultModels(scalar)).toBeUndefined();
 	});
 
@@ -546,9 +546,9 @@ describe("loadProjectDefaultModels", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pdm-mixed-"));
 		writeFileSync(
 			join(dir, "vars.yaml"),
-			"default_models:\n  - claude/claude-opus-4.8\n  - ''\n  - 5\n",
+			"default_models:\n  - claude/claude-opus-5\n  - ''\n  - 5\n",
 		);
-		expect(loadProjectDefaultModels(dir)).toEqual(["claude/claude-opus-4.8"]);
+		expect(loadProjectDefaultModels(dir)).toEqual(["claude/claude-opus-5"]);
 	});
 });
 

@@ -344,7 +344,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "mise run setup",
 			postRun: "echo done",
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			timeoutMs: 120_000,
 			priority: "normal",
 			onDone: "stay",
@@ -363,10 +363,10 @@ describe("runTask", () => {
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("done");
-		// def.model "claude/claude-opus-4.8" resolves through the catalog → claude-opus-4-8.
-		expect(claudeModel).toBe("claude-opus-4-8");
+		// def.model "claude/claude-opus-5" resolves through the catalog → claude-opus-5.
+		expect(claudeModel).toBe("claude-opus-5");
 		expect(hookCalls).toEqual(["mise run setup", "echo done"]);
-		expect(runStore.readRunMeta(t.id)?.model).toBe("claude-opus-4-8");
+		expect(runStore.readRunMeta(t.id)?.model).toBe("claude-opus-5");
 	});
 
 	it("renders pre_run hooks with global/repo/item vars (item wins)", async () => {
@@ -383,7 +383,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "setup.sh {{number}} {{repo_slug}}",
 			postRun: null,
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			timeoutMs: 120_000,
 			priority: "normal",
 			onDone: "stay",
@@ -423,7 +423,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "bad-setup",
 			postRun: "cleanup",
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			timeoutMs: 60_000,
 			priority: "normal",
 			onDone: "stay",
@@ -548,7 +548,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: "run {{ticket}} {{branch}} {{worktree}}",
 			postRun: null,
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			timeoutMs: 60_000,
 			priority: "normal",
 			onDone: "stay",
@@ -593,7 +593,7 @@ describe("runTask", () => {
 			verify: null,
 			preRun: null,
 			postRun: "cleanup",
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			timeoutMs: 60_000,
 			priority: "normal",
 			onDone: "stay",
@@ -673,10 +673,10 @@ describe("runTask model-ref resolution", () => {
 
 describe("runTask model_pinned (explicit TUI pick)", () => {
 	it("pinned ref runs EXACTLY as picked — no active-provider re-head", async () => {
-		// Active provider is grok, but the task is pinned to claude/claude-opus-4.8 (an
+		// Active provider is grok, but the task is pinned to claude/claude-opus-5 (an
 		// explicit TUI dialog pick). Unlike an unpinned task (which would
 		// prepend grok's group head, see the next test), the run must go to
-		// claude/claude-opus-4.8 exactly.
+		// claude/claude-opus-5 exactly.
 		let seenModel = "";
 		const { deps, store } = makeDeps({
 			activeProvider: "grok",
@@ -690,13 +690,13 @@ describe("runTask model_pinned (explicit TUI pick)", () => {
 			repo: "platform",
 			ref: "temp",
 			source: "tui",
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			modelPinned: true,
 		});
 		withWorktree(store, t.id);
 		const result = await runTask(t.id, deps);
 		expect(result.status).toBe("done");
-		expect(seenModel).toBe("claude-opus-4-8");
+		expect(seenModel).toBe("claude-opus-5");
 	});
 
 	it("pinned ref on a disabled provider fails fast — no fallback", async () => {
@@ -885,7 +885,7 @@ describe("runTask pinned resume model resolution", () => {
 			verify: null,
 			preRun: null,
 			postRun: null,
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			timeoutMs: 60_000,
 			priority: "normal",
 			onDone: "stay",
@@ -912,7 +912,7 @@ describe("runTask pinned resume model resolution", () => {
 		});
 		withWorktree(store, t.id);
 		await runTask(t.id, deps);
-		// task.model "claude/claude-fable-5" wins over def.model "claude/claude-opus-4.8".
+		// task.model "claude/claude-fable-5" wins over def.model "claude/claude-opus-5".
 		expect(seenModel).toBe("claude-fable-5");
 	});
 });
@@ -966,7 +966,7 @@ describe("runTask timeout precedence", () => {
 			verify: null,
 			preRun: null,
 			postRun: null,
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			timeoutMs: 45_000,
 			priority: "normal",
 			onDone: "stay",
@@ -1128,7 +1128,7 @@ describe("runTask verify (done-condition)", () => {
 			preRun: null,
 			postRun: null,
 			verify: "check {{ticket}} {{worktree}}",
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			timeoutMs: 60_000,
 			priority: "normal",
 			onDone: "stay",

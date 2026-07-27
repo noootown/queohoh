@@ -12,7 +12,7 @@
  * id passed to the CLI; `label` is the reference used in `model:` fields and
  * pickers (`provider/label`). Labels follow `provider-family-version` with
  * hyphens between segments and dots inside the version (e.g.
- * `claude-opus-4.8`, `grok-4.5`) so the version is visible in the TUI without
+ * `claude-opus-5`, `grok-4.5`) so the version is visible in the TUI without
  * a separate short alias. `hidden` affects pickers only — a hidden entry
  * still resolves when referenced explicitly. */
 export interface CatalogEntry {
@@ -31,7 +31,7 @@ export const PROVIDER_PRECEDENCE: string[] = ["claude", "grok", "codex"];
  * receives (may still use the provider's native hyphenated form). */
 export const BUILTIN_CATALOG: CatalogEntry[] = [
 	{ provider: "claude", id: "claude-fable-5", label: "claude-fable-5" },
-	{ provider: "claude", id: "claude-opus-4-8", label: "claude-opus-4.8" },
+	{ provider: "claude", id: "claude-opus-5", label: "claude-opus-5" },
 	{ provider: "claude", id: "claude-sonnet-5", label: "claude-sonnet-5" },
 	{ provider: "claude", id: "claude-haiku-4-5", label: "claude-haiku-4.5" },
 	{ provider: "grok", id: "grok-4.5", label: "grok-4.5" },
@@ -128,7 +128,7 @@ export function effectiveCatalog(
  * 1. `label.endsWith("-" + rest)` — e.g. `claude/sonnet-5` → `claude-sonnet-5`
  *    (intermediate label that gained a provider prefix).
  * 2. pure-alphabetic `rest` matching a hyphen segment of a label — e.g.
- *    `claude/opus` → `claude-opus-4.8`, `claude/sonnet` → `claude-sonnet-5`
+ *    `claude/opus` → `claude-opus-5`, `claude/sonnet` → `claude-sonnet-5`
  *    (short family tokens from the tier-alias era). Group order is
  *    most→least powerful, so the first match is the current top of that
  *    family. Never crosses provider groups. */

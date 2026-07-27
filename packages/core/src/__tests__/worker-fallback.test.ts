@@ -287,7 +287,7 @@ describe("runTask chain rotation + provider-group skip", () => {
 	it("two-entry list rotates claude → grok on a session limit", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: sessionLimitResult,
-			model: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+			model: ["claude/claude-opus-5", "grok/grok-4.5"],
 		});
 		const first = await runTask(taskId, { ...deps, providers });
 		expect(first.status).toBe("queued");
@@ -301,7 +301,7 @@ describe("runTask chain rotation + provider-group skip", () => {
 	it("single-entry list settles terminal (no retry) on an availability failure", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: sessionLimitResult,
-			model: ["claude/claude-opus-4.8"],
+			model: ["claude/claude-opus-5"],
 		});
 		const out = await runTask(taskId, { ...deps, providers });
 		// One entry, nowhere to hop → the availability failure settles terminal.
@@ -316,14 +316,14 @@ describe("runTask chain rotation + provider-group skip", () => {
 	it("provider-group skip: a failed claude entry skips ALL claude entries, hops to grok", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: sessionLimitResult,
-			model: ["claude/claude-opus-4.8", "claude/claude-sonnet-5", "grok/grok-4.5"],
+			model: ["claude/claude-opus-5", "claude/claude-sonnet-5", "grok/grok-4.5"],
 		});
 		const first = await runTask(taskId, { ...deps, providers });
 		expect(first.status).toBe("queued");
 		expect(first.attemptedModels).toEqual(["claude"]);
 		const second = await runTask(taskId, { ...deps, providers });
 		expect(second.status).toBe("done");
-		// claude/claude-opus-4.8 availability-failed → the whole claude group is attempted,
+		// claude/claude-opus-5 availability-failed → the whole claude group is attempted,
 		// so claude/claude-sonnet-5 is never tried; the next hop is grok.
 		expect(seenProviders).toEqual(["claude", "grok"]);
 	});
@@ -331,7 +331,7 @@ describe("runTask chain rotation + provider-group skip", () => {
 	it("legacy attemptedProviders:['claude'] (surfaced as attemptedModels) skips every claude entry", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: okResult,
-			model: ["claude/claude-opus-4.8", "claude/claude-sonnet-5", "grok/grok-4.5"],
+			model: ["claude/claude-opus-5", "claude/claude-sonnet-5", "grok/grok-4.5"],
 		});
 		// A pre-catalog task file's `attempted_providers: [claude]` surfaces as
 		// attemptedModels via task.ts read-compat (covered in task-attempted.test.ts);
@@ -361,7 +361,7 @@ describe("runTask activeProvider vs resume pin", () => {
 		// task — the frozen stamp runs exactly the captured ref/chain order.
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: okResult,
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			activeProvider: "grok",
 		});
 		const out = await runTask(taskId, { ...deps, providers });
@@ -372,7 +372,7 @@ describe("runTask activeProvider vs resume pin", () => {
 	it("model_pinned suppresses the active-provider re-head — runs exactly the pinned ref", async () => {
 		const { deps, providers, taskId, seenProviders } = makeFallbackDeps({
 			firstResult: okResult,
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			modelPinned: true,
 			activeProvider: "grok",
 		});
@@ -457,7 +457,7 @@ describe("runTask pinned resume — pin absent from resolved chain", () => {
 				// A single string ref naming only claude — resolveModelChain never
 				// puts a grok entry in the chain, so the pin (grok) is absent and
 				// the else-branch has to derive it straight from the catalog.
-				model: "claude/claude-opus-4.8",
+				model: "claude/claude-opus-5",
 			});
 		const out = await runTask(taskId, { ...deps, providers, lineage });
 		expect(out.status).toBe("done");
@@ -506,7 +506,7 @@ describe("runTask pinned resume — pin absent from resolved chain", () => {
 		const { deps, taskId } = makeFallbackDeps({
 			firstResult: okResult,
 			resumeSessionId: "s1",
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 		});
 		const providers: ProviderConfig[] = [
 			{ name: "claude", enabled: true },

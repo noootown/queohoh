@@ -49,7 +49,7 @@ const CONFIG_YAML = `discovery:
   item_key: "{{url}}"
 dedup: skip_seen
 worktree: "pr:{{number}}"
-model: claude/claude-opus-4.8
+model: claude/claude-opus-5
 timeout: 30m
 priority: normal
 `;
@@ -85,7 +85,7 @@ async function setup() {
 		archiveAfterDays: 7,
 		vars: { github_username: "alice" },
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/claude-opus-4.8", "grok/grok-4.5"],
+		defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
 		providers: TEST_PROVIDERS,
 	};
 	const okResult: RunResult = {
@@ -178,7 +178,7 @@ describe("pr-review port shape", () => {
 				description: null,
 				// summary forwards the authored `provider/label` ref as-is (there is
 				// no alias table to resolve against anymore).
-				model: "claude/claude-opus-4.8",
+				model: "claude/claude-opus-5",
 				worktree: "pr:{{number}}",
 			},
 		]);

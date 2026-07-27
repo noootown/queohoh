@@ -35,7 +35,7 @@ describe("resolveModelChain", () => {
 	it("string spec resolves to a 1-entry chain", () => {
 		expect(
 			resolveModelChain(
-				"claude/claude-opus-4.8",
+				"claude/claude-opus-5",
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -44,7 +44,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
@@ -73,7 +73,7 @@ describe("resolveModelChain", () => {
 		// `provider/label` form — never the id the caller happened to type.
 		expect(
 			resolveModelChain(
-				"claude/claude-opus-4-8",
+				"claude/claude-opus-5",
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -82,7 +82,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
@@ -116,7 +116,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
 			],
 		});
@@ -140,7 +140,7 @@ describe("resolveModelChain", () => {
 	it("drops entries whose provider is disabled", () => {
 		expect(
 			resolveModelChain(
-				["codex/gpt-5.6-sol", "claude/claude-opus-4.8"],
+				["codex/gpt-5.6-sol", "claude/claude-opus-5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -149,7 +149,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
@@ -157,7 +157,7 @@ describe("resolveModelChain", () => {
 	it("stable-partitions active-provider entries first", () => {
 		expect(
 			resolveModelChain(
-				["claude/claude-opus-4.8", "grok/grok-4.5"],
+				["claude/claude-opus-5", "grok/grok-4.5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -167,7 +167,7 @@ describe("resolveModelChain", () => {
 			ok: true,
 			chain: [
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
@@ -181,13 +181,13 @@ describe("resolveModelChain", () => {
 				["grok/grok-4.5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
-				["claude/claude-opus-4.8", "grok/grok-4.5"],
+				["claude/claude-opus-5", "grok/grok-4.5"],
 				"claude",
 			),
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
 			],
 		});
@@ -217,7 +217,7 @@ describe("resolveModelChain", () => {
 		// No pool at all → group-head fallback (grok's most powerful, grok-4.5).
 		expect(
 			resolveModelChain(
-				["claude/claude-opus-4.8"],
+				["claude/claude-opus-5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -227,7 +227,7 @@ describe("resolveModelChain", () => {
 			ok: true,
 			chain: [
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
@@ -235,7 +235,7 @@ describe("resolveModelChain", () => {
 	it("switch-miss does NOT prepend when the active provider is disabled", () => {
 		expect(
 			resolveModelChain(
-				["claude/claude-opus-4.8"],
+				["claude/claude-opus-5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -244,7 +244,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
@@ -252,7 +252,7 @@ describe("resolveModelChain", () => {
 	it("dedups by provider/id, keeping the first occurrence", () => {
 		expect(
 			resolveModelChain(
-				["claude/claude-opus-4.8", "claude/claude-opus-4.8"],
+				["claude/claude-opus-5", "claude/claude-opus-5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 				[],
@@ -261,7 +261,7 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
@@ -282,22 +282,22 @@ describe("resolvePinnedModel", () => {
 		// Active provider is grok, but a pinned pick names claude — unlike
 		// resolveModelChain, no grok head is prepended.
 		expect(
-			resolvePinnedModel("claude/claude-opus-4.8", BUILTIN_CATALOG, PROVIDERS),
+			resolvePinnedModel("claude/claude-opus-5", BUILTIN_CATALOG, PROVIDERS),
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
 
 	it("canonicalizes a provider/id-form ref to provider/label", () => {
 		expect(
-			resolvePinnedModel("claude/claude-opus-4-8", BUILTIN_CATALOG, PROVIDERS),
+			resolvePinnedModel("claude/claude-opus-5", BUILTIN_CATALOG, PROVIDERS),
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
@@ -327,14 +327,14 @@ describe("resolveFrozenModelChain", () => {
 		// chain must keep claude first (no inject of grok default).
 		expect(
 			resolveFrozenModelChain(
-				["claude/claude-opus-4.8", "grok/grok-4.5"],
+				["claude/claude-opus-5", "grok/grok-4.5"],
 				BUILTIN_CATALOG,
 				PROVIDERS,
 			),
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
 			],
 		});
@@ -342,21 +342,21 @@ describe("resolveFrozenModelChain", () => {
 
 	it("drops disabled providers from the stamp", () => {
 		const result = resolveFrozenModelChain(
-			["codex/gpt-5.6-sol", "claude/claude-opus-4.8"],
+			["codex/gpt-5.6-sol", "claude/claude-opus-5"],
 			BUILTIN_CATALOG,
 			PROVIDERS,
 		);
 		expect(result).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-4-8", ref: "claude/claude-opus-4.8" },
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
 });
 
 describe("captureModelForSchedule", () => {
-	const defaults = ["claude/claude-opus-4.8", "grok/grok-4.5"];
+	const defaults = ["claude/claude-opus-5", "grok/grok-4.5"];
 
 	it("freezes the re-headed chain under the then-active provider", () => {
 		// Active=grok re-heads the default list; stamp freezes that order.
@@ -369,14 +369,14 @@ describe("captureModelForSchedule", () => {
 		);
 		expect(captured).toEqual({
 			ok: true,
-			model: ["grok/grok-4.5", "claude/claude-opus-4.8"],
+			model: ["grok/grok-4.5", "claude/claude-opus-5"],
 			modelPinned: false,
 		});
 	});
 
 	it("explicit pin returns a single pinned ref", () => {
 		const captured = captureModelForSchedule(
-			"claude/claude-opus-4.8",
+			"claude/claude-opus-5",
 			BUILTIN_CATALOG,
 			PROVIDERS,
 			defaults,
@@ -385,7 +385,7 @@ describe("captureModelForSchedule", () => {
 		);
 		expect(captured).toEqual({
 			ok: true,
-			model: "claude/claude-opus-4.8",
+			model: "claude/claude-opus-5",
 			modelPinned: true,
 		});
 	});

@@ -1139,7 +1139,7 @@ export class ApiServer {
 				const promptBySession = this.runPromptBySession();
 				const modelBySession = this.runModelBySession();
 				// Map the run's stored model (the RESOLVED provider-specific id, e.g.
-				// `claude-opus-4-8`; see worker.ts) back to its `provider/label` ref so
+				// `claude-opus-5`; see worker.ts) back to its `provider/label` ref so
 				// a resumed session can default its launch form to the SAME model it
 				// originally ran on (consumed by form.rs). A value already in
 				// `provider/label` form passes through; an id/ref the catalog doesn't
@@ -1520,7 +1520,7 @@ export class ApiServer {
 
 	/**
 	 * Reverse index: Claude session_id → the model that run used (the resolved
-	 * id persisted in run data, e.g. `claude-opus-4-8`). Built from the run
+	 * id persisted in run data, e.g. `claude-opus-5`). Built from the run
 	 * store on demand. `listSessions` maps this back to an alias so resuming a
 	 * session defaults to the same model it ran on.
 	 */

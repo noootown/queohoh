@@ -6,7 +6,7 @@ describe("claudeAdapter", () => {
 		expect(
 			claudeAdapter.buildArgs({
 				prompt: "hi",
-				model: "claude-opus-4-8",
+				model: "claude-opus-5",
 				resumeSessionId: "s1",
 			}),
 		).toEqual([
@@ -16,7 +16,7 @@ describe("claudeAdapter", () => {
 			"stream-json",
 			"--verbose",
 			"--model",
-			"claude-opus-4-8",
+			"claude-opus-5",
 			"--resume",
 			"s1",
 		]);

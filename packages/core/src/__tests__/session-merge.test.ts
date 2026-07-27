@@ -45,14 +45,14 @@ describe("mergeSessionSources", () => {
 				sessionId: "s1",
 				provider: "claude",
 				label: "run-store label",
-				model: "claude/claude-opus-4.8",
+				model: "claude/claude-opus-5",
 				mtimeMs: 50, // older than the disk row
 			}),
 		];
 		const got = mergeSessionSources(diskRows, runStoreRows, 5);
 		expect(got).toHaveLength(1);
 		expect(got[0]?.label).toBe("run-store label"); // run-store metadata wins
-		expect(got[0]?.model).toBe("claude/claude-opus-4.8");
+		expect(got[0]?.model).toBe("claude/claude-opus-5");
 		expect(got[0]?.mtimeMs).toBe(100); // max of the two mtimes survives
 	});
 

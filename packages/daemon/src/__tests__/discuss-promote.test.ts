@@ -49,7 +49,7 @@ function baseConfig(workspace: string, repoPath: string): GlobalConfig {
 		archiveAfterDays: 7,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
-		defaultModels: ["claude/claude-opus-4.8"],
+		defaultModels: ["claude/claude-opus-5"],
 		providers: TEST_PROVIDERS,
 	};
 }
