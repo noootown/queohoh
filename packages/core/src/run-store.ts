@@ -307,7 +307,8 @@ export class RunStore {
 			"## Stats",
 			`- outcome: ${data.outcome}${data.reason ? ` (${data.reason})` : ""}`,
 			`- model: ${modelLine}`,
-			`- cost: ${usage.costUsd === null ? "n/a" : `$${usage.costUsd}`}`,
+			// Two decimal places — raw f64 can paint as `$7.783155999999998`.
+			`- cost: ${usage.costUsd === null ? "n/a" : `$${usage.costUsd.toFixed(2)}`}`,
 			`- tokens: ${formatTokensLine(usage)}`,
 			`- turns: ${usage.turns ?? "n/a"}`,
 			`- duration: ${usage.durationMs === null ? "n/a" : `${Math.round(usage.durationMs / 1000)}s`}`,

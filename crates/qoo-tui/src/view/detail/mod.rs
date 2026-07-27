@@ -44,6 +44,13 @@ fn compact_count(n: u64) -> String {
     format!("{:.1}M", n as f64 / 1_000_000.0)
 }
 
+/// USD cost for the `cost` row / Stats block: always two decimal places so
+/// float noise from the provider (`$7.783155999999998`) never paints as a long
+/// tail. Pure — unit-tested via `stats_rows`.
+fn format_cost_usd(c: f64) -> String {
+    format!("${c:.2}")
+}
+
 /// Human-readable duration from milliseconds: `Xs` below a minute, `Xm` on the
 /// minute range (whole minutes, seconds truncated), `Xh` / `Xh Ym` for hours.
 /// Pure — the ideal unit-test target.
@@ -325,7 +332,7 @@ fn run_info_lines(
     if meta.timed_out {
         details.push(("timed out", "yes".to_string()));
     }
-    details.push(("cost", meta.cost_usd.map(|c| format!("${c}")).unwrap_or_else(dash)));
+    details.push(("cost", meta.cost_usd.map(format_cost_usd).unwrap_or_else(dash)));
     // ADDITIONAL to cost, not a replacement: a provider (grok) can report token
     // counts with no priced cost, so `cost` stays `—` while `tokens` still has a
     // value — the whole reason this row exists. Only dashes out when NEITHER
@@ -401,7 +408,7 @@ fn stats_rows(meta: &RunMeta) -> Vec<(&'static str, String)> {
     vec![
         ("outcome", outcome),
         ("model", meta.model.clone().unwrap_or_else(dash)),
-        ("cost", meta.cost_usd.map(|c| format!("${c}")).unwrap_or_else(dash)),
+        ("cost", meta.cost_usd.map(format_cost_usd).unwrap_or_else(dash)),
         ("turns", meta.turns.map(|t| t.to_string()).unwrap_or_else(dash)),
         ("duration", meta.duration_ms.map(format_duration).unwrap_or_else(dash)),
     ]

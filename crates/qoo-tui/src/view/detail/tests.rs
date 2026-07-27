@@ -589,7 +589,7 @@
             vec![
                 ("outcome", "failed (exit code 1)".to_string()),
                 ("model", "claude-fable-5".to_string()),
-                ("cost", "$31.07151099999998".to_string()),
+                ("cost", "$31.07".to_string()),
                 ("turns", "40".to_string()),
                 ("duration", "18m".to_string()), // format_duration, not raw seconds
             ]
