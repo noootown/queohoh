@@ -21,30 +21,31 @@ pub struct QueueColLayout {
 
 /// QUEUE Model cell: the model that **is or will be** used for this task.
 ///
-/// - `model_pinned` + a single-string stamp → that exact ref (worker pin; no
-///   active-provider re-head).
-/// - otherwise → [`effective_model_head`] under `ctx.active_provider` (stable
-///   re-head + default-models / group-head prepend), same as the TASKS Model
-///   column. `None` stamp uses the repo's `default_models`.
+/// Task stamps are frozen at schedule time under the then-active provider
+/// (daemon `captureModelForSchedule` → worker `resolveFrozenModelChain`). A
+/// later TUI provider switch must NOT re-head the stamp for display — that
+/// was the bug where a finished `claude/claude-opus-5 → grok/…` run painted
+/// as `grok-4.5` while the active provider was Grok (user screenshot).
+///
+/// - Any non-null stamp (pinned or list) → **first ref** (schedule-time head).
+/// - `None` stamp → repo `default_models` under the **current** active
+///   provider (same re-head as TASKS / ad-hoc unstamped).
 ///
 /// Label-only via [`model_ref_display`]. Empty when resolution fails so the
 /// pane-gate can drop the column when every visible row is blank.
 pub fn task_model_text(row: &QueueRow, ctx: &ModelResolveCtx<'_>) -> String {
-    // Pinned single-string stamp: worker runs exactly this — do not re-head.
-    if row.model_pinned {
-        if let Some(crate::ipc::types::ModelRef::One(r)) = row.model.as_ref() {
-            return model_ref_display(ctx.catalog, r);
+    // Frozen stamp: order already captures schedule-time re-head. Show head
+    // only (worker tries first entry first). Do not call effective_model_head
+    // on the stamp — that re-applies today's active provider.
+    if let Some(m) = row.model.as_ref() {
+        if let Some(head) = m.refs().into_iter().next() {
+            return model_ref_display(ctx.catalog, &head);
         }
     }
+    // Unstamped: resolve defaults under current active provider.
     let defaults = ctx.default_models.refs_for(&row.repo);
     let enabled = ctx.enabled_refs();
-    match effective_model_head(
-        row.model.as_ref(),
-        ctx.catalog,
-        &enabled,
-        &defaults,
-        ctx.active_provider,
-    ) {
+    match effective_model_head(None, ctx.catalog, &enabled, &defaults, ctx.active_provider) {
         Some(head) => model_ref_display(ctx.catalog, &head),
         None => String::new(),
     }

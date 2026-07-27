@@ -467,6 +467,42 @@
     }
 
     #[test]
+    fn task_model_text_uses_frozen_stamp_head_not_active_provider_rehead() {
+        // Live bug: stamp [claude-opus-5, grok-4.5], run used claude, TUI
+        // active=grok painted grok-4.5 via effective_model_head re-head.
+        let mut row = qrow("JUS-1946", Some("pr-fix-ci-conflicts"), "x");
+        row.model = Some(ModelRef::Many(vec![
+            "claude/claude-opus-5".into(),
+            "grok/grok-4.5".into(),
+        ]));
+        row.model_pinned = false;
+        let owned = ModelResolveOwned {
+            catalog: vec![
+                CatalogEntry {
+                    provider: "claude".into(),
+                    id: "claude-opus-5".into(),
+                    label: "claude-opus-5".into(),
+                    hidden: false,
+                },
+                CatalogEntry {
+                    provider: "grok".into(),
+                    id: "grok-4.5".into(),
+                    label: "grok-4.5".into(),
+                    hidden: false,
+                },
+            ],
+            enabled_providers: vec!["claude".into(), "grok".into()],
+            default_models: DefaultModels::default(),
+            active_provider: "grok".into(),
+        };
+        assert_eq!(
+            task_model_text(&row, &owned.ctx()),
+            "claude-opus-5",
+            "frozen stamp head wins over current active provider"
+        );
+    }
+
+    #[test]
     fn def_and_wt_col_layout_size_name_column() {
         let defs = vec![
             DefinitionSummary { name: "squash-merge".into(), ..Default::default() },

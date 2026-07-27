@@ -111,6 +111,42 @@ describe("filterNewItems", () => {
 		expect(out).toEqual([{ item: { number: "9" }, itemKey: "9" }]);
 	});
 
+	it("skip_live ignores done/failed archive and only blocks live keys", () => {
+		// Babysit defs: main can re-introduce conflicts on the same head SHA;
+		// a prior done must not permanently silence the PR.
+		const out = filterNewItems(items, {
+			...base,
+			mode: "skip_live",
+			existing: [
+				existing("done", "1"),
+				existing("failed", "2"),
+				existing("queued", "3"),
+			],
+		});
+		expect(out.map((o) => o.itemKey)).toEqual(["1", "2"]);
+	});
+
+	it("skip_live blocks running and needs-input the same as queued", () => {
+		const out = filterNewItems([{ number: "1" }, { number: "2" }], {
+			...base,
+			mode: "skip_live",
+			existing: [
+				existing("running", "1"),
+				existing("needs-input", "2"),
+			],
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("skip_live is definition-scoped", () => {
+		const out = filterNewItems([{ number: "1" }], {
+			...base,
+			mode: "skip_live",
+			existing: [existing("running", "1", "platform/other-task")],
+		});
+		expect(out.map((o) => o.itemKey)).toEqual(["1"]);
+	});
+
 	it("only same-definition instances count", () => {
 		const out = filterNewItems([{ number: "1" }], {
 			...base,

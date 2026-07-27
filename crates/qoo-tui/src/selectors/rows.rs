@@ -70,13 +70,13 @@ pub struct QueueRow {
     pub worktree: String,
     /// task definition name; None for ad-hoc prompts
     pub def_name: Option<String>,
-    /// Schedule model stamp for the QUEUE Model column (effective head at paint
-    /// via [`crate::selectors::task_model_text`]). `None` → repo defaults under
-    /// the active provider. Cloned from the task wire; not re-resolved here so
-    /// the rows cache can stay valid across active-provider switches (layout
-    /// / paint pass the current [`ModelResolveCtx`]).
+    /// Schedule model stamp for the QUEUE Model column (first ref = head at
+    /// paint via [`crate::selectors::task_model_text`]; order is frozen at
+    /// schedule — no active-provider re-head). `None` → repo defaults under
+    /// the current active provider. Cloned from the task wire.
     pub model: Option<crate::ipc::types::ModelRef>,
-    /// Wire `modelPinned`: a single-string stamp is an exact pick (no re-head).
+    /// Wire `modelPinned` (kept for submit/requeue paths; display uses stamp
+    /// head regardless — pins are single-ref stamps).
     pub model_pinned: bool,
     /// Task's target repo — default_models lookup for unstamped / unpinned.
     pub repo: String,

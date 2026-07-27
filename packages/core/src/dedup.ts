@@ -1,7 +1,7 @@
 import type { TaskInstance, TaskStatus } from "./task.js";
 import { render } from "./template.js";
 
-export type DedupMode = "skip_seen" | "retry_errored" | "none";
+export type DedupMode = "skip_seen" | "retry_errored" | "skip_live" | "none";
 
 // Terminal statuses that make a `retry_errored` key eligible to re-enqueue. A
 // `failed` run errored; a `cancelled` run was deliberately stopped by the user;
@@ -16,6 +16,16 @@ const RETRYABLE_STATUSES: ReadonlySet<TaskStatus> = new Set([
 	"failed",
 	"cancelled",
 	"verify-failed",
+]);
+
+// Statuses that mean "a worker or the queue already owns this item" for
+// `skip_live`. Terminal archive history (done/failed/…) does NOT block —
+// next discover can re-enqueue. Use for babysit defs where main can re-break
+// a PR (merge conflicts) without a new head SHA.
+const LIVE_STATUSES: ReadonlySet<TaskStatus> = new Set([
+	"queued",
+	"running",
+	"needs-input",
 ]);
 
 export interface KeyedItem {
@@ -42,6 +52,19 @@ export function filterNewItems(
 	if (opts.mode === "none") return keyed;
 
 	const sameDef = opts.existing.filter((t) => t.definition === opts.definition);
+
+	// Live-only: at most one in-flight task per key. Archive/`done` never
+	// blocks — cron re-picks the PR when it still matches discovery (conflicts
+	// after main moves, CI red again) once the previous run has settled.
+	if (opts.mode === "skip_live") {
+		const liveKeys = new Set(
+			sameDef
+				.filter((t) => t.itemKey !== null && LIVE_STATUSES.has(t.status))
+				.map((t) => t.itemKey as string),
+		);
+		return keyed.filter(({ itemKey }) => !liveKeys.has(itemKey));
+	}
+
 	const seen = new Set(
 		sameDef.filter((t) => t.itemKey !== null).map((t) => t.itemKey as string),
 	);
