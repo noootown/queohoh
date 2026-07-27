@@ -252,6 +252,14 @@ pub fn task_summary(task: &TaskInstance) -> String {
 /// Empty values render as the bare key. Emoji stripped from values so the
 /// queue Prompt/Args column cannot shift Created/Age/Live (double-width).
 pub fn item_args_summary(item: &std::collections::HashMap<String, String>) -> String {
+    item_args_lines(item).join(" ")
+}
+
+/// One `key=value` string per sorted key — for the run detail Prompt tab, where
+/// a discovery item can have a dozen fields (and long values) and a single
+/// space-joined blob is unreadable (user feedback: split args onto lines).
+/// Same key sort / empty-value / emoji stripping as [`item_args_summary`].
+pub fn item_args_lines(item: &std::collections::HashMap<String, String>) -> Vec<String> {
     let mut keys: Vec<&String> = item.keys().collect();
     keys.sort();
     keys.into_iter()
@@ -264,8 +272,7 @@ pub fn item_args_summary(item: &std::collections::HashMap<String, String>) -> St
                 format!("{k}={v}")
             }
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect()
 }
 
 /// Drop emoji / pictographs / other double-width symbols from queue Prompt/Args

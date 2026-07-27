@@ -310,6 +310,13 @@ impl App {
         providers
             .into_iter()
             .filter_map(|p| {
+                // Stamped model lists restrict which providers may be switched
+                // onto (ad-hoc / unstamped → any). Matches submit-path resolve.
+                if let Some(t) = sample.as_ref() {
+                    if !Self::task_allows_requeue_provider(t, &p) {
+                        return None;
+                    }
+                }
                 let model_ref = sample
                     .as_ref()
                     .and_then(|t| self.resolve_requeue_model_for_provider(t, &p))

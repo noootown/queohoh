@@ -870,6 +870,23 @@
     }
 
     #[test]
+    fn item_args_lines_one_per_sorted_key() {
+        let mut m = std::collections::HashMap::new();
+        m.insert("mode".into(), "ready".into());
+        m.insert("pr".into(), "257".into());
+        m.insert("title".into(), "has spaces and = signs".into());
+        assert_eq!(
+            item_args_lines(&m),
+            vec![
+                "mode=ready".to_string(),
+                "pr=257".to_string(),
+                "title=has spaces and = signs".to_string(),
+            ]
+        );
+        assert!(item_args_lines(&std::collections::HashMap::new()).is_empty());
+    }
+
+    #[test]
     fn task_summary_strips_emoji_so_trailing_columns_stay_aligned() {
         // Live bug: comment_body=📄 Data… made Created/Age/Live shift right
         // (pad_clip is char-count; 📄 is 1 char / 2 cells).

@@ -92,9 +92,11 @@ pub enum LineCtx {
     /// with [`LineCtx::LaneTask`] (no header over the leading glyph slot). Chrome,
     /// never a cursor row. See [`style_lane_header_line`].
     LaneHeader,
-    /// Resolved task-arg blob on the run detail's Prompt tab (`situation=… pr=…`).
-    /// Styled with accent keys + meta values (see [`style_args_line`]); not
-    /// markdown — long URLs stay in the args color, not link-accented.
+    /// One resolved task-arg line on the run detail's Prompt tab (`key=value`,
+    /// value may contain spaces). Styled with accent key + meta value (see
+    /// [`style_args_line`]); not markdown — long URLs stay in the args color,
+    /// not link-accented. Continuations from wrap have no `=` and paint wholly
+    /// as value.
     Args,
 }
 
@@ -616,34 +618,30 @@ pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette)
     }
 }
 
-/// Style a resolved-args blob (`situation=… pr=…`): `key=` in accent, values in
-/// meta — same treatment as the QUEUE Prompt/Args column.
+/// Style one resolved-arg line (`key=value with spaces`): `key=` in accent,
+/// the rest of the line (value, may contain spaces/`=`) in meta. Wrap
+/// continuations have no leading `key=` — paint wholly as value. Detail Prompt
+/// tab puts one arg per logical line; the QUEUE cell still tokenizes on space
+/// via `style_args_spans` in panes.rs.
 fn style_args_line(line: &str, p: &Palette) -> Line<'static> {
     let key_st = p.args_key_style();
     let val_st = p.args_style();
     if line.is_empty() {
         return Line::from("");
     }
-    let mut spans = Vec::new();
-    let mut first = true;
-    for token in line.split(' ') {
-        if !first {
-            spans.push(Span::styled(" ".to_string(), val_st));
-        }
-        first = false;
-        if token.is_empty() {
-            continue;
-        }
-        if let Some((k, v)) = token.split_once('=') {
-            spans.push(Span::styled(format!("{k}="), key_st));
+    // First `=` only: values (URLs, fingerprints) often contain more `=`.
+    // Key must be non-empty and space-free so a wrapped value continuation
+    // that happens to include `=` is not mis-keyed.
+    if let Some((k, v)) = line.split_once('=') {
+        if !k.is_empty() && !k.contains(' ') {
+            let mut spans = vec![Span::styled(format!("{k}="), key_st)];
             if !v.is_empty() {
                 spans.push(Span::styled(v.to_string(), val_st));
             }
-        } else {
-            spans.push(Span::styled(token.to_string(), val_st));
+            return Line::from(spans);
         }
     }
-    Line::from(spans)
+    Line::from(Span::styled(line.to_string(), val_st))
 }
 
 /// Style a queue-style lane-task row (see [`LineCtx::LaneTask`]): a status glyph

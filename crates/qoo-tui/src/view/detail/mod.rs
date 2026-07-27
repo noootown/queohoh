@@ -18,7 +18,7 @@ use crate::markup::{
     DisplayLine, LineCtx, fence_states, fence_states_from, style_display_line,
     wrap_lines,
 };
-use crate::selectors::{arg_summary, item_args_summary};
+use crate::selectors::{arg_summary, item_args_lines};
 use crate::view::Computed;
 use crate::view::theme::{Palette, TITLE_DETAIL};
 
@@ -194,16 +194,29 @@ fn worktree_rows(
 
 /// Resolved definition args for a run (`item` map), else a non-sentinel
 /// `item_key`, else `—`. Never surfaces the daemon's `"adhoc"` placeholder.
+/// Single-line form for the info tab's compact `args` row (and any caller that
+/// wants one string). Prompt-tab display uses [`run_args_lines`] instead.
 fn run_args_display(task: &TaskInstance) -> String {
+    let lines = run_args_lines(task);
+    if lines.is_empty() {
+        return EM_DASH.to_string();
+    }
+    lines.join(" ")
+}
+
+/// Same resolution as [`run_args_display`], but one entry per arg so the Prompt
+/// tab can render each `key=value` on its own line. Empty when there is nothing
+/// to show (caller treats that as no Args section).
+fn run_args_lines(task: &TaskInstance) -> Vec<String> {
     if let Some(item) = task.item.as_ref().filter(|m| !m.is_empty()) {
-        return item_args_summary(item);
+        return item_args_lines(item);
     }
     task.item_key
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("adhoc"))
-        .map(str::to_string)
-        .unwrap_or_else(|| EM_DASH.to_string())
+        .map(|s| vec![s.to_string()])
+        .unwrap_or_default()
 }
 
 /// Wire status → the lowercase label shown in the `info` tab's Run section
@@ -521,17 +534,20 @@ pub(crate) fn content_for(
             2 => {
                 // Args (resolved item) above the full rendered prompt so the
                 // operator sees what the def was called with without scrolling
-                // past template boilerplate.
+                // past template boilerplate. One key=value per line — a single
+                // space-joined blob with long discovery fields was unreadable.
                 let mut lines: Vec<String> = Vec::new();
                 let mut ctxs: Vec<LineCtx> = Vec::new();
-                let args = run_args_display(task);
-                let has_args = args != EM_DASH;
+                let arg_lines = run_args_lines(task);
+                let has_args = !arg_lines.is_empty();
                 if has_args {
                     lines.push("Args".to_string());
                     ctxs.push(LineCtx::Header);
-                    lines.push(args);
-                    // Args blob: accent keys + meta values (not markdown Text).
-                    ctxs.push(LineCtx::Args);
+                    for line in arg_lines {
+                        lines.push(line);
+                        // Per-arg line: accent key + meta value (not markdown Text).
+                        ctxs.push(LineCtx::Args);
+                    }
                     lines.push(String::new());
                     ctxs.push(LineCtx::Text);
                 }
