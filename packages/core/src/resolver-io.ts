@@ -93,14 +93,14 @@ export function createResolverIO(exec: Exec): ResolverIO {
 					cwd: repoPath,
 				});
 			}
-			// `--yes`: the daemon is non-interactive — without it Worktrunk
-			// refuses to run project post-start hooks (platform's mise/uv/docker
-			// setup) and spawn fails with "Cannot prompt for approval".
-			// `--no-cd`: we only need the worktree created; the daemon never
-			// changes its own cwd into it.
+			// `--yes` / `--no-cd` are SWITCH subcommand flags, not global wt
+			// options (`wt --yes switch …` fails with "unexpected argument
+			// '--yes'"; tip: `switch --yes`). Without `--yes` Worktrunk refuses
+			// project post-start hooks in a non-TTY daemon ("Cannot prompt for
+			// approval"). `--no-cd`: create only — never change the daemon cwd.
 			const args = branch
-				? ["--yes", "switch", "--no-cd", branch]
-				: ["--yes", "switch", "--no-cd", "-c", name];
+				? ["switch", "--yes", "--no-cd", branch]
+				: ["switch", "--yes", "--no-cd", "-c", name];
 			const { exitCode } = await exec("wt", args, { cwd: repoPath });
 			if (exitCode === 0) {
 				const after = await listWorktrees(repoPath);
@@ -122,9 +122,10 @@ export function createResolverIO(exec: Exec): ResolverIO {
 			// inherently best-effort; only `wt remove`'s exit code is load-bearing.
 			await exec("git", ["reset", "--hard", "HEAD"], { cwd: worktree.path });
 			await exec("git", ["clean", "-fd"], { cwd: worktree.path });
+			// Same flag placement as switch: `remove --yes`, not `--yes remove`.
 			const { exitCode } = await exec(
 				"wt",
-				["--yes", "remove", worktree.branch],
+				["remove", "--yes", worktree.branch],
 				{ cwd: repoPath },
 			);
 			if (exitCode !== 0) {

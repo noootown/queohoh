@@ -90,7 +90,7 @@ describe("createResolverIO", () => {
 				// The new worktree only appears after `wt switch` has run.
 				return { stdout: wtRan ? after : before, exitCode: 0 };
 			}
-			if (key === "wt --yes switch --no-cd -c TICK-77") {
+			if (key === "wt switch --yes --no-cd -c TICK-77") {
 				wtRan = true;
 				return { stdout: "", exitCode: 0 };
 			}
@@ -113,7 +113,7 @@ describe("createResolverIO", () => {
 			if (key === "git worktree list --porcelain") {
 				return { stdout: wtRan ? after : PORCELAIN, exitCode: 0 };
 			}
-			if (key === `wt --yes switch --no-cd ${branch}`) {
+			if (key === `wt switch --yes --no-cd ${branch}`) {
 				wtRan = true;
 				return { stdout: "", exitCode: 0 };
 			}
@@ -154,7 +154,7 @@ describe("createResolverIO", () => {
 		expect(records).toEqual([
 			{ key: "git reset --hard HEAD", cwd: "/wt/TICK-77" },
 			{ key: "git clean -fd", cwd: "/wt/TICK-77" },
-			{ key: "wt --yes remove TICK-77-fix", cwd: "/repo" },
+			{ key: "wt remove --yes TICK-77-fix", cwd: "/repo" },
 			{ key: "git branch -D TICK-77-fix", cwd: "/repo" },
 		]);
 	});
@@ -195,7 +195,7 @@ describe("createResolverIO", () => {
 			path: "/wt/TICK-77",
 			branch: "TICK-77-fix",
 		});
-		expect(keys).toContain("wt --yes remove TICK-77-fix");
+		expect(keys).toContain("wt remove --yes TICK-77-fix");
 		expect(keys).toContain("git branch -D TICK-77-fix");
 	});
 });
