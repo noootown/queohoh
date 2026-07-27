@@ -16,17 +16,29 @@ const DEFAULT_TIMEOUT_MS = 5000;
 
 export type ClaudeTokenReader = () => Promise<string | null>;
 
-/** Pure parse of Anthropic OAuth usage JSON → sample or null. */
+/**
+ * Pure parse of Anthropic OAuth usage JSON → sample or null.
+ *
+ * Chip text is **session/week** (`five_hour` / `seven_day`), shorter window
+ * first. Severity is the worse of the two. `resetsAt` is always the 5h
+ * session reset (ISO → epoch ms); the TUI always appends a live countdown
+ * when it is present.
+ */
 export function parseClaudeUsage(json: unknown): UsageSample | null {
 	if (json === null || typeof json !== "object") return null;
 	const obj = json as Record<string, unknown>;
 	const session = readUtilization(obj.five_hour);
 	const week = readUtilization(obj.seven_day);
 	if (session === null || week === null) return null;
-	return {
+	const sample: UsageSample = {
 		text: `${Math.round(session)}%/${Math.round(week)}%`,
 		severity: maxSeverity([session, week]),
 	};
+	const resetsAt = readResetsAtMs(obj.five_hour);
+	if (resetsAt !== null) {
+		sample.resetsAt = resetsAt;
+	}
+	return sample;
 }
 
 function readUtilization(bucket: unknown): number | null {
@@ -36,6 +48,16 @@ function readUtilization(bucket: unknown): number | null {
 		return null;
 	}
 	return utilization;
+}
+
+/** `resets_at` ISO-8601 → epoch ms; missing/invalid → null. */
+function readResetsAtMs(bucket: unknown): number | null {
+	if (bucket === null || typeof bucket !== "object") return null;
+	const raw = (bucket as Record<string, unknown>).resets_at;
+	if (typeof raw !== "string" || raw.length === 0) return null;
+	const ms = Date.parse(raw);
+	if (!Number.isFinite(ms)) return null;
+	return ms;
 }
 
 /**

@@ -195,14 +195,14 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 ///
 /// | Color            | Concept                | Surfaces                                                                                   |
 /// |------------------|------------------------|--------------------------------------------------------------------------------------------|
-/// | `mauve`          | task / definition NAME | QUEUE def column; TASKS name column; WORKTREES activity `→ <name>` and last-task **def** only |
+/// | `mauve`          | task / definition NAME | QUEUE def column; TASKS name column; WORKTREES activity `→ <name>` and last-task **def** only; DETAIL worktree lane Task **def** only |
 /// | `worktree`       | worktree IDENTITY NAME | QUEUE worktree column; WORKTREES name column                                                |
 /// | `accent`         | generic UI accent      | selection bar; focused borders; active tab; dialog/menu borders; filter `>`; footer keys    |
 /// | `info` (teal)    | TIMESTAMPS only        | QUEUE timestamp + age; TASKS Cron schedule text; WORKTREES commit-age, last-task age        |
 /// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `→` next lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
-/// | `fg`             | prose / arg values     | default text; QUEUE + WORKTREES last-task Prompt/Args **values**; detail Args values        |
-/// | `accent`         | UI accent + arg **keys** | selection; focused borders; tabs; `situation=` / `pr=` keys in QUEUE + last-task args     |
+/// | `fg`             | prose / arg values     | default text; QUEUE + WORKTREES last-task + DETAIL lane Prompt/Args **values**; detail Args values |
+/// | `accent`         | UI accent + arg **keys** | selection; focused borders; tabs; `situation=` / `pr=` keys in QUEUE + last-task + DETAIL lane args |
 /// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⧗ $ ⊟`)                                    |
 ///
 /// `info` is deliberately reserved for timestamp-related text (user request);

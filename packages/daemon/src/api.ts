@@ -989,13 +989,13 @@ export class ApiServer {
 				return updated;
 			}
 			case "defer": {
-				// QUEUE `[d]efer`: push a live task +5h (Claude sliding window).
-				// Stacks: a second `d` on an already-deferred task adds another
-				// +5h onto the existing future `notBefore` (not "from now"), so
-				// operators can walk a task further out without undoing prior
-				// pushes. A past/null `notBefore` bases from now — which is also
-				// the cancel → re-queue → defer path (skip/retry clear
-				// `notBefore`, so the next defer starts the 5h window from 0).
+				// QUEUE `[d]efer`: push a live task by N hours (Claude sliding
+				// window). Optional `hours` (positive integer 1..999); default 5
+				// when omitted (legacy clients / DEFER_MS). Stacks: a second
+				// defer on an already-deferred task adds another window onto
+				// the existing future `notBefore` (not "from now"). A past/null
+				// `notBefore` bases from now — which is also the cancel →
+				// re-queue → defer path (skip/retry clear `notBefore`).
 				// Queued → stamp `notBefore` (stays queued; scheduler skips until
 				// then). Running → stamp FIRST, then stop: finalizeRun sees the
 				// future notBefore + cancel marker and re-queues instead of
@@ -1004,13 +1004,24 @@ export class ApiServer {
 				if (task.status !== "queued" && task.status !== "running") {
 					throw new Error(`cannot defer task in status ${task.status}`);
 				}
+				let hours = 5;
+				if (params.hours !== undefined && params.hours !== null) {
+					const n = Number(params.hours);
+					if (!Number.isInteger(n) || n < 1 || n > 999) {
+						throw new Error(
+							`defer hours must be an integer 1..999, got ${String(params.hours)}`,
+						);
+					}
+					hours = n;
+				}
+				const deferMs = hours * 60 * 60 * 1000;
 				const now = Date.now();
 				const existingMs = task.notBefore
 					? Date.parse(task.notBefore)
 					: Number.NaN;
 				const base =
 					!Number.isNaN(existingMs) && existingMs > now ? existingMs : now;
-				const until = new Date(base + DEFER_MS).toISOString();
+				const until = new Date(base + deferMs).toISOString();
 				if (task.status === "queued") {
 					const updated = deps.store.update(task.id, { notBefore: until });
 					deps.onMutation();
@@ -1034,7 +1045,7 @@ export class ApiServer {
 				//    `cancelled` (terminal, stays visible, distinct from `failed`).
 				//  - an already-TERMINAL task → dismiss: archive it out of the queue.
 				if (task.status === "queued" || task.status === "needs-input") {
-					// Clear `notBefore` so a later re-queue + defer starts the 5h
+					// Clear `notBefore` so a later re-queue + defer starts a fresh
 					// window from now (not stacked onto a cancel-era stamp).
 					const updated = deps.store.update(task.id, {
 						status: "cancelled",

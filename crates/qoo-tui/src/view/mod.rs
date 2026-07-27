@@ -537,6 +537,7 @@ mod tests {
             severity: UsageSeverity::Ok,
             fetched_at: 1,
             stale: false,
+            resets_at: None,
         }]);
         let (terminal, hits) = render_at(&app, 120, 40);
         let buf = terminal.backend().buffer().clone();
@@ -564,6 +565,62 @@ mod tests {
     }
 
     #[test]
+    fn header_appends_session_reset_countdown_whenever_resets_at_present() {
+        // Countdown is severity-agnostic: any sample with resetsAt gets
+        // ` · ⧗ …` so the operator always sees when the session window frees.
+        use crate::ipc::types::{ProviderUsage, UsageSeverity};
+
+        let mut app = fixture_app();
+        // 1h12m from fixture now (2026-07-09T12:05:03Z).
+        let resets_at_ms = (app.now_epoch_s + 1 * 3600 + 12 * 60) * 1000;
+        app.snapshot.as_mut().unwrap().enabled_providers = Some(vec!["claude".into()]);
+
+        for (text, severity, label) in [
+            ("100%/55%", UsageSeverity::Crit, "crit"),
+            ("85%/40%", UsageSeverity::Warn, "warn"),
+            ("12%/34%", UsageSeverity::Ok, "ok"),
+        ] {
+            app.snapshot.as_mut().unwrap().provider_usages = Some(vec![ProviderUsage {
+                provider: "claude".into(),
+                text: text.into(),
+                severity,
+                fetched_at: 1,
+                stale: false,
+                resets_at: Some(resets_at_ms),
+            }]);
+            let (terminal, _) = render_at(&app, 140, 40);
+            let buf = terminal.backend().buffer().clone();
+            let mut row0 = String::new();
+            for x in 0..140 {
+                row0.push_str(buf[(x, 0)].symbol());
+            }
+            let expected = format!("↯ claude {text} · ⧗ 1h12m");
+            assert!(
+                row0.contains(&expected),
+                "{label} + resetsAt → countdown: expected {expected:?} in {row0:?}"
+            );
+        }
+
+        // No resetsAt → bare percents, no hourglass.
+        app.snapshot.as_mut().unwrap().provider_usages = Some(vec![ProviderUsage {
+            provider: "claude".into(),
+            text: "50%/20%".into(),
+            severity: UsageSeverity::Ok,
+            fetched_at: 1,
+            stale: false,
+            resets_at: None,
+        }]);
+        let (terminal, _) = render_at(&app, 140, 40);
+        let buf = terminal.backend().buffer().clone();
+        let mut row0 = String::new();
+        for x in 0..140 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        assert!(row0.contains("↯ claude 50%/20%"), "still shows %: {row0:?}");
+        assert!(!row0.contains('⧗'), "no countdown without resetsAt: {row0:?}");
+    }
+
+    #[test]
     fn header_shows_all_enabled_providers_with_usage() {
         // Snapshot lists claude + grok as enabled; both have samples; active
         // is grok. Both chips render; order follows enabled_providers. Codex
@@ -582,6 +639,7 @@ mod tests {
                 severity: UsageSeverity::Ok,
                 fetched_at: 1,
                 stale: false,
+                resets_at: None,
             },
             ProviderUsage {
                 provider: "grok".into(),
@@ -589,6 +647,7 @@ mod tests {
                 severity: UsageSeverity::Warn,
                 fetched_at: 2,
                 stale: false,
+                resets_at: None,
             },
             ProviderUsage {
                 provider: "codex".into(),
@@ -596,6 +655,7 @@ mod tests {
                 severity: UsageSeverity::Unknown,
                 fetched_at: 3,
                 stale: false,
+                resets_at: None,
             },
         ]);
         let (terminal, hits) = render_at(&app, 120, 40);
@@ -677,6 +737,7 @@ mod tests {
             severity: UsageSeverity::Crit,
             fetched_at: 1,
             stale: false,
+            resets_at: None,
         });
         let (terminal, hits) = render_at(&app, 120, 40);
         let buf = terminal.backend().buffer().clone();

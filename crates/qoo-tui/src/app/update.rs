@@ -408,6 +408,20 @@ impl App {
                     None => Update { dirty: false, cmds: vec![] },
                 }
             }
+            Event::Task { id, task } => {
+                // Full-task reply for the DETAIL Prompt tab. Success fills the
+                // cache (and clears the in-flight marker); failure LEAVES the
+                // marker as a poison so `reconcile_full_task` doesn't refetch-loop
+                // against an old daemon that lacks the `task` method.
+                match task {
+                    Some(t) => {
+                        self.full_tasks.insert(id.clone(), *t);
+                        self.full_tasks_inflight.remove(&id);
+                        Update { dirty: true, cmds: vec![] }
+                    }
+                    None => Update { dirty: false, cmds: vec![] },
+                }
+            }
         }
     }
 
@@ -457,10 +471,6 @@ impl App {
             ConfirmAction::RequeueTasks { calls } => {
                 self.clear_range_and_marks(ListPane::Queue);
                 vec![Cmd::RpcSeq { verb: "reran".into(), calls, invalidate_defs_for: None }]
-            }
-            ConfirmAction::DeferTasks { calls } => {
-                self.clear_range_and_marks(ListPane::Queue);
-                vec![Cmd::RpcSeq { verb: "deferred".into(), calls, invalidate_defs_for: None }]
             }
             ConfirmAction::DiscoverDef { repo, name } => {
                 // Optimistic in-flight marker: the def row's `⌕` animates

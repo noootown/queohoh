@@ -31,6 +31,7 @@ const NO_TABS: &[&str] = &[];
 /// number.
 pub const RUN_TAB_REPORT: usize = 0;
 pub const RUN_TAB_TRANSCRIPT: usize = 1;
+pub const RUN_TAB_PROMPT: usize = 2;
 
 pub fn sub_tab_names(kind: DetailKind) -> &'static [&'static str] {
     match kind {

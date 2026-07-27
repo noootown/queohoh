@@ -791,7 +791,9 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
         return;
     }
 
-    // Resolve context from the last-focused list pane.
+    // Resolve context from the last-focused list pane. When a full (untruncated)
+    // task is cached for the selected run, prefer it over the snapshot row so
+    // the Prompt tab shows the complete prompt rather than the wire `…` preview.
     let ctx = match (&app.snapshot, &c.active_name) {
         (Some(snap), Some(name)) => derive_context(
             snap,
@@ -803,6 +805,13 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             &c.ui.selections,
         ),
         _ => DetailContext::Empty,
+    };
+    let ctx = match ctx {
+        DetailContext::Run { task } => match app.full_tasks.get(&task.id) {
+            Some(full) => DetailContext::Run { task: full.clone() },
+            None => DetailContext::Run { task },
+        },
+        other => other,
     };
     let kind = ctx.kind();
     let sub_tab = clamp_sub_tab(c.ui.sub_tab[kind as usize], kind);

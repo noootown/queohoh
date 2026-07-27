@@ -392,44 +392,86 @@ fn queue_d_confirms_then_defers_a_queued_task() {
     let opened = a.update(key('d'));
     assert!(opened.cmds.is_empty(), "d opens the dialog, dispatches nothing yet");
     match &a.mode {
-        Mode::Confirm {
-            title,
-            body,
-            confirm_label,
-            action: ConfirmAction::DeferTasks { calls },
-            ..
+        Mode::Form {
+            state,
+            action: FormAction::DeferTasks { ids },
         } => {
-            assert!(title.contains("Defer 1"), "title={title}");
-            assert!(body.iter().any(|l| l.contains("+5h")), "body={body:?}");
-            assert_eq!(confirm_label, "Defer +5h");
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].method, "defer");
-            assert_eq!(calls[0].params, serde_json::json!({ "id": "t1" }));
+            assert!(state.title.contains("Defer 1"), "title={}", state.title);
+            assert_eq!(state.primary_label, "Defer");
+            assert_eq!(ids, &["t1".to_string()]);
+            let hours = state
+                .fields
+                .iter()
+                .find(|f| f.label == "hours")
+                .map(|f| f.value.as_str());
+            assert_eq!(hours, Some("5"));
         }
-        other => panic!("expected defer confirm, got {other:?}"),
+        other => panic!("expected defer form, got {other:?}"),
     }
+    // Tab to Primary (hours field focused first), Enter submits.
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     let u = a.update(enter());
     assert!(matches!(a.mode, Mode::List));
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { verb, calls, .. } => {
             assert_eq!(verb, "deferred");
             assert_eq!(calls[0].method, "defer");
-            assert_eq!(calls[0].params, serde_json::json!({ "id": "t1" }));
+            assert_eq!(
+                calls[0].params,
+                serde_json::json!({ "id": "t1", "hours": 5 })
+            );
         }
         _ => unreachable!(),
     }
 }
 
 #[test]
-fn queue_d_esc_dismisses_the_confirm_without_dispatch() {
+fn queue_d_esc_dismisses_the_form_without_dispatch() {
     let mut snap = failed_task_snapshot();
     snap.tasks[0].status = TaskStatus::Queued;
     let mut a = app_with(snap);
     a.update(key('d'));
-    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::DeferTasks { .. }, .. }));
+    assert!(matches!(a.mode, Mode::Form { action: FormAction::DeferTasks { .. }, .. }));
     let u = a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert!(matches!(a.mode, Mode::List), "esc dismisses");
     assert!(u.cmds.is_empty(), "esc dispatches nothing");
+}
+
+#[test]
+fn queue_d_hours_form_accepts_digits_only_and_fires_hours() {
+    // Shared form Input: digits only (no `.`); Tab → Primary → Enter fires.
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].status = TaskStatus::Queued;
+    let mut a = app_with(snap);
+    a.update(key('d'));
+    // Default "5" → Backspace → "12".
+    a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+    a.update(key('1'));
+    a.update(key('2'));
+    a.update(key('.'));
+    a.update(key('x'));
+    match &a.mode {
+        Mode::Form { state, .. } => {
+            let hours = state
+                .fields
+                .iter()
+                .find(|f| f.label == "hours")
+                .map(|f| f.value.as_str());
+            assert_eq!(hours, Some("12"));
+        }
+        other => panic!("{other:?}"),
+    }
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    let u = a.update(enter());
+    match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
+        Cmd::RpcSeq { calls, .. } => {
+            assert_eq!(
+                calls[0].params,
+                serde_json::json!({ "id": "t1", "hours": 12 })
+            );
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]

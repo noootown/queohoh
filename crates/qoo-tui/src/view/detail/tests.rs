@@ -1033,6 +1033,66 @@
         assert!(!body.contains("(no report yet)"), "clamped index is not the report fall-through");
     }
 
+    /// Prompt tab prefers `full_tasks` over the wire-truncated snapshot prompt
+    /// so a long prompt eventually renders complete (no trailing wire `…`).
+    #[test]
+    fn prompt_tab_uses_full_tasks_cache_over_truncated_wire() {
+        let mut app = detail_app(crate::detail::RUN_TAB_PROMPT);
+        let wire = format!("{}…", "w".repeat(40));
+        let full_text = format!(
+            "{} and the rest of the untruncated prompt that the snapshot cut off",
+            "w".repeat(40)
+        );
+        if let Some(snap) = app.snapshot.as_mut() {
+            if let Some(t) = snap.tasks.iter_mut().find(|t| t.id == "01RUN") {
+                t.prompt = wire.clone();
+            }
+        }
+        let mut full = app
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.tasks.iter().find(|t| t.id == "01RUN"))
+            .cloned()
+            .expect("01RUN in fixture");
+        full.prompt = full_text.clone();
+        app.full_tasks.insert("01RUN".into(), full);
+
+        let (terminal, _hits) = render_at(&app, 100, 24);
+        let body = terminal.backend().to_string();
+        // Phrase is unique to the full (non-wire) prompt; may wrap across cells
+        // but stays contiguous on one display line at this width.
+        assert!(
+            body.contains("untruncated prompt that the snapshot"),
+            "full cached prompt must render; body:\n{body}"
+        );
+        // Wire form ends with the U+2026 ellipsis after the 40 w's; full cache
+        // replaces that task, so the bare `…` wire tail must not be what we show.
+        assert!(
+            !body.contains(&wire),
+            "must not still show the wire-truncated preview; body:\n{body}"
+        );
+    }
+
+    /// While the full-task fetch is in flight (or never started), Prompt still
+    /// shows the snapshot wire preview — including a trailing `…`.
+    #[test]
+    fn prompt_tab_shows_wire_preview_while_full_task_uncached() {
+        let mut app = detail_app(crate::detail::RUN_TAB_PROMPT);
+        let wire = format!("{}…", "truncated-preview-body-".repeat(3));
+        if let Some(snap) = app.snapshot.as_mut() {
+            if let Some(t) = snap.tasks.iter_mut().find(|t| t.id == "01RUN") {
+                t.prompt = wire.clone();
+            }
+        }
+        assert!(app.full_tasks.is_empty());
+        let (terminal, _hits) = render_at(&app, 100, 24);
+        let body = terminal.backend().to_string();
+        assert!(
+            body.contains("truncated-preview-body-"),
+            "wire preview must still render while loading; body:\n{body}"
+        );
+    }
+
     /// Queued task with no run dir yet: the info tab still shows identity/
     /// status/created from the live task (not an empty placeholder).
     #[test]

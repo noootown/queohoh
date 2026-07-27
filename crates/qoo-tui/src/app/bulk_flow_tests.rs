@@ -106,28 +106,25 @@ fn queue_range_defer_via_d_confirms_then_defers_each_row() {
     a.update(shift_down());
     a.update(key('d')); // opens confirm (freezes the calls)
     match &a.mode {
-        Mode::Confirm {
-            title,
-            body,
-            confirm_label,
-            action: ConfirmAction::DeferTasks { calls },
-            ..
+        Mode::Form {
+            state,
+            action: FormAction::DeferTasks { ids },
         } => {
-            assert!(title.contains("Defer 2"), "title={title}");
+            assert!(state.title.contains("Defer 2"), "title={}", state.title);
             assert!(
-                body.iter().any(|l| l.contains("+5h") && l.contains("running")),
-                "body={body:?}"
+                state.fields.iter().any(|f| f.label == "note" && f.value.contains("running")),
+                "fields={:?}",
+                state.fields.iter().map(|f| (&f.label, &f.value)).collect::<Vec<_>>()
             );
-            assert_eq!(confirm_label, "Defer +5h");
-            assert_eq!(calls.len(), 2);
-            assert_eq!(calls[0].method, "defer");
-            assert_eq!(calls[0].params, serde_json::json!({ "id": "t0" }));
-            assert_eq!(calls[1].method, "defer");
-            assert_eq!(calls[1].params, serde_json::json!({ "id": "t1" }));
+            assert_eq!(ids, &["t0".to_string(), "t1".to_string()]);
         }
-        other => panic!("expected defer confirm, got {other:?}"),
+        other => panic!("expected defer form, got {other:?}"),
     }
-    let u = a.update(enter()); // confirm
+    a.update(Event::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Tab,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    let u = a.update(enter()); // submit Primary
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { verb, calls, invalidate_defs_for } => {
             assert_eq!(verb, "deferred");

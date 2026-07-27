@@ -21,7 +21,7 @@ const HELP_ROWS: [(&str, &str); 25] = [
     ("g", "goto: tmux split juice|agent 3:1 — resume session (queue) · open worktree (worktrees)"),
     ("x", "cancel (queue) · remove worktree (worktrees)"),
     ("a", "archive / unarchive selection (queue)"),
-    ("d", "defer +5h, stacks if already deferred (queue) · discover (tasks)"),
+    ("d", "defer by N hours (digit field, default 5; stacks) (queue) · discover (tasks)"),
     ("c", "cron: pause / resume schedule (tasks)"),
     ("s", "schedule adhoc task (queue)"),
     ("t", "task menu (worktrees)"),

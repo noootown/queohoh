@@ -1683,6 +1683,43 @@ describe("ApiServer", () => {
 		);
 	});
 
+	it("defer accepts hours and stamps that many hours", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		const before = Date.now();
+		const updated = (await client.call("defer", { id: t.id, hours: 2 })) as {
+			notBefore: string | null;
+		};
+		const until = Date.parse(updated.notBefore!);
+		const twoH = 2 * 60 * 60 * 1000;
+		expect(until - before).toBeGreaterThanOrEqual(twoH - 2000);
+		expect(until - before).toBeLessThanOrEqual(twoH + 2000);
+	});
+
+	it("defer rejects non-integer / out-of-range hours", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		await expect(client.call("defer", { id: t.id, hours: 0 })).rejects.toThrow(
+			/hours must be an integer/,
+		);
+		await expect(
+			client.call("defer", { id: t.id, hours: 1.5 }),
+		).rejects.toThrow(/hours must be an integer/);
+		await expect(
+			client.call("defer", { id: t.id, hours: 1000 }),
+		).rejects.toThrow(/hours must be an integer/);
+	});
+
 	it("defer stamps notBefore +DEFER_MS on a queued task", async () => {
 		const { client, store } = await setup();
 		const t = store.create({

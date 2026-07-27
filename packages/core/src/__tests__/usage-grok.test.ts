@@ -28,9 +28,10 @@ describe("parseGrokBilling", () => {
 		});
 	});
 
-	it("dual monthly+weekly → text and severity warn", () => {
+	it("dual → week/month text and severity warn", () => {
+		// Shorter window first (week 81% warn, month 42% ok) → 81%/42%.
 		expect(parseGrokBilling(monthlyOk, weeklyOk)).toEqual({
-			text: "42%/81%",
+			text: "81%/42%",
 			severity: "warn",
 		});
 	});
@@ -59,7 +60,7 @@ describe("parseGrokBilling", () => {
 					currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY" },
 				},
 			}),
-		).toEqual({ text: "42%/0%", severity: "ok" });
+		).toEqual({ text: "0%/42%", severity: "ok" });
 	});
 });
 
@@ -92,7 +93,7 @@ describe("createGrokUsageProbe", () => {
 			},
 		});
 		expect(await probe.fetch()).toEqual({
-			text: "42%/81%",
+			text: "81%/42%",
 			severity: "warn",
 		});
 		expect(calls[0]).toBe("https://example.test/v1/billing");

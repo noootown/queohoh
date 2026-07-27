@@ -6,7 +6,9 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::app::{App, Update};
 use crate::ipc::client::{spawn_subscription, RpcClient};
-use crate::ipc::types::{DefinitionSummary, SettingsPayload, StateSnapshot, TaskDefinition};
+use crate::ipc::types::{
+    DefinitionSummary, SettingsPayload, StateSnapshot, TaskDefinition, TaskInstance,
+};
 use crate::runfiles::RunFiles;
 
 /// Everything enters the app through this one enum (contract-verbatim).
@@ -29,6 +31,10 @@ pub enum Event {
     /// Boxed: a full `TaskDefinition` (~400 bytes) would otherwise dominate every
     /// `Event` (clippy::large_enum_variant).
     Definition { repo: String, name: String, def: Option<Box<TaskDefinition>> },
+    /// Full-task reply for the DETAIL Prompt tab (untruncated prompt). Boxed so a
+    /// fat `TaskInstance` doesn't dominate every `Event`. `None` = RPC failed or
+    /// the daemon predates the `task` method (poison: leave inflight).
+    Task { id: String, task: Option<Box<TaskInstance>> },
     /// Result of the on-demand `settings` RPC that backs the `,` overlay.
     /// `None` = the call failed or the daemon predates the RPC (stored as
     /// `Some(None)` in `App::settings` → overlay shows the "unavailable" line).
@@ -104,6 +110,10 @@ pub enum Cmd {
     },
     FetchDefinitions { repo: String },
     FetchDefinition { repo: String, name: String },
+    /// Fetch a full (untruncated-prompt) task by id via the `task` RPC; the reply
+    /// lands as [`Event::Task`]. Used by the DETAIL Prompt tab when the snapshot
+    /// wire prompt ends with `…`.
+    FetchTask { id: String },
     /// Fetch a worktree's resumable Claude sessions for the session picker via the
     /// `listSessions` RPC; the reply lands as [`Event::SessionsLoaded`] (echoing
     /// `worktree` so a stale reply is dropped). `repo`/`worktree` scope the query.
@@ -252,6 +262,11 @@ pub async fn run_event_loop<B: ratatui::backend::Backend>(
         // Definition context — without this, `full_defs` never fills and the
         // pane shows "(loading definition…)" forever.
         if let Some(cmd) = app.reconcile_full_def() {
+            cmds.push(cmd);
+        }
+        // Same lazy pattern for the FULL task (untruncated prompt) when DETAIL is
+        // on the Run Prompt sub-tab and the snapshot wire prompt is truncated.
+        if let Some(cmd) = app.reconcile_full_task() {
             cmds.push(cmd);
         }
         let mut quit = false;
@@ -526,6 +541,21 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                     Err(_) => None,
                 };
                 let _ = tx.send(Event::Definition { repo, name, def });
+            });
+        }
+        Cmd::FetchTask { id } => {
+            tokio::spawn(async move {
+                let call = RpcCall {
+                    method: "task".into(),
+                    params: serde_json::json!({ "id": &id }),
+                };
+                // Errors / null / old daemon → None (mirrors FetchDefinition's
+                // catch → null; update leaves the inflight key as a poison).
+                let task = match rpc_once(&sock, &call, 5_000).await {
+                    Ok(v) => serde_json::from_value::<TaskInstance>(v).ok().map(Box::new),
+                    Err(_) => None,
+                };
+                let _ = tx.send(Event::Task { id, task });
             });
         }
         Cmd::FetchSessions { repo, worktree } => {

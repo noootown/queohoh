@@ -695,18 +695,18 @@ impl App {
     }
 
     /// `d` on QUEUE (and the `[d]efer` chip): push selected queued/running
-    /// task(s) +5h (Claude sliding window). ALWAYS confirms first (parity with
-    /// stop/rerun): freezes per-task `defer` RPCs and opens `Mode::Confirm`.
-    /// Running rows are stopped and re-queued with `notBefore` by the daemon;
-    /// a second confirm on an already-deferred row stacks another +5h. Terminal
-    /// / needs-input / archived are ineligible; a selection with nothing
-    /// deferrable never opens the dialog — status line instead.
+    /// task(s) by N hours (Claude sliding window; default 5). Opens the shared
+    /// bordered form ([`Mode::Form`]) with an hours input (Tab / field focus /
+    /// buttons same as every other form). Running rows are stopped and
+    /// re-queued with `notBefore` by the daemon; a second defer stacks another
+    /// window. Terminal / needs-input / archived are ineligible; a selection
+    /// with nothing deferrable never opens the form — status line instead.
     pub(super) fn defer_selected(&mut self) -> Update {
+        use crate::view::form::{Field, FormState};
         let defer_ok = |s: TaskStatus| matches!(s, TaskStatus::Queued | TaskStatus::Running);
         let Some((rows, is_bulk)) = self.queue_selection_rows() else {
             return Update::default();
         };
-        // Eligible rows in view order, keeping status for the confirm summary.
         let eligible: Vec<(String, TaskStatus)> = rows
             .into_iter()
             .filter(|(_, s, arch)| !arch && defer_ok(*s))
@@ -723,31 +723,24 @@ impl App {
         let running = eligible.iter().filter(|(_, s)| matches!(s, TaskStatus::Running)).count();
         let n = eligible.len();
         let plural = if n == 1 { "" } else { "s" };
-        let summary = if n == 1 {
-            match eligible[0].1 {
-                TaskStatus::Running => {
-                    "defer 1 running task +5h (will stop and re-queue)".to_string()
-                }
-                _ => "defer 1 queued task +5h".to_string(),
-            }
-        } else if running > 0 {
-            format!("defer {n} tasks +5h ({running} running will be stopped and re-queued)")
-        } else {
-            format!("defer {n} tasks +5h")
-        };
-        let calls: Vec<RpcCall> = eligible
-            .into_iter()
-            .map(|(id, _)| RpcCall {
-                method: "defer".into(),
-                params: serde_json::json!({ "id": id }),
-            })
-            .collect();
-        self.mode = Mode::Confirm {
-            title: format!("Defer {n} task{plural}"),
-            body: vec![summary],
-            confirm_label: "Defer +5h".into(),
-            action: ConfirmAction::DeferTasks { calls },
-            focus: crate::hit::ButtonKind::Confirm,
+        let ids: Vec<String> = eligible.into_iter().map(|(id, _)| id).collect();
+        let mut fields = Vec::new();
+        if running > 0 {
+            let note = if n == 1 {
+                "will stop and re-queue".into()
+            } else {
+                format!("{running} running will stop and re-queue")
+            };
+            fields.push(Field::readonly("note", &note));
+        }
+        fields.push(Field::input("hours", "5", true));
+        self.mode = Mode::Form {
+            state: FormState::new(
+                &format!("Defer {n} task{plural}"),
+                "Defer",
+                fields,
+            ),
+            action: FormAction::DeferTasks { ids },
         };
         Update { dirty: true, cmds: vec![] }
     }

@@ -6,8 +6,23 @@ use ratatui::widgets::Paragraph;
 use crate::app::App;
 use crate::hit::{HitMap, HitTarget};
 use crate::ipc::types::{ProviderUsage, UsageSeverity};
+use crate::selectors::remaining_label;
 use crate::view::Computed;
 use crate::view::theme::{GLYPH_DOT, Palette};
+
+/// Format the usage chip label: base `text` (e.g. `100%/55%`), and when the
+/// daemon sent a session `resetsAt`, append a live countdown (` · ⧗ 1h12m`)
+/// at every severity — not only crit — so the operator always sees when the
+/// primary window frees.
+fn usage_label(u: &ProviderUsage, now_epoch_s: u64) -> String {
+    let base = format!(" {}", u.text);
+    let Some(resets_at_ms) = u.resets_at else {
+        return base;
+    };
+    // Wire stores epoch ms (JS Date); remaining_label wants epoch seconds.
+    let until_s = resets_at_ms / 1000;
+    format!("{base} · {}", remaining_label(until_s, now_epoch_s))
+}
 
 /// Severity color for an active provider's usage text. Stale samples add DIM
 /// so a last-good chip reads quieter without disappearing.
@@ -194,7 +209,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             } else {
                 Style::default().fg(p.dim)
             };
-            let usage_span = Span::styled(format!(" {}", u.text), style);
+            let usage_span = Span::styled(usage_label(u, app.now_epoch_s), style);
             cluster_w = cluster_w.saturating_add(usage_span.width() as u16);
             right_spans.push(usage_span);
         }

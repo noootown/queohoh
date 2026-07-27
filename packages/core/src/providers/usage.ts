@@ -4,6 +4,12 @@ export type UsageSeverity = "ok" | "warn" | "crit" | "unknown";
 export interface UsageSample {
 	text: string;
 	severity: UsageSeverity;
+	/**
+	 * When the primary usage window resets (epoch ms). Claude: 5h session
+	 * `resets_at`. Optional — probes without a timer omit it. The TUI appends
+	 * a live countdown whenever this is set (any severity).
+	 */
+	resetsAt?: number;
 }
 
 export interface ProviderUsage {
@@ -12,6 +18,8 @@ export interface ProviderUsage {
 	severity: UsageSeverity;
 	fetchedAt: number;
 	stale: boolean;
+	/** Epoch ms; see [`UsageSample.resetsAt`]. Omitted on older samples. */
+	resetsAt?: number;
 }
 
 export interface UsageProbe {

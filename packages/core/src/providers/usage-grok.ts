@@ -19,6 +19,9 @@ export type GrokTokenReader = () => Promise<string | null>;
  * Pure parse of Grok billing JSON (monthly + optional weekly credits) →
  * sample or null. Divide-by-zero / missing monthly fields → null.
  * Weekly is optional: null/unusable weekly → monthly-only text.
+ *
+ * Dual chip order is **week/month** (shorter window first), matching the
+ * Claude session-first mental model — not month/week.
  */
 export function parseGrokBilling(
 	monthlyJson: unknown,
@@ -35,8 +38,8 @@ export function parseGrokBilling(
 		};
 	}
 	return {
-		text: `${Math.round(monthlyPct)}%/${Math.round(weeklyPct)}%`,
-		severity: maxSeverity([monthlyPct, weeklyPct]),
+		text: `${Math.round(weeklyPct)}%/${Math.round(monthlyPct)}%`,
+		severity: maxSeverity([weeklyPct, monthlyPct]),
 	};
 }
 

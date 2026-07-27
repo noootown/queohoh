@@ -199,15 +199,15 @@ pub enum Mode {
     /// once on first open.
     Settings,
     /// Unified destructive-confirmation dialog (remove worktree, bulk remove,
-    /// queue cancel, queue re-queue). `title` names the verb; `body` are the message lines (built
-    /// per-verb at open time — the branch/warning lines, the truncated name list,
-    /// the running-will-be-stopped summary); `confirm_label` is the Confirm
-    /// button's verb; `action` is the frozen payload fired on confirm. `focus`
-    /// is the highlighted button (defaults to Confirm on open): Left/Right/Tab
-    /// move it; Enter activates the focused button; `y`/`n` are always-on
-    /// accelerators; Esc dismisses (unadvertised). A click on either button acts
-    /// regardless of focus; a click inside the body is inert; an outside click
-    /// dismisses.
+    /// queue cancel, queue re-queue). `title` names the verb; `body` are the
+    /// message lines (built per-verb at open time); `confirm_label` is the
+    /// Confirm button's verb; `action` is the frozen payload fired on confirm.
+    /// `focus` is the highlighted button (defaults to Confirm on open):
+    /// Left/Right/Tab move it; Enter activates the focused button; `y`/`n` are
+    /// always-on accelerators; Esc dismisses (unadvertised). A click on either
+    /// button acts regardless of focus; a click inside the body is inert; an
+    /// outside click dismisses. Defer uses [`Mode::Form`] (hours input), not
+    /// this dialog.
     Confirm {
         title: String,
         body: Vec<String>,
@@ -355,6 +355,13 @@ pub enum FormAction {
     Requeue {
         task_ids: Vec<String>,
     },
+    /// QUEUE `[d]efer`: push frozen task ids by N hours. Fields: `[hours input]`
+    /// (digit-only while open; required, 1..=999). Optional leading readonly
+    /// note when any selected task is running. On submit: one `defer` RPC per
+    /// id with the parsed hours (stacks on an existing future `notBefore`).
+    DeferTasks {
+        ids: Vec<String>,
+    },
 }
 
 /// Which stop each adhoc-create form field occupies (the positional layout the
@@ -405,10 +412,6 @@ pub enum ConfirmAction {
     /// clears the QUEUE range first. Mirror of [`Self::CancelTasks`] for the
     /// QUEUE re-queue (`r`) verb.
     RequeueTasks { calls: Vec<crate::event::RpcCall> },
-    /// The frozen per-task `defer` RPCs in one `RpcSeq` (verb "deferred");
-    /// clears the QUEUE range first. Mirror of [`Self::CancelTasks`] for the
-    /// QUEUE defer (`d`) verb (+5h Claude window; stacks on re-press).
-    DeferTasks { calls: Vec<crate::event::RpcCall> },
     /// Run discovery for def `name` in `repo` (TASKS `d` / `[d]iscover` chip).
     /// Repo + name are frozen when the dialog opens so confirm fires exactly
     /// the def the body named. On confirm: optimistic `App::discovering` insert

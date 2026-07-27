@@ -14,6 +14,8 @@ type CacheEntry = {
 	text: string;
 	severity: UsageSeverity;
 	fetchedAt: number;
+	/** Epoch ms when the primary window resets; see UsageSample.resetsAt. */
+	resetsAt?: number;
 };
 
 export interface UsagePollerDeps {
@@ -163,18 +165,26 @@ export class UsagePoller {
 
 		if (sample !== null) {
 			const fetchedAt = this.now();
-			this.cache.set(P, {
+			const entry: CacheEntry = {
 				text: sample.text,
 				severity: sample.severity,
 				fetchedAt,
-			});
-			this.published.set(P, {
+			};
+			if (sample.resetsAt !== undefined) {
+				entry.resetsAt = sample.resetsAt;
+			}
+			this.cache.set(P, entry);
+			const published: ProviderUsage = {
 				provider: P,
 				text: sample.text,
 				severity: sample.severity,
 				fetchedAt,
 				stale: false,
-			});
+			};
+			if (sample.resetsAt !== undefined) {
+				published.resetsAt = sample.resetsAt;
+			}
+			this.published.set(P, published);
 			this.onChange();
 			return;
 		}
@@ -182,13 +192,17 @@ export class UsagePoller {
 		// Fetch failed / null: last-good stale, or drop the chip for this provider.
 		const cached = this.cache.get(P);
 		if (cached) {
-			this.published.set(P, {
+			const published: ProviderUsage = {
 				provider: P,
 				text: cached.text,
 				severity: cached.severity,
 				fetchedAt: cached.fetchedAt,
 				stale: true,
-			});
+			};
+			if (cached.resetsAt !== undefined) {
+				published.resetsAt = cached.resetsAt;
+			}
+			this.published.set(P, published);
 		} else {
 			this.published.delete(P);
 		}

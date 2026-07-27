@@ -117,7 +117,7 @@ pub(crate) fn render_back_button(frame: &mut ratatui::Frame, hit: &mut HitMap, r
 /// title/body/button-row (clamped, centered, capped at the frame). Registers the
 /// popup body as a `Modal` hit target (inert) and the two buttons as
 /// `Button(Confirm)`/`Button(Cancel)`; an outside click dismisses (handled in
-/// `on_mouse`).
+/// `on_mouse`). Defer uses the shared form, not this dialog.
 pub fn render_confirm(
     frame: &mut ratatui::Frame,
     hit: &mut HitMap,

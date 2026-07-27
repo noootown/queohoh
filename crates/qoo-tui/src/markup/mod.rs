@@ -621,8 +621,8 @@ pub fn style_transcript_line(line: &str, ctx: &LineCtx, width: u16, p: &Palette)
 /// Style one resolved-arg line (`key=value with spaces`): `key=` in accent,
 /// the rest of the line (value, may contain spaces/`=`) in meta. Wrap
 /// continuations have no leading `key=` — paint wholly as value. Detail Prompt
-/// tab puts one arg per logical line; the QUEUE cell still tokenizes on space
-/// via `style_args_spans` in panes.rs.
+/// tab puts one arg per logical line; space-joined multi-token args (QUEUE cell,
+/// WORKTREES last-task, DETAIL lane Task) use [`style_args_spans`].
 fn style_args_line(line: &str, p: &Palette) -> Line<'static> {
     let key_st = p.args_key_style();
     let val_st = p.args_style();
@@ -644,14 +644,45 @@ fn style_args_line(line: &str, p: &Palette) -> Line<'static> {
     Line::from(Span::styled(line.to_string(), val_st))
 }
 
+/// Color space-separated `key=value` tokens: keys (incl. `=`) in accent, values
+/// and bare tokens in default `fg`. Spaces stay value-styled. Shared by the
+/// QUEUE Prompt/Args cell, WORKTREES last-task args (after `def · `), and the
+/// DETAIL worktree lane Task column (same paint as those panes).
+pub(crate) fn style_args_spans(s: &str, p: &Palette) -> Vec<Span<'static>> {
+    if s.is_empty() {
+        return vec![];
+    }
+    let key_st = p.args_key_style();
+    let val_st = p.args_style();
+    let mut spans = Vec::new();
+    let mut first = true;
+    for token in s.split(' ') {
+        if !first {
+            spans.push(Span::styled(" ".to_string(), val_st));
+        }
+        first = false;
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = token.split_once('=') {
+            spans.push(Span::styled(format!("{k}="), key_st));
+            if !v.is_empty() {
+                spans.push(Span::styled(v.to_string(), val_st));
+            }
+        } else {
+            spans.push(Span::styled(token.to_string(), val_st));
+        }
+    }
+    spans
+}
+
 /// Style a queue-style lane-task row (see [`LineCtx::LaneTask`]): a status glyph
-/// (colored by [`crate::view::theme::glyph_style`]), the task NAME (`line`) in
-/// mauve for a definition or default grey for a prompt summary, then the fixed right-aligned
-/// `created` / `age` columns (both `info` teal, like the queue pane's timestamp
-/// and age) and the `live` column (warn, the "now" slot — `⏱ <elapsed>` for a
-/// running task, `#N in lane` for a queued one, blank otherwise). Columns fit
-/// `width` via [`crate::selectors::lane_task_cols`], degrading trailing columns
-/// before the name so nothing is pushed off-screen. When `selected` the whole row
+/// (colored by [`crate::view::theme::glyph_style`]), then the task NAME — for a
+/// definition, **mauve def** + ` · ` + QUEUE/WORKTREES args paint
+/// ([`style_args_spans`]); for a freeform prompt, terminal-default grey — then
+/// fixed `created` / `age` (`info` teal) and `live` (warn). Columns fit `width`
+/// via [`crate::selectors::lane_task_cols`], degrading trailing columns before
+/// the name so nothing is pushed off-screen. When `selected` the whole row
 /// inverts with the palette selection style — the detail row cursor. Every char
 /// lands in exactly one contiguous span so the cell-column selection patch keeps
 /// working. `width == 0` yields an empty line.
@@ -672,16 +703,33 @@ fn style_lane_task_line(
         return Line::from(String::new());
     }
     let cols = crate::selectors::lane_task_cols(width);
-    // Def name in the name color (mauve); a prompt summary in the terminal-default
-    // grey (white is reserved for actions/tabs).
-    let name_style = if is_def { Style::default().fg(p.mauve) } else { Style::default() };
     let gap = " ".repeat(crate::selectors::COL_GAP);
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled(glyph.to_string(), crate::view::theme::glyph_style(glyph, p)),
         Span::raw(" "),
     ];
     if cols.name_w > 0 {
-        spans.push(Span::styled(crate::selectors::pad_clip(name, cols.name_w), name_style));
+        // Clip first so multi-span def · args paint never overruns the name
+        // column; right-pad so Created/Age/Live stay aligned (pad_clip parity).
+        let shown = crate::selectors::clip(name, cols.name_w);
+        if is_def {
+            // Match WORKTREES Last Task: mauve def only; args get key/value paint.
+            let mauve = Style::default().fg(p.mauve);
+            if let Some((def_part, args_part)) = shown.split_once(" · ") {
+                spans.push(Span::styled(def_part.to_string(), mauve));
+                spans.push(Span::styled(" · ".to_string(), p.args_style()));
+                spans.extend(style_args_spans(args_part, p));
+            } else {
+                spans.push(Span::styled(shown.clone(), mauve));
+            }
+        } else {
+            // Freeform prompt summary — terminal-default grey (not mauve).
+            spans.push(Span::raw(shown.clone()));
+        }
+        let used = shown.chars().count();
+        if used < cols.name_w {
+            spans.push(Span::raw(" ".repeat(cols.name_w - used)));
+        }
     }
     if cols.created_w > 0 {
         spans.push(Span::raw(gap.clone()));

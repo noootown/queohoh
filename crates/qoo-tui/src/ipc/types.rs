@@ -89,7 +89,8 @@ pub enum UsageSeverity {
 
 /// Active provider usage published on `StateSnapshot` for the top-bar chip.
 /// Mirrors `ProviderUsage` in packages/core (provider, text, severity, fetchedAt,
-/// stale). Container `default` so a partial payload still deserializes.
+/// stale, optional resetsAt). Container `default` so a partial payload still
+/// deserializes — older daemons omit `resetsAt`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProviderUsage {
@@ -98,6 +99,10 @@ pub struct ProviderUsage {
     pub severity: UsageSeverity,
     pub fetched_at: u64,
     pub stale: bool,
+    /// Epoch **milliseconds** when the primary window resets (Claude 5h
+    /// session). `None` on older daemons / probes without a timer. The header
+    /// appends a live countdown whenever this is present (any severity).
+    pub resets_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -793,20 +798,28 @@ mod tests {
         // A modern daemon publishes camelCase `providerUsage` on the state
         // broadcast (single-chip back-compat for the active entry)...
         let s: StateSnapshot = serde_json::from_str(
-            r#"{"providerUsage":{"provider":"claude","text":"100%/73%","severity":"crit","fetchedAt":1,"stale":false}}"#,
+            r#"{"providerUsage":{"provider":"claude","text":"100%","severity":"crit","fetchedAt":1,"stale":false,"resetsAt":1700000000000}}"#,
         )
         .unwrap();
         let u = s.provider_usage.unwrap();
         assert_eq!(u.provider, "claude");
-        assert_eq!(u.text, "100%/73%");
+        assert_eq!(u.text, "100%");
         assert_eq!(u.severity, UsageSeverity::Crit);
         assert_eq!(u.fetched_at, 1);
         assert!(!u.stale);
+        assert_eq!(u.resets_at, Some(1_700_000_000_000));
 
         // ...and an old daemon that omits it defaults to None (container `default`).
         let old: StateSnapshot = serde_json::from_str(r#"{}"#).unwrap();
         assert!(old.provider_usage.is_none());
         assert!(old.provider_usages.is_none());
+
+        // Pre-resetsAt payload still deserializes (field defaults to None).
+        let no_reset: StateSnapshot = serde_json::from_str(
+            r#"{"providerUsage":{"provider":"claude","text":"55%","severity":"ok","fetchedAt":1,"stale":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(no_reset.provider_usage.unwrap().resets_at, None);
     }
 
     #[test]

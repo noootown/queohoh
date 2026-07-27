@@ -24,7 +24,8 @@ use ratatui::layout::Position;
 use crate::event::{Cmd, Event, RpcCall};
 use crate::hit::{HitMap, HitTarget};
 use crate::ipc::types::{
-    ArgSpec, DefinitionSummary, SettingsPayload, StateSnapshot, TaskDefinition, TaskStatus,
+    ArgSpec, DefinitionSummary, SettingsPayload, StateSnapshot, TaskDefinition, TaskInstance,
+    TaskStatus,
 };
 use crate::keymap::AppAction;
 use crate::runfiles::RunFiles;
@@ -92,6 +93,16 @@ pub struct App {
     /// marker so `reconcile_full_def` doesn't refetch-loop; invalidation
     /// (`ActionResult::invalidate_defs_for`) clears the repo's keys.
     pub full_defs_inflight: HashSet<String>,
+    /// Full `TaskInstance`s keyed by task id — the untruncated prompt (and args)
+    /// for the DETAIL Prompt tab. Snapshot prompts are wire-capped (~400 chars
+    /// + `…`); the `task` RPC returns the full disk copy. Lazy-filled by
+    /// [`Self::reconcile_full_task`] when the Prompt tab is showing a truncated
+    /// wire prompt.
+    pub full_tasks: HashMap<String, TaskInstance>,
+    /// Task ids with a `FetchTask` in flight (or poisoned after a failed fetch
+    /// so we don't refetch-loop against an old/broken daemon). Mirrors
+    /// `full_defs_inflight`.
+    pub full_tasks_inflight: HashSet<String>,
     pub now_epoch_s: u64,
     /// Monotonic millisecond clock stamped by the event loop before every
     /// `update()` (from an `Instant` taken at program start). Read by
@@ -255,6 +266,8 @@ impl App {
             discovering: HashSet::new(),
             full_defs: HashMap::new(),
             full_defs_inflight: HashSet::new(),
+            full_tasks: HashMap::new(),
+            full_tasks_inflight: HashSet::new(),
             now_epoch_s: now_epoch_s(),
             now_ms: 0,
             prefix_armed: false,
@@ -762,6 +775,45 @@ impl App {
         Some(Cmd::FetchDefinition { repo: def.repo.clone(), name: def.name.clone() })
     }
 
+    /// Emit a `task` (full/untruncated) fetch for `id` when neither cached nor
+    /// already in flight; marks in-flight before returning so repeat calls
+    /// dedup. Shared by [`Self::reconcile_full_task`].
+    fn ensure_full_task(&mut self, id: &str) -> Vec<Cmd> {
+        if self.full_tasks.contains_key(id) || self.full_tasks_inflight.contains(id) {
+            return Vec::new();
+        }
+        self.full_tasks_inflight.insert(id.to_string());
+        vec![Cmd::FetchTask { id: id.to_string() }]
+    }
+
+    /// Emit a lazy full-task fetch when the detail pane is on the Run Prompt
+    /// sub-tab and the snapshot's wire prompt looks truncated (`…` suffix from
+    /// `PROMPT_WIRE_MAX`). Short / untruncated snapshot prompts skip the RPC
+    /// entirely. Called by the event loop after every `update`, sibling to
+    /// [`Self::reconcile_full_def`]. A failed fetch leaves a poison marker in
+    /// `full_tasks_inflight` so we never spin against an old daemon that lacks
+    /// the `task` method.
+    pub(crate) fn reconcile_full_task(&mut self) -> Option<Cmd> {
+        let (kind, sub) = self.detail_kind_and_subtab();
+        if kind != DetailKind::Run || sub != crate::detail::RUN_TAB_PROMPT {
+            return None;
+        }
+        let (id, _) = self.selected_run_task()?;
+        // Snapshot may already hold the full prompt (short tasks); only pay for
+        // the RPC when the wire preview ends with the truncation ellipsis.
+        let snap = self.snapshot.as_ref()?;
+        let wire_prompt = snap
+            .tasks
+            .iter()
+            .chain(snap.archived_recent.iter())
+            .find(|t| t.id == id)
+            .map(|t| t.prompt.as_str())?;
+        if !wire_prompt.ends_with('…') {
+            return None;
+        }
+        self.ensure_full_task(&id).into_iter().next()
+    }
+
     fn set_sub_tab_clamped(&mut self, idx: usize, cmds: &mut Vec<Cmd>) -> bool {
         let (kind, cur) = self.detail_kind_and_subtab();
         let next = crate::detail::clamp_sub_tab(idx, kind);
@@ -854,6 +906,9 @@ mod mark_flow_tests;
 
 #[cfg(test)]
 mod def_pick_tests;
+
+#[cfg(test)]
+mod full_task_tests;
 
 #[cfg(test)]
 mod heal_wiring_tests;

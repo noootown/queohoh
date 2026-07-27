@@ -16,7 +16,7 @@ pub enum ButtonKind {
 /// locked in as the target), `Goto` ≡ `g` (QUEUE — resume the task's Claude
 /// session in tmux; WORKTREES — open the worktree in tmux), `Cancel` ≡ `x`
 /// (QUEUE only — skip/stop the selected task), `Defer` ≡ `d` (QUEUE only —
-/// push the selected queued/running task +5h for the Claude usage window;
+/// push the selected queued/running task by N hours (confirm digit field, default 5);
 /// TASKS keeps `d` for Discover), `Remove` ≡ `x` (WORKTREES only — remove the
 /// selected worktree), `Cron` ≡ `c` (TASKS only — pause/resume the def's
 /// schedule), `Collapse` ≡ `z` (labeled collapse/expand by expanded/collapsed
@@ -73,13 +73,13 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
 /// Whether `btn` may act on a BULK (multi-row) selection in `pane` — the only
 /// verbs that stay live during a range: QUEUE's `Run` (re-queue, `[r]erun`),
 /// `Cancel` (stop, `[x]stop`), `Archive` (`[a]rchive`/`[a]unarchive`), and
-/// `Defer` (`[d]efer` +5h) each fan the RPC out over every eligible row in the
-/// range; WORKTREES' `Remove` opens its own bulk-remove menu. Everything else
-/// — including the pane-scoped `Goto`/`Schedule`/`Collapse` chips that don't
-/// even read the selection — is bulk-disabled: the title bar dims it (see
-/// [`crate::view::panes::button_chip`]) and its key/click refuses with a status
-/// line (`App::apply_action`) instead of silently acting on just the cursor
-/// row. SINGLE SOURCE OF TRUTH for both.
+/// `Defer` (`[d]efer` by N hours) each fan the RPC out over every eligible row
+/// in the range; WORKTREES' `Remove` opens its own bulk-remove menu. Everything
+/// else — including the pane-scoped `Goto`/`Schedule`/`Collapse` chips that
+/// don't even read the selection — is bulk-disabled: the title bar dims it
+/// (see [`crate::view::panes::button_chip`]) and its key/click refuses with a
+/// status line (`App::apply_action`) instead of silently acting on just the
+/// cursor row. SINGLE SOURCE OF TRUTH for both.
 pub(crate) fn bulk_allowed(pane: PaneId, btn: PaneButton) -> bool {
     use PaneButton::*;
     matches!(
@@ -90,6 +90,42 @@ pub(crate) fn bulk_allowed(pane: PaneId, btn: PaneButton) -> bool {
             | (PaneId::Queue, Defer)
             | (PaneId::Worktrees, Remove)
     )
+}
+
+/// Whether a QUEUE row-scoped chip is inert for the **topmost selected** row
+/// (single-selection dim-when-inert, same pattern as TASKS discover/cron).
+/// Bulk selections skip this and use [`bulk_allowed`] only — multi-row verbs
+/// filter eligibility at fire time.
+///
+/// | Chip | Live when |
+/// |------|-----------|
+/// | `[r]erun` | not archived, not running |
+/// | `[x]stop` | queued / needs-input / running (not archived) |
+/// | `[d]efer` | queued / running (not archived) |
+/// | `[a]rchive` | archived (→ unarchive) **or** live terminal/parked (not queued/running) |
+/// | others | never inert from row status (goto/session is separate) |
+pub(crate) fn queue_chip_inert(
+    btn: PaneButton,
+    status: crate::ipc::types::TaskStatus,
+    archived: bool,
+) -> bool {
+    use crate::ipc::types::TaskStatus;
+    use PaneButton::*;
+    match btn {
+        Run => archived || matches!(status, TaskStatus::Running),
+        Cancel => {
+            archived
+                || !matches!(
+                    status,
+                    TaskStatus::Queued | TaskStatus::NeedsInput | TaskStatus::Running
+                )
+        }
+        Defer => archived || !matches!(status, TaskStatus::Queued | TaskStatus::Running),
+        // Active work cannot be archived; chip greys until the task finishes
+        // (or is parked needs-input). Archived rows keep the chip for unarchive.
+        Archive => !archived && matches!(status, TaskStatus::Queued | TaskStatus::Running),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

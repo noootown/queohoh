@@ -1199,6 +1199,56 @@
     }
 
     #[test]
+    fn lane_task_row_def_args_match_queue_and_worktrees_paint() {
+        // WORKTREES Last Task / QUEUE Prompt/Args paint: mauve def, accent
+        // `key=`, fg value. DETAIL lane Task used to mauve the whole blob —
+        // `branch=` read as a def name. Parity requires the split paint.
+        let p = Palette::default();
+        let line = style_transcript_line(
+            "pr-resolve-bot-comments · branch=JUS-1830 comment_author=code-review",
+            &LineCtx::LaneTask {
+                glyph: '●',
+                is_def: true,
+                created: "07/27 15:46".into(),
+                age: "34m ago".into(),
+                live: String::new(),
+                selected: false,
+            },
+            80,
+            &p,
+        );
+        let got = flat(&line);
+        assert!(
+            got.contains("pr-resolve-bot-comments · branch=JUS-1830"),
+            "def · args text intact: {got:?}"
+        );
+        let styled = parts(&line);
+        let key_st = p.args_key_style();
+        let val_st = p.args_style();
+        assert!(
+            styled.iter().any(|(t, s)| t == "pr-resolve-bot-comments" && *s == mauve(&p)),
+            "def segment mauve only: {styled:?}"
+        );
+        assert!(
+            styled.iter().any(|(t, s)| t == " · " && *s == val_st),
+            "separator is args value style: {styled:?}"
+        );
+        assert!(
+            styled.iter().any(|(t, s)| t == "branch=" && *s == key_st),
+            "arg keys accent: {styled:?}"
+        );
+        assert!(
+            styled.iter().any(|(t, s)| t == "JUS-1830" && *s == val_st),
+            "arg values fg: {styled:?}"
+        );
+        // Def mauve must NOT cover keys (regression for whole-blob mauve).
+        assert!(
+            !styled.iter().any(|(t, s)| t.contains("branch=") && *s == mauve(&p)),
+            "keys must not be mauve: {styled:?}"
+        );
+    }
+
+    #[test]
     fn lane_task_row_blank_live_is_plain_not_warn() {
         let p = Palette::default();
         // A finished task has an empty live cell — it must render as raw padding

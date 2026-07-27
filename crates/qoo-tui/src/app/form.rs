@@ -1014,9 +1014,10 @@ impl App {
             }
             return Update { dirty: true, cmds };
         }
-        let Mode::Form { state, action: _ } = &mut self.mode else {
+        let Mode::Form { state, action } = &mut self.mode else {
             return Update { dirty: false, cmds: vec![] };
         };
+        let is_defer_hours = matches!(action, FormAction::DeferTasks { .. });
         let dropdown_open = state.dropdown_open;
         if dropdown_open {
             match ev.code {
@@ -1080,6 +1081,21 @@ impl App {
             Home => { state.move_home(); Update { dirty: true, cmds: vec![] } }
             End => { state.move_end(); Update { dirty: true, cmds: vec![] } }
             Backspace => { state.backspace(); Update { dirty: true, cmds: vec![] } }
+            // Defer hours: digits only, max 3 (1..999). Shared Input field +
+            // Tab/button chrome; reject `.` / letters (no fractional window).
+            Char(c) if !ctrl && !alt && is_defer_hours => {
+                if c.is_ascii_digit()
+                    && matches!(fk, FocusKind::Field(_))
+                    && state.fields.get(state.focus).is_some_and(|f| {
+                        matches!(f.kind, FieldKind::Input)
+                            && !f.readonly
+                            && f.value.chars().count() < 3
+                    })
+                {
+                    state.insert_char(c);
+                }
+                Update { dirty: true, cmds: vec![] }
+            }
             Char(c) if !ctrl && !alt => { state.insert_char(c); Update { dirty: true, cmds: vec![] } }
             _ => Update { dirty: false, cmds: vec![] },
         }
@@ -1117,6 +1133,20 @@ impl App {
             FormAction::CreateWorktree { .. } => {
                 let name = values.get(1).map(String::as_str).unwrap_or("");
                 crate::worktree_context::validate_branch(name).map(|_| 1)
+            }
+            // Hours is the last field (optional leading readonly note). Must be
+            // integer 1..=999 — empty already fails required; "0"/non-digits fail here.
+            FormAction::DeferTasks { .. } => {
+                let hours = values.last().map(String::as_str).unwrap_or("");
+                let ok = hours
+                    .parse::<u32>()
+                    .ok()
+                    .is_some_and(|n| (1..=999).contains(&n));
+                if ok {
+                    None
+                } else {
+                    Some(values.len().saturating_sub(1))
+                }
             }
             // The adhoc target combobox accepts a worktree name, a PR/ticket, or
             // empty (temp) — `resolve_target_ref` normalizes all three, so no
@@ -1383,6 +1413,28 @@ impl App {
                     dirty: true,
                     cmds: vec![Cmd::RpcSeq {
                         verb: "reran".into(),
+                        calls,
+                        invalidate_defs_for: None,
+                    }],
+                }
+            }
+            // Fields: optional readonly note + [hours input]. Hours already
+            // validated 1..=999 in action_field_error.
+            FormAction::DeferTasks { ids } => {
+                let hours_s = values.last().cloned().unwrap_or_else(|| "5".into());
+                let n: u32 = hours_s.parse().ok().filter(|n| (1..=999).contains(n)).unwrap_or(5);
+                let calls: Vec<RpcCall> = ids
+                    .into_iter()
+                    .map(|id| RpcCall {
+                        method: "defer".into(),
+                        params: serde_json::json!({ "id": id, "hours": n }),
+                    })
+                    .collect();
+                self.clear_range_and_marks(ListPane::Queue);
+                Update {
+                    dirty: true,
+                    cmds: vec![Cmd::RpcSeq {
+                        verb: "deferred".into(),
                         calls,
                         invalidate_defs_for: None,
                     }],
