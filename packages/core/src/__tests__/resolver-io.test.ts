@@ -35,7 +35,10 @@ describe("parseWorktreePorcelain", () => {
 });
 
 function fakeExec(
-	responses: Record<string, { stdout: string; exitCode: number }>,
+	responses: Record<
+		string,
+		{ stdout: string; stderr?: string; exitCode: number }
+	>,
 ): Exec & { calls: string[] } {
 	const calls: string[] = [];
 	return Object.assign(
@@ -129,14 +132,85 @@ describe("createResolverIO", () => {
 		expect(calls.some((c) => /\bswitch\b.*\s-c(\s|$)/.test(c))).toBe(false);
 	});
 
-	it("spawnWorktree throws when wt fails", async () => {
+	it("spawnWorktree throws when wt fails and no worktree appeared", async () => {
 		const exec = fakeExec({
 			"git worktree list --porcelain": { stdout: PORCELAIN, exitCode: 0 },
+			"wt switch --yes --no-cd -c TICK-77": {
+				stdout: "",
+				stderr: "hook boom",
+				exitCode: 1,
+			},
+			// reopen retry also fails
+			"wt switch --yes --no-cd TICK-77": {
+				stdout: "",
+				stderr: "still broken",
+				exitCode: 1,
+			},
 		});
 		const io = createResolverIO(exec);
 		await expect(io.spawnWorktree("/repo", "TICK-77")).rejects.toThrow(
-			/failed to spawn worktree/,
+			/failed to spawn worktree: TICK-77:.*hook boom/,
 		);
+	});
+
+	it("spawnWorktree adopts worktree when wt exits non-zero after create", async () => {
+		// post-create hooks failed but the worktree directory exists
+		const after = `${PORCELAIN}worktree /Users/me/ws/platform.JUS-1995\nHEAD aaa\nbranch refs/heads/JUS-1995\n\n`;
+		let wtRan = false;
+		const exec: Exec = async (command, args) => {
+			const key = [command, ...args].join(" ");
+			if (key === "git worktree list --porcelain") {
+				return { stdout: wtRan ? after : PORCELAIN, exitCode: 0 };
+			}
+			if (key === "wt switch --yes --no-cd -c JUS-1995") {
+				wtRan = true;
+				return { stdout: "", stderr: "mise sync failed", exitCode: 1 };
+			}
+			return { stdout: "", exitCode: 1 };
+		};
+		const io = createResolverIO(exec);
+		const spawned = await io.spawnWorktree("/repo", "JUS-1995");
+		expect(spawned).toEqual({
+			name: "platform.JUS-1995",
+			path: "/Users/me/ws/platform.JUS-1995",
+			branch: "JUS-1995",
+		});
+	});
+
+	it("spawnWorktree retries without -c when branch already exists", async () => {
+		const after = `${PORCELAIN}worktree /Users/me/ws/platform.JUS-1995\nHEAD aaa\nbranch refs/heads/JUS-1995\n\n`;
+		const calls: string[] = [];
+		let listN = 0;
+		const exec: Exec = async (command, args) => {
+			const key = [command, ...args].join(" ");
+			calls.push(key);
+			if (key === "git worktree list --porcelain") {
+				listN += 1;
+				// after reopen succeeds, list sees the worktree
+				return {
+					stdout: listN >= 1 && calls.includes("wt switch --yes --no-cd JUS-1995")
+						? after
+						: PORCELAIN,
+					exitCode: 0,
+				};
+			}
+			if (key === "wt switch --yes --no-cd -c JUS-1995") {
+				return {
+					stdout: "",
+					stderr: "✗ Branch JUS-1995 already exists",
+					exitCode: 1,
+				};
+			}
+			if (key === "wt switch --yes --no-cd JUS-1995") {
+				return { stdout: "", exitCode: 0 };
+			}
+			return { stdout: "", exitCode: 1 };
+		};
+		const io = createResolverIO(exec);
+		const spawned = await io.spawnWorktree("/repo", "JUS-1995");
+		expect(spawned.branch).toBe("JUS-1995");
+		expect(calls).toContain("wt switch --yes --no-cd -c JUS-1995");
+		expect(calls).toContain("wt switch --yes --no-cd JUS-1995");
 	});
 
 	it("removeWorktree force-cleans then removes then deletes the branch", async () => {

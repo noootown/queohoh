@@ -461,8 +461,9 @@ fn style_queue_args_spans(summary: &str, width: usize, p: &Palette) -> Vec<Span<
 }
 
 /// Color `key=value` tokens: keys (incl. `=`) in accent, values and bare tokens
-/// in meta. Spaces stay unstyled. Shared by the QUEUE Prompt/Args cell and the
-/// detail Prompt-tab Args body.
+/// in default `fg`. Spaces stay value-styled. Shared by the QUEUE Prompt/Args
+/// cell, WORKTREES last-task args (after `def · `), and detail Args styling
+/// parity in spirit (detail uses markup `style_args_line`).
 fn style_args_spans(s: &str, p: &Palette) -> Vec<Span<'static>> {
     if s.is_empty() {
         return vec![];
@@ -739,8 +740,10 @@ fn worktree_line(
         spans.push(Span::raw(" "));
     }
     spans.push(Span::styled(pad_clip(&row.name, layout.name_w), Style::default().fg(p.worktree)));
-    // Last finished lane task: status glyph (status-colored) + name (mauve when a
-    // def, default grey when a prompt) + relative age (info), padded to width.
+    // Last finished lane task: status glyph + def name (mauve) + args
+    // (`key=value` with QUEUE Prompt/Args paint: accent keys, fg values) +
+    // relative age (info). A freeform prompt stays default grey. Clip first so
+    // the age can right-pin in the fill column.
     if layout.last_w > 0 {
         spans.push(Span::raw(gap.clone()));
         match &row.last {
@@ -751,7 +754,15 @@ fn worktree_line(
                 spans.push(Span::styled(glyph.to_string(), glyph_style(*glyph, p)));
                 spans.push(Span::raw(" "));
                 if *is_def {
-                    spans.push(Span::styled(shown.clone(), mauve));
+                    // `def · args…` from lane_task_display_name — only the def
+                    // segment is mauve; args follow QUEUE Prompt/Args styling.
+                    if let Some((def_part, args_part)) = shown.split_once(" · ") {
+                        spans.push(Span::styled(def_part.to_string(), mauve));
+                        spans.push(Span::styled(" · ".to_string(), p.args_style()));
+                        spans.extend(style_args_spans(args_part, p));
+                    } else {
+                        spans.push(Span::styled(shown.clone(), mauve));
+                    }
                 } else {
                     spans.push(Span::raw(shown.clone())); // prompt = default grey
                 }

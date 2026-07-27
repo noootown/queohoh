@@ -115,6 +115,28 @@ export interface ResolverIO {
 	removeWorktree(repoPath: string, worktree: WorktreeInfo): Promise<void>;
 }
 
+/**
+ * Locate a worktree by ticket/PR id after spawn or for reuse. Worktrunk path
+ * templates are often `{repo}.{branch}` so porcelain `name` is
+ * `platform.JUS-1995` while we pass ticket id `JUS-1995`. Match order: branch,
+ * exact name, `*.${id}` suffix, slash-folded PR name.
+ */
+export function findWorktree(
+	list: WorktreeInfo[],
+	id: string,
+	branch?: string,
+): WorktreeInfo | undefined {
+	const wantBranch = branch ?? id;
+	return (
+		list.find((w) => w.branch === wantBranch) ??
+		list.find((w) => w.name === id) ??
+		list.find((w) => w.name.endsWith(`.${id}`)) ??
+		(branch
+			? list.find((w) => w.name === branch.replace(/\//g, "-"))
+			: undefined)
+	);
+}
+
 export type Resolution =
 	| { outcome: "resolved"; worktree: string; ephemeral: boolean }
 	| { outcome: "needs-input"; reason: string };
@@ -138,7 +160,9 @@ export async function resolveTarget(
 	switch (ref.kind) {
 		case "worktree": {
 			const existing = await io.listWorktrees(ctx.repoPath);
-			const match = existing.find((w) => w.name === ref.name);
+			// Same flexible match as ticket/spawn: `{repo}.{name}` path templates
+			// and branch-named worktrees must not re-spawn.
+			const match = findWorktree(existing, ref.name);
 			if (match) {
 				return { outcome: "resolved", worktree: match.name, ephemeral: false };
 			}
@@ -161,14 +185,6 @@ export async function resolveTarget(
 				};
 			}
 			const existing = await io.listWorktrees(ctx.repoPath);
-			const byBranch = existing.find((w) => w.branch === branch);
-			if (byBranch) {
-				return {
-					outcome: "resolved",
-					worktree: byBranch.name,
-					ephemeral: false,
-				};
-			}
 			// A PR always has a branch, so the branch itself names the worktree.
 			// Conventional branches (branch = ticket id) keep their old names;
 			// off-convention ones (dependabot/…) resolve instead of parking as
@@ -176,16 +192,19 @@ export async function resolveTarget(
 			// a valid git branch name can contain. No truncation: a lossy cut
 			// (slugify caps at 24) would collide two dependabot branches.
 			const name = branch.replace(/\//g, "-");
-			const byName = existing.find((w) => w.name === name);
-			if (byName) {
-				return { outcome: "resolved", worktree: byName.name, ephemeral: false };
+			const match = findWorktree(existing, name, branch);
+			if (match) {
+				return { outcome: "resolved", worktree: match.name, ephemeral: false };
 			}
 			const spawned = await io.spawnWorktree(ctx.repoPath, name, branch);
 			return { outcome: "resolved", worktree: spawned.name, ephemeral: false };
 		}
 		case "ticket": {
 			const existing = await io.listWorktrees(ctx.repoPath);
-			const match = existing.find((w) => w.name === ref.id);
+			// Prefer branch / `platform.JUS-1995` name — exact name-only match
+			// missed Worktrunk `{repo}.{branch}` paths and re-ran `wt -c` →
+			// "Branch already exists" (user: JUS-1995 spawn failures).
+			const match = findWorktree(existing, ref.id);
 			if (match) {
 				return { outcome: "resolved", worktree: match.name, ephemeral: false };
 			}

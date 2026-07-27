@@ -1,19 +1,27 @@
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
-import type { ResolverIO, WorktreeInfo } from "./resolver.js";
+import {
+	findWorktree,
+	type ResolverIO,
+	type WorktreeInfo,
+} from "./resolver.js";
 
 export type Exec = (
 	command: string,
 	args: string[],
 	opts: { cwd: string },
-) => Promise<{ stdout: string; exitCode: number }>;
+) => Promise<{ stdout: string; stderr?: string; exitCode: number }>;
 
 export const defaultExec: Exec = (command, args, opts) =>
 	new Promise((resolve) => {
-		execFile(command, args, { cwd: opts.cwd }, (error, stdout) => {
+		execFile(command, args, { cwd: opts.cwd }, (error, stdout, stderr) => {
 			const exitCode =
 				error && typeof error.code === "number" ? error.code : error ? 1 : 0;
-			resolve({ stdout: stdout ?? "", exitCode });
+			resolve({
+				stdout: stdout ?? "",
+				stderr: stderr ?? "",
+				exitCode,
+			});
 		});
 	});
 
@@ -98,21 +106,48 @@ export function createResolverIO(exec: Exec): ResolverIO {
 			// '--yes'"; tip: `switch --yes`). Without `--yes` Worktrunk refuses
 			// project post-start hooks in a non-TTY daemon ("Cannot prompt for
 			// approval"). `--no-cd`: create only — never change the daemon cwd.
-			const args = branch
-				? ["switch", "--yes", "--no-cd", branch]
-				: ["switch", "--yes", "--no-cd", "-c", name];
-			const { exitCode } = await exec("wt", args, { cwd: repoPath });
-			if (exitCode === 0) {
-				const after = await listWorktrees(repoPath);
-				// Prefer branch match: Worktrunk path templates are often
-				// `{repo}.{branch}` (slashes folded), not the slash→dash name
-				// we pass for PR refs — basename equality alone misses them.
-				const spawned =
-					after.find((w) => w.branch === (branch ?? name)) ??
-					after.find((w) => w.name === name);
-				if (spawned) return spawned;
+			const createArgs = branch
+				? (["switch", "--yes", "--no-cd", branch] as string[])
+				: (["switch", "--yes", "--no-cd", "-c", name] as string[]);
+			let result = await exec("wt", createArgs, { cwd: repoPath });
+			let detail = [result.stderr, result.stdout]
+				.filter((s) => s && s.trim())
+				.join("\n")
+				.trim();
+
+			// Ticket/temp create (-c): a prior partial spawn often left the
+			// branch on disk. wt then prints "Branch X already exists" and
+			// exits non-zero — open the existing branch without -c.
+			if (result.exitCode !== 0 && !branch) {
+				const reopen = await exec(
+					"wt",
+					["switch", "--yes", "--no-cd", name],
+					{ cwd: repoPath },
+				);
+				const reopenDetail = [reopen.stderr, reopen.stdout]
+					.filter((s) => s && s.trim())
+					.join("\n")
+					.trim();
+				if (reopen.exitCode === 0) {
+					result = reopen;
+					detail = reopenDetail;
+				} else if (reopenDetail) {
+					detail = detail
+						? `${detail}\n${reopenDetail}`
+						: reopenDetail;
+				}
 			}
-			throw new Error(`failed to spawn worktree: ${name}`);
+
+			// Always re-list: post-create hooks can exit non-zero AFTER the
+			// worktree directory exists (mise sync / docker-setup). Adopt it so
+			// the task runs instead of failing with a generic spawn error while
+			// leaving an orphan worktree the ticket matcher used to miss.
+			const after = await listWorktrees(repoPath);
+			const spawned = findWorktree(after, name, branch);
+			if (spawned) return spawned;
+
+			const suffix = detail ? `: ${detail.slice(0, 500)}` : "";
+			throw new Error(`failed to spawn worktree: ${name}${suffix}`);
 		},
 
 		async removeWorktree(repoPath, worktree) {

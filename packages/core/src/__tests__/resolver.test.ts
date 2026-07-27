@@ -119,6 +119,26 @@ describe("resolveTarget", () => {
 		expect(io.spawned).toEqual([]);
 	});
 
+	it("ticket ref: reuses Worktrunk {repo}.{ticket} path by branch", async () => {
+		// Live bug: name was platform.JUS-1995, matcher only checked name===JUS-1995,
+		// re-spawned with -c → "Branch already exists".
+		const io = stubIO({
+			listWorktrees: async () => [
+				{
+					name: "platform.JUS-1995",
+					path: "/wt/platform.JUS-1995",
+					branch: "JUS-1995",
+				},
+			],
+		});
+		expect(await resolveTarget("ticket:JUS-1995", ctx, io)).toEqual({
+			outcome: "resolved",
+			worktree: "platform.JUS-1995",
+			ephemeral: false,
+		});
+		expect(io.spawned).toEqual([]);
+	});
+
 	it("ticket ref: spawns when absent", async () => {
 		const io = stubIO();
 		expect(await resolveTarget("ticket:TICK-77", ctx, io)).toEqual({

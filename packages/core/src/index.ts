@@ -75,6 +75,7 @@ export type { TargetRef } from "./ref.js";
 export { extractTicketId, formatRef, parseRef } from "./ref.js";
 export type { Resolution, ResolverIO, WorktreeInfo } from "./resolver.js";
 export {
+	findWorktree,
 	isProtectedWorktree,
 	REPO_SENTINEL,
 	resolveTarget,
