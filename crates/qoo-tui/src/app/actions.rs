@@ -481,15 +481,14 @@ impl App {
         Some((sels, is_bulk))
     }
 
-    /// `r` on QUEUE (and the `[r]un`/re-run chip). Re-queue ALWAYS confirms first
-    /// (parity with the stop verb and the worktree remove): it freezes the
-    /// per-task `retry` RPCs and opens `Mode::Confirm`. EVERY status is
-    /// eligible except `running` (its in-flight worker owns the row — stop it
-    /// first) and archived rows; a `queued` retry is an idempotent no-op
-    /// daemon-side. Enter/y in that dialog dispatches the `RpcSeq` (verb
-    /// "reran", see `update`); a single ineligible row explains why with a
-    /// per-status no-op line, and a selection with nothing re-queueable never
-    /// opens the dialog — it sets a status line instead.
+    /// `r` on QUEUE (and the `[r]un`/re-run chip). Re-queue ALWAYS opens a form
+    /// first (parity with stop/remove confirms, plus a model picker): freezes
+    /// the eligible task ids and shows a model dropdown so a claude limit can
+    /// re-run as grok. EVERY status is eligible except `running` (stop it first)
+    /// and archived rows; a `queued` retry is an idempotent no-op daemon-side.
+    /// Submit dispatches one `retry` per id (`RpcSeq` verb "reran"); a single
+    /// ineligible row explains why with a per-status line, and a selection with
+    /// nothing re-queueable never opens the form.
     pub(super) fn requeue_selected(&mut self) -> Update {
         let requeue_ok = |s: TaskStatus| !matches!(s, TaskStatus::Running);
         let Some((rows, is_bulk)) = self.queue_selection_rows() else {
@@ -497,7 +496,7 @@ impl App {
         };
         if !is_bulk {
             // Single row: keep the per-status no-op line explaining why the one
-            // row can't re-queue; an eligible row opens the confirm dialog.
+            // row can't re-queue; an eligible row opens the re-run form.
             let Some((id, status, archived)) = rows.into_iter().next() else {
                 return Update::default();
             };
@@ -509,9 +508,7 @@ impl App {
                 self.status_line = Some(format!("cannot rerun a {} task", status_kebab(status)));
                 return Update { dirty: true, cmds: vec![] };
             }
-            let calls =
-                vec![RpcCall { method: "retry".into(), params: serde_json::json!({ "id": id }) }];
-            self.mode = Self::requeue_confirm_mode(1, calls);
+            self.open_requeue_form(vec![id]);
             return Update { dirty: true, cmds: vec![] };
         }
         let ids: Vec<String> =
@@ -520,29 +517,30 @@ impl App {
             self.status_line = Some("no rerunnable tasks in selection".into());
             return Update { dirty: true, cmds: vec![] };
         }
-        let n = ids.len();
-        let calls = ids
-            .into_iter()
-            .map(|id| RpcCall { method: "retry".into(), params: serde_json::json!({ "id": id }) })
-            .collect();
-        self.mode = Self::requeue_confirm_mode(n, calls);
+        self.open_requeue_form(ids);
         Update { dirty: true, cmds: vec![] }
     }
 
-    /// Build the QUEUE re-queue confirm dialog for `n` tasks. Mirror of the stop
-    /// dialog `cancel_selected` builds; `calls` are the frozen `retry` RPCs the
-    /// Confirm button fires via [`ConfirmAction::RequeueTasks`]. The range/marks
-    /// are cleared on confirm (in `run_confirm_action`), not at open time.
-    fn requeue_confirm_mode(n: usize, calls: Vec<RpcCall>) -> Mode {
+    /// Open the QUEUE re-run form for `task_ids` (already filtered eligible).
+    /// Provider dropdown preselected to the first task's last-run provider;
+    /// focus starts on Primary so Enter re-runs at once (Tab to switch provider).
+    /// Submit builds per-task `retry` RPCs (see [`App::fire_form_action`]).
+    fn open_requeue_form(&mut self, task_ids: Vec<String>) {
+        let n = task_ids.len();
         let plural = if n == 1 { "" } else { "s" };
-        Mode::Confirm {
-            title: format!("Rerun {n} task{plural}"),
-            // No leading spaces — the modal's interior padding provides the inset.
-            body: vec![format!("Rerun {n} task{plural}?")],
-            confirm_label: "Rerun".into(),
-            action: ConfirmAction::RequeueTasks { calls },
-            focus: crate::hit::ButtonKind::Confirm,
-        }
+        let preferred = self.requeue_preferred_model(&task_ids);
+        let field = self.requeue_model_field(&task_ids, preferred.as_deref());
+        let mut state = crate::view::form::FormState::new(
+            &format!("Rerun {n} task{plural}"),
+            "Rerun",
+            vec![field],
+        );
+        // Primary is the last stop before Cancel: field₀ → Primary → Cancel.
+        state.focus = state.fields.len();
+        self.mode = Mode::Form {
+            state,
+            action: crate::app::mode::FormAction::Requeue { task_ids },
+        };
     }
 
     /// `x` on QUEUE (and the `[x]stop` chip). Stop ALWAYS confirms first: it

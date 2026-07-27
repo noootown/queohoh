@@ -1435,6 +1435,27 @@ describe("ApiServer", () => {
 		expect(store.list()).toEqual([]);
 	});
 
+	it("retry can pin a model override (TUI re-run provider switch)", async () => {
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+			model: "claude/claude-opus-5",
+			modelPinned: true,
+		});
+		store.update(t.id, { status: "failed", error: "session limit" });
+		const retried = (await client.call("retry", {
+			id: t.id,
+			model: "grok/grok-4.5",
+			model_pinned: true,
+		})) as { status: string; model: string; modelPinned: boolean };
+		expect(retried.status).toBe("queued");
+		expect(retried.model).toBe("grok/grok-4.5");
+		expect(retried.modelPinned).toBe(true);
+	});
+
 	it("retry re-queues a verify-failed task; skip archives it (parity with failed)", async () => {
 		const { client, store } = await setup();
 		const t = store.create({

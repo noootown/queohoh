@@ -870,6 +870,26 @@
     }
 
     #[test]
+    fn task_summary_strips_emoji_so_trailing_columns_stay_aligned() {
+        // Live bug: comment_body=📄 Data… made Created/Age/Live shift right
+        // (pad_clip is char-count; 📄 is 1 char / 2 cells).
+        let mut t = make_task(TaskStatus::Queued);
+        t.item = Some(std::collections::HashMap::from([
+            ("branch".into(), "JUS-1979".into()),
+            ("comment_body".into(), "📄 Data Integration".into()),
+        ]));
+        let s = task_summary(&t);
+        assert!(!s.contains('📄'), "emoji stripped: {s}");
+        assert!(s.contains("comment_body=Data Integration"), "text kept: {s}");
+        assert!(s.contains("branch=JUS-1979"));
+        t.item = Some(std::collections::HashMap::from([(
+            "comment_body".into(),
+            "🎯 Functional  hello".into(),
+        )]));
+        assert_eq!(task_summary(&t), "comment_body=Functional hello");
+    }
+
+    #[test]
     fn task_summary_args_or_blank_never_adhoc_sentinel() {
         let mut t = make_task(TaskStatus::Queued);
         t.prompt = "You are the review worker — boilerplate…".into();

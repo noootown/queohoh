@@ -952,16 +952,39 @@ export class ApiServer {
 				// idempotent no-op, so bulk rerun selections never error.
 				// Clears `notBefore` so a manual re-run is not still blocked by a
 				// prior `[d]efer` window.
+				//
+				// Optional TUI re-run model override: a single `provider/label`
+				// pin (claude limit → try grok). When omitted, the existing
+				// schedule stamp stays. The TUI only sends a pin the task's
+				// stamped model list allows; unknown refs still reject here.
 				if (task.status === "running") {
 					throw new Error(
 						`cannot retry task in status ${task.status} — stop it first`,
 					);
 				}
-				const updated = deps.store.update(task.id, {
+				const patch: {
+					status: "queued";
+					error: null;
+					notBefore: null;
+					model?: string;
+					modelPinned?: boolean;
+				} = {
 					status: "queued",
 					error: null,
 					notBefore: null,
-				});
+				};
+				if (params.model !== undefined && params.model !== null) {
+					const model = this.coerceModel(deps.config.catalog, params.model);
+					if (typeof model !== "string") {
+						throw new Error(
+							"retry model must be a single provider/label ref (not a list)",
+						);
+					}
+					// Pin so the worker runs exactly this pick (no re-head).
+					patch.model = model;
+					patch.modelPinned = true;
+				}
+				const updated = deps.store.update(task.id, patch);
 				deps.onMutation();
 				return updated;
 			}

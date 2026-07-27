@@ -92,26 +92,32 @@ fn open_worktree_launcher(a: &mut App) -> Update {
 
 #[test]
 fn queue_r_confirms_then_requeues_the_selected_failed_task() {
-    // `r` on QUEUE always opens the confirm dialog first (single row); Enter
-    // fires the retry via an RpcSeq (verb "reran").
+    // `r` on QUEUE always opens the re-run form first (model picker + Rerun);
+    // Enter on Primary fires the retry via an RpcSeq (verb "reran").
     let mut a = app_with(failed_task_snapshot());
     let opened = a.update(key('r'));
-    assert!(opened.cmds.is_empty(), "r opens the dialog, dispatches nothing yet");
+    assert!(opened.cmds.is_empty(), "r opens the form, dispatches nothing yet");
     match &a.mode {
-        Mode::Confirm { action: ConfirmAction::RequeueTasks { calls }, .. } => {
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].method, "retry");
-            assert_eq!(calls[0].params, serde_json::json!({ "id": "t1" }));
+        Mode::Form {
+            action: FormAction::Requeue { task_ids },
+            state,
+            ..
+        } => {
+            assert_eq!(task_ids, &["t1".to_string()]);
+            assert_eq!(state.primary_label, "Rerun");
+            assert_eq!(state.fields.len(), 1, "provider dropdown only");
+            assert_eq!(state.fields[0].label, "provider");
         }
-        other => panic!("expected requeue confirm, got {other:?}"),
+        other => panic!("expected requeue form, got {other:?}"),
     }
-    let u = a.update(enter()); // confirm
+    let u = a.update(enter()); // Primary (focus starts there)
     assert!(matches!(a.mode, Mode::List));
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { verb, calls, .. } => {
             assert_eq!(verb, "reran");
             assert_eq!(calls[0].method, "retry");
-            assert_eq!(calls[0].params, serde_json::json!({ "id": "t1" }));
+            // No model on the task → pin is allowed (null stamp accepts any).
+            assert_eq!(calls[0].params["id"], "t1");
         }
         _ => unreachable!(),
     }
@@ -318,18 +324,18 @@ fn queue_r_noop_on_running_sets_status_line() {
 
 #[test]
 fn queue_r_confirms_on_cancelled_task() {
-    // A user-cancelled task is rerunnable: `r` opens the confirm dialog (no
+    // A user-cancelled task is rerunnable: `r` opens the re-run form (no
     // status-line no-op) and Enter fires the retry.
     let mut snap = failed_task_snapshot();
     snap.tasks[0].status = TaskStatus::Cancelled;
     let mut a = app_with(snap);
     let opened = a.update(key('r'));
-    assert!(opened.cmds.is_empty(), "r opens the dialog, dispatches nothing yet");
+    assert!(opened.cmds.is_empty(), "r opens the form, dispatches nothing yet");
     assert!(
-        matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }),
-        "cancelled task should open the rerun confirm, got {:?}", a.mode,
+        matches!(a.mode, Mode::Form { action: FormAction::Requeue { .. }, .. }),
+        "cancelled task should open the rerun form, got {:?}", a.mode,
     );
-    let u = a.update(enter()); // confirm
+    let u = a.update(enter()); // Primary
     assert!(u.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { calls, .. } if calls[0].method == "retry")));
 }
 
@@ -337,15 +343,15 @@ fn queue_r_confirms_on_cancelled_task() {
 fn queue_r_confirms_on_every_non_running_status() {
     // Rerun is allowed in ANY status except running (whose in-flight worker
     // owns the row — stop it first): done, skipped, and even queued (an
-    // idempotent no-op daemon-side) all open the confirm dialog.
+    // idempotent no-op daemon-side) all open the re-run form.
     for status in [TaskStatus::Done, TaskStatus::Skipped, TaskStatus::Queued] {
         let mut snap = failed_task_snapshot();
         snap.tasks[0].status = status;
         let mut a = app_with(snap);
         a.update(key('r'));
         assert!(
-            matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }),
-            "{status:?} task should open the rerun confirm, got {:?}", a.mode,
+            matches!(a.mode, Mode::Form { action: FormAction::Requeue { .. }, .. }),
+            "{status:?} task should open the rerun form, got {:?}", a.mode,
         );
     }
 }
@@ -479,12 +485,12 @@ fn queue_x_noop_on_terminal_sets_status_line_without_dialog() {
 
 #[test]
 fn queue_needs_input_is_requeueable_and_cancellable_via_skip() {
-    // Needs-input: `r` confirms then re-queues (retry); `x` confirms then skips.
+    // Needs-input: `r` opens re-run form then re-queues (retry); `x` confirms then skips.
     let mut snap = failed_task_snapshot();
     snap.tasks[0].status = TaskStatus::NeedsInput;
     let mut a = app_with(snap);
     a.update(key('r'));
-    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }));
+    assert!(matches!(a.mode, Mode::Form { action: FormAction::Requeue { .. }, .. }));
     let ru = a.update(enter());
     assert!(ru.cmds.iter().any(|c| matches!(c, Cmd::RpcSeq { calls, .. } if calls[0].method == "retry")));
 
@@ -513,15 +519,16 @@ fn queue_range_requeue_with_no_eligible_sets_status_line() {
 
 #[test]
 fn queue_range_requeue_all_eligible_requeues_each() {
-    // A range of two failed tasks confirms first, then re-queues both in one RpcSeq.
+    // A range of two failed tasks opens the re-run form, then re-queues both
+    // in one RpcSeq.
     let mut t0 = TaskInstance::default(); t0.id = "t0".into(); t0.status = TaskStatus::Failed; t0.target.repo = "platform".into();
     let mut t1 = TaskInstance::default(); t1.id = "t1".into(); t1.status = TaskStatus::Failed; t1.target.repo = "platform".into();
     let snap = StateSnapshot { tasks: vec![t0, t1], projects: vec![Project { name: "platform".into(), github_id: None }], ..Default::default() };
     let mut a = app_with(snap);
     a.update(shift_down());
-    a.update(key('r')); // opens confirm
-    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }));
-    let u = a.update(enter()); // confirm
+    a.update(key('r')); // opens re-run form
+    assert!(matches!(a.mode, Mode::Form { action: FormAction::Requeue { .. }, .. }));
+    let u = a.update(enter()); // Primary
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { verb, calls, .. } => {
             assert_eq!(verb, "reran");

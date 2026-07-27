@@ -201,7 +201,8 @@ pub const TITLE_DETAIL: &str = "📄 DETAIL";
 /// | `info` (teal)    | TIMESTAMPS only        | QUEUE timestamp + age; TASKS Cron schedule text; WORKTREES commit-age, last-task age        |
 /// | `meta`           | non-time metadata      | title-bar summaries; TASKS model column; WORKTREES `→` next lead; search query; settings values |
 /// | `warn` (yellow)  | live / now             | `⏱` timers; throbber; `±` dirty marker; QUEUE `#N in lane` live text; markdown `{{jinja}}`  |
-/// | `fg`             | prose / summaries      | QUEUE summary; WORKTREES last-task / `next` name WHEN a prompt (no definition)              |
+/// | `fg`             | prose / arg values     | default text; QUEUE Prompt/Args **values**; detail Args values; WORKTREES last-task when prompt |
+/// | `accent`         | UI accent + arg **keys** | selection; focused borders; tabs; `situation=` / `pr=` keys in args blobs                  |
 /// | via `glyph_style`| status glyphs          | QUEUE/last-task status glyph (`● ✗ ▶ ○ ‼ ⊘ ⊝ ⊗ ⧗ $ ⊟`)                                    |
 ///
 /// `info` is deliberately reserved for timestamp-related text (user request);
@@ -425,6 +426,19 @@ impl Palette {
     /// in panes, session pickers, and footers.
     pub fn timestamp_style(&self) -> Style {
         Style::default().fg(self.info)
+    }
+
+    /// Arg **values** (everything after `=` in a `key=value` token, and bare
+    /// tokens). Default terminal `fg` so the payload stays normal body text;
+    /// only the key is highlighted (see [`args_key_style`]).
+    pub fn args_style(&self) -> Style {
+        Style::default().fg(self.fg)
+    }
+
+    /// Arg **keys** (`situation=` / `pr=`) inside an args blob — accent (blue)
+    /// so the field name pops; the value stays default `fg`.
+    pub fn args_key_style(&self) -> Style {
+        Style::default().fg(self.accent)
     }
 
     /// Pane border color by focus state.

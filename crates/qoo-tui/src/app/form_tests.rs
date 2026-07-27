@@ -6,7 +6,7 @@
 use super::*;
 use crate::event::SessionChoice;
 use crate::hit::{ButtonKind, HitTarget};
-use crate::ipc::types::{Project, StateSnapshot};
+use crate::ipc::types::{ModelRef, Project, StateSnapshot, TaskInstance};
 use crate::view::form::{Field, FocusKind, FormState};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -865,4 +865,149 @@ fn model_field_floats_active_provider_group_to_top_under_grok() {
         }
         other => panic!("expected labeled Dropdown, got {other:?}"),
     }
+}
+
+#[test]
+fn title_case_provider_works() {
+    assert_eq!(crate::app::form::title_case_provider("grok"), "Grok");
+    assert_eq!(crate::app::form::title_case_provider("claude"), "Claude");
+}
+
+#[test]
+fn requeue_preferred_provider_uses_last_run_not_list_head() {
+    // Multi-model stamp headed by claude, but last run was grok (fallback).
+    // Preferred provider must be "grok", not list[0]'s claude.
+    let mut t = TaskInstance::default();
+    t.id = "run1".into();
+    t.model = Some(ModelRef::Many(vec![
+        "claude/claude-opus-4.8".into(),
+        "grok/grok-4.5".into(),
+    ]));
+    t.target.repo = "platform".into();
+    let mut app = launcher_app();
+    app.settings = Some(Some(catalog_settings()));
+    app.snapshot = Some(StateSnapshot {
+        tasks: vec![t],
+        projects: vec![Project {
+            name: "platform".into(),
+            github_id: None,
+        }],
+        ..Default::default()
+    });
+    app.run_files = Some((
+        "run1".into(),
+        Box::new(crate::runfiles::RunFiles {
+            meta: Some(crate::runfiles::RunMeta {
+                model: Some("grok-4.5".into()),
+                provider: Some("grok".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    ));
+    assert_eq!(
+        app.requeue_preferred_model(&["run1".into()]).as_deref(),
+        Some("grok"),
+    );
+    app.run_files = None;
+    assert_eq!(
+        app.requeue_preferred_model(&["run1".into()]).as_deref(),
+        Some("claude"),
+    );
+}
+
+#[test]
+fn requeue_provider_options_show_derived_model_no_keep_current() {
+    // First task's stamp drives labels: claude-opus-4.8 + grok-4.5.
+    let mut t = TaskInstance::default();
+    t.id = "t1".into();
+    t.target.repo = "platform".into();
+    t.model = Some(ModelRef::Many(vec![
+        "claude/claude-opus-4.8".into(),
+        "grok/grok-4.5".into(),
+    ]));
+    let mut app = launcher_app();
+    app.settings = Some(Some(catalog_settings()));
+    app.snapshot = Some(StateSnapshot {
+        tasks: vec![t],
+        projects: vec![Project {
+            name: "platform".into(),
+            github_id: None,
+        }],
+        ..Default::default()
+    });
+    let field = app.requeue_model_field(&["t1".into()], Some("grok"));
+    assert_eq!(field.label, "provider");
+    assert_eq!(field.value, "grok", "preferred provider preselected");
+    match &field.kind {
+        crate::view::form::FieldKind::Dropdown { options } => {
+            assert!(
+                !options.iter().any(|o| o.value.is_empty()),
+                "no Keep current: {options:?}"
+            );
+            // Value is bare provider; label shows the model that would be used.
+            let by_val: std::collections::HashMap<&str, &str> = options
+                .iter()
+                .map(|o| (o.value.as_str(), o.label.as_str()))
+                .collect();
+            assert_eq!(by_val.get("claude"), Some(&"Claude (claude-opus-4.8)"));
+            assert_eq!(by_val.get("grok"), Some(&"Grok (grok-4.5)"));
+            assert!(!options.iter().any(|o| o.value.contains('/')));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn resolve_requeue_model_from_manifest_or_defaults() {
+    let mut app = launcher_app();
+    app.settings = Some(Some(catalog_settings()));
+
+    let mut stamped = TaskInstance::default();
+    stamped.target.repo = "platform".into();
+    stamped.model = Some(ModelRef::Many(vec![
+        "claude/claude-opus-4.8".into(),
+        "grok/grok-4.5".into(),
+    ]));
+    assert_eq!(
+        app.resolve_requeue_model_for_provider(&stamped, "grok").as_deref(),
+        Some("grok/grok-4.5"),
+    );
+    assert_eq!(
+        app.resolve_requeue_model_for_provider(&stamped, "claude").as_deref(),
+        Some("claude/claude-opus-4.8"),
+    );
+    // Provider not in stamp → None (keep current).
+    assert!(app
+        .resolve_requeue_model_for_provider(&stamped, "codex")
+        .is_none());
+
+    // Ad-hoc: null stamp → default_models / group head for provider.
+    let mut adhoc = TaskInstance::default();
+    adhoc.target.repo = "platform".into();
+    adhoc.model = None;
+    let grok = app.resolve_requeue_model_for_provider(&adhoc, "grok");
+    assert!(
+        grok.as_deref().is_some_and(|r| r.starts_with("grok/")),
+        "adhoc grok default: {grok:?}"
+    );
+}
+
+#[test]
+fn task_allows_requeue_provider_null_any_and_list_restricts() {
+    let mut any = TaskInstance::default();
+    any.model = None;
+    assert!(App::task_allows_requeue_provider(&any, "grok"));
+
+    let mut one = TaskInstance::default();
+    one.model = Some(ModelRef::One("claude/claude-opus-4.8".into()));
+    assert!(App::task_allows_requeue_provider(&one, "claude"));
+    assert!(!App::task_allows_requeue_provider(&one, "grok"));
+
+    let mut many = TaskInstance::default();
+    many.model = Some(ModelRef::Many(vec![
+        "claude/claude-opus-4.8".into(),
+        "grok/grok-4.5".into(),
+    ]));
+    assert!(App::task_allows_requeue_provider(&many, "grok"));
 }

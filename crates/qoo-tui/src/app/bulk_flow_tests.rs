@@ -29,22 +29,28 @@ fn two_queue_one_failed() -> StateSnapshot {
 #[test]
 fn queue_range_requeue_via_r_hits_only_eligible_and_clears_range() {
     // t0 failed (eligible), t1 running (the ONE ineligible status). `r` over
-    // the 2-row range opens the confirm freezing only t0; Enter re-queues it
+    // the 2-row range opens the re-run form for only t0; Enter re-queues it
     // with the "reran" count feedback and clears the range.
     let mut snap = two_queue_one_failed();
     snap.tasks[1].status = TaskStatus::Running;
     let mut a = app_with(snap);
     a.update(shift_down()); // extend queue selection to 2 rows
-    a.update(key('r')); // opens the confirm dialog (freezing the calls)
-    assert!(matches!(a.mode, Mode::Confirm { action: ConfirmAction::RequeueTasks { .. }, .. }));
-    let u = a.update(enter()); // confirm
+    a.update(key('r')); // opens the re-run form (freezing eligible ids)
+    match &a.mode {
+        Mode::Form {
+            action: FormAction::Requeue { task_ids },
+            ..
+        } => assert_eq!(task_ids, &["t0".to_string()]),
+        other => panic!("expected requeue form, got {other:?}"),
+    }
+    let u = a.update(enter()); // Primary
     assert!(matches!(a.mode, Mode::List));
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { verb, calls, invalidate_defs_for } => {
             assert_eq!(verb, "reran");
             assert_eq!(calls.len(), 1); // only t0 is failed
             assert_eq!(calls[0].method, "retry");
-            assert_eq!(calls[0].params, serde_json::json!({ "id": "t0" }));
+            assert_eq!(calls[0].params["id"], "t0");
             assert_eq!(*invalidate_defs_for, None);
         }
         _ => unreachable!(),
@@ -474,16 +480,17 @@ fn queue_range_requeue_clamps_when_rows_shrink_below_frozen_start() {
     a.update(shift_down()); a.update(shift_down()); // anchor=3, cursor=5
     assert_eq!(a.active_ui().selections[0], Selection { cursor: 5, anchor: Some(3) });
     a.update(Event::Snapshot(six_queue_failed(&["a0", "a1"])));
-    a.update(key('r')); // must not panic; opens the confirm
+    a.update(key('r')); // must not panic; opens the re-run form
     // The [3..=5] span clamps against the 2 surviving rows → exactly one row
     // frozen for re-queue (a failed, eligible task); no out-of-bounds panic.
     match &a.mode {
-        Mode::Confirm { action: ConfirmAction::RequeueTasks { calls }, .. } => {
-            assert_eq!(calls.len(), 1)
-        }
+        Mode::Form {
+            action: FormAction::Requeue { task_ids },
+            ..
+        } => assert_eq!(task_ids.len(), 1),
         other => panic!("{other:?}"),
     }
-    let u = a.update(enter()); // confirm
+    let u = a.update(enter()); // Primary
     match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
         Cmd::RpcSeq { calls, .. } => assert_eq!(calls.len(), 1),
         _ => unreachable!(),

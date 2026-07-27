@@ -530,7 +530,8 @@ pub(crate) fn content_for(
                     lines.push("Args".to_string());
                     ctxs.push(LineCtx::Header);
                     lines.push(args);
-                    ctxs.push(LineCtx::Text);
+                    // Args blob: accent keys + meta values (not markdown Text).
+                    ctxs.push(LineCtx::Args);
                     lines.push(String::new());
                     ctxs.push(LineCtx::Text);
                 }

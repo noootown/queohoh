@@ -39,6 +39,20 @@ pub(super) fn builtin_catalog() -> Vec<CatalogEntry> {
     ]
 }
 
+/// Title-case a provider id for the re-run dropdown (`grok` → `Grok`).
+pub(super) fn title_case_provider(provider: &str) -> String {
+    let mut chars = provider.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => provider.to_string(),
+    }
+}
+
+/// Provider segment of a `provider/label` ref (or the whole string if bare).
+fn provider_of_ref(model_ref: &str) -> &str {
+    model_ref.split_once('/').map(|(p, _)| p).unwrap_or(model_ref)
+}
+
 /// The dropdown's head-option display label: `default (<refs joined with " → ">)`,
 /// or the bare `default` when there are no refs to show. Used by the ad-hoc /
 /// new-session catalog picker ([`App::model_field`]); refs come from the repo's
@@ -255,6 +269,203 @@ impl App {
             })
             .unwrap_or_default();
         Field::dropdown_labeled("model", options, &default)
+    }
+
+    /// QUEUE re-run **provider** picker. One option per enabled provider that
+    /// has a resolvable model for the first selected task, labeled
+    /// `Grok (grok-4.5)` (provider title + the model that would be pinned).
+    /// Value is the bare provider id; the concrete ref is re-derived per task
+    /// on submit. Preselects `preferred_provider` (last-run / first task).
+    /// No "Keep current" — the current provider is the default selection.
+    pub(super) fn requeue_model_field(
+        &self,
+        task_ids: &[String],
+        preferred_provider: Option<&str>,
+    ) -> Field {
+        let options = self.requeue_provider_options(task_ids);
+        let default = preferred_provider
+            .filter(|p| options.iter().any(|o| o.value == *p))
+            .map(|s| s.to_string())
+            .or_else(|| options.first().map(|o| o.value.clone()))
+            .unwrap_or_default();
+        Field::dropdown_labeled("provider", options, &default)
+    }
+
+    /// Enabled providers that the first selected task can resolve a model for.
+    /// Label shows which model would be used (manifest entry or ad-hoc default).
+    fn requeue_provider_options(&self, task_ids: &[String]) -> Vec<DropdownOption> {
+        let owned = self.model_resolve_owned();
+        let providers: Vec<String> = if owned.enabled_providers.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            owned
+                .catalog
+                .iter()
+                .filter(|e| !e.hidden && seen.insert(e.provider.clone()))
+                .map(|e| e.provider.clone())
+                .collect()
+        } else {
+            owned.enabled_providers.clone()
+        };
+        let sample = self.requeue_sample_task(task_ids);
+        providers
+            .into_iter()
+            .filter_map(|p| {
+                let model_ref = sample
+                    .as_ref()
+                    .and_then(|t| self.resolve_requeue_model_for_provider(t, &p))
+                    .or_else(|| {
+                        // No sample task (shouldn't happen) — group head only.
+                        crate::chain::group_head(&owned.catalog, &p).map(|e| e.model_ref())
+                    })?;
+                let model_label = crate::chain::model_ref_display(&owned.catalog, &model_ref);
+                Some(DropdownOption {
+                    value: p.clone(),
+                    label: format!("{} ({model_label})", title_case_provider(&p)),
+                })
+            })
+            .collect()
+    }
+
+    /// First selected task (live or archived) — drives dropdown labels and the
+    /// default provider for bulk re-run.
+    fn requeue_sample_task(
+        &self,
+        task_ids: &[String],
+    ) -> Option<crate::ipc::types::TaskInstance> {
+        let snap = self.snapshot.as_ref()?;
+        for id in task_ids {
+            if let Some(t) = snap
+                .tasks
+                .iter()
+                .chain(snap.archived_recent.iter())
+                .find(|t| t.id == *id)
+            {
+                return Some(t.clone());
+            }
+        }
+        None
+    }
+
+    /// Preferred **provider** for the re-run form: last-run provider (what
+    /// actually executed after fallback), else the stamp's first ref's provider.
+    pub(super) fn requeue_preferred_model(&self, task_ids: &[String]) -> Option<String> {
+        let catalog = self.model_catalog();
+        let snap = self.snapshot.as_ref()?;
+        for id in task_ids {
+            if let Some((rid, files)) = self.run_files.as_ref() {
+                if rid == id {
+                    if let Some(p) = Self::provider_from_run_meta(files.meta.as_ref(), &catalog) {
+                        return Some(p);
+                    }
+                }
+            }
+            if let Some(p) = self.read_run_provider(id, &catalog) {
+                return Some(p);
+            }
+            let task = snap
+                .tasks
+                .iter()
+                .chain(snap.archived_recent.iter())
+                .find(|t| t.id == *id);
+            if let Some(r) = task
+                .and_then(|t| t.model.as_ref())
+                .and_then(|m| m.refs().into_iter().next())
+            {
+                return Some(provider_of_ref(&r).to_string());
+            }
+        }
+        None
+    }
+
+    /// Provider that last ran this task (`meta.provider`, or from catalog id).
+    fn provider_from_run_meta(
+        meta: Option<&crate::runfiles::RunMeta>,
+        catalog: &[CatalogEntry],
+    ) -> Option<String> {
+        let meta = meta?;
+        if let Some(p) = meta.provider.as_deref().filter(|s| !s.is_empty()) {
+            return Some(p.to_string());
+        }
+        let model = meta.model.as_deref()?;
+        if let Some(e) = catalog.iter().find(|e| e.id == model || e.label == model) {
+            return Some(e.provider.clone());
+        }
+        if model.contains('/') {
+            return Some(provider_of_ref(model).to_string());
+        }
+        None
+    }
+
+    fn read_run_provider(&self, task_id: &str, catalog: &[CatalogEntry]) -> Option<String> {
+        let path = self.runs_dir.join(task_id).join("data.json");
+        let text = std::fs::read_to_string(path).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+        if !json.is_object() {
+            return None;
+        }
+        let model = json
+            .get("model")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let provider = json
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let meta = crate::runfiles::RunMeta {
+            model,
+            provider,
+            ..Default::default()
+        };
+        Self::provider_from_run_meta(Some(&meta), catalog)
+    }
+
+    /// Concrete pin ref for re-running `task` under `provider`.
+    /// - Stamp lists a matching `provider/…` → that first match (task manifest).
+    /// - Ad-hoc / null stamp → first repo `default_models` ref for the provider,
+    ///   else catalog group head for that provider.
+    /// - Stamp exists but has no entry for `provider` → `None` (keep stamp).
+    pub(super) fn resolve_requeue_model_for_provider(
+        &self,
+        task: &crate::ipc::types::TaskInstance,
+        provider: &str,
+    ) -> Option<String> {
+        if provider.is_empty() {
+            return None;
+        }
+        let prefix = format!("{provider}/");
+        if let Some(m) = task.model.as_ref() {
+            return m
+                .refs()
+                .into_iter()
+                .find(|r| r.starts_with(&prefix));
+        }
+        // Ad-hoc (or unstamped): default model for this provider.
+        let owned = self.model_resolve_owned();
+        let defaults = owned.default_models.refs_for(&task.target.repo);
+        if let Some(r) = defaults.into_iter().find(|r| r.starts_with(&prefix)) {
+            return Some(r);
+        }
+        crate::chain::group_head(&owned.catalog, provider).map(|e| e.model_ref())
+    }
+
+    /// Whether switching this task onto `provider` is allowed (manifest lists
+    /// that provider, or the task is unstamped/ad-hoc).
+    pub(super) fn task_allows_requeue_provider(
+        task: &crate::ipc::types::TaskInstance,
+        provider: &str,
+    ) -> bool {
+        if provider.is_empty() {
+            return true;
+        }
+        match &task.model {
+            None => true,
+            Some(m) => {
+                let prefix = format!("{provider}/");
+                m.refs().iter().any(|r| r.starts_with(&prefix))
+            }
+        }
     }
 
     /// Def-run model picker: concrete `provider/label` options only (no empty
@@ -907,7 +1118,8 @@ impl App {
             FormAction::NewSession { .. }
             | FormAction::AdhocTask { .. }
             | FormAction::GotoProvider { .. }
-            | FormAction::SwitchProvider => None,
+            | FormAction::SwitchProvider
+            | FormAction::Requeue { .. } => None,
         }
     }
 
@@ -1109,6 +1321,65 @@ impl App {
                     RpcOpts::default(),
                 );
                 Update { dirty: true, cmds: vec![cmd] }
+            }
+            // Fields: [provider dropdown]. One `retry` per frozen id. Provider
+            // is resolved per-task to a concrete model ref (stamp entry or
+            // ad-hoc default). Pin only when switching provider so same-provider
+            // re-run keeps multi-model stamps; tasks without that provider in
+            // their stamp get a bare retry (keep stamp).
+            FormAction::Requeue { task_ids } => {
+                let provider = values.first().cloned().unwrap_or_default();
+                let snap = self.snapshot.as_ref();
+                let calls: Vec<RpcCall> = task_ids
+                    .into_iter()
+                    .map(|id| {
+                        let mut params = serde_json::json!({ "id": id });
+                        if !provider.is_empty() {
+                            let task = snap.and_then(|s| {
+                                s.tasks
+                                    .iter()
+                                    .chain(s.archived_recent.iter())
+                                    .find(|t| t.id == id)
+                            });
+                            if let Some(task) = task {
+                                if let Some(model_ref) =
+                                    self.resolve_requeue_model_for_provider(task, &provider)
+                                {
+                                    // Prefer last-run provider when available for
+                                    // "is this a switch?" so list-head ≠ last-run
+                                    // does not false-pin on same-provider Enter.
+                                    let current_provider = self
+                                        .requeue_preferred_model(std::slice::from_ref(&id))
+                                        .or_else(|| {
+                                            task.model
+                                                .as_ref()
+                                                .and_then(|m| m.refs().into_iter().next())
+                                                .map(|r| provider_of_ref(&r).to_string())
+                                        });
+                                    if current_provider.as_deref() != Some(provider.as_str()) {
+                                        params["model"] =
+                                            serde_json::Value::String(model_ref);
+                                        params["model_pinned"] =
+                                            serde_json::Value::Bool(true);
+                                    }
+                                }
+                            }
+                        }
+                        RpcCall {
+                            method: "retry".into(),
+                            params,
+                        }
+                    })
+                    .collect();
+                self.clear_range_and_marks(ListPane::Queue);
+                Update {
+                    dirty: true,
+                    cmds: vec![Cmd::RpcSeq {
+                        verb: "reran".into(),
+                        calls,
+                        invalidate_defs_for: None,
+                    }],
+                }
             }
         }
     }

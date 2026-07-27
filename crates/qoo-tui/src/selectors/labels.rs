@@ -228,6 +228,9 @@ pub fn lane_key(repo: &str, worktree: &str) -> String {
 /// - resolved `item` map → `pr=257 mode=ready`
 /// - otherwise **blank** (never prompt boilerplate, never the daemon's
 ///   sentinel `item_key: "adhoc"` for arg-less / ad-hoc runs)
+///
+/// Emoji / double-width symbols are stripped: `pad_clip` is char-count based,
+/// so a 📄 in `comment_body=📄 …` shifts Created/Age/Live for that row.
 pub fn task_summary(task: &TaskInstance) -> String {
     if let Some(item) = task.item.as_ref() {
         if !item.is_empty() {
@@ -239,20 +242,22 @@ pub fn task_summary(task: &TaskInstance) -> String {
     if let Some(key) = task.item_key.as_deref() {
         let key = key.trim();
         if !key.is_empty() && !key.eq_ignore_ascii_case("adhoc") {
-            return key.to_string();
+            return strip_emoji_for_queue_summary(key);
         }
     }
     String::new()
 }
 
 /// `pr=257 mode=ready` — sorted keys so the queue stays stable.
-/// Empty values render as the bare key.
+/// Empty values render as the bare key. Emoji stripped from values so the
+/// queue Prompt/Args column cannot shift Created/Age/Live (double-width).
 pub fn item_args_summary(item: &std::collections::HashMap<String, String>) -> String {
     let mut keys: Vec<&String> = item.keys().collect();
     keys.sort();
     keys.into_iter()
         .map(|k| {
-            let v = item.get(k).map(String::as_str).unwrap_or("").trim();
+            let v = item.get(k).map(String::as_str).unwrap_or("");
+            let v = strip_emoji_for_queue_summary(v);
             if v.is_empty() {
                 k.clone()
             } else {
@@ -261,6 +266,46 @@ pub fn item_args_summary(item: &std::collections::HashMap<String, String>) -> St
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Drop emoji / pictographs / other double-width symbols from queue Prompt/Args
+/// text so fixed trailing columns stay aligned. `pad_clip` sizes by char count,
+/// not display cells — one 📄 shifts Created/Age/Live for the whole row.
+/// Also drops emoji ZWJ / variation selectors and collapses leftover spaces.
+fn strip_emoji_for_queue_summary(s: &str) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.chars() {
+        // Emoji composition glue — never useful in a dense arg column.
+        if matches!(c, '\u{200D}' | '\u{FE0E}' | '\u{FE0F}' | '\u{20E3}') {
+            continue;
+        }
+        // Skin-tone modifiers (emoji Fitzpatrick).
+        if ('\u{1F3FB}'..='\u{1F3FF}').contains(&c) {
+            continue;
+        }
+        let w = c.width().unwrap_or(0);
+        // Width 0 (combining) keep if we already emitted a base; width 2+ are
+        // emoji / CJK / symbols that blow char-count columns — drop them.
+        if w >= 2 {
+            continue;
+        }
+        if c.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+                prev_space = true;
+            }
+            continue;
+        }
+        prev_space = false;
+        out.push(c);
+    }
+    // Trim trailing space from the collapse pass.
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 /// First non-blank line of the prompt, trimmed, clipped to ≤240 chars with `…`.

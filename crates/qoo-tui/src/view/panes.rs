@@ -443,6 +443,54 @@ fn search_hint_line(query: &str, searching: bool, p: &Palette) -> Line<'static> 
     Line::from(spans)
 }
 
+/// Paint a QUEUE Prompt/Args cell: clip to `width` chars, color `key=` with
+/// [`Palette::args_key_style`] and values with [`Palette::args_style`], then
+/// right-pad so the cell is exactly `width` (trailing columns stay fixed).
+fn style_queue_args_spans(summary: &str, width: usize, p: &Palette) -> Vec<Span<'static>> {
+    // pad_clip always returns exactly `width` chars (content + trailing spaces).
+    let clipped = pad_clip(summary, width);
+    // Content length may be less than min(summary, width) when clip adds `…`.
+    let content_len = clipped.chars().rev().skip_while(|c| *c == ' ').count();
+    let content: String = clipped.chars().take(content_len).collect();
+    let pad: String = clipped.chars().skip(content_len).collect();
+    let mut spans = style_args_spans(&content, p);
+    if !pad.is_empty() {
+        spans.push(Span::raw(pad));
+    }
+    spans
+}
+
+/// Color `key=value` tokens: keys (incl. `=`) in accent, values and bare tokens
+/// in meta. Spaces stay unstyled. Shared by the QUEUE Prompt/Args cell and the
+/// detail Prompt-tab Args body.
+fn style_args_spans(s: &str, p: &Palette) -> Vec<Span<'static>> {
+    if s.is_empty() {
+        return vec![];
+    }
+    let key_st = p.args_key_style();
+    let val_st = p.args_style();
+    let mut spans = Vec::new();
+    let mut first = true;
+    for token in s.split(' ') {
+        if !first {
+            spans.push(Span::styled(" ".to_string(), val_st));
+        }
+        first = false;
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = token.split_once('=') {
+            spans.push(Span::styled(format!("{k}="), key_st));
+            if !v.is_empty() {
+                spans.push(Span::styled(v.to_string(), val_st));
+            }
+        } else {
+            spans.push(Span::styled(token.to_string(), val_st));
+        }
+    }
+    spans
+}
+
 fn queue_line(
     row: &QueueRow,
     layout: &QueueColLayout,
@@ -468,9 +516,10 @@ fn queue_line(
         spans.push(Span::styled(pad_clip(def, layout.def_w), Style::default().fg(p.mauve)));
     }
     spans.push(Span::raw(gap.clone()));
-    // Prompt/summary is prose → the terminal's default grey. White (`fg`) is
-    // reserved for actions/tabs, so this stays intentionally unstyled `Span::raw`.
-    spans.push(Span::raw(pad_clip(&row.summary, layout.summary_w)));
+    // Resolved item args (`pr=… mode=…`) in meta/accent so they read apart from
+    // default prose grey (user request). Clip first, then key=value paint, then
+    // right-pad so trailing Created/Age/Live stay fixed-width.
+    spans.extend(style_queue_args_spans(&row.summary, layout.summary_w, p));
     // Timestamps read in teal — a real color, not grey (grey-on-dark was
     // unreadable per user feedback).
     if layout.show_timestamp {

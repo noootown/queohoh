@@ -346,6 +346,15 @@ pub enum FormAction {
     /// selection is a silent no-op (no RPC). Distinct from worktree `g`
     /// ([`FormAction::GotoProvider`]), which launches an interactive agent.
     SwitchProvider,
+    /// QUEUE `[r]erun`: re-queue frozen task ids with a provider pick.
+    /// Fields: `[provider dropdown]` — one row per resolvable provider, labeled
+    /// `Grok (grok-4.5)` from the first task's stamp (or defaults for ad-hoc).
+    /// Default = that task's last-run provider. On submit each task gets a
+    /// `retry` RPC; model is derived from its stamp/defaults and pinned only
+    /// when the provider changes.
+    Requeue {
+        task_ids: Vec<String>,
+    },
 }
 
 /// Which stop each adhoc-create form field occupies (the positional layout the
