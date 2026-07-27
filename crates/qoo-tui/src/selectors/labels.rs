@@ -177,7 +177,8 @@ pub fn queue_search_text(row: &QueueRow) -> String {
         row.def_name.as_ref().map(|d| d.len() + 1).unwrap_or(0)
             + row.worktree.len()
             + 1
-            + row.summary.len(),
+            + row.summary.len()
+            + 32,
     );
     if let Some(d) = &row.def_name {
         s.push_str(d);
@@ -186,6 +187,14 @@ pub fn queue_search_text(row: &QueueRow) -> String {
     if !row.worktree.is_empty() {
         s.push_str(&row.worktree);
         s.push(' ');
+    }
+    // Model refs (raw stamps) so `/` filter can hit `grok` / `opus` without
+    // needing the catalog for re-head.
+    if let Some(m) = &row.model {
+        for r in m.refs() {
+            s.push_str(&r);
+            s.push(' ');
+        }
     }
     s.push_str(&row.summary);
     s
@@ -635,16 +644,17 @@ fn capped_max<'a>(values: impl Iterator<Item = &'a str>, cap: usize) -> usize {
 
 /// Content cap for identity name columns across panes: QUEUE worktree, WORKTREES
 /// worktree name, and TASKS def name. Sized so long names leave room for trailing
-/// columns (summary / last-task / author / PR / model).
-pub const WORKTREE_CAP: usize = 28;
+/// columns (summary / last-task / author / PR / model). 20 (was 28) after
+/// operator feedback that the worktree/name column was eating Prompt/Args space.
+pub const WORKTREE_CAP: usize = 20;
 pub const DEF_CAP: usize = 20;
 /// Max width of the humanized schedule text in the TASKS pane. A raw-cron
 /// fallback longer than this is clipped with `…` rather than blowing out the
 /// row.
 pub const SCHED_CAP: usize = 20;
-/// Max width of the model cell in the TASKS pane (effective head label only,
-/// e.g. `claude-opus-4.8` / `grok-4.5`). Clipped with `…` if longer; the column
-/// still degrades (drops) before the name shrinks.
+/// Max width of the Model cell in TASKS and QUEUE (effective head / pin label
+/// only, e.g. `claude-opus-5` / `grok-4.5`). Clipped with `…` if longer; the
+/// column still degrades (drops) before identity columns shrink.
 pub const MODEL_CAP: usize = 20;
 pub const SUMMARY_MIN: usize = 10;
 /// Gutter between adjacent field columns (glyph/chain markers keep single

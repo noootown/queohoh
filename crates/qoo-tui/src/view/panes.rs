@@ -497,6 +497,7 @@ fn queue_line(
     p: &Palette,
     now_epoch_s: u64,
     tz_offset_s: i32,
+    model_ctx: &crate::selectors::ModelResolveCtx<'_>,
 ) -> Line<'static> {
     let mut spans: Vec<Span> = Vec::new();
     // Glyph column: running rows get a placeholder space (throbber painted over).
@@ -514,6 +515,16 @@ fn queue_line(
         spans.push(Span::raw(gap.clone()));
         let def = row.def_name.as_deref().unwrap_or("");
         spans.push(Span::styled(pad_clip(def, layout.def_w), Style::default().fg(p.mauve)));
+    }
+    // Model: what is/will be used for this run (pinned stamp or effective head).
+    // Meta fg matches the TASKS Model column; blank-pad when a row has no
+    // resolvable model so columns never slide. Omitted when pane reserved 0.
+    if layout.model_w > 0 {
+        spans.push(Span::raw(gap.clone()));
+        spans.push(Span::styled(
+            pad_clip(&crate::selectors::task_model_text(row, model_ctx), layout.model_w),
+            Style::default().fg(p.meta),
+        ));
     }
     spans.push(Span::raw(gap.clone()));
     // Resolved item args (`pr=… mode=…`) in meta/accent so they read apart from
@@ -577,6 +588,9 @@ fn queue_header(layout: &QueueColLayout, p: &Palette) -> Line<'static> {
     }
     if layout.def_w > 0 {
         header_col(&mut spans, "Task", layout.def_w, p);
+    }
+    if layout.model_w > 0 {
+        header_col(&mut spans, "Model", layout.model_w, p);
     }
     // Resolved item args when present; otherwise first prompt line.
     header_col(&mut spans, "Prompt/Args", layout.summary_w, p);
@@ -1416,8 +1430,14 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect, h
             pane_buttons(PaneId::Queue),
             QUEUE_ROW_SCOPED,
             &mut btn_hits,
-            |rows, avail| queue_col_layout(rows, avail, app.now_epoch_s),
-            |row, layout, p| queue_line(row, layout, p, app.now_epoch_s, tz_offset),
+            |rows, avail| {
+                let owned = app.model_resolve_owned();
+                queue_col_layout(rows, avail, &owned.ctx())
+            },
+            |row, layout, p| {
+                let owned = app.model_resolve_owned();
+                queue_line(row, layout, p, app.now_epoch_s, tz_offset, &owned.ctx())
+            },
             queue_header,
             |row| row.archived,
             |_| false, // QUEUE has no Cron chip

@@ -168,6 +168,11 @@ pub struct TaskInstance {
     /// to make the entire `tasks`/`archivedRecent` vec fail serde, and the
     /// subscription's `unwrap_or_default()` then blanked the whole TUI.
     pub model: Option<ModelRef>,
+    /// When true (and `model` is a single string), the worker runs EXACTLY that
+    /// ref — no active-provider re-head. QUEUE Model column mirrors that pin.
+    /// `false` / missing (old daemon) → resolve under the active provider like
+    /// the TASKS Model column. Wire: `modelPinned`.
+    pub model_pinned: bool,
     pub prompt: String,
     /// Done-condition (`verify`) fields (additive; all `None` on an old daemon
     /// that omits them, via the container `default`). `verify` is the configured
@@ -411,7 +416,7 @@ pub struct Discovery {
 /// JSON array both deserialize into the right variant; a `null`/missing `model`
 /// is represented by the enclosing `Option<ModelRef>` being `None`. Mirrors the
 /// daemon's `model: string | string[] | null` (see packages/core/src/definition.ts).
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(untagged)]
 pub enum ModelRef {
     One(String),

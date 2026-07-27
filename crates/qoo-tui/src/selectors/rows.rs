@@ -70,6 +70,16 @@ pub struct QueueRow {
     pub worktree: String,
     /// task definition name; None for ad-hoc prompts
     pub def_name: Option<String>,
+    /// Schedule model stamp for the QUEUE Model column (effective head at paint
+    /// via [`crate::selectors::task_model_text`]). `None` → repo defaults under
+    /// the active provider. Cloned from the task wire; not re-resolved here so
+    /// the rows cache can stay valid across active-provider switches (layout
+    /// / paint pass the current [`ModelResolveCtx`]).
+    pub model: Option<crate::ipc::types::ModelRef>,
+    /// Wire `modelPinned`: a single-string stamp is an exact pick (no re-head).
+    pub model_pinned: bool,
+    /// Task's target repo — default_models lookup for unstamped / unpinned.
+    pub repo: String,
     pub summary: String,
     /// Static live-column text for non-running rows (`#N in lane` for Queued;
     /// empty otherwise). Running elapsed is NOT baked here — see
@@ -502,6 +512,9 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             )
             .to_string(),
             def_name: task.definition.as_deref().map(def_display_name),
+            model: task.model.clone(),
+            model_pinned: task.model_pinned,
+            repo: task.target.repo.clone(),
             summary: task_summary(task),
             detail,
             running_elapsed,
@@ -545,6 +558,9 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             )
             .to_string(),
             def_name: task.definition.as_deref().map(def_display_name),
+            model: task.model.clone(),
+            model_pinned: task.model_pinned,
+            repo: task.target.repo.clone(),
             summary: task_summary(task),
             // Archived rows carry no detail text (the dimming + glyph convey state).
             detail: String::new(),

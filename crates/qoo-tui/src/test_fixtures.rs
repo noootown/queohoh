@@ -43,6 +43,7 @@ fn task(
         session: session.to_string(),
         resume_session_id: None,
         model: None,
+        model_pinned: false,
         prompt: prompt.to_string(),
         verify: None,
         verified: None,

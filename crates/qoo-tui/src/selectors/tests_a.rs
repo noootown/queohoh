@@ -57,6 +57,7 @@
             session: "fresh".into(),
             resume_session_id: None,
             model: None,
+            model_pinned: false,
             prompt: "fix the flaky test\nmore context\n".into(),
             verify: None,
             verified: None,

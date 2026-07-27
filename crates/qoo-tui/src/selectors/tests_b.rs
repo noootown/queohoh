@@ -316,6 +316,9 @@
             running: false,
             worktree: "TICK-1966".into(),
             def_name: Some("intake".into()),
+            model: None,
+            model_pinned: false,
+            repo: "platform".into(),
             summary: "blank page after undo".into(),
             detail: String::new(),
             running_elapsed: None,
@@ -367,6 +370,9 @@
             running: false,
             worktree: worktree.into(),
             def_name: def.map(str::to_string),
+            model: None,
+            model_pinned: false,
+            repo: "platform".into(),
             summary: summary.into(),
             detail: String::new(),
             running_elapsed: None,
@@ -381,16 +387,23 @@
         }
     }
 
+    fn empty_queue_model_ctx() -> ModelResolveOwned {
+        empty_model_owned()
+    }
+
     #[test]
     fn queue_col_layout_wide_shows_all_columns_sized_to_visible_max() {
         let rows = vec![
             qrow("feature", Some("squash-merge"), "implement the widget cache"),
             qrow("main", None, "flaky migration"),
         ];
+        let ctx = empty_queue_model_ctx();
         // Wide pane: every column present, summary flexes to fill the slack.
-        let l = queue_col_layout(&rows, 100, 0);
+        // No catalog → model column pane-gates to 0.
+        let l = queue_col_layout(&rows, 100, &ctx.ctx());
         assert_eq!(l.worktree_w, 7); // "feature"
         assert_eq!(l.def_w, 12); // "squash-merge"
+        assert_eq!(l.model_w, 0);
         assert!(l.show_timestamp);
         assert!(l.age_w > 0);
         assert!(l.summary_w >= SUMMARY_MIN);
@@ -402,13 +415,16 @@
             qrow("feature", Some("squash-merge"), "implement the widget cache"),
             qrow("main", None, "flaky migration"),
         ];
+        let ctx = empty_queue_model_ctx();
         // 23 inner cells (the 80x24 default left pane): timestamp/age/detail drop,
-        // then def drops. With the main-session chain column gone the prefix is 2
-        // cells lighter, so "feature" keeps its full 7 and still holds the floor.
-        let l = queue_col_layout(&rows, 23, 0);
+        // then model, then def drops. With the main-session chain column gone the
+        // prefix is 2 cells lighter, so "feature" keeps its full 7 and still
+        // holds the floor.
+        let l = queue_col_layout(&rows, 23, &ctx.ctx());
         assert!(!l.show_timestamp);
         assert_eq!(l.age_w, 0);
         assert_eq!(l.live_w, 0);
+        assert_eq!(l.model_w, 0);
         assert_eq!(l.def_w, 0);
         assert_eq!(l.worktree_w, 7);
         assert!(l.summary_w >= SUMMARY_MIN, "summary keeps its floor (got {})", l.summary_w);
@@ -421,9 +437,33 @@
             Some("a-very-long-definition-name"),
             "s",
         )];
-        let l = queue_col_layout(&rows, 200, 0);
+        let ctx = empty_queue_model_ctx();
+        let l = queue_col_layout(&rows, 200, &ctx.ctx());
         assert_eq!(l.worktree_w, WORKTREE_CAP);
         assert_eq!(l.def_w, DEF_CAP);
+    }
+
+    #[test]
+    fn queue_col_layout_model_between_task_and_summary() {
+        // Stamped single-pin: column sizes to the label, pane-gated on content.
+        let mut row = qrow("wt", Some("pr-ready"), "args");
+        row.model = Some(ModelRef::One("claude/claude-opus-5".into()));
+        row.model_pinned = true;
+        let owned = ModelResolveOwned {
+            catalog: vec![CatalogEntry {
+                provider: "claude".into(),
+                id: "claude-opus-5".into(),
+                label: "claude-opus-5".into(),
+                hidden: false,
+            }],
+            enabled_providers: vec!["claude".into()],
+            default_models: DefaultModels::default(),
+            active_provider: "claude".into(),
+        };
+        let l = queue_col_layout(&[row], 120, &owned.ctx());
+        assert_eq!(l.model_w, "claude-opus-5".chars().count());
+        assert!(l.def_w > 0);
+        assert!(l.summary_w >= SUMMARY_MIN);
     }
 
     #[test]
@@ -882,6 +922,9 @@
             running,
             worktree: "feature".into(),
             def_name: Some("squash-merge".into()),
+            model: None,
+            model_pinned: false,
+            repo: "platform".into(),
             summary: "implement the widget cache".into(),
             detail: String::new(),
             running_elapsed: if running { Some(now() - 303) } else { None },
@@ -896,7 +939,11 @@
         };
         let before = vec![finished(false, '✓'), qrow("main", None, "flaky migration")];
         let after = vec![finished(true, '▶'), qrow("main", None, "flaky migration")];
-        assert_eq!(queue_col_layout(&before, 100, 0), queue_col_layout(&after, 100, 0));
+        let ctx = empty_queue_model_ctx();
+        assert_eq!(
+            queue_col_layout(&before, 100, &ctx.ctx()),
+            queue_col_layout(&after, 100, &ctx.ctx())
+        );
     }
 
     #[test]

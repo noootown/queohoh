@@ -6,6 +6,9 @@
 pub struct QueueColLayout {
     pub worktree_w: usize,
     pub def_w: usize,
+    /// Model column (between Task and Prompt/Args). Pane-gated: 0 when every
+    /// visible row resolves blank. Capped at [`MODEL_CAP`].
+    pub model_w: usize,
     pub summary_w: usize,
     pub show_timestamp: bool,
     /// `AGE_W` when the relative-age column is kept, else 0 (fixed width).
@@ -16,43 +19,91 @@ pub struct QueueColLayout {
     pub live_w: usize,
 }
 
+/// QUEUE Model cell: the model that **is or will be** used for this task.
+///
+/// - `model_pinned` + a single-string stamp → that exact ref (worker pin; no
+///   active-provider re-head).
+/// - otherwise → [`effective_model_head`] under `ctx.active_provider` (stable
+///   re-head + default-models / group-head prepend), same as the TASKS Model
+///   column. `None` stamp uses the repo's `default_models`.
+///
+/// Label-only via [`model_ref_display`]. Empty when resolution fails so the
+/// pane-gate can drop the column when every visible row is blank.
+pub fn task_model_text(row: &QueueRow, ctx: &ModelResolveCtx<'_>) -> String {
+    // Pinned single-string stamp: worker runs exactly this — do not re-head.
+    if row.model_pinned {
+        if let Some(crate::ipc::types::ModelRef::One(r)) = row.model.as_ref() {
+            return model_ref_display(ctx.catalog, r);
+        }
+    }
+    let defaults = ctx.default_models.refs_for(&row.repo);
+    let enabled = ctx.enabled_refs();
+    match effective_model_head(
+        row.model.as_ref(),
+        ctx.catalog,
+        &enabled,
+        &defaults,
+        ctx.active_provider,
+    ) {
+        Some(head) => model_ref_display(ctx.catalog, &head),
+        None => String::new(),
+    }
+}
+
 /// Fit the QUEUE columns into `avail` inner cells. The identity/content columns
-/// (glyph, optional ⛓ chain, worktree, def) are sized to the widest visible value
-/// (capped so the summary keeps room); the summary flexes into what remains. The
-/// trailing timestamp / age / live columns have FIXED reserved widths (never
-/// sized from row data) — their PRESENCE is decided purely by the width ladder,
-/// so a row gaining a timer or a wider value never shifts any column. When space
-/// is tight the trailing columns degrade in a fixed order — timestamp, then age,
-/// then live — so the summary keeps at least `SUMMARY_MIN` cells; only if that
-/// still isn't enough does def drop and then worktree shrink.
-pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> QueueColLayout {
+/// (glyph, worktree, def, model) are sized to the widest visible value (capped
+/// so the summary keeps room); the summary flexes into what remains. The trailing
+/// timestamp / age / live columns have FIXED reserved widths (never sized from
+/// row data) — their PRESENCE is decided purely by the width ladder, so a row
+/// gaining a timer or a wider value never shifts any column. When space is tight
+/// the trailing columns degrade first (timestamp → age → live), then model,
+/// then def, then worktree shrinks — so the summary keeps at least
+/// `SUMMARY_MIN` cells. Model needs `ctx` for effective-head resolution
+/// (active-provider re-head); pass the same ctx paint uses.
+pub fn queue_col_layout(
+    rows: &[QueueRow],
+    avail: usize,
+    ctx: &ModelResolveCtx<'_>,
+) -> QueueColLayout {
     let worktree_w = capped_max(rows.iter().map(|r| r.worktree.as_str()), WORKTREE_CAP);
     let mut def_w = capped_max(rows.iter().filter_map(|r| r.def_name.as_deref()), DEF_CAP);
+    // Model column: content-capped, pane-gated (0 when every visible row is blank).
+    let mut model_w = rows
+        .iter()
+        .map(|r| cw(&task_model_text(r, ctx)))
+        .max()
+        .unwrap_or(0)
+        .min(MODEL_CAP);
 
-    // Non-flex prefix width: glyph(1) + worktree(+gutter) + def(+gutter) + the
-    // gutter before the summary. The summary itself is the remainder.
-    let prefix = |worktree_w: usize, def_w: usize| -> usize {
+    // Non-flex prefix: glyph(1) + worktree + def + model + gutter before summary.
+    let prefix = |worktree_w: usize, def_w: usize, model_w: usize| -> usize {
         1 + if worktree_w > 0 { COL_GAP + worktree_w } else { 0 }
             + if def_w > 0 { COL_GAP + def_w } else { 0 }
+            + if model_w > 0 { COL_GAP + model_w } else { 0 }
             + COL_GAP
     };
     // Summary width given the current column choices (may be negative → too tight).
     // Trailing columns are fixed-width: timestamp=TIMESTAMP_W, age=AGE_W,
     // live=QUEUE_LIVE_W — each present as a bool.
-    let summary_of =
-        |worktree_w: usize, def_w: usize, show_ts: bool, age_w: usize, live_w: usize| -> isize {
-            let mut used = prefix(worktree_w, def_w) as isize;
-            if show_ts {
-                used += (COL_GAP + TIMESTAMP_W) as isize;
-            }
-            if age_w > 0 {
-                used += (COL_GAP + age_w) as isize;
-            }
-            if live_w > 0 {
-                used += (COL_GAP + live_w) as isize;
-            }
-            avail as isize - used
-        };
+    let summary_of = |worktree_w: usize,
+                      def_w: usize,
+                      model_w: usize,
+                      show_ts: bool,
+                      age_w: usize,
+                      live_w: usize|
+     -> isize {
+        let mut used = prefix(worktree_w, def_w, model_w) as isize;
+        if show_ts {
+            used += (COL_GAP + TIMESTAMP_W) as isize;
+        }
+        if age_w > 0 {
+            used += (COL_GAP + age_w) as isize;
+        }
+        if live_w > 0 {
+            used += (COL_GAP + live_w) as isize;
+        }
+        avail as isize - used
+    };
 
     let min = SUMMARY_MIN as isize;
     let mut show_timestamp = true;
@@ -61,26 +112,38 @@ pub fn queue_col_layout(rows: &[QueueRow], avail: usize, _now_epoch_s: u64) -> Q
     let mut worktree_w = worktree_w;
 
     // Trailing columns degrade first: timestamp, then age, then live.
-    if summary_of(worktree_w, def_w, show_timestamp, age_w, live_w) < min {
+    if summary_of(worktree_w, def_w, model_w, show_timestamp, age_w, live_w) < min {
         show_timestamp = false;
     }
-    if summary_of(worktree_w, def_w, show_timestamp, age_w, live_w) < min {
+    if summary_of(worktree_w, def_w, model_w, show_timestamp, age_w, live_w) < min {
         age_w = 0;
     }
-    if summary_of(worktree_w, def_w, show_timestamp, age_w, live_w) < min {
+    if summary_of(worktree_w, def_w, model_w, show_timestamp, age_w, live_w) < min {
         live_w = 0;
     }
-    // Still cramped → drop def, then shrink worktree toward the summary floor.
-    if summary_of(worktree_w, def_w, show_timestamp, age_w, live_w) < min {
+    // Still cramped → drop model, then def, then shrink worktree.
+    if summary_of(worktree_w, def_w, model_w, show_timestamp, age_w, live_w) < min {
+        model_w = 0;
+    }
+    if summary_of(worktree_w, def_w, model_w, show_timestamp, age_w, live_w) < min {
         def_w = 0;
     }
-    let s = summary_of(worktree_w, def_w, show_timestamp, age_w, live_w);
+    let s = summary_of(worktree_w, def_w, model_w, show_timestamp, age_w, live_w);
     if s < min && worktree_w > 0 {
         worktree_w = worktree_w.saturating_sub((min - s) as usize);
     }
-    let summary_w = summary_of(worktree_w, def_w, show_timestamp, age_w, live_w).max(0) as usize;
+    let summary_w =
+        summary_of(worktree_w, def_w, model_w, show_timestamp, age_w, live_w).max(0) as usize;
 
-    QueueColLayout { worktree_w, def_w, summary_w, show_timestamp, age_w, live_w }
+    QueueColLayout {
+        worktree_w,
+        def_w,
+        model_w,
+        summary_w,
+        show_timestamp,
+        age_w,
+        live_w,
+    }
 }
 
 /// Minimum name column the worktree detail lane-task rows keep before a trailing
