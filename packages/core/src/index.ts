@@ -42,19 +42,6 @@ export {
 	loadDefinition,
 } from "./definition.js";
 export { discoverItems } from "./discovery.js";
-export type {
-	DiscussAnchor,
-	DiscussMeta,
-	DiscussStatus,
-	DiscussTurnOpts,
-	DiscussTurnResult,
-} from "./discuss/index.js";
-export {
-	buildDiscussTurnPrompt,
-	DISCUSS_SYSTEM_PROMPT,
-	DiscussStore,
-	runDiscussTurn,
-} from "./discuss/index.js";
 export { parseDuration } from "./duration.js";
 export { parseEnvFile } from "./env-file.js";
 export { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
