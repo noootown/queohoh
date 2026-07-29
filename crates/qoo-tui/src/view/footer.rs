@@ -80,7 +80,7 @@ pub fn render(app: &App, c: &Computed, frame: &mut ratatui::Frame, area: Rect) {
     }
     if let Some(status) = &app.status_line {
         frame.render_widget(
-            Paragraph::new(Text::from(status.clone())).style(Style::default().fg(p.error)),
+            Paragraph::new(Text::from(status.clone())).style(Style::default().fg(p.accent)),
             area,
         );
         return;
