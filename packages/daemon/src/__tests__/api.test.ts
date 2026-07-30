@@ -199,6 +199,10 @@ async function setup(opts?: {
 		}),
 		redact: makeRedactor(new Map()),
 		lineage,
+		// Mirrors daemon.ts's production wiring: worktree-favorite stamping in
+		// `worktreesByRepo` reads through to the same SettingsStore the RPC
+		// writes, so `set_worktree_favorite` is observable on the state snapshot.
+		isWorktreeFavorite: (key) => settings.isWorktreeFavorite(key),
 	});
 	let mutations = 0;
 	const server = new ApiServer({
@@ -1619,6 +1623,157 @@ describe("ApiServer", () => {
 		await expect(client.call("unarchive", { id: "nope" })).rejects.toThrow(
 			/task not found in archive/,
 		);
+	});
+
+	describe("favorites", () => {
+		it("set_task_favorite flips and persists on a live task", async () => {
+			const { client, store } = await setup();
+			const t = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			expect(
+				await client.call("set_task_favorite", { id: t.id, favorite: true }),
+			).toBe(true);
+			expect(store.getAny(t.id)?.favorite).toBe(true);
+			expect(
+				await client.call("set_task_favorite", { id: t.id, favorite: false }),
+			).toBe(false);
+			expect(store.getAny(t.id)?.favorite).toBe(false);
+		});
+
+		it("set_task_favorite works on an archived task without unarchiving", async () => {
+			const { client, store } = await setup();
+			const t = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			store.update(t.id, { status: "failed", error: "boom" });
+			await client.call("archive", { id: t.id });
+			expect(
+				await client.call("set_task_favorite", { id: t.id, favorite: true }),
+			).toBe(true);
+			expect(store.get(t.id)).toBeUndefined();
+			expect(store.getAny(t.id)?.favorite).toBe(true);
+		});
+
+		it("set_worktree_favorite writes the settings set", async () => {
+			const WT = [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }];
+			const { client, settings, engine } = await setup({ worktrees: WT });
+			await engine.tick();
+			expect(
+				await client.call("set_worktree_favorite", {
+					repo: "platform",
+					name: "wt-a",
+					favorite: true,
+				}),
+			).toBe(true);
+			expect(settings.isWorktreeFavorite("platform/wt-a")).toBe(true);
+			const state = (await client.call("state")) as {
+				worktrees: Record<string, { name: string; favorite?: boolean }[]>;
+			};
+			expect(state.worktrees.platform?.[0]).toMatchObject({
+				name: "wt-a",
+				favorite: true,
+			});
+		});
+
+		it("set_worktree_favorite rejects a missing repo/name", async () => {
+			const { client } = await setup();
+			await expect(
+				client.call("set_worktree_favorite", { name: "wt-a", favorite: true }),
+			).rejects.toThrow(/repo and name are required/);
+			await expect(
+				client.call("set_worktree_favorite", {
+					repo: "platform",
+					favorite: true,
+				}),
+			).rejects.toThrow(/repo and name are required/);
+		});
+
+		it("archive/skip refuse a favorited task while its worktree exists", async () => {
+			const WT = [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }];
+			const { client, store, engine } = await setup({ worktrees: WT });
+			await engine.tick();
+
+			const archiveTarget = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			store.update(archiveTarget.id, {
+				status: "failed",
+				error: "boom",
+				target: { ...archiveTarget.target, worktree: "wt-a" },
+				favorite: true,
+			});
+			await expect(
+				client.call("archive", { id: archiveTarget.id }),
+			).rejects.toThrow(/favorited/);
+
+			const skipTarget = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			store.update(skipTarget.id, {
+				status: "cancelled",
+				error: "cancelled by user",
+				target: { ...skipTarget.target, worktree: "wt-a" },
+				favorite: true,
+			});
+			await expect(client.call("skip", { id: skipTarget.id })).rejects.toThrow(
+				/favorited/,
+			);
+		});
+
+		it("archive succeeds on a favorited task whose worktree is gone (orphan rule)", async () => {
+			const WT = [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }];
+			const { client, store, engine } = await setup({ worktrees: WT });
+			await engine.tick();
+
+			const t = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			store.update(t.id, {
+				status: "failed",
+				error: "boom",
+				target: { ...t.target, worktree: "wt-gone" },
+				favorite: true,
+			});
+			await expect(client.call("archive", { id: t.id })).resolves.toBe(true);
+		});
+
+		it("archive refuses a favorited task whose target worktree is the prefixed form while the listing carries the stripped name", async () => {
+			const WT = [{ name: "wt-a", path: "/wt/wt-a", branch: "wt-a" }];
+			const { client, store, engine } = await setup({ worktrees: WT });
+			await engine.tick();
+
+			const t = store.create({
+				prompt: "p",
+				repo: "platform",
+				ref: "temp",
+				source: "tui",
+			});
+			store.update(t.id, {
+				status: "failed",
+				error: "boom",
+				target: { ...t.target, worktree: "platform.wt-a" },
+				favorite: true,
+			});
+			await expect(client.call("archive", { id: t.id })).rejects.toThrow(
+				/favorited/,
+			);
+		});
 	});
 
 	it("retry re-queues every non-running status (done/skipped/queued included)", async () => {

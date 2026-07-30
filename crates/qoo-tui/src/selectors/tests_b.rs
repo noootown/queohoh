@@ -327,6 +327,7 @@
             lane_position: None,
             created_epoch_s: 0,
             archived: false,
+            favorite: false,
             status: TaskStatus::Queued,
             priority: "normal".into(),
             finished_epoch_s: None,
@@ -381,6 +382,7 @@
             lane_position: None,
             created_epoch_s: 0,
             archived: false,
+            favorite: false,
             status: TaskStatus::Queued,
             priority: "normal".into(),
             finished_epoch_s: None,
@@ -464,6 +466,20 @@
         assert_eq!(l.model_w, "claude-opus-5".chars().count());
         assert!(l.def_w > 0);
         assert!(l.summary_w >= SUMMARY_MIN);
+    }
+
+    #[test]
+    fn queue_layout_is_identical_with_and_without_favorites() {
+        // The `★` paints inside the dot→worktree gap and costs no width, so a
+        // favorite appearing/disappearing can never shift any column (user
+        // feedback: both a data-gated slot AND a reserved slot read wrong —
+        // the star must be free).
+        let plain = qrow("feature", Some("squash-merge"), "implement the widget cache");
+        let mut fav = plain.clone();
+        fav.favorite = true;
+        let ctx = empty_queue_model_ctx();
+        let no_fav = queue_col_layout(&[plain.clone()], 120, &ctx.ctx());
+        assert_eq!(no_fav, queue_col_layout(&[plain, fav], 120, &ctx.ctx()));
     }
 
     #[test]
@@ -969,6 +985,7 @@
             lane_position: None,
             created_epoch_s: 0,
             archived: false,
+            favorite: false,
             status: if running { TaskStatus::Running } else { TaskStatus::Done },
             priority: "normal".into(),
             finished_epoch_s: None,

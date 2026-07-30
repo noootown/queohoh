@@ -77,8 +77,13 @@ pub fn queue_col_layout(
         .min(MODEL_CAP);
 
     // Non-flex prefix: glyph(1) + worktree + def + model + gutter before summary.
+    // The dot→worktree gap is 3 cells, not COL_GAP: space + `★` favorite cell
+    // + space — the worktree pane's front-marker rhythm (`● ± name`), which
+    // Ian called the most comfortable after trying a 2-cell-slot-plus-gap
+    // (too wide) and an in-gap star hugging the dot (too cramped). Static, so
+    // favoriting never shifts columns.
     let prefix = |worktree_w: usize, def_w: usize, model_w: usize| -> usize {
-        1 + if worktree_w > 0 { COL_GAP + worktree_w } else { 0 }
+        1 + if worktree_w > 0 { 3 + worktree_w } else { 0 }
             + if def_w > 0 { COL_GAP + def_w } else { 0 }
             + if model_w > 0 { COL_GAP + model_w } else { 0 }
             + COL_GAP

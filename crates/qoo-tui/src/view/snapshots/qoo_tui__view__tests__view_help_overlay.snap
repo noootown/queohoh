@@ -6,22 +6,22 @@ expression: terminal.backend()
 "╭📋 QUEU│                                                              │───────╮" Hidden by multi-width symbols: [(2, " ")]
 "│       │   Tab / Shift+Tab cycle focus: queue → tasks → worktrees     │       │"
 "│ 🔍 [/]│   1–9 / 0         switch project tab (0 = 10th)              │       │" Hidden by multi-width symbols: [(3, " ")]
-"│    Wor│   ctrl+s then n/p next / previous project tab                │       │"
-"│ ⠯  fea│   arrows          move list cursor (shift: extend selection  │       │"
-"│ ○  fea│   space           mark/unmark row (non-contiguous, combines  │       │"
+"│     Wo│   ctrl+s then n/p next / previous project tab                │       │"
+"│ ⠯   fe│   arrows          move list cursor (shift: extend selection  │       │"
+"│ ○   fe│   space           mark/unmark row (non-contiguous, combines  │       │"
 "│ ──────│   j / k           detail: move lane-task row · else scroll   │       │"
-"│ ✗  mai│   h / l           detail: previous / next sub-tab            │       │"
-"│ ●  mai│   ctrl+x / ctrl+z detail sub-tab (alias of l / h)            │       │"
+"│ ✗   ma│   h / l           detail: previous / next sub-tab            │       │"
+"│ ●   ma│   ctrl+x / ctrl+z detail sub-tab (alias of l / h)            │       │"
 "│       │   enter           open selected lane task (worktrees)        │       │"
 "│       │   r               rerun (queue) · run def (tasks) — schedul  │       │"
 "╰───────│   g               goto: tmux split juice|agent 3:1 — resume  │       │"
 "╭⚡TASKS│   x               cancel (queue) · remove worktree (worktre  │       │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]│   a               archive / unarchive selection (queue)      │       │" Hidden by multi-width symbols: [(3, " ")]
-"│ no tas│   d               defer +5h, stacks if already deferred (qu  │       │"
-"│       │   c               cron: pause / resume schedule (tasks)      │       │"
-"╰───────│   s               schedule adhoc task (queue)                │       │"
-"╭🌲 WORK│   t               task menu (worktrees)                      │       │" Hidden by multi-width symbols: [(2, " ")]
-"│ 🔍 [/]│   z               collapse / expand focused list pane        │       │" Hidden by multi-width symbols: [(3, " ")]
+"│ no tas│   d               defer by N hours (digit field, default 5;  │       │"
+"│       │   f               favorite: pin / unpin row (queue, worktre  │       │"
+"╰───────│   c               cron: pause / resume schedule (tasks)      │       │"
+"╭🌲 WORK│   s               schedule adhoc task (queue)                │       │" Hidden by multi-width symbols: [(2, " ")]
+"│ 🔍 [/]│   t               task menu (worktrees)                      │       │" Hidden by multi-width symbols: [(3, " ")]
 "│ 2 feat│                                                              │       │"
 "│ ● hotf│  [ Back ]                                                    │       │"
 "╰───────│                                                              │───────╯"

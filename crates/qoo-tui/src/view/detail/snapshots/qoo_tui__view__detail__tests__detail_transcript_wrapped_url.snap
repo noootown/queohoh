@@ -6,12 +6,12 @@ expression: terminal.backend()
 "╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│    Worktr…  Prompt/Args ││  line 9                                        ▲  │"
-"│ ⠯  feature  topic=widg… ││  line 10                                       ║  │"
-"│ ○  feature  topic=docs… ││  line 11                                       ║  │"
+"│     Worktr…  Prompt/Ar… ││  line 9                                        ▲  │"
+"│ ⠯   feature  topic=wid… ││  line 10                                       ║  │"
+"│ ○   feature  topic=doc… ││  line 11                                       ║  │"
 "│ ──────── finished ───── ││  line 12                                       ║  │"
-"│ ✗  main                 ││  line 13                                       ║  │"
-"│ ●  main                 ││  line 14                                       ║  │"
+"│ ✗   main                ││  line 13                                       ║  │"
+"│ ●   main                ││  line 14                                       ║  │"
 "│                         ││  line 15                                       █  │"
 "│                         ││  line 16                                       █  │"
 "╰─────────────────────────╯│  line 17                                       █  │"

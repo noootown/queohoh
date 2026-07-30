@@ -179,6 +179,73 @@ fn worktrees_with_protected() -> StateSnapshot {
 }
 
 #[test]
+fn bulk_archive_skips_favorited_rows() {
+    // Two terminal (archivable) rows, one favorited: the archive-direction bulk
+    // filter drops the favorited row — the pin blocks archive/dismiss.
+    let mut t0 = TaskInstance::default();
+    t0.id = "t0".into();
+    t0.status = TaskStatus::Failed;
+    t0.target.repo = "platform".into();
+    let mut t1 = TaskInstance::default();
+    t1.id = "t1".into();
+    t1.status = TaskStatus::Failed;
+    t1.target.repo = "platform".into();
+    t1.favorite = true;
+    let snap = StateSnapshot {
+        tasks: vec![t0, t1],
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    a.update(shift_down()); // 2-row range
+    let u = a.update(key('a')); // archive direction, no confirm
+    match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })).unwrap() {
+        Cmd::RpcSeq { verb, calls, .. } => {
+            assert_eq!(verb, "archived");
+            assert_eq!(calls.len(), 1, "the favorited row must be dropped");
+            assert_eq!(calls[0].params, serde_json::json!({ "id": "t0" }));
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn worktrees_with_favorited() -> StateSnapshot {
+    let mut wts = HashMap::new();
+    wts.insert("platform".into(), vec![
+        WorktreeInfo { name: "fav".into(), path: "/wt/fav".into(), branch: "fav".into(), favorite: true, ..Default::default() },
+        WorktreeInfo { name: "wt-b".into(), path: "/wt/b".into(), branch: "wt-b".into(), ..Default::default() },
+    ]);
+    StateSnapshot { projects: vec![Project { name: "platform".into(), github_id: None }], worktrees: wts, ..Default::default() }
+}
+
+#[test]
+fn single_remove_refuses_a_favorited_worktree() {
+    let mut a = app_with(worktrees_with_favorited());
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → tasks
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → worktrees
+    // cursor on row 0 (fav, favorited) — press x
+    let u = a.update(key('x'));
+    assert!(matches!(a.mode, Mode::List), "no confirm dialog opens");
+    assert_eq!(a.status_line.as_deref(), Some("worktree is favorited"));
+    assert!(!u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { .. } | Cmd::RpcSeq { .. })));
+}
+
+#[test]
+fn bulk_remove_drops_favorited_rows() {
+    let mut a = app_with(worktrees_with_favorited());
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → tasks
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → worktrees
+    a.update(shift_down()); // 2-row range: fav(favorited) + wt-b
+    a.update(key('x')); // opens bulk confirm with only eligible rows
+    match &a.mode {
+        Mode::Confirm { action: ConfirmAction::BulkRemoveWorktrees { names, .. }, .. } => {
+            assert_eq!(names, &vec!["wt-b".to_string()]); // favorited dropped
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn single_remove_refuses_a_protected_worktree() {
     let mut a = app_with(worktrees_with_protected());
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))); // → tasks

@@ -77,3 +77,34 @@ describe("SettingsStore cron pause-set", () => {
 		expect(store.isCronDisabled("demo/ping")).toBe(false);
 	});
 });
+
+describe("SettingsStore favorite_worktrees set", () => {
+	it("favorite_worktrees defaults empty, toggles, persists, and coexists with the other keys", () => {
+		const stateDir = freshStateDir();
+		const store = new SettingsStore(stateDir, PROVIDERS);
+
+		expect(store.isWorktreeFavorite("platform/wt-a")).toBe(false);
+		expect(store.setWorktreeFavorite("platform/wt-a", true)).toBe(true);
+		expect(readSettings(stateDir).favorite_worktrees).toEqual(["platform/wt-a"]);
+
+		store.setCronDisabled("platform/intake", true); // other keys survive a favorite write and vice versa
+		expect(readSettings(stateDir).favorite_worktrees).toEqual(["platform/wt-a"]);
+		expect(readSettings(stateDir).disabled_crons).toEqual(["platform/intake"]);
+
+		const restarted = new SettingsStore(stateDir, PROVIDERS);
+		expect(restarted.isWorktreeFavorite("platform/wt-a")).toBe(true);
+		expect(restarted.setWorktreeFavorite("platform/wt-a", false)).toBe(false);
+		expect(readSettings(stateDir).favorite_worktrees).toEqual([]);
+	});
+
+	it("tolerates an old settings.json without favorite_worktrees", () => {
+		const stateDir = freshStateDir();
+		const path = settingsPath(stateDir);
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify({ active_provider: "claude" })}\n`);
+
+		expect(new SettingsStore(stateDir, PROVIDERS).isWorktreeFavorite("x/y")).toBe(
+			false,
+		);
+	});
+});

@@ -114,6 +114,31 @@ age only hard-purges now).
 
 ---
 
+## Favorites
+
+A favorited task is user-pinned and gets four exceptions to the flow above:
+
+1. **Manual archive/dismiss refuses.** Archiving (or the terminal half of
+   `[a]rchive`/skip-as-dismiss) a favorited task throws “task is favorited —
+   unfavorite it first” — but only while its target worktree still exists. The
+   guard lifts once that worktree is gone (an orphaned favorite has nowhere
+   live left to protect).
+2. **`on_done: archive` is skipped.** A favorited task that finishes `done`
+   stays live even when its definition says `on_done: archive` — the pin
+   outranks the def's soft-dismiss.
+3. **Age purge skips it.** `purge_after_days` never hard-deletes a favorited
+   terminal task, live or archived.
+4. **Worktree-removed purge does NOT skip it.** Deleting a worktree still
+   purges every task bound to it, favorited or not — this is a deliberate
+   design decision, not an oversight: the lane is gone, so its history goes
+   with it regardless of the pin.
+
+One more wrinkle: the archived-tail wire cap (newest 200, see below) means a
+favorited archived task older than that is still protected from purge but
+won't be visible in the TUI.
+
+---
+
 ## Recommended patterns
 
 | Kind of work | Suggested config |

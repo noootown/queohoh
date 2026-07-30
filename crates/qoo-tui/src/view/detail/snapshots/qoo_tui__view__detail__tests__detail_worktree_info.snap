@@ -6,12 +6,12 @@ expression: terminal.backend()
 "╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:info                                            │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│    Worktr…  Prompt/Args ││  path     /repos/acme.feature                     │"
-"│ ⠯  feature  topic=widg… ││  branch   feature/TICK-1200-cache                 │"
-"│ ○  feature  topic=docs… ││  commit   a1b2c3d                                 │"
+"│     Worktr…  Prompt/Ar… ││  path     /repos/acme.feature                     │"
+"│ ⠯   feature  topic=wid… ││  branch   feature/TICK-1200-cache                 │"
+"│ ○   feature  topic=doc… ││  commit   a1b2c3d                                 │"
 "│ ──────── finished ───── ││  author   Alice Example                           │"
-"│ ✗  main                 ││  updated  3d ago (07/06 07:05)                    │"
-"│ ●  main                 ││  pr       #42                                     │"
+"│ ✗   main                ││  updated  3d ago (07/06 07:05)                    │"
+"│ ●   main                ││  pr       #42                                     │"
 "│                         ││                                                   │"
 "│                         ││    Task        Created      Age       Live        │"
 "╰─────────────────────────╯│  ▶ squash-me…  07/09 07:00  just now  ⏱ 0s        │"

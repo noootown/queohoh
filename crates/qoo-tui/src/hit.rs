@@ -48,6 +48,11 @@ pub enum PaneButton {
     Cron,
     Remove,
     Collapse,
+    /// QUEUE + WORKTREES `[f]avorite` — a TOGGLE: pins the selected row (queue
+    /// FINISHED-section pin / worktree top-pin) and blocks archive/remove while
+    /// set. Single-row only (bulk refuses): a bulk toggle is ambiguous when the
+    /// selection mixes favorited and unfavorited rows.
+    Favorite,
 }
 
 /// The title-bar chip set for a pane, in scope order (row-scoped verbs first,
@@ -63,9 +68,9 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
         // Schedule (blank adhoc create) on QUEUE; WORKTREES Run is the same form
         // with the selected worktree locked as the target. Defer sits with the
         // other row verbs (rerun/stop/archive) before the pane-scoped schedule.
-        PaneId::Queue => &[Run, Cancel, Goto, Archive, Defer, Schedule, Collapse],
+        PaneId::Queue => &[Run, Cancel, Goto, Archive, Defer, Favorite, Schedule, Collapse],
         PaneId::Tasks => &[Run, Discover, Cron, Collapse],
-        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Collapse],
+        PaneId::Worktrees => &[Run, Goto, Remove, Tasks, Favorite, Collapse],
         PaneId::Detail => &[],
     }
 }
@@ -224,7 +229,7 @@ mod tests {
         assert!(bulk_allowed(PaneId::Queue, Cancel));
         assert!(bulk_allowed(PaneId::Queue, Archive));
         assert!(bulk_allowed(PaneId::Queue, Defer));
-        for btn in [Goto, Schedule, Collapse] {
+        for btn in [Goto, Schedule, Collapse, Favorite] {
             assert!(!bulk_allowed(PaneId::Queue, btn), "{btn:?} should be bulk-disabled on QUEUE");
         }
         // TASKS: none.
@@ -233,7 +238,7 @@ mod tests {
         }
         // WORKTREES: only remove.
         assert!(bulk_allowed(PaneId::Worktrees, Remove));
-        for btn in [Run, Goto, Tasks, Collapse] {
+        for btn in [Run, Goto, Tasks, Collapse, Favorite] {
             assert!(!bulk_allowed(PaneId::Worktrees, btn), "{btn:?} should be bulk-disabled on WORKTREES");
         }
     }

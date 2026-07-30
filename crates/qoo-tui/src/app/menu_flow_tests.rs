@@ -190,6 +190,84 @@ fn queue_a_archives_a_needs_input_task() {
     );
 }
 
+// --- queue/worktrees `f` favorite toggle ----------------------------------
+
+#[test]
+fn queue_f_favorites_the_selected_unfavorited_task() {
+    let mut a = app_with(failed_task_snapshot());
+    let u = a.update(key('f'));
+    assert!(matches!(a.mode, Mode::List));
+    assert!(
+        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+            if call.method == "set_task_favorite"
+                && call.params == serde_json::json!({ "id": "t1", "favorite": true }))),
+        "expected a set_task_favorite(true) dispatch, got {:?}",
+        u.cmds,
+    );
+}
+
+#[test]
+fn queue_f_on_a_favorited_task_unfavorites_it() {
+    let mut snap = failed_task_snapshot();
+    snap.tasks[0].favorite = true;
+    let mut a = app_with(snap);
+    let u = a.update(key('f'));
+    assert!(
+        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+            if call.method == "set_task_favorite"
+                && call.params == serde_json::json!({ "id": "t1", "favorite": false }))),
+        "expected a set_task_favorite(false) dispatch, got {:?}",
+        u.cmds,
+    );
+}
+
+#[test]
+fn worktrees_f_favorites_the_cursor_worktree_by_raw_name() {
+    let mut a = app_with(worktree_snapshot());
+    focus_worktrees(&mut a);
+    let u = a.update(key('f'));
+    assert!(
+        u.cmds.iter().any(|c| matches!(c, Cmd::Rpc { call, .. }
+            if call.method == "set_worktree_favorite"
+                && call.params == serde_json::json!({
+                    "repo": "platform", "name": "platform.wt-a", "favorite": true
+                }))),
+        "expected a set_worktree_favorite(true) dispatch using raw_name, got {:?}",
+        u.cmds,
+    );
+}
+
+#[test]
+fn worktrees_f_on_a_session_row_refuses_with_a_status_line() {
+    // A session row is not a worktree — `f` refuses like `x` does.
+    let mut wts = HashMap::new();
+    wts.insert(
+        "platform".into(),
+        vec![WorktreeInfo { name: "platform.wt-a".into(), path: "/wt/wt-a".into(), branch: "wt-a".into(), ..Default::default() }],
+    );
+    let snap = StateSnapshot {
+        projects: vec![Project { name: "platform".into(), github_id: None }],
+        worktrees: wts,
+        sessions: vec![SessionEntry {
+            kind: "interactive".into(),
+            key: "s1".into(),
+            lane: None,
+            cwd: Some("/wt/wt-a/nested".into()),
+            pid: None,
+            started_at: String::new(),
+            heartbeat_at: String::new(),
+        }],
+        ..Default::default()
+    };
+    let mut a = app_with(snap);
+    focus_worktrees(&mut a);
+    a.update(down()); // select the appended session row
+    let u = a.update(key('f'));
+    assert!(matches!(a.mode, Mode::List));
+    assert!(u.cmds.is_empty());
+    assert_eq!(a.status_line.as_deref(), Some("not a worktree"));
+}
+
 // --- bulk archive helpers -------------------------------------------------
 fn terminal_task(id: &str, status: TaskStatus) -> TaskInstance {
     let mut t = TaskInstance::default();

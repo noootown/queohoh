@@ -3,7 +3,7 @@ source: crates/qoo-tui/src/view/mod.rs
 expression: terminal.backend()
 ---
 " 1:acme (1)                                                                              ● running 0"
-"╭📋 QUEUE──── [r] [x] [g] [a] [d]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
+"╭📋 QUEUE [r] [x] [g] [a] [d] [f]╮╭📄 DETAIL───────────────────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (36, " ")]
 "│                                ││ 1:report  2:transcript  3:prompt  4:info                       │"
 "│ 🔍 [/]filter                   ││                                                                │" Hidden by multi-width symbols: [(3, " ")]
 "│    Prompt/Args    Live         ││  (no report yet)                                               │"
@@ -20,7 +20,7 @@ expression: terminal.backend()
 "│ no task definitions            ││                                                                │"
 "│                                ││                                                                │"
 "╰────────────────────────────────╯│                                                                │"
-"╭🌲 WORKTREES──── [r] [g] [x] [t]╮│                                                                │" Hidden by multi-width symbols: [(2, " ")]
+"╭🌲 WORKTREES [r] [g] [x] [t] [f]╮│                                                                │" Hidden by multi-width symbols: [(2, " ")]
 "│ 🔍 [/]filter                   ││                                                                │" Hidden by multi-width symbols: [(3, " ")]
 "│ no worktrees                   ││                                                                │"
 "│                                ││                                                                │"

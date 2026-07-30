@@ -302,6 +302,9 @@ export interface EngineDeps {
 	 * tick so a `set_cron_enabled` toggle takes effect on the next evaluation.
 	 * Absent ⇒ nothing is paused (used by tests that don't exercise the toggle). */
 	isCronDisabled?: (key: string) => boolean;
+	/** Settings-store reader for `<repo>/<name>` worktree-favorite keys.
+	 * Injected (like isCronDisabled) so core stays free of daemon settings. */
+	isWorktreeFavorite?: (key: string) => boolean;
 }
 
 export class Engine {
@@ -374,6 +377,8 @@ export class Engine {
 					protectedNames,
 					wt,
 				);
+				base.favorite =
+					this.deps.isWorktreeFavorite?.(`${repo}/${wt.name}`) ?? false;
 				return base;
 			});
 		}
@@ -462,6 +467,11 @@ export class Engine {
 		if (isProtectedWorktree(repoPath, repo, protectedNames, wt)) {
 			throw new Error(
 				`Worktree "${wt.name}" is protected and cannot be removed`,
+			);
+		}
+		if (this.deps.isWorktreeFavorite?.(`${repo}/${wt.name}`)) {
+			throw new Error(
+				`Worktree "${wt.name}" is favorited and cannot be removed — unfavorite it first`,
 			);
 		}
 		this.cancelLiveTasksForWorktree(
@@ -688,8 +698,10 @@ export class Engine {
 		};
 
 		// Soft-dismiss backstop: done + on_done: archive still on live list.
+		// A favorited task is never archived by the backstop — the pin outranks
+		// the def's soft-dismiss (mirrors worker.ts's onDone-archive site).
 		for (const t of deps.store.list()) {
-			if (t.status === "done" && onDoneFor(t) === "archive") {
+			if (t.status === "done" && onDoneFor(t) === "archive" && !t.favorite) {
 				deps.store.archive(t.id);
 			}
 		}
@@ -749,12 +761,15 @@ export class Engine {
 			deps.store.purge(t.id);
 		}
 
-		// Age purge: terminal tasks past purge_after_days (live or archived).
+		// Age purge: terminal tasks past purge_after_days (live or archived). A
+		// favorited row must never be silently hard-deleted by age (unlike the
+		// WORKTREE-GONE purges above, which stay unguarded by design).
 		for (const t of [
 			...deps.store.list(),
 			...deps.store.listArchived(),
 		]) {
 			if (!TERMINAL_STATUSES.has(t.status)) continue;
+			if (t.favorite) continue;
 			const days = purgeDaysFor(t);
 			const cutoff = now - days * 86_400_000;
 			if (terminalEpoch(t) < cutoff) {

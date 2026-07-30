@@ -240,6 +240,58 @@ describe("QueueStore", () => {
 		expect(store.listArchived().map((a) => a.id)).toEqual([t.id]);
 	});
 
+	it("updateAny patches a live task the same as update, finishedAt stamp included", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		const updated = store.updateAny(t.id, { status: "done", favorite: true });
+		expect(updated.favorite).toBe(true);
+		expect(updated.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+		expect(store.get(t.id)?.favorite).toBe(true);
+	});
+
+	it("updateAny patches an archived task in place without unarchiving it", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "done" });
+		store.archive(t.id);
+		const updated = store.updateAny(t.id, { favorite: true });
+		expect(updated.favorite).toBe(true);
+		expect(store.get(t.id)).toBeUndefined(); // still NOT live
+		expect(store.getAny(t.id)?.favorite).toBe(true); // persisted in archive
+	});
+
+	it("updateAny stamps finishedAt on an archived task's status transition, matching update", () => {
+		const store = freshStore();
+		const t = store.create({
+			prompt: "x",
+			repo: "r",
+			ref: "temp",
+			source: "tui",
+		});
+		store.archive(t.id);
+		expect(t.finishedAt).toBeNull();
+		const updated = store.updateAny(t.id, { status: "done" });
+		expect(updated.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+		expect(store.getAny(t.id)?.finishedAt).toBe(updated.finishedAt);
+	});
+
+	it("updateAny throws for unknown id", () => {
+		const store = freshStore();
+		expect(() => store.updateAny("01UNKNOWN0000000000000000X", {})).toThrow(
+			/task not found/,
+		);
+	});
+
 	it("create persists resumeSessionId and model", () => {
 		const store = freshStore();
 		const t = store.create({

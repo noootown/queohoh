@@ -109,6 +109,10 @@ pub struct QueueRow {
     /// creation epoch seconds (parsed from the daemon ISO timestamp)
     pub created_epoch_s: u64,
     pub archived: bool,
+    /// User-pinned (`f`). Pins the row first within the FINISHED section only —
+    /// ACTIVE keeps pure execution order (user decision). Also feeds the `★`
+    /// column gate and the bulk-archive exclusion.
+    pub favorite: bool,
     /// task status — drives the ACTIVE-section status ordering and the
     /// active/finished section split (see [`queue_rows`]).
     pub status: TaskStatus,
@@ -196,6 +200,11 @@ pub struct WorktreeRow {
     /// Drives the `⛨` front-column marker and gates the remove action. Session
     /// rows default `false` (never removable anyway).
     pub protected: bool,
+    /// User-pinned (`f`). Pins the row above the mine-first tier in
+    /// [`cmp_worktree_rows`] — the top sort tier, ahead of activity/commit
+    /// recency. Session rows default `false` (they never enter that
+    /// comparator anyway).
+    pub favorite: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,15 +382,20 @@ pub fn queue_divider_after(rows: &[QueueRow]) -> Option<usize> {
 ///    (`not_before_epoch_s` ASC), then id ASC.
 ///
 /// **FINISHED** (done/failed/cancelled/skipped/unknown + archived) after:
-/// live before dimmed ARCHIVED, then completion DESC, then id DESC.
+/// favorite pin first (outranks live-before-archived — a favorited archived
+/// row beats a live non-favorite row), then live before dimmed ARCHIVED, then
+/// completion DESC, then id DESC.
 fn queue_sort(a: &QueueRow, b: &QueueRow) -> std::cmp::Ordering {
     let (fa, fb) = (queue_row_finished(a), queue_row_finished(b));
     fa.cmp(&fb).then_with(|| {
         if fa {
-            // Both finished: live before archived, then newest completion
-            // first, then newest id first.
-            a.archived
-                .cmp(&b.archived)
+            // Both finished: favorites first (user pin outranks the
+            // live-before-archived tier), then the pre-existing order applies
+            // within each group — live before archived, newest completion
+            // first, newest id first.
+            b.favorite
+                .cmp(&a.favorite)
+                .then_with(|| a.archived.cmp(&b.archived))
                 .then_with(|| {
                     b.finished_epoch_s.unwrap_or(0).cmp(&a.finished_epoch_s.unwrap_or(0))
                 })
@@ -523,6 +537,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             lane_position,
             created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: false,
+            favorite: task.favorite,
             status: task.status,
             priority: task.priority.clone(),
             finished_epoch_s: task.finished_at.as_deref().map(parse_iso_epoch_s),
@@ -570,6 +585,7 @@ pub fn queue_rows(snapshot: &StateSnapshot, project: &str) -> Vec<QueueRow> {
             lane_position: None,
             created_epoch_s: parse_iso_epoch_s(&task.created),
             archived: true,
+            favorite: task.favorite,
             status: task.status,
             priority: task.priority.clone(),
             finished_epoch_s: task.finished_at.as_deref().map(parse_iso_epoch_s),
@@ -888,14 +904,16 @@ fn worktree_last_run_epoch(row: &WorktreeRow) -> u64 {
     running.max(finished)
 }
 
-/// Three-level WORKTREES row ordering: (1) MINE first, (2) LAST-RUN time
-/// descending (newest task activity), (3) LAST-COMMIT descending. Equal keys keep
-/// their input order — the caller must use a STABLE sort. Pure over the row (+ the
-/// project's `github_id`) so the ordering is unit-testable in isolation. Session
-/// rows never pass through this comparator (they are appended after the sort).
+/// Four-level WORKTREES row ordering: (1) FAVORITE first, (2) MINE first,
+/// (3) LAST-RUN time descending (newest task activity), (4) LAST-COMMIT
+/// descending. Equal keys keep their input order — the caller must use a
+/// STABLE sort. Pure over the row (+ the project's `github_id`) so the
+/// ordering is unit-testable in isolation. Session rows never pass through
+/// this comparator (they are appended after the sort).
 fn cmp_worktree_rows(a: &WorktreeRow, b: &WorktreeRow, github_id: Option<&str>) -> Ordering {
-    worktree_is_mine(b, github_id)
-        .cmp(&worktree_is_mine(a, github_id)) // mine (true) sorts first
+    b.favorite
+        .cmp(&a.favorite) // favorites pin above the mine-first tier
+        .then_with(|| worktree_is_mine(b, github_id).cmp(&worktree_is_mine(a, github_id))) // mine (true) sorts first
         .then_with(|| worktree_last_run_epoch(b).cmp(&worktree_last_run_epoch(a))) // newest run first
         .then_with(|| {
             b.last_commit_epoch
@@ -1000,14 +1018,16 @@ pub fn worktree_rows(snapshot: &StateSnapshot, project: &str) -> Vec<WorktreeRow
                 pr_base: wt.pr_base.clone(),
                 pr_author: wt.pr_author.clone(),
                 protected: wt.protected,
+                favorite: wt.favorite,
             }
         })
         .collect();
 
-    // Three-level order (see `cmp_worktree_rows`): mine first, then most-recent
-    // task activity, then most-recent commit. `sort_by` is STABLE, so equal-key
-    // rows keep their daemon-emitted order (the tiebreak). Session rows (below)
-    // keep their append-at-end placement — they never enter this ordering.
+    // Four-level order (see `cmp_worktree_rows`): favorite first, then mine
+    // first, then most-recent task activity, then most-recent commit.
+    // `sort_by` is STABLE, so equal-key rows keep their daemon-emitted order
+    // (the tiebreak). Session rows (below) keep their append-at-end
+    // placement — they never enter this ordering.
     rows.sort_by(|a, b| cmp_worktree_rows(a, b, github_id));
 
     // One "You" row per interactive session whose cwd is inside a project

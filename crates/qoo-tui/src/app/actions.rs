@@ -7,9 +7,10 @@
 
 use super::*;
 
-/// One resolved QUEUE selection row for the `r`/`x` verbs: `(task_id, status,
-/// archived)`. A small alias to keep `queue_selection_rows`' return type legible.
-type QueueSelRow = (String, TaskStatus, bool);
+/// One resolved QUEUE selection row for the `r`/`x`/`f` verbs: `(task_id,
+/// status, archived, favorite)`. A small alias to keep `queue_selection_rows`'
+/// return type legible.
+type QueueSelRow = (String, TaskStatus, bool, bool);
 
 /// Kebab-case status name for the queue `r`/`x` no-op status lines
 /// ("cannot rerun a running task").
@@ -438,6 +439,12 @@ impl App {
                 cmds.extend(u.cmds);
                 u.dirty
             }
+            // `f` on QUEUE or WORKTREES: flip the selected row's favorite.
+            A::ToggleFavorite => {
+                let u = self.toggle_favorite();
+                cmds.extend(u.cmds);
+                u.dirty
+            }
         };
         Update { dirty, cmds }
     }
@@ -475,7 +482,7 @@ impl App {
                     .find(|t| t.id == r.task_id)
                     .map(|t| t.status)
                     .unwrap_or(TaskStatus::Unknown);
-                (r.task_id.clone(), status, r.archived)
+                (r.task_id.clone(), status, r.archived, r.favorite)
             })
             .collect();
         Some((sels, is_bulk))
@@ -497,7 +504,7 @@ impl App {
         if !is_bulk {
             // Single row: keep the per-status no-op line explaining why the one
             // row can't re-queue; an eligible row opens the re-run form.
-            let Some((id, status, archived)) = rows.into_iter().next() else {
+            let Some((id, status, archived, _favorite)) = rows.into_iter().next() else {
                 return Update::default();
             };
             if archived {
@@ -511,8 +518,11 @@ impl App {
             self.open_requeue_form(vec![id]);
             return Update { dirty: true, cmds: vec![] };
         }
-        let ids: Vec<String> =
-            rows.into_iter().filter(|(_, s, arch)| !arch && requeue_ok(*s)).map(|(id, _, _)| id).collect();
+        let ids: Vec<String> = rows
+            .into_iter()
+            .filter(|(_, s, arch, _)| !arch && requeue_ok(*s))
+            .map(|(id, _, _, _)| id)
+            .collect();
         if ids.is_empty() {
             self.status_line = Some("no rerunnable tasks in selection".into());
             return Update { dirty: true, cmds: vec![] };
@@ -562,8 +572,8 @@ impl App {
         // them; archived rows are never cancellable.
         let eligible: Vec<(String, TaskStatus)> = rows
             .into_iter()
-            .filter(|(_, _, arch)| !arch)
-            .filter_map(|(id, s, _)| cancel_method(s).map(|_| (id, s)))
+            .filter(|(_, _, arch, _)| !arch)
+            .filter_map(|(id, s, _, _)| cancel_method(s).map(|_| (id, s)))
             .collect();
         if eligible.is_empty() {
             self.status_line = Some("nothing to stop in selection".into());
@@ -621,7 +631,7 @@ impl App {
         if is_bulk {
             return self.archive_selected_bulk(rows);
         }
-        let Some((id, status, archived)) = rows.into_iter().next() else {
+        let Some((id, status, archived, _favorite)) = rows.into_iter().next() else {
             return Update::default();
         };
         let method = if archived {
@@ -656,7 +666,7 @@ impl App {
     /// range-clearing [`Cmd::RpcSeq`] (verb "archived"/"unarchived"), mirroring
     /// the bulk stop/rerun path but with no confirm — the toggle is its own undo.
     fn archive_selected_bulk(&mut self, rows: Vec<QueueSelRow>) -> Update {
-        let Some(&(_, _, first_archived)) = rows.first() else {
+        let Some(&(_, _, first_archived, _)) = rows.first() else {
             return Update::default();
         };
         // Only queued/running are un-hideable live work; `needs-input` is parked
@@ -666,18 +676,19 @@ impl App {
             if first_archived { ("unarchive", "unarchived") } else { ("archive", "archived") };
         let ids: Vec<String> = rows
             .into_iter()
-            .filter(|(_, status, archived)| {
+            .filter(|(_, status, archived, favorite)| {
                 if first_archived {
                     // Unarchive direction: only the already-archived rows.
                     *archived
                 } else {
                     // Archive direction: archivable rows (terminal + parked
                     // needs-input) — skip active queued/running work (can't hide
-                    // it) and already-archived rows (opposite half).
-                    !*archived && !active(*status)
+                    // it), already-archived rows (opposite half), and favorited
+                    // rows (the pin blocks archive/dismiss).
+                    !*archived && !active(*status) && !*favorite
                 }
             })
-            .map(|(id, _, _)| id)
+            .map(|(id, _, _, _)| id)
             .collect();
         if ids.is_empty() {
             self.status_line = Some(format!("nothing to {method} in selection"));
@@ -709,8 +720,8 @@ impl App {
         };
         let eligible: Vec<(String, TaskStatus)> = rows
             .into_iter()
-            .filter(|(_, s, arch)| !arch && defer_ok(*s))
-            .map(|(id, s, _)| (id, s))
+            .filter(|(_, s, arch, _)| !arch && defer_ok(*s))
+            .map(|(id, s, _, _)| (id, s))
             .collect();
         if eligible.is_empty() {
             self.status_line = Some(if is_bulk {
@@ -1443,6 +1454,10 @@ impl App {
             self.status_line = Some("worktree is protected".into());
             return Update { dirty: true, cmds: vec![] };
         }
+        if row.favorite {
+            self.status_line = Some("worktree is favorited".into());
+            return Update { dirty: true, cmds: vec![] };
+        }
         let worktree = row.raw_name.clone();
         let branch = row.branch.clone();
         let branch_line =
@@ -1460,6 +1475,96 @@ impl App {
             focus: crate::hit::ButtonKind::Confirm,
         };
         Update { dirty: true, cmds: vec![] }
+    }
+
+    /// `f` on QUEUE or WORKTREES: flip the selected row's favorite. Explicit-set
+    /// RPCs (TUI computes the toggle from the snapshot). Bulk refuses — see
+    /// PaneButton::Favorite.
+    pub(super) fn toggle_favorite(&mut self) -> Update {
+        match self.ui().focus {
+            PaneId::Queue => {
+                let Some((rows, is_bulk)) = self.queue_selection_rows() else {
+                    return Update::default();
+                };
+                if is_bulk {
+                    self.status_line = Some(BULK_NOT_APPLICABLE.into());
+                    return Update { dirty: true, cmds: vec![] };
+                }
+                let Some((id, _, _, favorite)) = rows.into_iter().next() else {
+                    return Update::default();
+                };
+                self.status_line =
+                    Some(if favorite { "unfavorited".into() } else { "favorited".into() });
+                Update { dirty: true, cmds: vec![Self::set_task_favorite_cmd(&id, !favorite)] }
+            }
+            PaneId::Worktrees => {
+                let ui = self.active_ui();
+                let sel = ui.selections[ListPane::Worktrees.idx()];
+                let marks = &ui.marks[ListPane::Worktrees.idx()];
+                if crate::view::is_bulk_selection(&sel, marks) {
+                    self.status_line = Some(BULK_NOT_APPLICABLE.into());
+                    return Update { dirty: true, cmds: vec![] };
+                }
+                let Some(repo) = self.active_repo() else {
+                    return Update::default();
+                };
+                let Some(row) = self.selected_worktree_row_filtered() else {
+                    self.status_line = Some("no worktree selected".into());
+                    return Update { dirty: true, cmds: vec![] };
+                };
+                if row.is_session {
+                    self.status_line = Some("not a worktree".into());
+                    return Update { dirty: true, cmds: vec![] };
+                }
+                let (raw_name, favorite) = (row.raw_name.clone(), row.favorite);
+                self.status_line = Some(format!(
+                    "{} {}",
+                    if favorite { "unfavorited" } else { "favorited" },
+                    row.name
+                ));
+                Update {
+                    dirty: true,
+                    cmds: vec![Self::set_worktree_favorite_cmd(&repo, &raw_name, !favorite)],
+                }
+            }
+            _ => Update::default(),
+        }
+    }
+
+    /// Build the fire-and-forget `set_task_favorite` command: pins (or unpins)
+    /// the QUEUE row. Favorites ride the daemon's push snapshot — no def cache
+    /// to invalidate.
+    pub(super) fn set_task_favorite_cmd(id: &str, favorite: bool) -> Cmd {
+        Cmd::Rpc {
+            label: "favorite".into(),
+            call: RpcCall {
+                method: "set_task_favorite".into(),
+                params: serde_json::json!({ "id": id, "favorite": favorite }),
+            },
+            timeout_ms: 5000,
+            timeout_is_ok: false,
+            invalidate_defs_for: None,
+            report_empty_as: None,
+        }
+    }
+
+    /// Build the fire-and-forget `set_worktree_favorite` command. Same shape as
+    /// [`Self::set_task_favorite_cmd`] — no def cache to invalidate.
+    pub(super) fn set_worktree_favorite_cmd(repo: &str, name: &str, favorite: bool) -> Cmd {
+        Cmd::Rpc {
+            label: "favorite".into(),
+            call: RpcCall {
+                method: "set_worktree_favorite".into(),
+                // `name` is the row's raw_name (directory basename, possibly
+                // `<repo>.`-prefixed) so the daemon's settings key matches the
+                // engine's stamping read exactly.
+                params: serde_json::json!({ "repo": repo, "name": name, "favorite": favorite }),
+            },
+            timeout_ms: 5000,
+            timeout_is_ok: false,
+            invalidate_defs_for: None,
+            report_empty_as: None,
+        }
     }
 
     /// `(task_id, is_running)` when the current detail context is a Run.

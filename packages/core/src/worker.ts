@@ -669,7 +669,7 @@ export async function finalizeRun(
 	// "the worker claimed success but the check disagreed". There is
 	// deliberately NO universal dirty-tree check anymore: it punished
 	// `worktree: repo` tasks for pre-existing dirt in the user's own checkout;
-	// defs that want it (autofix, pr-ready) declare it as their `verify`.
+	// defs that want it (autofix, pr-massage) declare it as their `verify`.
 	const verifyCmd = def?.verify ?? task.verify ?? null;
 	if (outcome === "done" && verifyCmd !== null && deps.executeVerify) {
 		const v = await deps.executeVerify({
@@ -817,7 +817,12 @@ export async function finalizeRun(
 	// the archive list immediately (track record kept until purge). Failures
 	// stay live so they can be inspected.
 	const onDone = task2.onDone ?? def?.onDone ?? "stay";
-	if (outcome === "done" && onDone === "archive") {
+	// Favorited tasks stay live: the pin outranks the def's soft-dismiss.
+	if (
+		outcome === "done" &&
+		onDone === "archive" &&
+		!(task2.favorite ?? false)
+	) {
 		deps.store.archive(taskId);
 		const archived = deps.store.getAny(taskId) ?? task2;
 		return { task: archived, retry: false };

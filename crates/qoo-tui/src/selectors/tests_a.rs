@@ -58,6 +58,7 @@
             resume_session_id: None,
             model: None,
             model_pinned: false,
+            favorite: false,
             prompt: "fix the flaky test\nmore context\n".into(),
             verify: None,
             verified: None,
@@ -724,6 +725,32 @@
     }
 
     #[test]
+    fn queue_finished_favorites_pin_first_even_above_live_nonfavorites_and_active_is_untouched() {
+        // q1 queued (ACTIVE, untouched by favorite); d1/d2 live done; a1
+        // archived+favorited finishes EARLIEST of all yet still pins first —
+        // the favorite tier outranks the live-before-archived tier entirely.
+        let mut a1 = qtask(TaskStatus::Done, "01ARCH_FAV", "normal", Some("2026-07-09T09:00:00.000Z"));
+        a1.favorite = true;
+        let rows = queue_rows(
+            &snap(
+                vec![
+                    qtask(TaskStatus::Queued, "01Q1", "normal", None),
+                    qtask(TaskStatus::Done, "01D1", "normal", Some("2026-07-09T12:00:00.000Z")),
+                    qtask(TaskStatus::Done, "01D2", "normal", Some("2026-07-09T11:00:00.000Z")),
+                ],
+                vec![a1],
+            ),
+            "platform",
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["01Q1", "01ARCH_FAV", "01D1", "01D2"]
+        );
+        // Divider unmoved: still one before the first finished row (index 0).
+        assert_eq!(queue_divider_after(&rows), Some(0));
+    }
+
+    #[test]
     fn queue_archived_tail_keeps_completion_order_within_itself() {
         // Within the archived tail the existing completion-desc order holds.
         let rows = queue_rows(
@@ -1163,6 +1190,18 @@
         assert_eq!(cmp_worktree_rows(&other, &mine, Some("me")), Ordering::Greater);
         // Without a github_id the mine tier is inert, so freshness decides.
         assert_eq!(cmp_worktree_rows(&mine, &other, None), Ordering::Greater);
+    }
+
+    #[test]
+    fn cmp_worktree_rows_favorite_beats_mine_and_freshness() {
+        // A favorited row with no activity still outranks a "mine" row with the
+        // freshest possible activity — favorite is the top tier, above mine-first.
+        let mut fav = wtrow("fav");
+        fav.favorite = true;
+        let mut mine = wtrow("mine");
+        mine.last_commit_author_email = Some("me@example.com".into());
+        mine.running_elapsed = Some(9_999);
+        assert_eq!(cmp_worktree_rows(&fav, &mine, Some("me")), Ordering::Less);
     }
 
     #[test]

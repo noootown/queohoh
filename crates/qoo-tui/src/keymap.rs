@@ -83,6 +83,11 @@ pub enum AppAction {
     /// Terminal / needs-input / archived refuse. TASKS keeps bare `d` for
     /// Discover (pane-gated). Routes to `App::defer_selected`.
     DeferSelected,
+    /// Toggle the selected row's favorite pin (`f`, and the `[f]avorite` chip)
+    /// on QUEUE (task pin, via `set_task_favorite`) and WORKTREES (worktree
+    /// pin, via `set_worktree_favorite`). Single-row only; session rows refuse
+    /// with a status line. Routes to `App::toggle_favorite`.
+    ToggleFavorite,
     /// New adhoc task on the selected WORKTREES row (`r`, and the worktrees
     /// `[r]un` chip): same form as QUEUE `[s]chedule`, with the selected
     /// worktree locked as the target (readonly). Session rows can't host a
@@ -183,6 +188,9 @@ pub fn list_mode_action(key: &KeyEvent, focus: PaneId) -> AppAction {
         // `c` is a TASKS-only chip: toggle the highlighted def's cron on/off
         // (was `o`; key now matches the label's first letter → `[c]ron`).
         KeyCode::Char('c') => gated(PaneButton::Cron, AppAction::ToggleCron),
+        // `f` is a Favorite TOGGLE chip on QUEUE and WORKTREES; inert on TASKS
+        // (no Favorite chip there).
+        KeyCode::Char('f') => gated(PaneButton::Favorite, AppAction::ToggleFavorite),
         // `g` is a Goto chip on QUEUE and WORKTREES, but means different things:
         // QUEUE resumes the selected task's Claude session, WORKTREES opens the
         // worktree in a fresh tmux window. Inert on TASKS (no Goto chip there).
@@ -446,13 +454,27 @@ mod tests {
 
     #[test]
     fn unbound_keys_are_none() {
-        // w/f/m moved to the action menu (parity with the Ink keymap tests). On
+        // w/m moved to the action menu (parity with the Ink keymap tests). On
         // the QUEUE pane `t` is inert (a WORKTREES-only chip, keymap-gated).
         // `r`/`x`/`g` ARE bound on QUEUE now (re-queue / cancel / goto), so
-        // they're not in this set.
-        for c in ['w', 'f', 'm', 't'] {
+        // they're not in this set. `f` is now the QUEUE/WORKTREES favorite
+        // toggle (see `f_favorites_on_queue_and_worktrees_not_on_tasks`), so
+        // it's no longer unbound anywhere.
+        for c in ['w', 'm', 't'] {
             assert_eq!(list_mode_action(&k(KeyCode::Char(c)), PaneId::Queue), AppAction::None);
         }
+    }
+
+    #[test]
+    fn f_favorites_on_queue_and_worktrees_not_on_tasks() {
+        // `f` is a Favorite TOGGLE chip on QUEUE and WORKTREES; inert on TASKS
+        // (no Favorite chip there).
+        assert_eq!(list_mode_action(&k(KeyCode::Char('f')), PaneId::Queue), AppAction::ToggleFavorite);
+        assert_eq!(
+            list_mode_action(&k(KeyCode::Char('f')), PaneId::Worktrees),
+            AppAction::ToggleFavorite
+        );
+        assert_eq!(list_mode_action(&k(KeyCode::Char('f')), PaneId::Tasks), AppAction::None);
     }
 
     #[test]

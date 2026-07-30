@@ -6,12 +6,12 @@ expression: terminal.backend()
 "╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│    Worktr…  Prompt/Args ││  Build steps:                                     │"
-"│ ⠯  feature  topic=widg… ││  ──────── bash ─────────────────────────────────  │"
-"│ ○  feature  topic=docs… ││  cd ~/proj && make build                          │"
+"│     Worktr…  Prompt/Ar… ││  Build steps:                                     │"
+"│ ⠯   feature  topic=wid… ││  ──────── bash ─────────────────────────────────  │"
+"│ ○   feature  topic=doc… ││  cd ~/proj && make build                          │"
 "│ ──────── finished ───── ││  cat log.txt | grep error                         │"
-"│ ✗  main                 ││  ───────────────────────────────────────────────  │"
-"│ ●  main                 ││  Config:                                          │"
+"│ ✗   main                ││  ───────────────────────────────────────────────  │"
+"│ ●   main                ││  Config:                                          │"
 "│                         ││  ──────── json ─────────────────────────────────  │"
 "│                         ││  {"name": "qoo", "count": 3, "ok": true}          │"
 "╰─────────────────────────╯│  ───────────────────────────────────────────────  │"

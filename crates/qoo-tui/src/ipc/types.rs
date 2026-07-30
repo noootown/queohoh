@@ -178,6 +178,10 @@ pub struct TaskInstance {
     /// `false` / missing (old daemon) → resolve under the active provider like
     /// the TASKS Model column. Wire: `modelPinned`.
     pub model_pinned: bool,
+    /// User-pinned from the TUI (`f`). Pins the row in the QUEUE FINISHED
+    /// section; the daemon refuses archive/dismiss while set. Absent on an old
+    /// daemon → `false` via the container `default`.
+    pub favorite: bool,
     pub prompt: String,
     /// Done-condition (`verify`) fields (additive; all `None` on an old daemon
     /// that omits them, via the container `default`). `verify` is the configured
@@ -294,6 +298,10 @@ pub struct WorktreeInfo {
     /// without it, `None`/null = unknown / no PR / old daemon. Lowest-priority
     /// front marker (`✎`); see `wt_merge_marker`.
     pub wip: Option<bool>,
+    /// User-favorited from the TUI (`f`): pins the row above the mine-first
+    /// sort and paints `★` in the `⛨` slot (favorite wins). Absent on an old
+    /// daemon → `false` via the container `default`.
+    pub favorite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]

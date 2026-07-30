@@ -77,6 +77,11 @@ export interface WorktreeInfo {
 	 * Computed by the daemon and carried to the TUI. Absent/undefined = not
 	 * protected (an old daemon that predates the field). */
 	protected?: boolean;
+	/** True when the operator favorited this worktree from the TUI (`f`).
+	 * Daemon-computed from the settings store's `favorite_worktrees`; pins the
+	 * row above the mine-first sort and blocks removal. Absent/undefined = not
+	 * favorited (an old daemon that predates the field). */
+	favorite?: boolean;
 }
 
 /**

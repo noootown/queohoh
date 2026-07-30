@@ -75,6 +75,10 @@ const TaskMetaSchema = z
 		// Explicit TUI dialog single-ref pick (no fallback). Unpinned non-null
 		// model is still frozen schedule order — see captureModelForSchedule.
 		model_pinned: z.boolean().default(false),
+		// Pinned by the user from the TUI (`f`). Pins the row in the QUEUE
+		// FINISHED section and blocks archive/dismiss while the target worktree
+		// still exists. Additive: absent on legacy files → false.
+		favorite: z.boolean().default(false),
 		// Per-task hard wall-clock ceiling override, in ms (additive; absent on
 		// legacy files → null). Set from the MCP `timeout` param (enqueue_task /
 		// enqueue_chain); resolution precedence at run time is definition >
@@ -169,6 +173,8 @@ export interface TaskInstance {
 	 * that single ref (no fallback). A non-null unpinned `model` is still
 	 * frozen at schedule time (ordered chain, no re-head). */
 	modelPinned?: boolean;
+	/** User-pinned from the TUI. Absent = false. See TaskMetaSchema.favorite. */
+	favorite?: boolean;
 	/** Per-task hard wall-clock ceiling override, in ms; null = fall back to the
 	 * definition's `timeout:` (if any) or the daemon default. See
 	 * `TaskMetaSchema.timeout_ms`. */
@@ -231,6 +237,7 @@ export function parseTaskFile(content: string): TaskInstance {
 		resumeSessionId: m.resume_session_id,
 		model: m.model,
 		modelPinned: m.model_pinned,
+		favorite: m.favorite,
 		timeoutMs: m.timeout_ms,
 		prompt: body,
 		chainId: m.chain_id,
@@ -278,6 +285,7 @@ export function serializeTaskFile(task: TaskInstance): string {
 		resume_session_id: task.resumeSessionId,
 		model: task.model,
 		model_pinned: task.modelPinned ?? false,
+		favorite: task.favorite ?? false,
 		timeout_ms: task.timeoutMs ?? null,
 		chain_id: task.chainId ?? null,
 		chain_seq: task.chainSeq ?? null,

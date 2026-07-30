@@ -74,6 +74,11 @@ pub const GLYPH_DIRTY: char = '±';
 pub const GLYPH_PROTECTED: char = '⛨';
 /// Discovery-backed task definition — front marker slot, mirroring `GLYPH_DIRTY`.
 pub const GLYPH_DISCOVER: char = '⌕';
+/// Favorite pin (`f`), QUEUE star column + WORKTREES front slot (where it
+/// takes precedence over `⛨` — a favorited worktree is implicitly protected,
+/// the pin is the more actionable fact). Single-width; painted `p.warn`
+/// (LightYellow) — the raw-ANSI status slot shared by every profile.
+pub const GLYPH_FAVORITE: char = '★';
 /// Worktree's committed work has been merged into the project's default branch
 /// (vars.yaml `default_branch`) — front marker column beside `±`/`⛨`, in ok
 /// green: "safe to clean up". `↣` (rightwards arrow with tail, single-width):
@@ -171,6 +176,10 @@ pub const BTN_LABEL_UNARCHIVE: &str = "unarchive";
 /// TASKS cron toggle. Rendered `[c]ron` — key matches the label's first letter
 /// (was `[o]cron`; `o` is inert).
 pub const BTN_LABEL_CRON: &str = "cron";
+/// QUEUE + WORKTREES favorite toggle. Static label — no unfavorite flip like
+/// [`BTN_LABEL_ARCHIVE`]/[`BTN_LABEL_UNARCHIVE`]: the `★` column/slot already
+/// shows current state, so the chip word never needs to change.
+pub const BTN_LABEL_FAVORITE: &str = "favorite";
 pub const BTN_LABEL_REMOVE: &str = "remove";
 pub const BTN_LABEL_COLLAPSE: &str = "collapse";
 pub const BTN_LABEL_EXPAND: &str = "expand";

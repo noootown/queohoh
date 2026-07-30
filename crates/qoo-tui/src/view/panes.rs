@@ -19,11 +19,11 @@ use crate::selectors::{
 };
 use crate::view::theme::{
     BTN_LABEL_ARCHIVE, BTN_LABEL_COLLAPSE, BTN_LABEL_CRON, BTN_LABEL_DEFER, BTN_LABEL_DISCOVER,
-    BTN_LABEL_EXPAND,
+    BTN_LABEL_EXPAND, BTN_LABEL_FAVORITE,
     BTN_LABEL_GOTO, BTN_LABEL_REMOVE, BTN_LABEL_RERUN, BTN_LABEL_RUN, BTN_LABEL_SCHEDULE,
     BTN_LABEL_STOP, BTN_LABEL_TASKS, BTN_LABEL_UNARCHIVE,
     COLOR_PR_READY, COLOR_PR_WIP, FENCE_RULE_MIN_TRAIL, FENCE_RULE_PREFIX, GLYPH_APPROVED,
-    GLYPH_CURSOR, GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_MERGED, GLYPH_NEXT,
+    GLYPH_CURSOR, GLYPH_DIRTY, GLYPH_DISCOVER, GLYPH_DOT, GLYPH_FAVORITE, GLYPH_MERGED, GLYPH_NEXT,
     GLYPH_PROTECTED, GLYPH_READY_FOR_REVIEW, GLYPH_SEARCH, GLYPH_WIP,
     Palette, RULE_CHAR, SEARCH_HINT_IDLE, TITLE_QUEUE, TITLE_TASKS, TITLE_WORKTREES, glyph_style,
 };
@@ -38,9 +38,9 @@ use crate::view::theme::{
 // shows only while chips from BOTH groups remain (see [`build_header`]);
 // collapse always keeps its `z` key. These MUST stay in step with the ordering
 // of the corresponding `pane_buttons` arm.
-const QUEUE_ROW_SCOPED: usize = 5; // [r]erun [x]stop [g]oto [a]rchive [d]efer · [s]chedule [z]
+const QUEUE_ROW_SCOPED: usize = 6; // [r]erun [x]stop [g]oto [a]rchive [d]efer [f]avorite · [s]chedule [z]
 const TASKS_ROW_SCOPED: usize = 3; // [r]un [d]iscover [c]ron · [z]
-const WORKTREE_ROW_SCOPED: usize = 4; // [r]un [g]oto [x]remove [t]asks · [z]
+const WORKTREE_ROW_SCOPED: usize = 5; // [r]un [g]oto [x]remove [t]asks [f]avorite · [z]
 
 /// Scope divider drawn between the row-scoped and pane-scoped chip groups (the
 /// TUI's `·` separator convention). It REPLACES the normal single-space gap
@@ -136,6 +136,7 @@ fn button_chip(
             ('a', if archive_unarchive { BTN_LABEL_UNARCHIVE } else { BTN_LABEL_ARCHIVE })
         }
         PaneButton::Remove => ('x', BTN_LABEL_REMOVE),
+        PaneButton::Favorite => ('f', BTN_LABEL_FAVORITE),
         PaneButton::Collapse => {
             ('z', if collapsed { BTN_LABEL_EXPAND } else { BTN_LABEL_COLLAPSE })
         }
@@ -491,7 +492,18 @@ fn queue_line(
     }
     let gap = " ".repeat(crate::selectors::COL_GAP);
     if layout.worktree_w > 0 {
-        spans.push(Span::raw(gap.clone()));
+        // Dot→worktree gap is `space + ★-cell + space` (3 cells, static) — the
+        // worktree pane's front-marker rhythm (`● ± name`), Ian's pick after
+        // a slot-plus-gap read too wide and an in-gap star hugged the dot.
+        // Static, so favoriting never shifts columns; the running-row throbber
+        // only overpaints the glyph cell's x, so the star cell never collides.
+        spans.push(Span::raw(" "));
+        if row.favorite {
+            spans.push(Span::styled(GLYPH_FAVORITE.to_string(), Style::default().fg(p.warn)));
+        } else {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::raw(" "));
         spans.push(Span::styled(pad_clip(&row.worktree, layout.worktree_w), Style::default().fg(p.worktree)));
     }
     if layout.def_w > 0 {
@@ -567,7 +579,10 @@ fn header_col(spans: &mut Vec<Span<'static>>, label: &str, w: usize, p: &Palette
 fn queue_header(layout: &QueueColLayout, p: &Palette) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")]; // status-glyph slot
     if layout.worktree_w > 0 {
-        header_col(&mut spans, "Worktree", layout.worktree_w, p);
+        // 3-cell lead mirroring the row's `space + ★-cell + space` gap (NOT
+        // header_col's COL_GAP) so "Worktree" sits exactly over the names.
+        spans.push(Span::raw("   "));
+        spans.push(Span::styled(pad_clip("Worktree", layout.worktree_w), p.dim_style()));
     }
     if layout.def_w > 0 {
         header_col(&mut spans, "Task", layout.def_w, p);
@@ -686,7 +701,9 @@ fn worktree_line(
         spans.push(Span::raw(" "));
     }
     if layout.protected_w > 0 {
-        if row.protected {
+        if row.favorite {
+            spans.push(Span::styled(GLYPH_FAVORITE.to_string(), Style::default().fg(p.warn)));
+        } else if row.protected {
             spans.push(Span::styled(GLYPH_PROTECTED.to_string(), meta));
         } else {
             spans.push(Span::raw(" "));
@@ -1639,6 +1656,113 @@ mod tests {
         assert_ne!(sched_cell_style(true, &p), sched_cell_style(false, &p));
     }
 
+    fn qrow(worktree: &str, def: Option<&str>, summary: &str) -> QueueRow {
+        QueueRow {
+            task_id: "t".into(),
+            glyph: '○',
+            running: false,
+            worktree: worktree.into(),
+            def_name: def.map(str::to_string),
+            model: None,
+            model_pinned: false,
+            repo: "platform".into(),
+            summary: summary.into(),
+            detail: String::new(),
+            running_elapsed: None,
+            not_before_epoch_s: None,
+            lane_key: String::new(),
+            lane_position: None,
+            created_epoch_s: 0,
+            archived: false,
+            favorite: false,
+            status: crate::ipc::types::TaskStatus::Queued,
+            priority: "normal".into(),
+            finished_epoch_s: None,
+        }
+    }
+
+    #[test]
+    fn queue_line_paints_star_inside_the_gap_without_shifting_columns() {
+        let p = Palette::default();
+        let ctx = crate::selectors::ModelResolveOwned::default();
+        let mut fav = qrow("zzzz", None, "do the thing");
+        fav.favorite = true;
+        let plain = qrow("zzzz", None, "do the thing");
+        let render = |row: &QueueRow, layout: &QueueColLayout| {
+            queue_line(row, layout, &p, 0, 0, &ctx.ctx())
+                .spans
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<String>()
+        };
+
+        // Worktree-pane marker rhythm: glyph, space, ★ cell, space, name — the
+        // star sits at cell 2 with a breathing space on both sides, and a
+        // favorited and a plain row under the same layout put the worktree
+        // name at the same x.
+        let layout = queue_col_layout(&[plain.clone(), fav.clone()], 120, &ctx.ctx());
+        let fav_text = render(&fav, &layout);
+        assert_eq!(fav_text.chars().nth(2), Some(GLYPH_FAVORITE));
+        assert_eq!(fav_text.chars().nth(1), Some(' '));
+        assert_eq!(fav_text.chars().nth(3), Some(' '));
+        let plain_text = render(&plain, &layout);
+        assert!(!plain_text.contains(GLYPH_FAVORITE));
+        assert_eq!(
+            fav_text.chars().position(|c| c == 'z'),
+            plain_text.chars().position(|c| c == 'z'),
+        );
+        // Same rows, no favorite anywhere → same layout, same worktree x (the
+        // gap-painted star can never shift columns).
+        let bare_layout = queue_col_layout(&[plain.clone()], 120, &ctx.ctx());
+        assert_eq!(bare_layout, layout);
+    }
+
+    #[test]
+    fn worktree_line_favorite_star_wins_the_protected_slot() {
+        use crate::selectors::{wt_col_layout, WorktreeRow};
+        let p = Palette::default();
+        // Favorited AND protected → the star wins the shared slot, no ⛨.
+        let fav_protected = WorktreeRow {
+            name: "long-lived".into(),
+            raw_name: "long-lived".into(),
+            path: "/x".into(),
+            branch: "long-lived".into(),
+            protected: true,
+            favorite: true,
+            ..Default::default()
+        };
+        // Protected only → ⛨ shows as today.
+        let protected_only = WorktreeRow {
+            name: "TICK-1".into(),
+            raw_name: "TICK-1".into(),
+            path: "/y".into(),
+            branch: "TICK-1".into(),
+            protected: true,
+            ..Default::default()
+        };
+        let rows = vec![fav_protected.clone(), protected_only.clone()];
+        let layout = wt_col_layout(&rows, 120);
+        let text = |r: &WorktreeRow| {
+            worktree_line(r, &layout, &p, 0)
+                .spans
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<String>()
+        };
+        let fav_text = text(&fav_protected);
+        assert!(fav_text.contains(GLYPH_FAVORITE));
+        assert!(!fav_text.contains(GLYPH_PROTECTED));
+        let prot_text = text(&protected_only);
+        assert!(prot_text.contains(GLYPH_PROTECTED));
+        assert!(!prot_text.contains(GLYPH_FAVORITE));
+        // Both markers are single-width and share the same statically
+        // reserved slot, so Name lands at the same char offset on every row.
+        assert_eq!(
+            fav_text.chars().position(|c| c == 'l').unwrap(),
+            prot_text.chars().position(|c| c == 'T').unwrap()
+        );
+    }
+
     #[test]
     fn worktree_line_shows_protected_marker_in_its_own_slot_beside_dirty() {
         use crate::selectors::{wt_col_layout, WorktreeRow};
@@ -2016,24 +2140,26 @@ mod tests {
     #[test]
     fn build_header_worktrees_includes_row_verbs_and_tasks_chip() {
         let p = Palette::default();
-        // Five chips: row-scoped [r]un [g]oto [x]remove [t]asks · pane-scoped [z].
+        // Six chips: row-scoped [r]un [g]oto [x]remove [t]asks [f]avorite · pane-scoped [z].
         let area = Rect { x: 0, y: 0, width: 110, height: 8 };
         let (line, rects) =
             build_header(area, "WORKTREES", None, false, PaneId::Worktrees, pane_buttons(PaneId::Worktrees), WORKTREE_ROW_SCOPED, false, false, false, false, false, None, &p);
-        assert_eq!(rects.len(), 5);
+        assert_eq!(rects.len(), 6);
         assert_eq!(rects[0].1, PaneButton::Run);
         assert_eq!(rects[1].1, PaneButton::Goto);
         assert_eq!(rects[2].1, PaneButton::Remove);
         assert_eq!(rects[3].1, PaneButton::Tasks);
-        assert_eq!(rects[4].1, PaneButton::Collapse);
+        assert_eq!(rects[4].1, PaneButton::Favorite);
+        assert_eq!(rects[5].1, PaneButton::Collapse);
         let text = line.spans.iter().map(|s| s.content.clone()).collect::<String>();
         assert!(text.contains("[r]un"), "labeled run chip renders: {text}");
         assert!(text.contains("[g]oto"), "labeled goto chip renders: {text}");
         assert!(text.contains("[x]remove"), "labeled remove chip renders: {text}");
         assert!(text.contains("[t]asks"), "labeled tasks chip renders: {text}");
+        assert!(text.contains("[f]avorite"), "labeled favorite chip renders: {text}");
         assert!(!text.contains("create"), "create chip still gone from WORKTREES: {text}");
         assert!(text.contains("[z]collapse"), "labeled collapse chip renders: {text}");
-        assert!(text.contains('·'), "scope divider between tasks and collapse: {text}");
+        assert!(text.contains('·'), "scope divider between favorite and collapse: {text}");
     }
 
     #[test]

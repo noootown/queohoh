@@ -117,6 +117,10 @@ export class QueueStore {
 		return join(this.tasksDir, `${id}.md`);
 	}
 
+	archivePath(id: string): string {
+		return join(this.archiveDir, `${id}.md`);
+	}
+
 	/** Drop both list caches. Call after an external tasks/ mutation (fs.watch)
 	 * so the next list() re-reads disk. Writes through this class invalidate
 	 * themselves. */
@@ -144,6 +148,7 @@ export class QueueStore {
 			resumeSessionId: input.resumeSessionId ?? null,
 			model: input.model ?? null,
 			modelPinned: input.modelPinned ?? false,
+			favorite: false,
 			timeoutMs: input.timeoutMs ?? null,
 			prompt: input.prompt,
 			chainId: null,
@@ -196,6 +201,7 @@ export class QueueStore {
 				resumeSessionId: i === 0 ? (shared.resumeSessionId ?? null) : null,
 				model: step.model ?? null,
 				modelPinned: step.modelPinned ?? false,
+				favorite: false,
 				timeoutMs: step.timeoutMs ?? null,
 				prompt: step.prompt,
 				chainId,
@@ -263,16 +269,19 @@ export class QueueStore {
 		}
 	}
 
-	update(id: string, patch: Partial<Omit<TaskInstance, "id">>): TaskInstance {
-		const current = this.get(id);
-		if (!current) throw new Error(`task not found: ${id}`);
-		const next: TaskInstance = { ...current, ...patch, id };
-		// Stamp/clear the completion timestamp on a status transition (unless the
-		// caller set finishedAt explicitly): a terminal status (done/failed/
-		// cancelled/skipped) stamps now, keeping an existing stamp so a re-set of
-		// the same terminal status is idempotent; any non-terminal status clears it
-		// (a re-run un-finishes the task). A patch that doesn't touch status leaves
-		// finishedAt untouched.
+	/** Merge `patch` onto `current`, applying the completion-timestamp rule that
+	 * both `update` and `updateAny` need on a status transition (unless the
+	 * caller set finishedAt explicitly): a terminal status (done/failed/
+	 * cancelled/skipped/verify-failed) stamps now, keeping an existing stamp so
+	 * a re-set of the same terminal status is idempotent; any non-terminal
+	 * status clears it (a re-run un-finishes the task). A patch that doesn't
+	 * touch status leaves finishedAt untouched. Factored out so the ARCHIVED
+	 * branch of `updateAny` can't silently diverge from `update`'s semantics. */
+	private applyPatch(
+		current: TaskInstance,
+		patch: Partial<Omit<TaskInstance, "id">>,
+	): TaskInstance {
+		const next: TaskInstance = { ...current, ...patch, id: current.id };
 		if (patch.status !== undefined && !("finishedAt" in patch)) {
 			const terminal =
 				patch.status === "done" ||
@@ -284,7 +293,35 @@ export class QueueStore {
 				? (current.finishedAt ?? new Date().toISOString())
 				: null;
 		}
+		return next;
+	}
+
+	update(id: string, patch: Partial<Omit<TaskInstance, "id">>): TaskInstance {
+		const current = this.get(id);
+		if (!current) throw new Error(`task not found: ${id}`);
+		const next = this.applyPatch(current, patch);
 		this.write(next);
+		return next;
+	}
+
+	/** Like `update`, but reaches ARCHIVED tasks too: a live task goes through
+	 * `update` unchanged; an archived one gets the same `applyPatch` merge
+	 * (status/finishedAt semantics included) and is written back into the
+	 * archive dir (it stays archived — favoriting a dismissed row must not
+	 * resurrect it). Throws when the id exists in neither location. */
+	updateAny(
+		id: string,
+		patch: Partial<Omit<TaskInstance, "id">>,
+	): TaskInstance {
+		if (this.get(id)) return this.update(id, patch);
+		const current = this.getAny(id);
+		if (!current) throw new Error(`task not found: ${id}`);
+		const next = this.applyPatch(current, patch);
+		const path = this.archivePath(id);
+		const tmp = `${path}.tmp`;
+		writeFileSync(tmp, serializeTaskFile(next));
+		renameSync(tmp, path);
+		this.archiveCache = null;
 		return next;
 	}
 

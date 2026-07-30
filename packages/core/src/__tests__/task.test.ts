@@ -20,6 +20,7 @@ const sample: TaskInstance = {
 	resumeSessionId: null,
 	model: null,
 	modelPinned: false,
+	favorite: false,
 	timeoutMs: null,
 	prompt: "Reply to review comments on PR #1423.\n",
 	chainId: null,
@@ -160,6 +161,19 @@ describe("model field accepts a list", () => {
 		const withString: TaskInstance = { ...sample, model: "claude/claude-opus-5" };
 		const reparsed = parseTaskFile(serializeTaskFile(withString));
 		expect(reparsed.model).toBe("claude/claude-opus-5");
+	});
+});
+
+describe("favorite field", () => {
+	it("defaults to false when absent (legacy task files)", () => {
+		const legacy = serializeTaskFile(sample).replace(/^favorite: .*\n/m, "");
+		expect(legacy).not.toContain("favorite:");
+		expect(parseTaskFile(legacy).favorite).toBe(false);
+	});
+
+	it("round-trips when set to true", () => {
+		const fav: TaskInstance = { ...sample, favorite: true };
+		expect(parseTaskFile(serializeTaskFile(fav)).favorite).toBe(true);
 	});
 });
 

@@ -498,6 +498,10 @@ impl App {
                             self.set_focus(p);
                             return self.apply_action(crate::keymap::AppAction::RemoveSelectedWorktree);
                         }
+                        crate::hit::PaneButton::Favorite => {
+                            self.set_focus(p);
+                            return self.apply_action(crate::keymap::AppAction::ToggleFavorite);
+                        }
                     }
                 }
                 Some(_) => false, // MenuItem/FormField/DropdownItem/Button: M2/M3

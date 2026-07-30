@@ -44,6 +44,7 @@ fn task(
         resume_session_id: None,
         model: None,
         model_pinned: false,
+        favorite: false,
         prompt: prompt.to_string(),
         verify: None,
         verified: None,

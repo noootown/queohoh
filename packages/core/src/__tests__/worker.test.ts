@@ -1259,4 +1259,27 @@ describe("startRun / finalizeRun split", () => {
 		expect(settled.task.notBefore).toBe(until);
 		expect(store.get(t.id)?.notBefore).toBe(until);
 	});
+
+	it("finalizeRun archives on success when onDone is archive and the task is not favorited", async () => {
+		const { deps, store } = makeDeps();
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		store.update(t.id, { onDone: "archive" });
+		await startRun(t.id, deps);
+		const settled = await finalizeRun(t.id, okResult, deps);
+		expect(settled.task.status).toBe("done");
+		expect(store.get(t.id)).toBeUndefined();
+		expect(store.getAny(t.id)?.status).toBe("done");
+	});
+
+	it("finalizeRun keeps a favorited task live even when onDone is archive", async () => {
+		const { deps, store } = makeDeps();
+		const t = enqueue(store);
+		withWorktree(store, t.id);
+		store.update(t.id, { onDone: "archive", favorite: true });
+		await startRun(t.id, deps);
+		const settled = await finalizeRun(t.id, okResult, deps);
+		expect(settled.task.status).toBe("done");
+		expect(store.get(t.id)?.status).toBe("done");
+	});
 });

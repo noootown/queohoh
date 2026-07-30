@@ -40,6 +40,7 @@ import {
 } from "@queohoh/core";
 import { currentBuildId } from "./build-id.js";
 import type { Engine } from "./engine.js";
+import { worktreeNameAliases } from "./engine.js";
 import type { SettingsStore } from "./settings-store.js";
 
 /**
@@ -471,6 +472,34 @@ export class ApiServer {
 				);
 				this.broadcast();
 				return value;
+			}
+			case "set_task_favorite": {
+				// The TUI's `f` toggle on a QUEUE row. Explicit-set (idempotent);
+				// reaches archived rows too (updateAny) — favoriting a dismissed
+				// row pins it within FINISHED without resurrecting it.
+				const id = String(params.id ?? "");
+				const favorite = params.favorite === true;
+				const task = deps.store.getAny(id);
+				if (!task) throw new Error(`task not found: ${id}`);
+				deps.store.updateAny(id, { favorite });
+				deps.onMutation();
+				return favorite;
+			}
+			case "set_worktree_favorite": {
+				// The TUI's `f` toggle on a WORKTREES row. Settings-store only —
+				// never touches git or vars.yaml. Key uses the worktree's raw
+				// directory-basename name (the TUI sends raw_name), so the
+				// stamping read in worktreesByRepo matches exactly. A key naming
+				// a vanished worktree is inert, like a stale disabled_crons key.
+				const repo = String(params.repo ?? "");
+				const name = String(params.name ?? "");
+				if (repo.length === 0 || name.length === 0) {
+					throw new Error("set_worktree_favorite: repo and name are required");
+				}
+				const favorite = params.favorite === true;
+				deps.settings.setWorktreeFavorite(`${repo}/${name}`, favorite);
+				this.broadcast(); // settings-only change: push a snapshot ourselves
+				return favorite;
 			}
 			case "enqueue": {
 				const worktree =
@@ -1052,6 +1081,12 @@ export class ApiServer {
 						task.status,
 					)
 				) {
+					if (
+						(task.favorite ?? false) &&
+						this.favoriteGuardWorktreeExists(task)
+					) {
+						throw new Error("task is favorited — unfavorite it first");
+					}
 					deps.store.archive(task.id);
 					deps.onMutation();
 					return true;
@@ -1078,6 +1113,9 @@ export class ApiServer {
 					].includes(task.status)
 				) {
 					throw new Error(`cannot archive task in status ${task.status}`);
+				}
+				if ((task.favorite ?? false) && this.favoriteGuardWorktreeExists(task)) {
+					throw new Error("task is favorited — unfavorite it first");
 				}
 				deps.store.archive(task.id);
 				deps.onMutation();
@@ -1293,6 +1331,21 @@ export class ApiServer {
 		const task = this.deps.store.get(id);
 		if (!task) throw new Error(`task not found: ${id}`);
 		return task;
+	}
+
+	/** Whether the task's target worktree still exists, per the engine's cached
+	 * enrichment. Fails CLOSED: no worktree target, an unknown repo, or a cold
+	 * cache all read as "exists" so the favorite guard keeps protecting rather
+	 * than silently lapsing before the first sweep. Matches either name form —
+	 * task targets and the engine's listing may each independently carry the
+	 * stripped or `<repo>.`-prefixed form. */
+	private favoriteGuardWorktreeExists(task: TaskInstance): boolean {
+		const wtName = task.target.worktree;
+		if (!wtName) return true;
+		const list = this.deps.engine.worktreesByRepo()[task.target.repo];
+		if (!list || list.length === 0) return true;
+		const aliases = worktreeNameAliases(task.target.repo, wtName, wtName);
+		return list.some((w) => aliases.has(w.name));
 	}
 
 	/**

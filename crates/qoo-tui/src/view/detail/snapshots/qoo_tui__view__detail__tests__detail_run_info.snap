@@ -6,8 +6,8 @@ expression: terminal.backend()
 "╭📋 QUEUE─ [r] [x] [g] [a]╮╭📄 DETAIL──────────────────────────────────────────╮" Hidden by multi-width symbols: [(2, " "), (29, " ")]
 "│                         ││ 1:report  2:transcript  3:prompt  4:info          │"
 "│ 🔍 [/]filter            ││                                                   │" Hidden by multi-width symbols: [(3, " ")]
-"│    Worktr…  Prompt/Args ││  Run                                           ▲  │"
-"│ ●  feature  topic=widg… ││    id           01RUN                          █  │"
+"│     Worktr…  Prompt/Ar… ││  Run                                           ▲  │"
+"│ ●   feature  topic=wid… ││    id           01RUN                          █  │"
 "│                         ││    definition   squash-merge                   █  │"
 "│                         ││    status       done                           █  │"
 "│                         ││    args         topic=widget-cache             █  │"

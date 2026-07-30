@@ -60,11 +60,12 @@ impl App {
                     crate::view::selected_positions(&visible, &sel, marks, |r| r.raw_name.clone())
                         .into_iter()
                         .filter_map(|pos| visible.get(pos).copied())
-                        // Eligibility is applied AFTER selection (a session row
-                        // or a protected worktree can be marked; it just isn't
-                        // removable). Busy is allowed — daemon cancels live
-                        // tasks on each worktree before teardown.
-                        .filter(|r| !r.is_session && !r.protected)
+                        // Eligibility is applied AFTER selection (a session row,
+                        // a protected worktree, or a favorited one can be
+                        // marked; it just isn't removable). Busy is allowed —
+                        // daemon cancels live tasks on each worktree before
+                        // teardown.
+                        .filter(|r| !r.is_session && !r.protected && !r.favorite)
                         .map(|r| r.raw_name.clone())
                         .collect();
                 if remove_names.is_empty() {

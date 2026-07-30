@@ -7,7 +7,7 @@ use crate::hit::{HitMap, HitTarget};
 use crate::view::modal::{render_back_button, MODAL_PADDING};
 use crate::view::theme::Palette;
 
-const HELP_ROWS: [(&str, &str); 25] = [
+const HELP_ROWS: [(&str, &str); 26] = [
     ("Tab / Shift+Tab", "cycle focus: queue → tasks → worktrees"),
     ("1–9 / 0", "switch project tab (0 = 10th)"),
     ("ctrl+s then n/p", "next / previous project tab"),
@@ -22,6 +22,7 @@ const HELP_ROWS: [(&str, &str); 25] = [
     ("x", "cancel (queue) · remove worktree (worktrees)"),
     ("a", "archive / unarchive selection (queue)"),
     ("d", "defer by N hours (digit field, default 5; stacks) (queue) · discover (tasks)"),
+    ("f", "favorite: pin / unpin row (queue, worktrees)"),
     ("c", "cron: pause / resume schedule (tasks)"),
     ("s", "schedule adhoc task (queue)"),
     ("t", "task menu (worktrees)"),

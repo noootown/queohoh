@@ -55,6 +55,7 @@ function setup(
 		executeVerify?: VerifyExecutor;
 		pidAlive?: (pid: number) => boolean;
 		isShimPid?: (pid: number) => boolean;
+		isWorktreeFavorite?: (key: string) => boolean;
 	} = {},
 ) {
 	const base = mkdtempSync(join(tmpdir(), "qo-engine-"));
@@ -113,6 +114,7 @@ function setup(
 		lineage,
 		pidAlive: overrides.pidAlive,
 		isShimPid: overrides.isShimPid,
+		isWorktreeFavorite: overrides.isWorktreeFavorite,
 	});
 	return { engine, store, base, lineage };
 }
@@ -436,6 +438,39 @@ describe("Engine.tick", () => {
 		expect(store.listArchived().map((a) => a.id)).toEqual([t.id]);
 	});
 
+	it("archive backstop skips favorited done tasks", async () => {
+		const { engine, store } = setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, { status: "done", onDone: "archive", favorite: true });
+		await engine.tick();
+		expect(store.list().map((x) => x.id)).toContain(t.id);
+		expect(store.listArchived().map((x) => x.id)).not.toContain(t.id);
+	});
+
+	it("age purge skips favorited terminal tasks", async () => {
+		const { engine, store } = setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+		});
+		store.update(t.id, {
+			status: "failed",
+			created: "2020-01-01T00:00:00.000Z",
+			finishedAt: "2020-01-01T00:00:00.000Z",
+			purgeAfterDays: 1,
+			favorite: true,
+		});
+		await engine.tick();
+		expect(store.getAny(t.id)).toBeDefined();
+	});
+
 	it("applies per-project task_retention_days over the archive_after_days default", async () => {
 		const base = mkdtempSync(join(tmpdir(), "qo-engine-trd-"));
 		const repoPath = join(base, "repo");
@@ -620,6 +655,24 @@ describe("Engine.removeWorktree protection", () => {
 		await engine.removeWorktree("platform", "TICK-1");
 		expect(removed()).toBe("TICK-1");
 	});
+
+	it("refuses to remove a favorited worktree and runs nothing destructive", async () => {
+		let removed: string | null = null;
+		const { engine } = setup({
+			isWorktreeFavorite: (key) => key === "platform/TICK-1",
+			resolverIO: {
+				removeWorktree: async (_r, wt) => {
+					removed = wt.name;
+				},
+			},
+		});
+		await expect(engine.removeWorktree("platform", "TICK-1")).rejects.toThrow(
+			/favorited/,
+		);
+		// Never reached resolverIO.removeWorktree — which also proves
+		// cancelLiveTasksForWorktree (called just before it) never ran either.
+		expect(removed).toBeNull();
+	});
 });
 
 describe("Engine.createWorktree", () => {
@@ -692,6 +745,7 @@ describe("Engine.worktreesByRepo", () => {
 					readyForReview: null,
 					wip: null,
 					protected: false,
+					favorite: false,
 				},
 			],
 		});
@@ -740,6 +794,22 @@ describe("Engine.worktreesByRepo", () => {
 			"platform.testing1": true,
 			"TICK-1": false,
 		});
+	});
+
+	it("stamps favorite from the injected reader", async () => {
+		const { engine } = setup({
+			resolverIO: {
+				listWorktrees: async () => [
+					{ name: "wt-a", path: "/tmp/wt-a", branch: "wt-a" },
+					{ name: "wt-b", path: "/tmp/wt-b", branch: "wt-b" },
+				],
+			},
+			isWorktreeFavorite: (key) => key === "platform/wt-a",
+		});
+		await engine.tick();
+		const list = engine.worktreesByRepo().platform ?? [];
+		const byName = Object.fromEntries(list.map((w) => [w.name, w.favorite]));
+		expect(byName).toEqual({ "wt-a": true, "wt-b": false });
 	});
 });
 

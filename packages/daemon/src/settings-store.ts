@@ -33,6 +33,9 @@ export function firstEnabledProvider(providers: ProviderConfig[]): string {
  *   runtime set is the only thing that gates whether the engine fires it. A key
  *   absent from the set means enabled (the default), so an old settings.json
  *   with no `disabled_crons` reads as "everything enabled".
+ * - `favorite_worktrees`: the set of worktree keys (`<repo>/<name>`, `name`
+ *   being the literal `WorktreeInfo.name` directory basename) the operator has
+ *   starred from the TUI. A key absent from the set is simply un-favorited.
  *
  * On construction (daemon (re)start = a config load) the persisted
  * `active_provider` is validated against the effective provider table: a
@@ -47,12 +50,14 @@ export class SettingsStore {
 	private readonly path: string;
 	private active: string;
 	private disabledCrons: Set<string>;
+	private favoriteWorktrees: Set<string>;
 
 	constructor(stateDir: string, providers: ProviderConfig[]) {
 		this.path = settingsPath(stateDir);
 		const persisted = this.read();
 		this.active = this.snapProvider(persisted?.active ?? null, providers);
 		this.disabledCrons = new Set(persisted?.disabledCrons ?? []);
+		this.favoriteWorktrees = new Set(persisted?.favoriteWorktrees ?? []);
 	}
 
 	activeProvider(): string {
@@ -92,6 +97,22 @@ export class SettingsStore {
 		return !disabled;
 	}
 
+	/** True iff the worktree keyed `<repo>/<name>` is user-favorited. Keys never
+	 * validated — one naming a vanished worktree is simply inert. */
+	isWorktreeFavorite(key: string): boolean {
+		return this.favoriteWorktrees.has(key);
+	}
+
+	/** Flip a worktree's favorite and persist. Returns the new state (positive
+	 * polarity — unlike setCronDisabled's inverted return, there is no legacy
+	 * caller to mirror). */
+	setWorktreeFavorite(key: string, favorite: boolean): boolean {
+		if (favorite) this.favoriteWorktrees.add(key);
+		else this.favoriteWorktrees.delete(key);
+		this.write();
+		return favorite;
+	}
+
 	private snapProvider(
 		persisted: string | null,
 		providers: ProviderConfig[],
@@ -105,7 +126,11 @@ export class SettingsStore {
 		return snapped;
 	}
 
-	private read(): { active: string | null; disabledCrons: string[] } | null {
+	private read(): {
+		active: string | null;
+		disabledCrons: string[];
+		favoriteWorktrees: string[];
+	} | null {
 		try {
 			if (!existsSync(this.path)) return null;
 			const raw: unknown = JSON.parse(readFileSync(this.path, "utf-8"));
@@ -113,6 +138,7 @@ export class SettingsStore {
 			const obj = raw as {
 				active_provider?: unknown;
 				disabled_crons?: unknown;
+				favorite_worktrees?: unknown;
 			};
 			const active =
 				typeof obj.active_provider === "string" &&
@@ -124,7 +150,12 @@ export class SettingsStore {
 						(k): k is string => typeof k === "string" && k.length > 0,
 					)
 				: [];
-			return { active, disabledCrons };
+			const favoriteWorktrees = Array.isArray(obj.favorite_worktrees)
+				? obj.favorite_worktrees.filter(
+						(k): k is string => typeof k === "string" && k.length > 0,
+					)
+				: [];
+			return { active, disabledCrons, favoriteWorktrees };
 		} catch {
 			return null; // corrupt file → treat as unset
 		}
@@ -139,6 +170,7 @@ export class SettingsStore {
 					active_provider: this.active,
 					// Sorted for a stable on-disk order (deterministic diffs / tests).
 					disabled_crons: [...this.disabledCrons].sort(),
+					favorite_worktrees: [...this.favoriteWorktrees].sort(),
 				},
 				null,
 				2,
