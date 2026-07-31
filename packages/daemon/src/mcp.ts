@@ -179,7 +179,7 @@ export function createMcpServer(caller: McpCaller): McpServer {
 
 	server.tool(
 		"run_task_definition",
-		"Trigger a task definition as a plain run. Args fill the definition's declared args positionally; trailing args fall back to their declared defaults, and a required arg without a default is an error. Target precedence is cwd > worktree > ref > the definition's own worktree: setting; pass ref to pin the target (e.g. ref 'temp') and override a 'worktree: auto' definition that would otherwise target a PR/ticket URL found in the args. Returns created tasks as JSON.",
+		"Trigger a task definition as a plain run. Args fill the definition's declared args positionally; trailing args fall back to their declared defaults, and a required arg without a default is an error. Target precedence is cwd > worktree > ref > the definition's own worktree: setting; pass ref to pin the target (e.g. ref 'temp') and override a 'worktree: auto' definition that would otherwise target a PR/ticket URL found in the args. Optional model overrides the definition's authored model (worker: task.model beats def.model); a single-string ref is pinned so the TUI active provider cannot re-head it. Optional not_before defers eligibility until that ISO time. Returns created tasks as JSON.",
 		{
 			repo: z.string().describe("Registered project name"),
 			name: z.string().describe("Definition name (e.g. 'pr-review')"),
@@ -215,6 +215,12 @@ export function createMcpServer(caller: McpCaller): McpServer {
 				.string()
 				.optional()
 				.describe("ISO timestamp; task stays queued until then"),
+			model: z
+				.union([z.string(), z.array(z.string())])
+				.optional()
+				.describe(
+					"Override the definition's authored model as a provider/label ref (e.g. claude/claude-fable-5, grok/grok-4.5), or an ordered fallback list of such refs. A single-string ref is pinned (exact pick, no active-provider re-head). Omit to leave task.model null so the definition's own model / default_models applies. Every ref is validated against the catalog — an unknown ref fails the run.",
+				),
 		},
 		async (args) => toCallResult(mcpRunTaskDefinition(caller, args)),
 	);

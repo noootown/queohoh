@@ -252,6 +252,7 @@ describe("mcpRunTaskDefinition", () => {
 					ref: undefined,
 					resume_session_id: undefined,
 					not_before: undefined,
+					model: undefined,
 				},
 			},
 		]);
@@ -278,6 +279,7 @@ describe("mcpRunTaskDefinition", () => {
 			ref: "temp",
 			resume_session_id: "sess-2",
 			not_before: undefined,
+			model: undefined,
 		});
 	});
 
@@ -300,6 +302,32 @@ describe("mcpRunTaskDefinition", () => {
 			ref: undefined,
 			resume_session_id: undefined,
 			not_before: until,
+			model: undefined,
+		});
+	});
+
+	it("passes model through to runDefinition (provider override for def runs)", async () => {
+		// /qoo host handoff: force claude/claude-fable-5 on intake regardless of
+		// the TUI active provider. Single-string pin is applied in runDefinition.
+		const { caller, calls } = fakeCaller(() => [{ id: "01E" }]);
+		await mcpRunTaskDefinition(caller, {
+			repo: "platform",
+			name: "intake",
+			args: ["flaky login on bid"],
+			model: "claude/claude-fable-5",
+			not_before: "2099-07-01T12:00:00.000Z",
+		});
+		expect(calls[0]?.params).toEqual({
+			repo: "platform",
+			name: "intake",
+			args: ["flaky login on bid"],
+			source: "mcp",
+			cwd: undefined,
+			worktree: undefined,
+			ref: undefined,
+			resume_session_id: undefined,
+			not_before: "2099-07-01T12:00:00.000Z",
+			model: "claude/claude-fable-5",
 		});
 	});
 });

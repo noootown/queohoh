@@ -137,6 +137,7 @@ export function mcpRunTaskDefinition(
 		ref?: string;
 		resume_session_id?: string;
 		not_before?: string;
+		model?: string | string[];
 	},
 ): Promise<ToolResult> {
 	return withPort(caller, (port) =>
@@ -150,6 +151,10 @@ export function mcpRunTaskDefinition(
 			ref: args.ref,
 			resume_session_id: args.resume_session_id,
 			not_before: args.not_before,
+			// Single-string pin is decided in runDefinition (same rule as
+			// enqueue: typeof model === "string" → modelPinned). Lists stay
+			// unpinned so def-authored fallbacks still re-head.
+			model: args.model,
 		}),
 	);
 }

@@ -823,15 +823,18 @@ export class ApiServer {
 					params.resume_session_id.length > 0
 						? params.resume_session_id
 						: undefined;
-				// TUI def-run picker sends a 1-entry exact `provider/label`; same
-				// coerce/validate path as enqueue. Stamped onto the task so worker
-				// prefers it over the def's authored list.
+				// TUI def-run picker sends a 1-entry exact `provider/label`; MCP
+				// may send the same for a host/provider override. Same
+				// coerce/validate path as enqueue. Stamped onto the task so
+				// worker prefers it over the def's authored list.
 				const model = this.coerceModel(deps.config.catalog, params.model);
-				// The def-run picker always sends a concrete pick alongside
-				// `model_pinned: true` (there is no empty "default" head option on
-				// that dropdown — see `def_model_field`), so the worker runs
-				// EXACTLY this ref: no active-provider re-head, no fallback.
-				const modelPinned = params.model_pinned === true;
+				// Pin rule matches enqueue: explicit `model_pinned: true` (TUI
+				// dropdown) OR a single-string model (MCP /qoo host handoff).
+				// A fallback list stays unpinned so re-head / chain walk apply.
+				// Without this, MCP could stamp `claude/claude-fable-5` and still
+				// have the worker re-head to the TUI active provider.
+				const modelPinned =
+					params.model_pinned === true || typeof model === "string";
 				// Explicit TUI dialog def-run only (see `run_definition_cmd`) —
 				// pressing Run is "run NOW" intent, so dedup must not silently
 				// collapse this call to zero created tasks. MCP's runDefinition

@@ -1311,6 +1311,7 @@ describe("ApiServer", () => {
 	// TUI def-run picker peels the trailing model field and sends a 1-entry
 	// exact `provider/label` as params.model. Without this path the pick was a
 	// no-op: instantiate left task.model null and worker preferred def.model.
+	// MCP /qoo uses the same single-string form for a host/provider override.
 	it("runDefinition with model param stamps task.model (override for def-run picker)", async () => {
 		const { client } = await setup();
 		const created = (await client.call("runDefinition", {
@@ -1318,20 +1319,49 @@ describe("ApiServer", () => {
 			name: "greet",
 			args: ["world"],
 			model: "claude/claude-opus-5",
-		})) as { model: string | string[] | null }[];
+		})) as { model: string | string[] | null; modelPinned: boolean }[];
 		expect(created).toHaveLength(1);
 		expect(created[0]?.model).toBe("claude/claude-opus-5");
+		// Single-string model auto-pins (same rule as enqueue) so active-provider
+		// re-head cannot override an MCP host handoff.
+		expect(created[0]?.modelPinned).toBe(true);
 	});
 
-	it("runDefinition without model leaves task.model null so def.model applies at spawn", async () => {
+	it("runDefinition pins a single-string model without explicit model_pinned", async () => {
+		// Regression: previously only `model_pinned: true` pinned, so MCP could
+		// stamp claude/claude-fable-5 and still re-head under a Grok active
+		// provider. Single-string alone must pin.
 		const { client } = await setup();
 		const created = (await client.call("runDefinition", {
 			repo: "platform",
 			name: "greet",
 			args: ["world"],
-		})) as { model: string | string[] | null }[];
+			source: "mcp",
+			model: "claude/claude-fable-5",
+		})) as { model: string; modelPinned: boolean }[];
 		expect(created).toHaveLength(1);
-		expect(created[0]?.model).toBeNull();
+		expect(created[0]?.model).toBe("claude/claude-fable-5");
+		expect(created[0]?.modelPinned).toBe(true);
+	});
+
+	it("runDefinition without model freezes default_models (not null) at schedule time", async () => {
+		// Schedule-time capture always stamps: when neither the call nor the
+		// def names a model, the then-active provider's default_models chain is
+		// frozen on the task so a later TUI provider switch cannot re-head a
+		// still-queued run. (Pre-capture, task.model stayed null and the
+		// worker re-headed at spawn.)
+		const { client } = await setup();
+		const created = (await client.call("runDefinition", {
+			repo: "platform",
+			name: "greet",
+			args: ["world"],
+		})) as { model: string | string[] | null; modelPinned: boolean }[];
+		expect(created).toHaveLength(1);
+		expect(created[0]?.model).toEqual([
+			"claude/claude-opus-5",
+			"grok/grok-4.5",
+		]);
+		expect(created[0]?.modelPinned).toBe(false);
 	});
 
 	it("discoverDefinition runs discovery and fans out one task per item", async () => {
