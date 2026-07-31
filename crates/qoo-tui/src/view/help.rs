@@ -25,7 +25,7 @@ const HELP_ROWS: [(&str, &str); 26] = [
     ("f", "favorite: pin / unpin row (queue, worktrees)"),
     ("c", "cron: pause / resume schedule (tasks)"),
     ("s", "schedule adhoc task (queue)"),
-    ("t", "task menu (worktrees)"),
+    ("t", "task menu (worktrees; bulk = run def on each)"),
     ("z", "collapse / expand focused list pane"),
     ("/", "filter focused pane"),
     ("esc", "clear range+marks → clear filter → close overlay"),

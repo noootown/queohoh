@@ -134,6 +134,7 @@ impl App {
         fixed: HashMap<String, String>,
         initial: HashMap<String, String>,
         worktree: Option<String>,
+        bulk_worktrees: Vec<String>,
         worktrees: Vec<String>,
         branches: Vec<String>,
         def_model: Option<ModelRef>,
@@ -144,6 +145,13 @@ impl App {
         // `submit_def_args` peels the leading model off before reading args).
         // Because the model dropdown is never readonly, `FormState::new` always
         // lands initial focus on it.
+        // Bulk: lock worktree-typed fields to "N worktrees" (values filled per
+        // target on submit). Single: lock to `worktree` when present.
+        let bulk_label = (bulk_worktrees.len() >= 2)
+            .then(|| format!("{} worktrees", bulk_worktrees.len()));
+        let lock_wt = bulk_label
+            .as_deref()
+            .or(worktree.as_deref());
         let arg_fields = self
             .form_from_args(
                 &name,
@@ -152,12 +160,17 @@ impl App {
                 &initial,
                 &worktrees,
                 &branches,
-                worktree.as_deref(),
+                lock_wt,
             )
             .fields;
+        let title = if bulk_worktrees.len() >= 2 {
+            format!("{name} · {} worktrees", bulk_worktrees.len())
+        } else {
+            name.clone()
+        };
         let mut fields = vec![self.def_model_field(&repo, def_model.as_ref())];
         fields.extend(arg_fields);
-        let mut state = FormState::new(&name, "Run", fields);
+        let mut state = FormState::new(&title, "Run", fields);
         // So worktree-typed comboboxes suppress ticket/PR synthetic rows that
         // an existing worktree already covers (same as the schedule form).
         state.ref_aliases =
@@ -168,6 +181,7 @@ impl App {
             def_name: name,
             args,
             initial_worktree: worktree,
+            bulk_worktrees,
             preview_scroll: 0,
         };
         cmds
@@ -255,18 +269,31 @@ impl App {
     /// still open the form so the operator can confirm/override the model —
     /// there is no immediate `runDefinition` hop.
     fn def_pick_activate(&mut self, index: usize) -> Update {
-        let Mode::DefPick { defs, worktree, branch, .. } = &self.mode else {
+        let Mode::DefPick {
+            defs,
+            worktree,
+            branch,
+            bulk_worktrees,
+            ..
+        } = &self.mode
+        else {
             return Update { dirty: false, cmds: vec![] };
         };
         let Some(def) = defs.get(index).cloned() else {
             return Update { dirty: false, cmds: vec![] };
         };
         let worktree = worktree.clone();
-        let branch = branch.clone();
-        let fixed = branch
-            .as_deref()
-            .map(crate::worktree_context::context_arg_values)
-            .unwrap_or_default();
+        let bulk_worktrees = bulk_worktrees.clone();
+        // Branch-derived fixed args only for single-worktree launches (bulk
+        // targets can have different branches; leave those args for the form).
+        let fixed = if bulk_worktrees.len() >= 2 {
+            HashMap::new()
+        } else {
+            branch
+                .as_deref()
+                .map(crate::worktree_context::context_arg_values)
+                .unwrap_or_default()
+        };
         let worktrees = self.active_worktree_names();
         let branches = self.active_worktree_branches();
         let cmds = self.open_def_args(
@@ -276,6 +303,7 @@ impl App {
             fixed,
             HashMap::new(),
             worktree,
+            bulk_worktrees,
             worktrees,
             branches,
             def.model,
@@ -454,7 +482,16 @@ impl App {
         let rows = self.active_worktree_rows();
         let worktree_names = Self::worktree_names(&rows);
         let aliases = crate::worktree_context::worktree_ref_aliases(&rows);
-        let Mode::DefArgs { state, repo, def_name, args, initial_worktree, .. } = &mut self.mode else {
+        let Mode::DefArgs {
+            state,
+            repo,
+            def_name,
+            args,
+            initial_worktree,
+            bulk_worktrees,
+            ..
+        } = &mut self.mode
+        else {
             return Update { dirty: false, cmds: vec![] };
         };
         match state.validate() {
@@ -486,16 +523,68 @@ impl App {
                 } else {
                     Vec::new()
                 };
-                // A worktree-typed arg's value → canonical ref; no such arg keeps
-                // the old positional-only behavior (target_ref None).
-                let target_ref = args
-                    .iter()
-                    .position(ArgSpec::is_worktree)
+                let wt_arg_idx = args.iter().position(ArgSpec::is_worktree);
+                let bulk = bulk_worktrees.clone();
+                let repo = repo.clone();
+                let def_name = def_name.clone();
+                let initial_worktree = initial_worktree.clone();
+
+                // Bulk WORKTREES `t`: one runDefinition per selected worktree,
+                // shared model + non-target args. Target field shows "N worktrees"
+                // in the form — never use that label as a ref.
+                if bulk.len() >= 2 {
+                    let calls: Vec<crate::event::RpcCall> = bulk
+                        .iter()
+                        .map(|wt| {
+                            let mut args_v = arg_values.clone();
+                            if let Some(i) = wt_arg_idx {
+                                if let Some(slot) = args_v.get_mut(i) {
+                                    *slot = wt.clone();
+                                }
+                            }
+                            let target_ref = format!("worktree:{wt}");
+                            // Build the same params as run_definition_cmd but as
+                            // RpcCall for RpcSeq fan-out.
+                            let mut params = serde_json::json!({
+                                "repo": repo,
+                                "name": def_name,
+                                "args": args_v,
+                                "source": "tui",
+                                "bypass_dedup": true,
+                                "ref": target_ref,
+                            });
+                            if let Some(v) = super::form::model_param_from_chain(&model_chain) {
+                                params["model"] = v;
+                            }
+                            crate::event::RpcCall {
+                                method: "runDefinition".into(),
+                                params,
+                            }
+                        })
+                        .collect();
+                    let n = calls.len();
+                    self.clear_range_and_marks(ListPane::Worktrees);
+                    self.mode = Mode::List;
+                    self.status_line = Some(format!("running {def_name} on {n} worktrees…"));
+                    return Update {
+                        dirty: true,
+                        cmds: vec![Cmd::RpcSeq {
+                            // seq_summary appends the ok count: "ran 3"
+                            verb: "ran".into(),
+                            calls,
+                            invalidate_defs_for: Some(repo),
+                        }],
+                    };
+                }
+
+                // Single: worktree-typed arg → canonical ref; else optional
+                // initial_worktree launch context.
+                let target_ref = wt_arg_idx
                     .and_then(|i| arg_values.get(i))
                     .map(|value| resolve_target_ref(value, &worktree_names, &aliases));
                 let cmd = Self::run_definition_cmd(
-                    repo,
-                    def_name,
+                    &repo,
+                    &def_name,
                     &arg_values,
                     initial_worktree.as_deref(),
                     target_ref.as_deref(),

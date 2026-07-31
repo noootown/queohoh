@@ -265,13 +265,27 @@ pub fn render(app: &mut App, frame: &mut ratatui::Frame) -> HitMap {
             crate::app::Mode::Confirm { title, body, confirm_label, focus, .. } => {
                 modal::render_confirm(frame, &mut hits, title, body, confirm_label, *focus);
             }
-            crate::app::Mode::DefPick { defs, index, worktree, branch, query, preview_scroll } => {
+            crate::app::Mode::DefPick {
+                defs,
+                index,
+                worktree,
+                branch,
+                bulk_worktrees,
+                query,
+                preview_scroll,
+            } => {
                 let repo = app.active_repo().unwrap_or_default();
-                let title = match worktree {
-                    Some(wt) => {
-                        format!("Tasks — {}:{}", repo, crate::selectors::strip_repo_prefix(wt, &repo))
+                let title = if bulk_worktrees.len() >= 2 {
+                    format!("Tasks — {repo} · {} worktrees", bulk_worktrees.len())
+                } else {
+                    match worktree {
+                        Some(wt) => format!(
+                            "Tasks — {}:{}",
+                            repo,
+                            crate::selectors::strip_repo_prefix(wt, &repo)
+                        ),
+                        None => format!("Tasks — {repo}"),
                     }
-                    None => format!("Tasks — {repo}"),
                 };
                 let _ = branch;
                 // Resolve the highlighted (filtered) def's full prompt for the right

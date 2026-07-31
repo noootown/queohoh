@@ -44,7 +44,8 @@ pub enum AppAction {
     CycleSubTab(i32),
     /// Open the task menu (`t`): the upgraded def picker over the active repo,
     /// carrying the selected worktree row's context when the worktrees pane holds
-    /// focus. Routes to `App::open_task_menu`.
+    /// focus. A bulk selection (range ∪ marks) runs the chosen def once per
+    /// eligible worktree. Routes to `App::open_task_menu`.
     OpenTaskMenu,
     /// Open the run form for the TASKS pane's highlighted definition (`r`, and
     /// the tasks pane's `[r]un` chip): always includes the effective-chain model

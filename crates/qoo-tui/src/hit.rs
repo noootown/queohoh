@@ -79,12 +79,13 @@ pub(crate) fn pane_buttons(pane: PaneId) -> &'static [PaneButton] {
 /// verbs that stay live during a range: QUEUE's `Run` (re-queue, `[r]erun`),
 /// `Cancel` (stop, `[x]stop`), `Archive` (`[a]rchive`/`[a]unarchive`), and
 /// `Defer` (`[d]efer` by N hours) each fan the RPC out over every eligible row
-/// in the range; WORKTREES' `Remove` opens its own bulk-remove menu. Everything
-/// else — including the pane-scoped `Goto`/`Schedule`/`Collapse` chips that
-/// don't even read the selection — is bulk-disabled: the title bar dims it
-/// (see [`crate::view::panes::button_chip`]) and its key/click refuses with a
-/// status line (`App::apply_action`) instead of silently acting on just the
-/// cursor row. SINGLE SOURCE OF TRUTH for both.
+/// in the range; WORKTREES' `Remove` opens its bulk-remove menu and `Tasks`
+/// (`[t]asks`) opens the def picker to run one def on every selected worktree.
+/// Everything else — including the pane-scoped `Goto`/`Schedule`/`Collapse`
+/// chips that don't even read the selection — is bulk-disabled: the title bar
+/// dims it (see [`crate::view::panes::button_chip`]) and its key/click refuses
+/// with a status line (`App::apply_action`) instead of silently acting on just
+/// the cursor row. SINGLE SOURCE OF TRUTH for both.
 pub(crate) fn bulk_allowed(pane: PaneId, btn: PaneButton) -> bool {
     use PaneButton::*;
     matches!(
@@ -94,6 +95,7 @@ pub(crate) fn bulk_allowed(pane: PaneId, btn: PaneButton) -> bool {
             | (PaneId::Queue, Archive)
             | (PaneId::Queue, Defer)
             | (PaneId::Worktrees, Remove)
+            | (PaneId::Worktrees, Tasks)
     )
 }
 
@@ -236,9 +238,10 @@ mod tests {
         for btn in [Run, Discover, Cron, Collapse] {
             assert!(!bulk_allowed(PaneId::Tasks, btn), "{btn:?} should be bulk-disabled on TASKS");
         }
-        // WORKTREES: only remove.
+        // WORKTREES: remove + tasks (bulk run def).
         assert!(bulk_allowed(PaneId::Worktrees, Remove));
-        for btn in [Run, Goto, Tasks, Collapse, Favorite] {
+        assert!(bulk_allowed(PaneId::Worktrees, Tasks));
+        for btn in [Run, Goto, Collapse, Favorite] {
             assert!(!bulk_allowed(PaneId::Worktrees, btn), "{btn:?} should be bulk-disabled on WORKTREES");
         }
     }

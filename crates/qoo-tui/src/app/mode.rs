@@ -222,12 +222,14 @@ pub enum Mode {
     /// wrapped line (reset on query/highlight changes). `defs` is the repo's
     /// summaries in server (alphabetical) order; `worktree`/`branch` are the
     /// explicit-target context (from the selected worktree row) that drives the
-    /// chosen def's args as FIXED values.
+    /// chosen def's args as FIXED values. `bulk_worktrees` (len ≥ 2) is a multi-
+    /// worktree selection from WORKTREES bulk `t` — pick once, run per target.
     DefPick {
         defs: Vec<DefinitionSummary>,
         index: usize,
         worktree: Option<String>,
         branch: Option<String>,
+        bulk_worktrees: Vec<String>,
         query: String,
         preview_scroll: usize,
     },
@@ -240,14 +242,17 @@ pub enum Mode {
     /// `state.fields` so a submit maps those values back to positional args;
     /// a trailing `model` field holds the effective-chain picker and is peeled
     /// off on submit); `initial_worktree` is the launch worktree (if any);
-    /// `preview_scroll` is the right panel's first visible wrapped line.
-    /// Key/click handling lives in `app/def_args.rs`.
+    /// `bulk_worktrees` (len ≥ 2) fans submit into one `runDefinition` per
+    /// worktree with shared non-target args; `preview_scroll` is the right
+    /// panel's first visible wrapped line. Key/click handling lives in
+    /// `app/def_args.rs`.
     DefArgs {
         state: crate::view::form::FormState,
         repo: String,
         def_name: String,
         args: Vec<crate::ipc::types::ArgSpec>,
         initial_worktree: Option<String>,
+        bulk_worktrees: Vec<String>,
         preview_scroll: usize,
     },
     /// Session picker (`r` on a worktree row, or the adhoc-create form's session

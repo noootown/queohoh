@@ -909,6 +909,7 @@ impl App {
             HashMap::new(),
             initial,
             None,
+            Vec::new(),
             worktrees,
             branches,
             def.model,

@@ -308,11 +308,99 @@ fn bulk_remove_n_cancels_without_cmd() {
 }
 
 #[test]
-fn worktrees_bulk_range_refuses_run_goto_and_tasks_menu() {
-    // WORKTREES keeps only `Remove` bulk-doable — `r`/`g`/`t` all refuse with a
-    // status line on a multi-row range instead of silently targeting the
-    // cursor row's single worktree.
+fn worktrees_bulk_t_submit_fans_out_one_run_per_worktree() {
+    // Bulk `t` → pick def → Run fans into RpcSeq of runDefinition, one per
+    // selected worktree, each with ref worktree:<name>.
+    use crossterm::event::{KeyCode, KeyModifiers};
     let mut a = app_with(three_worktrees());
+    a.defs_by_project.insert(
+        "platform".into(),
+        vec![{
+            let mut d = crate::ipc::types::DefinitionSummary::default();
+            d.repo = "platform".into();
+            d.name = "pr-review".into();
+            d.worktree = Some("worktree:{{target}}".into());
+            d.args = vec![crate::ipc::types::ArgSpec {
+                name: "target".into(),
+                r#type: Some("worktree".into()),
+                default: None,
+                options: None,
+                description: None,
+            }];
+            d
+        }],
+    );
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    a.update(shift_down()); // 2 worktrees
+    a.update(key('t'));
+    assert!(matches!(a.mode, Mode::DefPick { .. }));
+    a.update(enter()); // open form
+    match &a.mode {
+        Mode::DefArgs {
+            bulk_worktrees,
+            state,
+            ..
+        } => {
+            assert_eq!(bulk_worktrees.len(), 2);
+            // Title carries the bulk count.
+            assert!(
+                state.title.contains("2 worktrees") || state.fields.iter().any(|f| f.value.contains("worktree")),
+                "form should surface bulk context: title={:?} fields={:?}",
+                state.title,
+                state.fields.iter().map(|f| (&f.label, &f.value)).collect::<Vec<_>>(),
+            );
+        }
+        other => panic!("expected DefArgs bulk form, got {other:?}"),
+    }
+    // Focus Primary and submit.
+    if let Mode::DefArgs { state, .. } = &mut a.mode {
+        state.focus = state.fields.len(); // Primary
+    }
+    let u = a.update(enter());
+    assert!(matches!(a.mode, Mode::List));
+    match u.cmds.iter().find(|c| matches!(c, Cmd::RpcSeq { .. })) {
+        Some(Cmd::RpcSeq { verb, calls, .. }) => {
+            assert_eq!(verb, "ran");
+            assert_eq!(calls.len(), 2);
+            for (i, call) in calls.iter().enumerate() {
+                assert_eq!(call.method, "runDefinition");
+                assert_eq!(call.params["name"], "pr-review");
+                let r = call.params["ref"].as_str().unwrap_or("");
+                assert!(r.starts_with("worktree:"), "call {i} ref={r}");
+            }
+            let refs: Vec<&str> = calls
+                .iter()
+                .map(|c| c.params["ref"].as_str().unwrap())
+                .collect();
+            assert_ne!(refs[0], refs[1], "each call targets a different worktree");
+        }
+        other => panic!("expected RpcSeq fan-out, got {other:?} cmds={:?}", u.cmds),
+    }
+}
+
+#[test]
+fn worktrees_bulk_range_refuses_run_and_goto_but_allows_tasks_menu() {
+    // WORKTREES bulk-doable: `Remove` + `Tasks`. `r`/`g` refuse with a status
+    // line; `t` opens the def picker with bulk_worktrees filled.
+    let mut a = app_with(three_worktrees());
+    a.defs_by_project.insert(
+        "platform".into(),
+        vec![{
+            let mut d = crate::ipc::types::DefinitionSummary::default();
+            d.repo = "platform".into();
+            d.name = "pr-review".into();
+            d.worktree = Some("worktree:{{target}}".into());
+            d.args = vec![crate::ipc::types::ArgSpec {
+                name: "target".into(),
+                r#type: Some("worktree".into()),
+                default: None,
+                options: None,
+                description: None,
+            }];
+            d
+        }],
+    );
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
     a.update(shift_down());
@@ -330,8 +418,20 @@ fn worktrees_bulk_range_refuses_run_goto_and_tasks_menu() {
 
     a.status_line = None;
     a.update(key('t'));
-    assert!(matches!(a.mode, Mode::List));
-    assert_eq!(a.status_line.as_deref(), Some("not applicable to bulk selection"));
+    match &a.mode {
+        Mode::DefPick {
+            bulk_worktrees,
+            worktree,
+            defs,
+            ..
+        } => {
+            assert!(worktree.is_none(), "bulk has no single worktree");
+            assert_eq!(bulk_worktrees.len(), 2, "shift-down selects two rows");
+            assert_eq!(defs.len(), 1);
+            assert_eq!(defs[0].name, "pr-review");
+        }
+        other => panic!("expected bulk DefPick, got {other:?}"),
+    }
 }
 
 #[test]

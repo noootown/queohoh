@@ -683,14 +683,14 @@ impl App {
 
     /// Open the task menu (`t`): the def picker over the active repo. Bails
     /// quietly with no repo; sets a status line and stays in `List` when the repo
-    /// has no definitions. When the worktrees pane holds focus and a non-session
-    /// worktree row is selected, that row's raw name (and non-empty branch)
-    /// become the FIXED arg context; otherwise both are `None`. Returns the
-    /// prompt-prefetch commands for the first highlighted def.
+    /// has no definitions. When the worktrees pane holds focus:
+    /// - single non-session row → that row's raw name (+ branch) is FIXED context
+    /// - bulk selection (range ∪ marks) → `bulk_worktrees` lists every eligible
+    ///   non-session name; picking a def runs it once per target
+    /// Returns the prompt-prefetch commands for the first highlighted def.
     fn open_task_menu(&mut self) -> Vec<Cmd> {
-        // `t` is WORKTREES-only; a bulk range there isn't in the doable set
-        // (only `Remove` is) — refuse rather than silently targeting just the
-        // cursor row's worktree.
+        // `t` is bulk-allowed on WORKTREES (fan-out run); other bulk-blocked
+        // verbs still refuse via their own chips.
         if self.bulk_blocked(ListPane::Worktrees, crate::hit::PaneButton::Tasks) {
             return Vec::new();
         }
@@ -702,22 +702,30 @@ impl App {
             self.status_line = Some("no task definitions found".into());
             return Vec::new();
         }
-        let (worktree, branch) = if self.active_ui().last_list_pane == ListPane::Worktrees {
-            match self.selected_worktree_row() {
-                Some(row) if !row.is_session => {
-                    let branch = if row.branch.is_empty() { None } else { Some(row.branch.clone()) };
-                    (Some(row.raw_name.clone()), branch)
-                }
-                _ => (None, None),
-            }
-        } else {
-            (None, None)
-        };
+        let (worktree, branch, bulk_worktrees) =
+            if self.active_ui().last_list_pane == ListPane::Worktrees {
+                self.worktree_task_menu_targets(&repo)
+            } else {
+                (None, None, Vec::new())
+            };
+        // Bulk with zero eligible rows (only sessions marked, etc.) — refuse.
+        // Single/empty cursor still opens contextless so TASKS-like launches
+        // from a bare worktrees focus keep working in tests and edge UIs.
+        let ui = self.active_ui();
+        if ui.last_list_pane == ListPane::Worktrees
+            && worktree.is_none()
+            && bulk_worktrees.is_empty()
+            && crate::view::is_bulk_selection(&ui.selections[2], &ui.marks[2])
+        {
+            self.status_line = Some("no eligible worktrees".into());
+            return Vec::new();
+        }
         // A worktree-scoped menu lists only defs that CONSUME the selected
         // worktree (user request — repo-pinned no-arg defs like sanitize-project
         // read as runnable "on TICK-1816" when the context means nothing to
         // them). Contextless opens keep the full list.
-        let defs: Vec<_> = if worktree.is_some() {
+        let scoped = worktree.is_some() || bulk_worktrees.len() >= 2;
+        let defs: Vec<_> = if scoped {
             defs.into_iter().filter(def_uses_worktree_context).collect()
         } else {
             defs
@@ -726,8 +734,69 @@ impl App {
             self.status_line = Some("no worktree-scoped task definitions".into());
             return Vec::new();
         }
-        self.mode = Mode::DefPick { defs, index: 0, worktree, branch, query: String::new(), preview_scroll: 0 };
+        self.mode = Mode::DefPick {
+            defs,
+            index: 0,
+            worktree,
+            branch,
+            bulk_worktrees,
+            query: String::new(),
+            preview_scroll: 0,
+        };
         self.prefetch_full_def()
+    }
+
+    /// Resolve WORKTREES `t` targets from `selection ∪ marks` (or the cursor
+    /// row when not bulk). Non-session rows only. Single eligible →
+    /// `(Some(name), branch, [])`; multi → `(None, None, names)`.
+    fn worktree_task_menu_targets(
+        &self,
+        repo: &str,
+    ) -> (Option<String>, Option<String>, Vec<String>) {
+        let Some(snap) = self.snapshot.as_ref() else {
+            return (None, None, Vec::new());
+        };
+        let ui = self.active_ui();
+        let rows = crate::selectors::worktree_rows(snap, repo);
+        let vis = crate::selectors::filter_rows(&rows, &ui.search[2], |r| r.name.clone());
+        let visible: Vec<&crate::selectors::WorktreeRow> =
+            vis.iter().filter_map(|&i| rows.get(i)).collect();
+        let sel = ui.selections[2];
+        let marks = &ui.marks[2];
+        let bulk = crate::view::is_bulk_selection(&sel, marks);
+        let eligible: Vec<&crate::selectors::WorktreeRow> = if bulk {
+            crate::view::selected_positions(&visible, &sel, marks, |r| r.raw_name.clone())
+                .into_iter()
+                .filter_map(|pos| visible.get(pos).copied())
+                .filter(|r| !r.is_session)
+                .collect()
+        } else if let Some(row) = self.selected_worktree_row().filter(|r| !r.is_session) {
+            // selected_worktree_row returns owned; re-find in `visible` for a ref.
+            visible
+                .iter()
+                .copied()
+                .filter(|r| r.raw_name == row.raw_name)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if eligible.is_empty() {
+            return (None, None, Vec::new());
+        }
+        if eligible.len() == 1 {
+            let r = eligible[0];
+            let branch = if r.branch.is_empty() {
+                None
+            } else {
+                Some(r.branch.clone())
+            };
+            return (Some(r.raw_name.clone()), branch, Vec::new());
+        }
+        (
+            None,
+            None,
+            eligible.iter().map(|r| r.raw_name.clone()).collect(),
+        )
     }
 
     /// Emit a lazy `definition` (full/prompt) fetch for the currently highlighted

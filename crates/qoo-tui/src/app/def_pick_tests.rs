@@ -60,7 +60,7 @@ fn fixture_app_with_defs_and_worktree(
 fn fixture_def_pick_defs(defs: Vec<DefinitionSummary>, worktree: Option<String>, branch: Option<String>) -> App {
     let mut app = App::new("/tmp/runs".into(), "/tmp/daemon.sock".into());
     app.size = (120, 40);
-    app.mode = Mode::DefPick { defs, index: 0, worktree, branch, query: String::new(), preview_scroll: 0 };
+    app.mode = Mode::DefPick { defs, index: 0, worktree, branch, bulk_worktrees: Vec::new(), query: String::new(), preview_scroll: 0 };
     app
 }
 
@@ -228,12 +228,21 @@ fn task_menu_opens_def_pick_in_server_order() {
     app.set_focus(PaneId::Worktrees);
     app.update(key(KeyCode::Char('t')));
     match &app.mode {
-        Mode::DefPick { defs, index, worktree, branch, query, preview_scroll } => {
+        Mode::DefPick {
+            defs,
+            index,
+            worktree,
+            branch,
+            bulk_worktrees,
+            query,
+            preview_scroll,
+        } => {
             assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["autotest", "squash-merge"]);
             assert_eq!(*index, 0);
             // Worktrees focused but no worktree rows → no worktree context.
             assert_eq!(worktree.as_deref(), None);
             assert_eq!(branch.as_deref(), None);
+            assert!(bulk_worktrees.is_empty());
             assert!(query.is_empty());
             assert_eq!(*preview_scroll, 0);
         }
@@ -265,7 +274,18 @@ fn def_uses_worktree_context_predicate() {
     // `worktree: repo` + no context-fillable args → agnostic.
     assert!(!def_uses_worktree_context(&wt(dsum("p", "sanitize-project", "global", vec![]), "repo")));
     // Any non-repo worktree setting consumes the context (target override applies).
-    assert!(def_uses_worktree_context(&wt(dsum("p", "autofix", "project", vec![arg("situation")]), "auto")));
+    assert!(def_uses_worktree_context(&wt(
+        dsum(
+            "p",
+            "autofix",
+            "project",
+            vec![
+                ArgSpec { r#type: Some("worktree".into()), ..arg("target") },
+                arg("situation"),
+            ],
+        ),
+        "worktree:{{target}}",
+    )));
     assert!(def_uses_worktree_context(&wt(dsum("p", "adhoc", "project", vec![]), "temp")));
     // `worktree: repo` but a context-fillable arg (source/branch/ticket) → kept.
     assert!(def_uses_worktree_context(&wt(dsum("p", "squash-merge", "global", vec![arg("source")]), "repo")));
@@ -282,7 +302,12 @@ fn task_menu_on_a_worktree_hides_worktree_agnostic_defs() {
     // that consume the context (non-repo worktree, or a source arg) remain.
     let repo_noargs =
         DefinitionSummary { worktree: Some("repo".into()), ..dsum("platform", "sanitize-project", "global", vec![]) };
-    let auto = DefinitionSummary { worktree: Some("auto".into()), ..dsum("platform", "autofix", "project", vec![arg("situation")]) };
+    // Autofix is worktree-scoped via target + worktree:{{target}} (was auto).
+    let target = ArgSpec { r#type: Some("worktree".into()), ..arg("target") };
+    let auto = DefinitionSummary {
+        worktree: Some("worktree:{{target}}".into()),
+        ..dsum("platform", "autofix", "project", vec![target, arg("situation")])
+    };
     let repo_source =
         DefinitionSummary { worktree: Some("repo".into()), ..dsum("platform", "squash-merge", "global", vec![arg("source")]) };
     let mut app = fixture_app_with_defs_and_worktree(
@@ -500,6 +525,7 @@ fn open_def_args_builds_formstate_fields() {
         None,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         None,
     );
     match &app.mode {
@@ -603,6 +629,7 @@ fn def_args_app(args: Vec<ArgSpec>, fixed: HashMap<String, String>, worktree: Op
         def_name: "pr-ready".into(),
         args,
         initial_worktree: worktree,
+        bulk_worktrees: Vec::new(),
         preview_scroll: 0,
     };
     app
@@ -670,6 +697,7 @@ fn def_args_submit_peels_leading_model_from_positional_args() {
         def_name: "deploy".into(),
         args: vec![arg("source"), arg("target")],
         initial_worktree: None,
+        bulk_worktrees: Vec::new(),
         preview_scroll: 0,
     };
     // Move focus onto the Primary button (index == field count) and submit.
@@ -725,6 +753,7 @@ fn def_args_preselected_model_is_preferred_first_on_submit() {
         def_name: "deploy".into(),
         args: vec![],
         initial_worktree: None,
+        bulk_worktrees: Vec::new(),
         preview_scroll: 0,
     };
     if let Mode::DefArgs { state, .. } = &mut app.mode {
@@ -835,6 +864,7 @@ fn def_args_combobox_app(options: Vec<String>) -> App {
         def_name: "pr-ready".into(),
         args: vec![ArgSpec { name: "target".into(), r#type: Some("worktree".into()), default: None, options: None, description: None }],
         initial_worktree: None,
+        bulk_worktrees: Vec::new(),
         preview_scroll: 0,
     };
     app
@@ -916,6 +946,7 @@ fn def_args_worktree_submit_app(options: Vec<String>, worktrees: Vec<&str>) -> A
         def_name: "pr-review".into(),
         args: vec![wt_arg("target")],
         initial_worktree: None,
+        bulk_worktrees: Vec::new(),
         preview_scroll: 0,
     };
     app
@@ -979,6 +1010,7 @@ fn def_args_worktree_combobox_empty_blocks_submit() {
         def_name: "pr-review".into(),
         args: vec![wt_arg("target")],
         initial_worktree: None,
+        bulk_worktrees: Vec::new(),
         preview_scroll: 0,
     };
     app.update(key(Tab)); // combobox → Run, value left empty
@@ -1034,6 +1066,7 @@ fn def_args_locked_worktree_submits_ref_and_omits_worktree_param() {
         def_name: "pr-review".into(),
         args: vec![wt_arg("target")],
         initial_worktree: Some("platform.wt-a".into()),
+        bulk_worktrees: Vec::new(),
         preview_scroll: 0,
     };
     app.update(key(Tab)); // skip the readonly field → Run
