@@ -14,18 +14,39 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI="${ROOT}/packages/daemon/dist/cli.js"
 NAME="queohoh"
+# Stable user-bin shim — never register an ephemeral fnm multishell node path
+# (those vanish when the parent shell exits and break Grok/Claude MCP handshakes).
+SHIM="${HOME}/.local/bin/queohoh"
 
 if ! command -v node >/dev/null 2>&1; then
 	echo "node not found on PATH" >&2
 	exit 1
 fi
-NODE="$(command -v node)"
 
 if [ ! -f "$CLI" ]; then
 	echo "daemon CLI not built: $CLI" >&2
 	echo "run: mise run build   (or pnpm -r build)" >&2
 	exit 1
 fi
+
+# Install/refresh a PATH-stable launcher that resolves `node` at runtime.
+mkdir -p "$(dirname "$SHIM")"
+cat >"$SHIM" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+CLI="$CLI"
+if [ ! -f "\$CLI" ]; then
+	echo "queohoh: daemon CLI missing at \$CLI (build with mise run build in the queohoh repo)" >&2
+	exit 1
+fi
+if ! command -v node >/dev/null 2>&1; then
+	echo "queohoh: node not found on PATH" >&2
+	exit 1
+fi
+exec node "\$CLI" "\$@"
+EOF
+chmod +x "$SHIM"
+echo "shim: $SHIM → node $CLI"
 
 # Default: all supported agents. Positional args filter to a subset.
 if [ "$#" -eq 0 ]; then
@@ -42,21 +63,21 @@ register_claude() {
 	# Claude's `mcp add` is not an upsert: drop a prior entry so re-runs are
 	# idempotent (scope must match the install below).
 	claude mcp remove --scope user "$NAME" >/dev/null 2>&1 || true
-	claude mcp add --scope user "$NAME" -- "$NODE" "$CLI" mcp
+	claude mcp add --scope user "$NAME" -- "$SHIM" mcp
 }
 
 register_codex() {
 	# Codex also replaces by name only if we remove first; list/get fail on a
 	# broken user config, so remove is best-effort.
 	codex mcp remove "$NAME" >/dev/null 2>&1 || true
-	codex mcp add "$NAME" -- "$NODE" "$CLI" mcp
+	codex mcp add "$NAME" -- "$SHIM" mcp
 }
 
 register_grok() {
 	# Grok's `mcp add` is documented as "add or update" — still remove first so
 	# a stale command path is never left behind if update semantics change.
 	grok mcp remove --scope user "$NAME" >/dev/null 2>&1 || true
-	grok mcp add --scope user "$NAME" -- "$NODE" "$CLI" mcp
+	grok mcp add --scope user "$NAME" -- "$SHIM" mcp
 }
 
 for agent in "${AGENTS[@]}"; do
