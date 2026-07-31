@@ -57,8 +57,8 @@ pub fn task_model_text(row: &QueueRow, ctx: &ModelResolveCtx<'_>) -> String {
 /// timestamp / age / live columns have FIXED reserved widths (never sized from
 /// row data) — their PRESENCE is decided purely by the width ladder, so a row
 /// gaining a timer or a wider value never shifts any column. When space is tight
-/// the trailing columns degrade first (timestamp → age → live), then model,
-/// then def, then worktree shrinks — so the summary keeps at least
+/// the trailing columns degrade first (Finished timestamp → age → live), then
+/// model, then def, then worktree shrinks — so the summary keeps at least
 /// `SUMMARY_MIN` cells. Model needs `ctx` for effective-head resolution
 /// (active-provider re-head); pass the same ctx paint uses.
 pub fn queue_col_layout(
@@ -158,7 +158,7 @@ const LANE_NAME_MIN: usize = 6;
 
 /// Resolved column widths for one worktree-detail lane-task row: the flex `Task`
 /// name (`name_w`) after the `<glyph> ` prefix, then the fixed trailing columns
-/// `Created` (`TIMESTAMP_W`), `Age` (`AGE_W`), `Live` (`QUEUE_LIVE_W`) — the same
+/// `Finished` (`TIMESTAMP_W`), `Age` (`AGE_W`), `Live` (`QUEUE_LIVE_W`) — the same
 /// widths and `COL_GAP` gutters the QUEUE pane uses. A width of `0` omits that
 /// column. Shared by the row and header stylers so the two align cell-for-cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,7 +170,7 @@ pub(crate) struct LaneTaskCols {
 }
 
 /// Fit a lane-task row into `width` cells. The trailing columns are fixed-width
-/// (never sized from row data) and degrade in a fixed order — Live, then Created,
+/// (never sized from row data) and degrade in a fixed order — Live, then Finished,
 /// then Age — so the `Task` name keeps at least [`LANE_NAME_MIN`] cells; the name
 /// is the flex remainder. Pure over `width` (the ideal unit-test target).
 pub(crate) fn lane_task_cols(width: usize) -> LaneTaskCols {

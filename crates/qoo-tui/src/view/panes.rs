@@ -524,16 +524,24 @@ fn queue_line(
     spans.push(Span::raw(gap.clone()));
     // Resolved item args (`pr=… mode=…`) in meta/accent so they read apart from
     // default prose grey (user request). Clip first, then key=value paint, then
-    // right-pad so trailing Created/Age/Live stay fixed-width.
+    // right-pad so trailing Finished/Age/Live stay fixed-width.
     spans.extend(style_queue_args_spans(&row.summary, layout.summary_w, p));
-    // Timestamps read in teal — a real color, not grey (grey-on-dark was
-    // unreadable per user feedback).
+    // Finished timestamp (teal) — absolute local finish time when the daemon
+    // stamped `finishedAt`; blank pad for still-active rows (running/queued/
+    // needs-input) so the reserved TIMESTAMP_W cell never slides Age/Live.
+    // Unreadable grey-on-dark was the prior feedback that landed teal here.
     if layout.show_timestamp {
         spans.push(Span::raw(gap.clone()));
-        spans.push(Span::styled(
-            absolute_local_label(row.created_epoch_s, tz_offset_s),
-            Style::default().fg(p.info),
-        ));
+        match row.finished_epoch_s {
+            Some(e) => spans.push(Span::styled(
+                pad_clip(
+                    &absolute_local_label(e, tz_offset_s),
+                    crate::selectors::TIMESTAMP_W,
+                ),
+                Style::default().fg(p.info),
+            )),
+            None => spans.push(Span::raw(pad_clip("", crate::selectors::TIMESTAMP_W))),
+        }
     }
     if layout.age_w > 0 {
         spans.push(Span::raw(gap.clone()));
@@ -593,7 +601,8 @@ fn queue_header(layout: &QueueColLayout, p: &Palette) -> Line<'static> {
     // Resolved item args when present; otherwise first prompt line.
     header_col(&mut spans, "Prompt/Args", layout.summary_w, p);
     if layout.show_timestamp {
-        header_col(&mut spans, "Created", crate::selectors::TIMESTAMP_W, p);
+        // Absolute finish time (`finishedAt`); blank on still-active rows.
+        header_col(&mut spans, "Finished", crate::selectors::TIMESTAMP_W, p);
     }
     if layout.age_w > 0 {
         header_col(&mut spans, "Age", layout.age_w, p);

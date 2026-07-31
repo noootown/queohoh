@@ -239,7 +239,7 @@ pub fn lane_key(repo: &str, worktree: &str) -> String {
 ///   sentinel `item_key: "adhoc"` for arg-less / ad-hoc runs)
 ///
 /// Emoji / double-width symbols are stripped: `pad_clip` is char-count based,
-/// so a 📄 in `comment_body=📄 …` shifts Created/Age/Live for that row.
+/// so a 📄 in `comment_body=📄 …` shifts Finished/Age/Live for that row.
 pub fn task_summary(task: &TaskInstance) -> String {
     if let Some(item) = task.item.as_ref() {
         if !item.is_empty() {
@@ -259,7 +259,7 @@ pub fn task_summary(task: &TaskInstance) -> String {
 
 /// `pr=257 mode=ready` — sorted keys so the queue stays stable.
 /// Empty values render as the bare key. Emoji stripped from values so the
-/// queue Prompt/Args column cannot shift Created/Age/Live (double-width).
+/// queue Prompt/Args column cannot shift Finished/Age/Live (double-width).
 pub fn item_args_summary(item: &std::collections::HashMap<String, String>) -> String {
     item_args_lines(item).join(" ")
 }
@@ -286,7 +286,7 @@ pub fn item_args_lines(item: &std::collections::HashMap<String, String>) -> Vec<
 
 /// Drop emoji / pictographs / other double-width symbols from queue Prompt/Args
 /// text so fixed trailing columns stay aligned. `pad_clip` sizes by char count,
-/// not display cells — one 📄 shifts Created/Age/Live for the whole row.
+/// not display cells — one 📄 shifts Finished/Age/Live for the whole row.
 /// Also drops emoji ZWJ / variation selectors and collapses leftover spaces.
 fn strip_emoji_for_queue_summary(s: &str) -> String {
     use unicode_width::UnicodeWidthChar;

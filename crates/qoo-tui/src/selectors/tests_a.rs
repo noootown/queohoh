@@ -806,7 +806,7 @@
         assert_eq!(wide.live_w, QUEUE_LIVE_W);
         let trailing = 3 * COL_GAP + TIMESTAMP_W + AGE_W + QUEUE_LIVE_W;
         assert_eq!(wide.name_w, 60 - 2 - trailing);
-        // Degradation order is Live first, then Created, then Age — each drops only
+        // Degradation order is Live first, then Finished, then Age — each drops only
         // once the name floor no longer fits.
         let drop_live = lane_task_cols(2 + LANE_NAME_MIN + (COL_GAP + TIMESTAMP_W) + (COL_GAP + AGE_W));
         assert_eq!(drop_live.live_w, 0);
@@ -916,7 +916,7 @@
 
     #[test]
     fn task_summary_strips_emoji_so_trailing_columns_stay_aligned() {
-        // Live bug: comment_body=📄 Data… made Created/Age/Live shift right
+        // Live bug: comment_body=📄 Data… made Finished/Age/Live shift right
         // (pad_clip is char-count; 📄 is 1 char / 2 cells).
         let mut t = make_task(TaskStatus::Queued);
         t.item = Some(std::collections::HashMap::from([
