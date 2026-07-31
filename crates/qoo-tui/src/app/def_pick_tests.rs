@@ -681,11 +681,16 @@ fn def_args_submit_peels_leading_model_from_positional_args() {
         Cmd::Rpc { call, .. } => {
             assert_eq!(call.method, "runDefinition");
             assert_eq!(call.params["args"], serde_json::json!(["wt-a", "dev"]), "model excluded from args");
-            assert_eq!(call.params["model"], "claude/claude-opus-4.8", "leading model sent as params.model");
-            // The def-run picker never has an empty "default" option — a
-            // concrete pick is always sent pinned so the worker runs it
-            // exactly (no active-provider re-head, no fallback).
-            assert_eq!(call.params["model_pinned"], true);
+            // Fixture has a single picker option → one-ref model, still unpinned.
+            assert_eq!(
+                call.params["model"],
+                "claude/claude-opus-4.8",
+                "leading model sent as params.model"
+            );
+            assert!(
+                call.params.get("model_pinned").is_none(),
+                "TUI def-run is preference, not a hard pin"
+            );
         }
         other => panic!("expected runDefinition, got {other:?}"),
     }
@@ -693,11 +698,12 @@ fn def_args_submit_peels_leading_model_from_positional_args() {
 }
 
 #[test]
-fn def_args_preselected_model_is_pinned_on_submit() {
+fn def_args_preselected_model_is_preferred_first_on_submit() {
     use crate::view::form::{DropdownOption, Field, FormState};
     use crossterm::event::KeyCode::*;
     // Def-run picker: concrete options only (no empty default row). The value
-    // preselected for the active provider is submitted as a hard pin.
+    // preselected for the active provider is submitted preferred-first over
+    // the full picker list — not a hard pin.
     let model = Field::dropdown_labeled(
         "model",
         vec![
@@ -727,8 +733,11 @@ fn def_args_preselected_model_is_pinned_on_submit() {
     match &app.update(key(Enter)).cmds[0] {
         Cmd::Rpc { call, .. } => {
             assert_eq!(call.method, "runDefinition");
-            assert_eq!(call.params["model"], "grok/grok-4.5");
-            assert_eq!(call.params["model_pinned"], true);
+            assert_eq!(
+                call.params["model"],
+                serde_json::json!(["grok/grok-4.5", "claude/claude-opus-4.8"])
+            );
+            assert!(call.params.get("model_pinned").is_none());
         }
         other => panic!("expected runDefinition, got {other:?}"),
     }

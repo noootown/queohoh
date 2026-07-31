@@ -1469,7 +1469,7 @@ describe("ApiServer", () => {
 		expect(store.list()).toEqual([]);
 	});
 
-	it("retry can pin a model override (TUI re-run provider switch)", async () => {
+	it("retry can pin a model override (legacy hard pin)", async () => {
 		const { client, store } = await setup();
 		const t = store.create({
 			prompt: "p",
@@ -1488,6 +1488,28 @@ describe("ApiServer", () => {
 		expect(retried.status).toBe("queued");
 		expect(retried.model).toBe("grok/grok-4.5");
 		expect(retried.modelPinned).toBe(true);
+	});
+
+	it("retry preferred-first list keeps multi-model stamp unpinned", async () => {
+		// TUI re-run provider switch: reorder the listed models, do not hard-pin
+		// so a later re-run still offers every listed provider.
+		const { client, store } = await setup();
+		const t = store.create({
+			prompt: "p",
+			repo: "platform",
+			ref: "temp",
+			source: "tui",
+			model: ["claude/claude-opus-5", "grok/grok-4.5"],
+			modelPinned: false,
+		});
+		store.update(t.id, { status: "failed", error: "session limit" });
+		const retried = (await client.call("retry", {
+			id: t.id,
+			model: ["grok/grok-4.5", "claude/claude-opus-5"],
+		})) as { status: string; model: string | string[]; modelPinned: boolean };
+		expect(retried.status).toBe("queued");
+		expect(retried.model).toEqual(["grok/grok-4.5", "claude/claude-opus-5"]);
+		expect(retried.modelPinned).toBe(false);
 	});
 
 	it("retry re-queues a verify-failed task; skip archives it (parity with failed)", async () => {

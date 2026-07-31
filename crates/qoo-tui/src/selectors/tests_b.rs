@@ -1214,28 +1214,33 @@
 
     #[test]
     fn def_model_text_shows_effective_head_under_active_provider() {
-        // Def authored `claude/claude-opus-4.8`, active grok, catalog with both
-        // groups → effective head is the re-headed grok group head only
-        // (`grok-4.5`), not the full `grok-4.5 → claude-opus-4.8` chain (that
-        // stays on the detail config pane).
+        // Authored allowlist: single-provider def stays on that provider even
+        // when the TUI active provider is different (mail-check is grok-only).
         let m = resolve_owned("grok");
         let one = DefinitionSummary {
             model: Some(ModelRef::One("claude/claude-opus-4.8".into())),
             ..Default::default()
         };
-        assert_eq!(def_model_text(&one, &m.ctx()), "grok-4.5");
+        assert_eq!(def_model_text(&one, &m.ctx()), "claude-opus-4.8");
 
-        // List that already includes the active provider: stable-partition puts
-        // the grok entry first; the column still shows only that head.
+        // Multi-provider list: stable-partition puts the active provider first;
+        // the column still shows only that head (not the full chain).
         let list = DefinitionSummary {
             model: Some(ModelRef::Many(vec!["claude/claude-opus-4.8".into(), "grok/grok-4.5".into()])),
             ..Default::default()
         };
         assert_eq!(def_model_text(&list, &m.ctx()), "grok-4.5");
 
-        // Same authored ref under active claude → single versioned label.
+        // Same authored ref under matching active provider.
         let m_claude = resolve_owned("claude");
         assert_eq!(def_model_text(&one, &m_claude.ctx()), "claude-opus-4.8");
+
+        // Grok-only def under active=claude still shows grok (allowlist).
+        let grok_only = DefinitionSummary {
+            model: Some(ModelRef::One("grok/grok-4.5".into())),
+            ..Default::default()
+        };
+        assert_eq!(def_model_text(&grok_only, &m_claude.ctx()), "grok-4.5");
 
         // Absent model + empty defaults + no active → blank (pane-gate).
         let empty = empty_model_owned();

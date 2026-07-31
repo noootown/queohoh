@@ -446,7 +446,8 @@ impl App {
     /// canonical ref (`resolve_target_ref`) and sent as `params.ref` (the
     /// worktree param is then suppressed — see `run_definition_cmd`). The
     /// trailing model field (appended by [`Self::open_def_args`]) is peeled off
-    /// and sent as a 1-entry exact `params.model` when non-empty.
+    /// and sent as a preferred-first multi-list `params.model` (selected head,
+    /// then the other picker options) — not a hard pin.
     fn submit_def_args(&mut self) -> Update {
         // Worktree names + PR/ticket aliases for ref resolution — read before
         // the `self.mode` mutable borrow.
@@ -469,10 +470,22 @@ impl App {
                 let arg_start = usize::from(has_model);
                 let arg_values: Vec<String> =
                     values.iter().skip(arg_start).take(n_args).cloned().collect();
-                let model = has_model
-                    .then(|| values.first().cloned())
-                    .flatten()
-                    .filter(|m| !m.is_empty());
+                // Preferred-first over every option the def-run picker offered
+                // (def-authored list, or full catalog when the def omits model).
+                let model_chain = if has_model {
+                    let preferred = values.first().cloned().unwrap_or_default();
+                    let options: Vec<String> = match state.fields.first().map(|f| &f.kind) {
+                        Some(crate::view::form::FieldKind::Dropdown { options }) => options
+                            .iter()
+                            .map(|o| o.value.clone())
+                            .filter(|v| !v.is_empty())
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    super::form::preferred_first_chain(&preferred, &options)
+                } else {
+                    Vec::new()
+                };
                 // A worktree-typed arg's value → canonical ref; no such arg keeps
                 // the old positional-only behavior (target_ref None).
                 let target_ref = args
@@ -486,7 +499,7 @@ impl App {
                     &arg_values,
                     initial_worktree.as_deref(),
                     target_ref.as_deref(),
-                    model.as_deref(),
+                    &model_chain,
                 );
                 // Immediate feedback so Run is never a dead click: the RPC is
                 // async (and a slow worktree-provisioning run is deliberately

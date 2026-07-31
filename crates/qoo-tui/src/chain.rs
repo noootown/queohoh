@@ -3,11 +3,13 @@
 //! `findModel` / `groupHead` / `unknownModelError` helpers from
 //! `packages/core/src/catalog.ts` it depends on).
 //!
-//! TUI model display under the operator's `active_provider` (stable re-head +
-//! default-model prepend), not the authored yaml list: the TASKS Model column
-//! shows the **effective head** only; the definition config row shows the
-//! **full resolved chain** — so switching the active provider reorders /
-//! re-heads without rewriting every definition.
+//! TUI model display under the operator's `active_provider`: the TASKS Model
+//! column shows the **effective head** only; the definition config row shows
+//! the **full resolved chain**. For multi-provider authored lists, switching
+//! the active provider reorders within the allowlist. An authored list is an
+//! **allowlist** — a grok-only def never gains a claude head just because the
+//! TUI active provider is claude. Unstamped (null) defs still inject the
+//! active provider's default when it is missing from `default_models`.
 
 use crate::ipc::types::{CatalogEntry, ModelRef};
 
@@ -119,17 +121,20 @@ fn to_chain_entry(entry: &CatalogEntry) -> ChainEntry {
 
 /// Resolve a model spec into an ordered fallback chain over `catalog`.
 ///
-/// Algorithm (design spec Section 4, mirrored from packages/core resolveModelChain):
+/// Algorithm (design spec Section 4, mirrored from packages/core resolveModelChain,
+/// with allowlist semantics for authored lists):
 /// 1. `refs = spec is None ? default_models : model_ref.refs()`.
 /// 2. Map each ref via `find_model`; any miss ⇒ `unknown_model_error`.
 /// 3. Drop entries whose provider is not in `enabled_providers`.
 /// 4. Stable-partition: entries with `provider == active_provider` first
 ///    (keeping order), rest after.
-/// 5. If no entry has `provider == active_provider` AND that provider is
-///    enabled: prepend the active provider's `default_models` entry (its
-///    chosen default from the pool), falling back to
-///    `group_head(catalog, active_provider)` when `default_models` names no
-///    model for that provider (skip if neither exists).
+/// 5. **Defaults-only inject** (`spec is None`): if no entry has
+///    `provider == active_provider` AND that provider is enabled, prepend the
+///    active provider's `default_models` entry (its chosen default from the
+///    pool), falling back to `group_head(catalog, active_provider)` when
+///    `default_models` names no model for that provider (skip if neither
+///    exists). An **explicit** authored list is an allowlist — never inject a
+///    provider the def did not name.
 /// 6. Dedup by `provider/id` keeping first occurrence. Empty final chain ⇒
 ///    an error.
 pub fn resolve_model_chain(
@@ -139,6 +144,7 @@ pub fn resolve_model_chain(
     default_models: &[String],
     active_provider: &str,
 ) -> Result<Vec<ChainEntry>, String> {
+    let from_defaults = spec.is_none();
     let owned_refs: Vec<String> = match spec {
         None => default_models.to_vec(),
         Some(m) => m.refs(),
@@ -168,7 +174,12 @@ pub fn resolve_model_chain(
         .collect();
     let mut ordered: Vec<&CatalogEntry> = active.iter().copied().chain(rest).collect();
 
-    if active.is_empty() && is_enabled(enabled_providers, active_provider) {
+    // Inject only when resolving the unstamped defaults pool — never onto an
+    // authored allowlist (a grok-only def must stay grok-only).
+    if from_defaults
+        && active.is_empty()
+        && is_enabled(enabled_providers, active_provider)
+    {
         // Inject the active provider's DEFAULT from the pool (its `default_models`
         // entry), NOT its most-powerful group head; fall back to the group head
         // only when `default_models` names no model for the active provider.
@@ -444,61 +455,55 @@ mod tests {
     }
 
     #[test]
-    fn switch_miss_injects_active_provider_default_not_group_head() {
-        // [grok/grok-4.5] + active claude, pool = [claude/claude-opus-4.8, grok/grok-4.5] →
-        // inject claude's DEFAULT (opus), not claude's group head (fable).
+    fn authored_allowlist_never_injects_unlisted_active_provider() {
+        // mail-check is grok-only: active=claude must NOT inject claude.
         let cat = builtin_catalog();
         let spec = ModelRef::One("grok/grok-4.5".into());
         let defaults = vec!["claude/claude-opus-4.8".to_string(), "grok/grok-4.5".to_string()];
         assert_eq!(
             resolve_model_chain(Some(&spec), &cat, ENABLED, &defaults, "claude").unwrap(),
-            vec![
-                entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8"),
-                entry("grok", "grok-4.5", "grok/grok-4.5"),
-            ]
+            vec![entry("grok", "grok-4.5", "grok/grok-4.5")]
+        );
+        let claude_only = ModelRef::One("claude/claude-opus-4.8".into());
+        assert_eq!(
+            resolve_model_chain(Some(&claude_only), &cat, ENABLED, &[], "grok").unwrap(),
+            vec![entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8")]
+        );
+        assert_eq!(
+            effective_model_head(Some(&claude_only), &cat, ENABLED, &[], "grok").as_deref(),
+            Some("claude/claude-opus-4.8")
         );
     }
 
     #[test]
-    fn switch_miss_falls_back_to_group_head_when_no_default_for_active() {
-        // [grok/grok-4.5] + active claude, pool has only a grok entry → fall back
-        // to claude's group head (fable).
+    fn null_defaults_inject_active_when_missing_from_pool() {
+        // Unstamped only: defaults lack claude → inject group head (fable).
         let cat = builtin_catalog();
-        let spec = ModelRef::One("grok/grok-4.5".into());
         let defaults = vec!["grok/grok-4.5".to_string()];
         assert_eq!(
-            resolve_model_chain(Some(&spec), &cat, ENABLED, &defaults, "claude").unwrap(),
+            resolve_model_chain(None, &cat, ENABLED, &defaults, "claude").unwrap(),
             vec![
                 entry("claude", "claude-fable-5", "claude/claude-fable-5"),
                 entry("grok", "grok-4.5", "grok/grok-4.5"),
             ]
         );
-    }
-
-    #[test]
-    fn switch_miss_empty_defaults_falls_back_to_group_head() {
-        // [claude/claude-opus-4.8] + active grok, empty pool → group-head fallback grok-4.5.
-        let cat = builtin_catalog();
-        let spec = ModelRef::One("claude/claude-opus-4.8".into());
+        // defaults lack grok → inject grok group head.
+        let defaults_claude = vec!["claude/claude-opus-4.8".to_string()];
         assert_eq!(
-            resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "grok").unwrap(),
+            resolve_model_chain(None, &cat, ENABLED, &defaults_claude, "grok").unwrap(),
             vec![
                 entry("grok", "grok-4.5", "grok/grok-4.5"),
                 entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8"),
             ]
         );
-        assert_eq!(
-            effective_model_head(Some(&spec), &cat, ENABLED, &[], "grok").as_deref(),
-            Some("grok/grok-4.5")
-        );
     }
 
     #[test]
-    fn switch_miss_does_not_prepend_when_active_provider_disabled() {
+    fn null_defaults_do_not_prepend_when_active_provider_disabled() {
         let cat = builtin_catalog();
-        let spec = ModelRef::One("claude/claude-opus-4.8".into());
+        let defaults = vec!["claude/claude-opus-4.8".to_string()];
         assert_eq!(
-            resolve_model_chain(Some(&spec), &cat, ENABLED, &[], "codex").unwrap(),
+            resolve_model_chain(None, &cat, ENABLED, &defaults, "codex").unwrap(),
             vec![entry("claude", "claude-opus-4-8", "claude/claude-opus-4.8")]
         );
     }

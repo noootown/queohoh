@@ -33,7 +33,7 @@ use crate::selectors::{QueueRow, WorktreeRow};
 
 mod actions;
 mod def_args;
-mod form;
+pub(crate) mod form;
 mod menus;
 mod mode;
 mod mouse;

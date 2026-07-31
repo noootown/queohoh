@@ -977,10 +977,11 @@ export class ApiServer {
 				// Clears `notBefore` so a manual re-run is not still blocked by a
 				// prior `[d]efer` window.
 				//
-				// Optional TUI re-run model override: a single `provider/label`
-				// pin (claude limit → try grok). When omitted, the existing
-				// schedule stamp stays. The TUI only sends a pin the task's
-				// stamped model list allows; unknown refs still reject here.
+				// Optional TUI re-run model override. Prefer a preferred-first
+				// multi-list (keeps every listed model available for a later
+				// re-run / fallback). A single string with model_pinned stays a
+				// hard pin for older clients / explicit host handoff. When
+				// omitted, the existing schedule stamp stays.
 				if (task.status === "running") {
 					throw new Error(
 						`cannot retry task in status ${task.status} — stop it first`,
@@ -990,7 +991,7 @@ export class ApiServer {
 					status: "queued";
 					error: null;
 					notBefore: null;
-					model?: string;
+					model?: string | string[];
 					modelPinned?: boolean;
 				} = {
 					status: "queued",
@@ -999,14 +1000,28 @@ export class ApiServer {
 				};
 				if (params.model !== undefined && params.model !== null) {
 					const model = this.coerceModel(deps.config.catalog, params.model);
-					if (typeof model !== "string") {
-						throw new Error(
-							"retry model must be a single provider/label ref (not a list)",
+					const hardPin =
+						params.model_pinned === true && typeof model === "string";
+					if (hardPin) {
+						// Exact pick, no fallback (legacy pin path).
+						const stamped = this.stampScheduleModel(
+							task.target.repo,
+							model,
+							true,
 						);
+						patch.model = stamped.model;
+						patch.modelPinned = true;
+					} else {
+						// Preferred-first list (or single unpinned ref): freeze
+						// order, keep multi-model stamp for later re-runs.
+						const stamped = this.stampScheduleModel(
+							task.target.repo,
+							model,
+							false,
+						);
+						patch.model = stamped.model;
+						patch.modelPinned = false;
 					}
-					// Pin so the worker runs exactly this pick (no re-head).
-					patch.model = model;
-					patch.modelPinned = true;
 				}
 				const updated = deps.store.update(task.id, patch);
 				deps.onMutation();
@@ -1416,7 +1431,12 @@ export class ApiServer {
 			ctx.providers,
 			ctx.defaultModels,
 			ctx.activeProvider,
-			{ pinned: pinned && typeof model === "string" },
+			{
+				pinned: pinned && typeof model === "string",
+				// TUI preferred-first multi-list / MCP list: freeze order, no
+				// active-provider re-head (see captureModelForSchedule).
+				preserveOrder: Array.isArray(model),
+			},
 		);
 		if (!result.ok) throw new Error(result.error);
 		return { model: result.model, modelPinned: result.modelPinned };

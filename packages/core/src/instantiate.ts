@@ -158,6 +158,11 @@ export async function instantiateDefinition(
 			{
 				pinned:
 					deps.modelPinned === true && typeof deps.model === "string",
+				// Operator override list (TUI preferred-first): keep order. Def's
+				// own authored list (deps.model unset) still re-heads under the
+				// then-active provider below via resolveModelChain.
+				preserveOrder:
+					deps.model !== undefined && Array.isArray(deps.model),
 			},
 		);
 		if (!captured.ok) {

@@ -48,6 +48,43 @@ pub(super) fn title_case_provider(provider: &str) -> String {
     }
 }
 
+/// Preferred-first model chain: `head` first (when non-empty), then the rest of
+/// `chain` in order, de-duplicated. Empty head returns `chain` filtered of
+/// empties. Used when the operator picks a model they *prefer* — the full list
+/// stays on the task so re-run can still offer every listed model (or ad-hoc
+/// defaults), rather than hard-pinning to a single provider.
+pub(crate) fn preferred_first_chain(head: &str, chain: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if !head.is_empty() {
+        out.push(head.to_string());
+    }
+    for r in chain {
+        if r.is_empty() || r == head {
+            continue;
+        }
+        if !out.iter().any(|x| x == r) {
+            out.push(r.clone());
+        }
+    }
+    out
+}
+
+/// Wire `params.model` for a preferred-first chain: omit when empty, a single
+/// string when one ref, otherwise a JSON array. Never sets `model_pinned` —
+/// TUI picks are preference, not exclusive pins (MCP single-string auto-pin
+/// still applies server-side when a lone string is sent).
+pub(crate) fn model_param_from_chain(chain: &[String]) -> Option<serde_json::Value> {
+    match chain {
+        [] => None,
+        [one] => Some(serde_json::Value::String(one.clone())),
+        many => Some(serde_json::Value::Array(
+            many.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        )),
+    }
+}
+
 /// Provider segment of a `provider/label` ref (or the whole string if bare).
 fn provider_of_ref(model_ref: &str) -> &str {
     model_ref.split_once('/').map(|(p, _)| p).unwrap_or(model_ref)
@@ -273,10 +310,14 @@ impl App {
 
     /// QUEUE re-run **provider** picker. One option per enabled provider that
     /// has a resolvable model for the first selected task, labeled
-    /// `Grok (grok-4.5)` (provider title + the model that would be pinned).
-    /// Value is the bare provider id; the concrete ref is re-derived per task
-    /// on submit. Preselects `preferred_provider` (last-run / first task).
-    /// No "Keep current" — the current provider is the default selection.
+    /// `Grok (grok-4.5)` (provider title + the model that would run).
+    /// Value is the bare provider id; the preferred-first multi-list is
+    /// re-derived per task on submit. Preselects `preferred_provider`
+    /// (last-run / first task). No "Keep current" — the current provider is
+    /// the default selection.
+    ///
+    /// Options come from the task's listed models when stamped; unstamped
+    /// ad-hoc tasks offer each provider's default model instead.
     pub(super) fn requeue_model_field(
         &self,
         task_ids: &[String],
@@ -428,11 +469,11 @@ impl App {
         Self::provider_from_run_meta(Some(&meta), catalog)
     }
 
-    /// Concrete pin ref for re-running `task` under `provider`.
-    /// - Stamp lists a matching `provider/…` → that first match (task manifest).
+    /// Concrete model ref for re-running `task` under `provider`.
+    /// - Stamp lists a matching `provider/…` → that first match (task list).
     /// - Ad-hoc / null stamp → first repo `default_models` ref for the provider,
     ///   else catalog group head for that provider.
-    /// - Stamp exists but has no entry for `provider` → `None` (keep stamp).
+    /// - Stamp exists but has no entry for `provider` → `None` (not offered).
     pub(super) fn resolve_requeue_model_for_provider(
         &self,
         task: &crate::ipc::types::TaskInstance,
@@ -457,8 +498,35 @@ impl App {
         crate::chain::group_head(&owned.catalog, provider).map(|e| e.model_ref())
     }
 
-    /// Whether switching this task onto `provider` is allowed (manifest lists
-    /// that provider, or the task is unstamped/ad-hoc).
+    /// Preferred-first stamp for re-running `task` under `provider`: the
+    /// resolved ref for that provider first, then the rest of the task's listed
+    /// models (or, for unstamped ad-hoc, the repo's `default_models`). Keeps
+    /// every listed model available for a later re-run — never collapses to a
+    /// hard single-provider pin.
+    pub(super) fn requeue_model_chain_for_provider(
+        &self,
+        task: &crate::ipc::types::TaskInstance,
+        provider: &str,
+    ) -> Option<Vec<String>> {
+        let preferred = self.resolve_requeue_model_for_provider(task, provider)?;
+        let base: Vec<String> = match &task.model {
+            Some(m) => m.refs(),
+            None => {
+                let owned = self.model_resolve_owned();
+                owned.default_models.refs_for(&task.target.repo)
+            }
+        };
+        let chain = preferred_first_chain(&preferred, &base);
+        if chain.is_empty() {
+            None
+        } else {
+            Some(chain)
+        }
+    }
+
+    /// Whether switching this task onto `provider` is allowed: stamp lists that
+    /// provider, or the task is unstamped/ad-hoc (then any provider with a
+    /// resolvable default/group-head is fine).
     pub(super) fn task_allows_requeue_provider(
         task: &crate::ipc::types::TaskInstance,
         provider: &str,
@@ -475,6 +543,12 @@ impl App {
         }
     }
 
+    /// Repo `default_models` refs used as the ad-hoc preferred-first tail when
+    /// the operator picks a concrete model (re-run still offers every default).
+    pub(super) fn adhoc_default_model_chain(&self, repo: &str) -> Vec<String> {
+        self.model_resolve_owned().default_models.refs_for(repo)
+    }
+
     /// Def-run model picker: concrete `provider/label` options only (no empty
     /// `default (…)` row). Preselects the option that matches today's
     /// active-provider resolution head so the dropdown lands on "whatever
@@ -483,8 +557,9 @@ impl App {
     /// - Def authors `model:` → only those catalog entries, authored order.
     /// - Def omits `model:` → full visible catalog, provider-first.
     ///
-    /// Submit always sends the selected ref as a hard pin (`model_pinned`);
-    /// there is no unpinned empty head. Picking another entry overrides.
+    /// Submit stamps a **preferred-first multi-list** (selected head, then the
+    /// other picker options) with no hard pin — so re-run still offers every
+    /// listed model when budget/provider fails.
     pub(super) fn def_model_field(&self, repo: &str, def_model: Option<&ModelRef>) -> Field {
         let options = self.def_model_pin_options(def_model);
         let owned = self.model_resolve_owned();
@@ -1237,11 +1312,15 @@ impl App {
                 let mut params =
                     serde_json::json!({ "prompt": prompt, "repo": repo, "worktree": worktree });
                 if !model.is_empty() {
-                    // A concrete pick (not the head "" default) is an explicit
-                    // dialog choice: pin it so the worker runs it exactly, no
-                    // active-provider re-head, no fallback.
-                    params["model_pinned"] = serde_json::Value::Bool(true);
-                    params["model"] = serde_json::Value::String(model);
+                    // Preferred-first over repo defaults — not a hard pin. Re-run
+                    // still offers every default_models entry per provider.
+                    let chain = preferred_first_chain(
+                        &model,
+                        &self.adhoc_default_model_chain(&repo),
+                    );
+                    if let Some(v) = model_param_from_chain(&chain) {
+                        params["model"] = v;
+                    }
                 }
                 if let Some(sid) = resume_session_id {
                     params["resume_session_id"] = serde_json::Value::String(sid);
@@ -1258,10 +1337,18 @@ impl App {
                 let name = values.get(1).cloned().unwrap_or_default();
                 let prompt = values.get(2).cloned().unwrap_or_default();
                 self.status_line = Some(format!("creating worktree {name}…"));
+                let model_chain = if model.is_empty() {
+                    Vec::new()
+                } else {
+                    preferred_first_chain(&model, &self.adhoc_default_model_chain(&repo))
+                };
                 let cmd = Self::create_worktree_cmd(
                     &repo,
                     &name,
-                    Some(crate::event::EnqueueAfter { prompt, model }),
+                    Some(crate::event::EnqueueAfter {
+                        prompt,
+                        model_chain,
+                    }),
                 );
                 Update { dirty: true, cmds: vec![cmd] }
             }
@@ -1291,11 +1378,14 @@ impl App {
                     params["ref"] = serde_json::Value::String(r.clone());
                 }
                 if !model.is_empty() {
-                    // A concrete pick (not the head "" default) is an explicit
-                    // dialog choice: pin it so the worker runs it exactly, no
-                    // active-provider re-head, no fallback.
-                    params["model_pinned"] = serde_json::Value::Bool(true);
-                    params["model"] = serde_json::Value::String(model);
+                    // Preferred-first over repo defaults — not a hard pin.
+                    let chain = preferred_first_chain(
+                        &model,
+                        &self.adhoc_default_model_chain(&repo),
+                    );
+                    if let Some(v) = model_param_from_chain(&chain) {
+                        params["model"] = v;
+                    }
                 }
                 // The session pin is only valid on the worktree it was picked for
                 // (`resume_worktree`); honor it only when the resolved target
@@ -1360,10 +1450,10 @@ impl App {
                 Update { dirty: true, cmds: vec![cmd] }
             }
             // Fields: [provider dropdown]. One `retry` per frozen id. Provider
-            // is resolved per-task to a concrete model ref (stamp entry or
-            // ad-hoc default). Pin only when switching provider so same-provider
-            // re-run keeps multi-model stamps; tasks without that provider in
-            // their stamp get a bare retry (keep stamp).
+            // is resolved per-task to a preferred-first multi-list (stamp entry
+            // or ad-hoc defaults) — never a hard single-provider pin, so a later
+            // re-run still offers every listed model. Same-provider Enter keeps
+            // the existing stamp (no model patch).
             FormAction::Requeue { task_ids } => {
                 let provider = values.first().cloned().unwrap_or_default();
                 let snap = self.snapshot.as_ref();
@@ -1379,12 +1469,12 @@ impl App {
                                     .find(|t| t.id == id)
                             });
                             if let Some(task) = task {
-                                if let Some(model_ref) =
-                                    self.resolve_requeue_model_for_provider(task, &provider)
+                                if let Some(chain) =
+                                    self.requeue_model_chain_for_provider(task, &provider)
                                 {
                                     // Prefer last-run provider when available for
                                     // "is this a switch?" so list-head ≠ last-run
-                                    // does not false-pin on same-provider Enter.
+                                    // does not rewrite the stamp on same-provider Enter.
                                     let current_provider = self
                                         .requeue_preferred_model(std::slice::from_ref(&id))
                                         .or_else(|| {
@@ -1394,10 +1484,9 @@ impl App {
                                                 .map(|r| provider_of_ref(&r).to_string())
                                         });
                                     if current_provider.as_deref() != Some(provider.as_str()) {
-                                        params["model"] =
-                                            serde_json::Value::String(model_ref);
-                                        params["model_pinned"] =
-                                            serde_json::Value::Bool(true);
+                                        if let Some(v) = model_param_from_chain(&chain) {
+                                            params["model"] = v;
+                                        }
                                     }
                                 }
                             }

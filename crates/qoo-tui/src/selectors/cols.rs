@@ -231,16 +231,18 @@ pub fn def_desc_text(def: &DefinitionSummary) -> String {
 }
 
 /// The model cell text for a def in the TASKS list: the **effective head**
-/// under `ctx.active_provider` only (stable re-head + default-model /
-/// group-head prepend — see [`crate::chain::resolve_model_chain`] /
+/// under `ctx.active_provider` only (reorder within the authored allowlist —
+/// see [`crate::chain::resolve_model_chain`] /
 /// [`crate::chain::effective_model_head`]), label-only via
-/// [`crate::chain::model_ref_display`]. Not the authored yaml list and not the
-/// full `a → b → c` fallback chain (that stays on the detail config pane via
-/// [`crate::chain::resolved_model_chain_display`]). `None` model uses the
-/// repo's `default_models`. Empty string when resolution fails (unknown model /
-/// nothing runnable) so the pane-gate can drop the column when every visible
-/// def is blank. Layout ([`def_col_layout`]) and render
-/// ([`crate::view::panes`]) share this so widths track the displayed head.
+/// [`crate::chain::model_ref_display`]. Not the full `a → b → c` fallback
+/// chain (that stays on the detail config pane via
+/// [`crate::chain::resolved_model_chain_display`]). An authored list is an
+/// allowlist: a grok-only def still shows grok when the TUI active provider is
+/// claude. `None` model uses the repo's `default_models` (and may inject the
+/// active provider when missing from that pool). Empty string when resolution
+/// fails (unknown model / nothing runnable) so the pane-gate can drop the
+/// column when every visible def is blank. Layout ([`def_col_layout`]) and
+/// render ([`crate::view::panes`]) share this so widths track the displayed head.
 pub fn def_model_text(def: &DefinitionSummary, ctx: &ModelResolveCtx<'_>) -> String {
     let defaults = ctx.default_models.refs_for(&def.repo);
     let enabled = ctx.enabled_refs();

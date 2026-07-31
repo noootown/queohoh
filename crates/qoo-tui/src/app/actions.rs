@@ -1055,11 +1055,11 @@ impl App {
     /// sends `params.ref` and does NOT also send `params.worktree`, so the
     /// daemon honors the ref (create-or-reuse) instead of the legacy worktree
     /// hint. `worktree` (the launch context) is sent only when there is no ref.
-    /// `model` is the operator's 1-entry exact pick from the def-run model
-    /// dropdown (preselected to the active-provider head; no empty "default"
-    /// option — see `def_model_field`). A present non-empty `model` is always
-    /// sent with `model_pinned: true` — the daemon runs it exactly, no
-    /// active-provider re-head, no fallback.
+    /// `model_chain` is the operator's preferred-first list from the def-run
+    /// model dropdown (preselected to the active-provider head; no empty
+    /// "default" option — see `def_model_field`). Selected model first, then
+    /// the rest of the picker options — **not** a hard pin, so re-run still
+    /// offers every listed model when a provider is out of budget / down.
     ///
     /// Always sends `bypass_dedup: true`: a human filling this form and
     /// pressing Run is explicit "run NOW" intent, so a def's configured
@@ -1080,7 +1080,7 @@ impl App {
         values: &[String],
         worktree: Option<&str>,
         target_ref: Option<&str>,
-        model: Option<&str>,
+        model_chain: &[String],
     ) -> Cmd {
         let mut params = serde_json::json!({
             "repo": repo, "name": name, "args": values, "source": "tui",
@@ -1091,9 +1091,8 @@ impl App {
         } else if let Some(wt) = worktree {
             params["worktree"] = serde_json::Value::String(wt.to_string());
         }
-        if let Some(m) = model.filter(|m| !m.is_empty()) {
-            params["model_pinned"] = serde_json::Value::Bool(true);
-            params["model"] = serde_json::Value::String(m.to_string());
+        if let Some(v) = super::form::model_param_from_chain(model_chain) {
+            params["model"] = v;
         }
         Cmd::Rpc {
             label: "run".into(),

@@ -143,10 +143,10 @@ fn adhoc_existing_worktree_target_sends_worktree_ref() {
 }
 
 #[test]
-fn adhoc_picked_model_is_pinned() {
-    // Picking a concrete catalog model (not the head "" default) is an
-    // explicit dialog choice: it must be sent with `model_pinned: true` so
-    // the worker runs it exactly — no active-provider re-head, no fallback.
+fn adhoc_picked_model_is_preferred_first_not_pinned() {
+    // Picking a concrete catalog model (not the head "" default) stamps a
+    // preferred-first list over repo defaults — not a hard pin — so re-run
+    // still offers every default_models entry.
     let mut a = app();
     a.update(ch('s'));
     focus_field(&mut a, adhoc_field::MODEL);
@@ -158,8 +158,16 @@ fn adhoc_picked_model_is_pinned() {
     a.update(enter()); // pick
     let up = fill_prompt_and_submit(&mut a, "run it");
     let p = enqueue_params(&up);
-    assert_eq!(p["model"], "claude/claude-opus-4.8");
-    assert_eq!(p["model_pinned"], true);
+    let model = &p["model"];
+    if model.is_string() {
+        assert_eq!(model, "claude/claude-opus-4.8");
+    } else {
+        assert_eq!(model[0], "claude/claude-opus-4.8");
+    }
+    assert!(
+        p.get("model_pinned").is_none(),
+        "TUI adhoc pick is preference, not a hard pin"
+    );
 }
 
 #[test]

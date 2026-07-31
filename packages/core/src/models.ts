@@ -44,17 +44,20 @@ function toChainEntry(entry: CatalogEntry): ChainEntry {
 /**
  * Resolve a model spec into an ordered fallback chain over `catalog`.
  *
- * Algorithm (design spec Section 4, implemented verbatim):
+ * Algorithm (design spec Section 4, with allowlist semantics for authored lists):
  * 1. `refs = spec === null ? defaultModels : (typeof spec === "string" ? [spec] : spec)`.
  * 2. Map each ref via `findModel`; any miss ⇒ `unknownModelError`.
  * 3. Drop entries whose provider is disabled/unknown in `providers`.
  * 4. Stable-partition: entries with `provider === activeProvider` first
  *    (keeping order), rest after.
- * 5. If no entry has `provider === activeProvider` AND that provider is
- *    enabled: prepend the active provider's `defaultModels` entry (its chosen
- *    default from the pool), falling back to `groupHead(catalog, activeProvider)`
- *    when `defaultModels` names no model for that provider (skip if neither
- *    exists).
+ * 5. **Defaults-only inject** (`spec === null`): if no entry has
+ *    `provider === activeProvider` AND that provider is enabled, prepend the
+ *    active provider's `defaultModels` entry (its chosen default from the
+ *    pool), falling back to `groupHead(catalog, activeProvider)` when
+ *    `defaultModels` names no model for that provider (skip if neither
+ *    exists). An **explicit** authored list is an allowlist — never inject a
+ *    provider the def did not name (mail-check is grok-only even when the
+ *    TUI active provider is claude).
  * 6. Dedup by `provider/id` keeping first occurrence. Empty final chain ⇒ an
  *    error.
  */
@@ -65,8 +68,12 @@ export function resolveModelChain(
 	defaultModels: string[],
 	activeProvider: string,
 ): ChainResult {
-	const refs =
-		spec === null ? defaultModels : typeof spec === "string" ? [spec] : spec;
+	const fromDefaults = spec === null;
+	const refs = fromDefaults
+		? defaultModels
+		: typeof spec === "string"
+			? [spec]
+			: spec;
 
 	const entries: CatalogEntry[] = [];
 	for (const ref of refs) {
@@ -82,7 +89,13 @@ export function resolveModelChain(
 	const rest = enabled.filter((e) => e.provider !== activeProvider);
 	let ordered = [...active, ...rest];
 
-	if (active.length === 0 && isEnabled(providers, activeProvider)) {
+	// Inject only when resolving the unstamped defaults pool — never onto an
+	// authored allowlist (a grok-only def must stay grok-only).
+	if (
+		fromDefaults &&
+		active.length === 0 &&
+		isEnabled(providers, activeProvider)
+	) {
 		// Inject the active provider's DEFAULT from the pool: the `defaultModels`
 		// entry whose provider is the active one (the model the operator chose as
 		// that provider's default), NOT the provider's most-powerful group head.
@@ -202,6 +215,11 @@ export type CaptureModelResult =
  *
  * - Explicit pin (`pinned: true` + a single string): validated and returned as
  *   a 1-entry pin (`modelPinned: true`) — exact pick, no fallback.
+ * - Explicit ordered list (`preserveOrder: true` + array): freeze that order
+ *   via `resolveFrozenModelChain` (`modelPinned: false`). Used when the TUI
+ *   stamps a preferred-first multi-list — preferred head must survive capture
+ *   without active-provider re-head, while later refs stay available for
+ *   fallback and re-run provider switch.
  * - Otherwise: full `resolveModelChain` under `activeProvider`, then freeze the
  *   resulting refs onto `task.model` (`modelPinned: false`). The worker uses
  *   `resolveFrozenModelChain` for a non-null unpinned stamp.
@@ -212,7 +230,7 @@ export function captureModelForSchedule(
 	providers: ProviderConfig[],
 	defaultModels: string[],
 	activeProvider: string,
-	opts?: { pinned?: boolean },
+	opts?: { pinned?: boolean; preserveOrder?: boolean },
 ): CaptureModelResult {
 	if (opts?.pinned === true && typeof spec === "string") {
 		const pinned = resolvePinnedModel(spec, catalog, providers);
@@ -222,6 +240,18 @@ export function captureModelForSchedule(
 			ok: true,
 			model: pinned.chain[0]!.ref,
 			modelPinned: true,
+		};
+	}
+	// Operator-supplied ordered list (TUI preferred-first / MCP multi-model):
+	// keep authored order; do not re-head under activeProvider.
+	if (opts?.preserveOrder === true && Array.isArray(spec)) {
+		const frozen = resolveFrozenModelChain(spec, catalog, providers);
+		if (!frozen.ok) return frozen;
+		const refs = frozen.chain.map((e) => e.ref);
+		return {
+			ok: true,
+			model: refs.length === 1 ? refs[0]! : refs,
+			modelPinned: false,
 		};
 	}
 	const resolved = resolveModelChain(

@@ -400,10 +400,19 @@ fn launcher_new_session_form_enqueues_picked_model_ref_and_prompt() {
     assert_eq!(params["prompt"], "do the thing");
     assert_eq!(params["repo"], "platform");
     assert_eq!(params["worktree"], "platform.wt-a");
-    assert_eq!(params["model"], "claude/claude-opus-4.8");
-    // A concrete pick is an explicit dialog choice: pinned so the worker runs
-    // it exactly (no active-provider re-head, no fallback).
-    assert_eq!(params["model_pinned"], true);
+    // Preferred-first over defaults — not a hard pin. Catalog settings may be
+    // absent here (builtin defaults), so accept either a lone preferred string
+    // or a preferred-first list headed by the pick.
+    let model = &params["model"];
+    if model.is_string() {
+        assert_eq!(model, "claude/claude-opus-4.8");
+    } else {
+        assert_eq!(model[0], "claude/claude-opus-4.8");
+    }
+    assert!(
+        params.get("model_pinned").is_none(),
+        "TUI pick is preference, not a hard pin"
+    );
     assert!(params.get("resume_session_id").is_none());
 }
 
@@ -519,13 +528,13 @@ fn create_worktree_valid_fires_create_then_enqueue() {
     let up = app.update(enter());
     assert!(matches!(app.mode, Mode::List));
     match &up.cmds[..] {
-        [Cmd::CreateWorktree { repo, name, enqueue: Some(EnqueueAfter { prompt, model }) }] => {
+        [Cmd::CreateWorktree { repo, name, enqueue: Some(EnqueueAfter { prompt, model_chain }) }] => {
             assert_eq!(repo, "platform");
             assert_eq!(name, "feat-x");
             assert_eq!(prompt, "build it");
-            // Head option left untouched → empty model (the enqueue-after path
-            // drops it, so the daemon resolves the default chain).
-            assert_eq!(model, "");
+            // Head option left untouched → empty chain (the enqueue-after path
+            // omits model, so the daemon resolves the default chain).
+            assert!(model_chain.is_empty());
         }
         other => panic!("expected CreateWorktree+enqueue, got {other:?}"),
     }
@@ -1010,4 +1019,52 @@ fn task_allows_requeue_provider_null_any_and_list_restricts() {
         "grok/grok-4.5".into(),
     ]));
     assert!(App::task_allows_requeue_provider(&many, "grok"));
+}
+
+#[test]
+fn preferred_first_chain_puts_head_first_and_keeps_rest() {
+    use super::form::{model_param_from_chain, preferred_first_chain};
+    let chain = preferred_first_chain(
+        "grok/grok-4.5",
+        &[
+            "claude/claude-opus-4.8".into(),
+            "grok/grok-4.5".into(),
+        ],
+    );
+    assert_eq!(
+        chain,
+        vec!["grok/grok-4.5".to_string(), "claude/claude-opus-4.8".to_string()]
+    );
+    assert!(preferred_first_chain("", &["a".into()]).eq(&["a".to_string()]));
+    assert!(model_param_from_chain(&[]).is_none());
+    assert_eq!(
+        model_param_from_chain(&["claude/x".into()]),
+        Some(serde_json::json!("claude/x"))
+    );
+    assert_eq!(
+        model_param_from_chain(&["grok/y".into(), "claude/x".into()]),
+        Some(serde_json::json!(["grok/y", "claude/x"]))
+    );
+}
+
+#[test]
+fn requeue_model_chain_reorders_stamp_without_dropping_list() {
+    let mut app = launcher_app();
+    app.settings = Some(Some(catalog_settings()));
+    let mut stamped = TaskInstance::default();
+    stamped.target.repo = "platform".into();
+    stamped.model = Some(ModelRef::Many(vec![
+        "claude/claude-opus-4.8".into(),
+        "grok/grok-4.5".into(),
+    ]));
+    assert_eq!(
+        app.requeue_model_chain_for_provider(&stamped, "grok").as_deref(),
+        Some(
+            [
+                "grok/grok-4.5".to_string(),
+                "claude/claude-opus-4.8".to_string()
+            ]
+            .as_slice()
+        )
+    );
 }

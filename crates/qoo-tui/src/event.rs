@@ -79,11 +79,12 @@ pub struct RpcCall {
 /// Post-create enqueue payload for [`Cmd::CreateWorktree`]. When present, the
 /// handler enqueues a first task into the freshly-created worktree (resolving the
 /// worktree name from the create reply's `path` basename — never reconstructed in
-/// the TUI). Empty `model` means "daemon default".
+/// the TUI). Empty `model_chain` means "daemon default". A non-empty chain is the
+/// preferred-first multi-list (not a hard pin).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnqueueAfter {
     pub prompt: String,
-    pub model: String,
+    pub model_chain: Vec<String>,
 }
 
 /// Side effects `App::update` requests; performed by `execute` on tokio tasks
@@ -632,13 +633,12 @@ pub fn execute(cmd: Cmd, tx: UnboundedSender<Event>, sock: PathBuf, runs_dir: Pa
                         Some(wt) => {
                             let mut params =
                                 serde_json::json!({ "prompt": after.prompt, "repo": repo, "worktree": wt });
-                            if !after.model.is_empty() {
-                                // A concrete pick (not the head "" default) is an
-                                // explicit dialog choice: pin it so the worker
-                                // runs it exactly, no active-provider re-head, no
-                                // fallback.
-                                params["model_pinned"] = serde_json::Value::Bool(true);
-                                params["model"] = serde_json::Value::String(after.model);
+                            if let Some(v) =
+                                crate::app::form::model_param_from_chain(&after.model_chain)
+                            {
+                                // Preferred-first list from the create form — not
+                                // a hard pin (re-run keeps every listed model).
+                                params["model"] = v;
                             }
                             let enq = RpcCall { method: "enqueue".into(), params };
                             rpc_once(&sock, &enq, 5_000)

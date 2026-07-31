@@ -172,10 +172,9 @@ describe("resolveModelChain", () => {
 		});
 	});
 
-	it("switch-miss injects the active provider's default_models entry, not its group head", () => {
-		// default_models is the pool; claude's default is opus, but claude's
-		// group head is fable (its first catalog entry). A grok-only spec under
-		// active=claude must inject OPUS (the chosen default), never fable.
+	it("authored allowlist never injects an unlisted active provider", () => {
+		// mail-check is grok-only: active=claude must NOT inject claude/opus.
+		// Re-head only reorders within the authored list (partition step).
 		expect(
 			resolveModelChain(
 				["grok/grok-4.5"],
@@ -187,34 +186,9 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
-				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
 			],
 		});
-	});
-
-	it("switch-miss falls back to the group head when default_models names no model for the active provider", () => {
-		// default_models has only a grok entry; active=claude has no default in the
-		// pool → fall back to claude's group head (fable). Conservative + runnable.
-		expect(
-			resolveModelChain(
-				["grok/grok-4.5"],
-				BUILTIN_CATALOG,
-				PROVIDERS,
-				["grok/grok-4.5"],
-				"claude",
-			),
-		).toEqual({
-			ok: true,
-			chain: [
-				{ provider: "claude", model: "claude-fable-5", ref: "claude/claude-fable-5" },
-				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
-			],
-		});
-	});
-
-	it("switch-miss with empty default_models falls back to the group head", () => {
-		// No pool at all → group-head fallback (grok's most powerful, grok-4.5).
 		expect(
 			resolveModelChain(
 				["claude/claude-opus-5"],
@@ -226,19 +200,55 @@ describe("resolveModelChain", () => {
 		).toEqual({
 			ok: true,
 			chain: [
+				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
+			],
+		});
+	});
+
+	it("null defaults still inject active when missing from the defaults pool", () => {
+		// Unstamped path only: defaults lack the active provider → inject its
+		// default_models entry (opus), not group head (fable).
+		expect(
+			resolveModelChain(
+				null,
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				["grok/grok-4.5"],
+				"claude",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
+				// default_models has no claude entry → group-head fallback (fable)
+				{ provider: "claude", model: "claude-fable-5", ref: "claude/claude-fable-5" },
+				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
+			],
+		});
+		// Active's default is in the pool → inject that, not group head.
+		expect(
+			resolveModelChain(
+				null,
+				BUILTIN_CATALOG,
+				PROVIDERS,
+				["claude/claude-opus-5"],
+				"grok",
+			),
+		).toEqual({
+			ok: true,
+			chain: [
 				{ provider: "grok", model: "grok-4.5", ref: "grok/grok-4.5" },
 				{ provider: "claude", model: "claude-opus-5", ref: "claude/claude-opus-5" },
 			],
 		});
 	});
 
-	it("switch-miss does NOT prepend when the active provider is disabled", () => {
+	it("null defaults do NOT prepend when the active provider is disabled", () => {
 		expect(
 			resolveModelChain(
-				["claude/claude-opus-5"],
+				null,
 				BUILTIN_CATALOG,
 				PROVIDERS,
-				[],
+				["claude/claude-opus-5"],
 				"codex",
 			),
 		).toEqual({
@@ -387,6 +397,24 @@ describe("captureModelForSchedule", () => {
 			ok: true,
 			model: "claude/claude-opus-5",
 			modelPinned: true,
+		});
+	});
+
+	it("preserveOrder freezes an explicit list without active-provider re-head", () => {
+		// TUI preferred-first: grok then claude, while active=claude must NOT
+		// re-order the stamp (re-run still sees both; head stays the pick).
+		const captured = captureModelForSchedule(
+			["grok/grok-4.5", "claude/claude-opus-5"],
+			BUILTIN_CATALOG,
+			PROVIDERS,
+			defaults,
+			"claude",
+			{ preserveOrder: true },
+		);
+		expect(captured).toEqual({
+			ok: true,
+			model: ["grok/grok-4.5", "claude/claude-opus-5"],
+			modelPinned: false,
 		});
 	});
 });
