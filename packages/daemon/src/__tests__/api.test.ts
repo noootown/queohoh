@@ -134,6 +134,7 @@ async function setup(opts?: {
 		maxConcurrentTasks: 3,
 		purgeAfterDays: 7,
 		archiveAfterDays: 7,
+		worktreeRetentionDays: null,
 		vars: opts?.vars ?? {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
@@ -330,9 +331,7 @@ describe("ApiServer", () => {
 		const state = (await client.call("state")) as {
 			projects: { name: string; githubId?: string }[];
 		};
-		expect(state.projects).toEqual([
-			{ name: "platform", githubId: "alice" },
-		]);
+		expect(state.projects).toEqual([{ name: "platform", githubId: "alice" }]);
 	});
 
 	it("enqueue creates an adhoc task and reports state", async () => {

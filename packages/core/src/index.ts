@@ -23,6 +23,7 @@ export {
 	loadProjectProtectedWorktrees,
 	loadProjectTaskRetentionDays,
 	loadProjectVars,
+	loadProjectWorktreeRetentionDays,
 	projectWorkspaceDir,
 	resolveDefinition,
 } from "./config.js";

@@ -118,6 +118,20 @@ export interface ResolverIO {
 		branch?: string,
 	): Promise<WorktreeInfo>;
 	removeWorktree(repoPath: string, worktree: WorktreeInfo): Promise<void>;
+	/** Durable creation proof plus the current HEAD, so a new commit invalidates
+	 * a pending cleanup decision without revoking ownership. Absence refuses. */
+	ownedWorktreeToken?(
+		repoPath: string,
+		worktree: WorktreeInfo,
+	): Promise<string | null>;
+	/** Automatic removal rechecks ownership and clean state, then the caller's
+	 * current policy immediately before nonforce git removal. Unknown = refusal. */
+	removeOwnedWorktree?(
+		repoPath: string,
+		worktree: WorktreeInfo,
+		token: string,
+		stillAllowed: () => boolean,
+	): Promise<boolean>;
 }
 
 /**

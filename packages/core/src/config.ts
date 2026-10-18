@@ -129,6 +129,11 @@ const GlobalConfigSchema = z
 		// only hard-purge by age now).
 		purge_after_days: z.number().int().positive().optional(),
 		archive_after_days: z.number().int().positive().optional(),
+		// Reap a worktree with a verified creation receipt once it has been
+		// idle this many days and nothing live targets it. Null/absent ⇒ persistent
+		// worktrees are never reaped; ephemeral (`temp` ref) ones still are, as
+		// they carry no age gate.
+		worktree_retention_days: z.number().int().positive().nullable().optional(),
 		vars: z.record(z.string(), z.string()).default({}),
 		// Declares which agent CLIs (claude/grok/codex/...) are enabled, in
 		// fallback order. Built-ins start disabled — list a name (and/or set
@@ -176,6 +181,10 @@ export interface GlobalConfig {
 	purgeAfterDays: number;
 	/** @deprecated Alias of purgeAfterDays for older call sites/tests. */
 	archiveAfterDays: number;
+	/** Reap an idle worktree with a verified creation receipt after this many days (global
+	 * default; vars.yaml `worktree_retention_days` overrides per project).
+	 * null = never reap persistent worktrees. */
+	worktreeRetentionDays: number | null;
 	vars: Record<string, string>;
 	/** Effective provider table (built-in ⊕ config.yaml `providers:`), fallback
 	 * order. */
@@ -267,6 +276,7 @@ export function loadGlobalConfig(path: string): GlobalConfig {
 		// Keep archiveAfterDays equal for any residual readers/tests.
 		archiveAfterDays:
 			config.purge_after_days ?? config.archive_after_days ?? 14,
+		worktreeRetentionDays: config.worktree_retention_days ?? null,
 		vars: config.vars,
 		providers,
 		catalog,
@@ -328,6 +338,7 @@ export function loadProjectVars(projectDir: string): Record<string, string> {
 		if (key === "protected_worktrees") continue; // reserved: read by loadProjectProtectedWorktrees
 		if (key === "default_branch") continue; // reserved: read by loadProjectDefaultBranch
 		if (key === "task_retention_days") continue; // reserved: read by loadProjectTaskRetentionDays
+		if (key === "worktree_retention_days") continue; // reserved: read by loadProjectWorktreeRetentionDays
 		if (key === "providers") continue; // reserved (legacy): pre-catalog tier overrides
 		if (key === "default_models") continue; // reserved: read by loadProjectDefaultModels
 		if (value !== null && typeof value === "object") {
@@ -425,6 +436,43 @@ export function loadProjectTaskRetentionDays(
 			warnedRetentionValues.add(warnKey);
 			console.warn(
 				`vars.yaml task_retention_days: not a positive integer (${String(value)}), using ${fallback}`,
+			);
+		}
+		return fallback;
+	}
+	return value;
+}
+
+/** vars.yaml paths whose `worktree_retention_days` we've already warned about,
+ * so the per-tick sweep logs a bad value once rather than every pass. */
+const warnedWorktreeRetentionValues = new Set<string>();
+
+/** The project's optional `worktree_retention_days` from vars.yaml — how many
+ * idle days a queohoh-spawned `{repo}.{branch}` worktree survives before the
+ * engine reaps it. Explicit null disables persistent cleanup for this project,
+ * even if the global setting enables it. Returns `fallback` (the global `worktree_retention_days`,
+ * or null) when the file/key is absent or the value is not a positive integer.
+ * Tolerant like the other loaders: a bad value reverts to the fallback and
+ * never wedges the sweep. A null result disables persistent reaping entirely —
+ * fail-closed, since the cost of a wrong reap is a deleted directory. */
+export function loadProjectWorktreeRetentionDays(
+	projectDir: string,
+	fallback: number | null,
+): number | null {
+	const path = join(projectDir, "vars.yaml");
+	if (!existsSync(path)) return fallback;
+	const raw = yaml.load(readFileSync(path, "utf-8")) ?? {};
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+		return fallback;
+	const value = (raw as Record<string, unknown>).worktree_retention_days;
+	if (value === undefined) return fallback;
+	if (value === null) return null;
+	if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+		const warnKey = `${path}:${String(value)}`;
+		if (!warnedWorktreeRetentionValues.has(warnKey)) {
+			warnedWorktreeRetentionValues.add(warnKey);
+			console.warn(
+				`vars.yaml worktree_retention_days: not a positive integer (${String(value)}), using ${String(fallback)}`,
 			);
 		}
 		return fallback;

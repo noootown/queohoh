@@ -70,6 +70,7 @@ function setup(
 		maxConcurrentTasks: 3,
 		purgeAfterDays: 7,
 		archiveAfterDays: 7,
+		worktreeRetentionDays: null,
 		vars: {},
 		catalog: BUILTIN_CATALOG,
 		defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
@@ -291,6 +292,7 @@ describe("Engine.tick", () => {
 			maxConcurrentTasks: 3,
 			purgeAfterDays: 7,
 			archiveAfterDays: 7,
+			worktreeRetentionDays: null,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
@@ -501,6 +503,7 @@ describe("Engine.tick", () => {
 			maxConcurrentTasks: 3,
 			purgeAfterDays: 7,
 			archiveAfterDays: 7,
+			worktreeRetentionDays: null,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
@@ -1909,7 +1912,11 @@ describe("worktree-deletion archive", () => {
 			});
 			store.update(t.id, {
 				status,
-				target: { repo: "platform", ref: "worktree:TICK-1", worktree: "TICK-1" },
+				target: {
+					repo: "platform",
+					ref: "worktree:TICK-1",
+					worktree: "TICK-1",
+				},
 			});
 
 			await engine.tick();

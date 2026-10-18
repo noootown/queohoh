@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { monotonicFactory } from "ulid";
+import { parseRef } from "./ref.js";
 import type {
 	Priority,
 	SessionMode,
@@ -96,6 +97,9 @@ export class QueueStore {
 	readonly tasksDir: string;
 	readonly archiveDir: string;
 	invalidFiles: string[] = [];
+	/** Unreadable archive entries may contain cleanup-protecting favorites.
+	 * Keep their paths so automatic deletion can refuse incomplete history. */
+	invalidArchiveFiles: string[] = [];
 
 	private readonly ulid = monotonicFactory();
 	/** In-memory live queue. Invalidated on every write/rename and on `reload()`.
@@ -104,6 +108,62 @@ export class QueueStore {
 	private liveCache: TaskInstance[] | null = null;
 	/** In-memory archive list — same invalidation rules as `liveCache`. */
 	private archiveCache: TaskInstance[] | null = null;
+	/** Cleanup awaits git/gh, so a task can otherwise enter the lane between
+	 * the idle check and deletion. Hold all aliases until the remover settles;
+	 * callers get a retryable error instead of silently losing queued work. */
+	private readonly worktreeRemovals = new Map<string, symbol>();
+
+	reserveWorktreeRemoval(repo: string, names: ReadonlySet<string>): () => void {
+		const keys = [...names].map((name) => JSON.stringify([repo, name]));
+		if (keys.some((key) => this.worktreeRemovals.has(key))) {
+			throw new Error(
+				"worktree cleanup in progress; retry after cleanup finishes",
+			);
+		}
+		const token = Symbol();
+		for (const key of keys) this.worktreeRemovals.set(key, token);
+		return () => {
+			for (const key of keys) {
+				if (this.worktreeRemovals.get(key) === token)
+					this.worktreeRemovals.delete(key);
+			}
+		};
+	}
+
+	private assertTargetWritable(target: TaskInstance["target"]): void {
+		if (this.worktreeRemovals.size === 0) return;
+		const names = [target.worktree];
+		let unknownTarget = false;
+		if (target.worktree === null) {
+			try {
+				const ref = parseRef(target.ref);
+				if (ref.kind === "worktree") names.push(ref.name);
+				else if (ref.kind === "ticket") names.push(ref.id);
+				else if (ref.kind !== "repo") unknownTarget = true;
+			} catch {
+				unknownTarget = true;
+			}
+		}
+		// PR/temp refs have no stable lane until resolution; don't let them
+		// race cleanup in their repo. Resolved tasks elsewhere remain writable.
+		const reservedRepo =
+			unknownTarget &&
+			[...this.worktreeRemovals.keys()].some(
+				(key) => (JSON.parse(key) as [string, string])[0] === target.repo,
+			);
+		if (
+			reservedRepo ||
+			names.some(
+				(name) =>
+					name !== null &&
+					this.worktreeRemovals.has(JSON.stringify([target.repo, name])),
+			)
+		) {
+			throw new Error(
+				"worktree cleanup in progress; retry after cleanup finishes",
+			);
+		}
+	}
 
 	constructor(stateDir: string) {
 		this.stateDir = stateDir;
@@ -179,6 +239,12 @@ export class QueueStore {
 		steps: ChainStepInput[],
 		shared: ChainSharedInput,
 	): TaskInstance[] {
+		// Every member shares this target; reject before writing any member.
+		this.assertTargetWritable({
+			repo: shared.repo,
+			ref: shared.ref,
+			worktree: null,
+		});
 		const chainId = this.ulid();
 		const now = new Date().toISOString();
 		const created = steps.map((step, i) => {
@@ -263,7 +329,9 @@ export class QueueStore {
 		const archived = this.listArchived().find((t) => t.id === id);
 		if (archived) return archived;
 		try {
-			return parseTaskFile(readFileSync(join(this.archiveDir, `${id}.md`), "utf-8"));
+			return parseTaskFile(
+				readFileSync(join(this.archiveDir, `${id}.md`), "utf-8"),
+			);
 		} catch {
 			return undefined;
 		}
@@ -299,6 +367,7 @@ export class QueueStore {
 	update(id: string, patch: Partial<Omit<TaskInstance, "id">>): TaskInstance {
 		const current = this.get(id);
 		if (!current) throw new Error(`task not found: ${id}`);
+		this.assertTargetWritable(current.target);
 		const next = this.applyPatch(current, patch);
 		this.write(next);
 		return next;
@@ -317,6 +386,8 @@ export class QueueStore {
 		const current = this.getAny(id);
 		if (!current) throw new Error(`task not found: ${id}`);
 		const next = this.applyPatch(current, patch);
+		this.assertTargetWritable(current.target);
+		this.assertTargetWritable(next.target);
 		const path = this.archivePath(id);
 		const tmp = `${path}.tmp`;
 		writeFileSync(tmp, serializeTaskFile(next));
@@ -360,6 +431,8 @@ export class QueueStore {
 	 * isn't in the archive, so a stale TUI row surfaces a clear message instead
 	 * of a raw ENOENT. */
 	unarchive(id: string): void {
+		const task = this.listArchived().find((entry) => entry.id === id);
+		if (task) this.assertTargetWritable(task.target);
 		try {
 			renameSync(join(this.archiveDir, `${id}.md`), this.taskPath(id));
 		} catch {
@@ -371,6 +444,7 @@ export class QueueStore {
 
 	listArchived(): TaskInstance[] {
 		if (this.archiveCache !== null) return this.archiveCache;
+		this.invalidArchiveFiles = [];
 		const tasks: TaskInstance[] = [];
 		for (const file of readdirSync(this.archiveDir).sort()) {
 			if (!file.endsWith(".md")) continue;
@@ -379,7 +453,7 @@ export class QueueStore {
 					parseTaskFile(readFileSync(join(this.archiveDir, file), "utf-8")),
 				);
 			} catch {
-				// archived junk is ignored silently
+				this.invalidArchiveFiles.push(join(this.archiveDir, file));
 			}
 		}
 		tasks.sort((a, b) => a.id.localeCompare(b.id));
@@ -387,10 +461,8 @@ export class QueueStore {
 		return tasks;
 	}
 
-	private write(
-		task: TaskInstance,
-		opts?: { keepCache?: boolean },
-	): void {
+	private write(task: TaskInstance, opts?: { keepCache?: boolean }): void {
+		this.assertTargetWritable(task.target);
 		const path = this.taskPath(task.id);
 		const tmp = `${path}.tmp`;
 		writeFileSync(tmp, serializeTaskFile(task));

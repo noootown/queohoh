@@ -132,7 +132,8 @@ describe("resolveDefinition — project vs global", () => {
 			projects: [{ name: "platform", path: "/repo/platform" }],
 			maxConcurrentTasks: 3,
 			purgeAfterDays: 7,
-		archiveAfterDays: 7,
+			archiveAfterDays: 7,
+			worktreeRetentionDays: null,
 			vars: {},
 			catalog: BUILTIN_CATALOG,
 			defaultModels: ["claude/claude-opus-5", "grok/grok-4.5"],
@@ -179,10 +180,7 @@ describe("resolveDefinition — project vs global", () => {
 describe("loadProjectVars", () => {
 	it("reads and stringifies vars.yaml", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
-		writeFileSync(
-			join(dir, "vars.yaml"),
-			"repo: acme/platform\nport: 3000\n",
-		);
+		writeFileSync(join(dir, "vars.yaml"), "repo: acme/platform\nport: 3000\n");
 		expect(loadProjectVars(dir)).toEqual({
 			repo: "acme/platform",
 			port: "3000",
@@ -207,10 +205,7 @@ describe("loadProjectVars", () => {
 
 	it("skips the reserved github_id key instead of exposing it as a var", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-pv-"));
-		writeFileSync(
-			join(dir, "vars.yaml"),
-			"ticket: TICK-1\ngithub_id: alice\n",
-		);
+		writeFileSync(join(dir, "vars.yaml"), "ticket: TICK-1\ngithub_id: alice\n");
 		expect(loadProjectVars(dir)).toEqual({ ticket: "TICK-1" });
 	});
 
@@ -332,10 +327,7 @@ describe("loadProjectDefaultBranch", () => {
 describe("loadProjectGithubId", () => {
 	it("reads a string github_id from vars.yaml", () => {
 		const dir = mkdtempSync(join(tmpdir(), "queohoh-gh-"));
-		writeFileSync(
-			join(dir, "vars.yaml"),
-			"ticket: TICK-1\ngithub_id: alice\n",
-		);
+		writeFileSync(join(dir, "vars.yaml"), "ticket: TICK-1\ngithub_id: alice\n");
 		expect(loadProjectGithubId(dir)).toBe("alice");
 	});
 
@@ -538,7 +530,10 @@ describe("loadProjectDefaultModels", () => {
 		expect(loadProjectDefaultModels(noKey)).toBeUndefined();
 
 		const scalar = mkdtempSync(join(tmpdir(), "queohoh-pdm-"));
-		writeFileSync(join(scalar, "vars.yaml"), "default_models: claude/claude-opus-5\n");
+		writeFileSync(
+			join(scalar, "vars.yaml"),
+			"default_models: claude/claude-opus-5\n",
+		);
 		expect(loadProjectDefaultModels(scalar)).toBeUndefined();
 	});
 

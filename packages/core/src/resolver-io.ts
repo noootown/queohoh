@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat } from "node:fs/promises";
+import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename } from "node:path";
 import {
@@ -8,6 +8,10 @@ import {
 	type WorktreeInfo,
 } from "./resolver.js";
 import { executeBoundedCommand } from "./runner.js";
+import {
+	createWorktreeOwnership,
+	type OwnershipFs,
+} from "./worktree-ownership.js";
 
 export type Exec = (
 	command: string,
@@ -44,6 +48,8 @@ export interface ResolverFs {
 	exists(path: string): Promise<boolean>;
 	/** Legacy injection seam; recursive recovery is intentionally never called. */
 	remove?(path: string): Promise<void>;
+	/** Missing metadata I/O means automatic cleanup cannot prove ownership. */
+	ownership?: OwnershipFs;
 }
 
 export const defaultResolverFs: ResolverFs = {
@@ -57,6 +63,13 @@ export const defaultResolverFs: ResolverFs = {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 			throw error;
 		}
+	},
+	ownership: {
+		realpath,
+		lstat,
+		readFile: (path) => readFile(path, "utf8"),
+		writeExclusive: (path, data) =>
+			writeFile(path, data, { flag: "wx", mode: 0o600 }),
 	},
 };
 
@@ -137,6 +150,7 @@ export function createResolverIO(
 ): ResolverIO {
 	const settleAttempts = opts.settleAttempts ?? REMOVE_SETTLE_ATTEMPTS;
 	const settleIntervalMs = opts.settleIntervalMs ?? REMOVE_SETTLE_INTERVAL_MS;
+	const ownership = createWorktreeOwnership(exec, fsio.ownership);
 	async function listWorktrees(repoPath: string): Promise<WorktreeInfo[]> {
 		const { stdout, exitCode } = await exec(
 			"git",
@@ -186,6 +200,8 @@ export function createResolverIO(
 
 	return {
 		listWorktrees,
+		ownedWorktreeToken: ownership.token,
+		removeOwnedWorktree: ownership.remove,
 
 		async prBranch(repoPath, number) {
 			const { stdout, exitCode } = await exec(
@@ -203,6 +219,18 @@ export function createResolverIO(
 		},
 
 		async spawnWorktree(repoPath, name, branch) {
+			// Only a positively new branch plus the FIRST successful create can
+			// establish ownership. Reopens, hooks that failed and PR adoption cannot.
+			const before = await listWorktrees(repoPath);
+			let canOwn = false;
+			if (!branch && !findWorktree(before, name)) {
+				const check = await exec(
+					"git",
+					["show-ref", "--verify", "--quiet", `refs/heads/${name}`],
+					{ cwd: repoPath },
+				);
+				canOwn = check.exitCode === 1;
+			}
 			// `branch` given (the PR flow) means "check out this EXISTING branch":
 			// fetch it and switch WITHOUT -c — `wt switch -c` would mint a brand-new
 			// branch of the same name off HEAD, silently landing the worktree on
@@ -225,6 +253,7 @@ export function createResolverIO(
 				? (["switch", "--yes", "--no-cd", branch] as string[])
 				: (["switch", "--yes", "--no-cd", "-c", name] as string[]);
 			let result = await exec("wt", createArgs, { cwd: repoPath });
+			canOwn = canOwn && result.exitCode === 0;
 			let detail = [result.stderr, result.stdout]
 				.filter((s) => s?.trim())
 				.join("\n")
@@ -255,7 +284,16 @@ export function createResolverIO(
 			// leaving an orphan worktree the ticket matcher used to miss.
 			const after = await listWorktrees(repoPath);
 			const spawned = findWorktree(after, name, branch);
-			if (spawned) return spawned;
+			if (spawned) {
+				if (
+					canOwn &&
+					spawned.branch === name &&
+					!before.some((wt) => wt.path === spawned.path)
+				) {
+					await ownership.record(repoPath, spawned);
+				}
+				return spawned;
+			}
 
 			// A refusal, missing registration or missing .git is never proof that
 			// a directory belongs to us. Leave every leftover for manual inspection.

@@ -78,6 +78,40 @@ The lane is gone; the board should not keep its history. This is independent of
 **`@repo` / primary checkout never goes away**, so worktree purge never fires
 for main-checkout tasks. Those need `purge_after_days` (below).
 
+### Automatic worktree cleanup
+
+`worktree_retention_days: null` (the default, also used when omitted from global
+config) disables automatic removal of persistent worktrees. A positive integer
+enables removal after that many idle days, measured from the newest task
+completion or commit. A project's `vars.yaml` can override the global value;
+explicit `null` disables it for that project, while an omitted key inherits.
+Ephemeral worktrees from `temp` tasks have no age threshold.
+
+When persistent cleanup is enabled, the newest terminal task record for each
+present worktree is retained as activity evidence even past `purge_after_days`.
+Older records still expire normally. The retained record goes away when the
+worktree is removed, or becomes subject to normal task expiry when worktree
+retention is disabled. This also leaves one record for a worktree that fails
+the ownership check; it does not grant permission to delete that worktree.
+
+Automatic cleanup requires a creation receipt recorded when queohoh successfully
+creates a new branch and worktree. Old worktrees, manually created directories,
+and adopted PR branches are left alone. The receipt must still match the exact
+repository, directory and Git metadata. Naming a directory `repo.branch` does
+not make it eligible.
+
+Both kinds of automatic cleanup require terminal, unfavorited task history,
+no active registered sessions, and no worktree protection or favorite. Fresh
+checks must find no tracked edits, untracked or ignored files, and no open PR.
+Failed Git/PR checks stop cleanup. While deletion is in progress, queue writes
+targeting that worktree return a retry message. Cleanup runs in the background
+and uses non-force Git removal; it preserves the branch and its commits.
+
+Manual removal remains an explicit destructive action. If its background
+deletion leaves a directory behind, queohoh reports it for manual inspection;
+it never recursively deletes an unrecognized leftover or a path extracted
+from an error message.
+
 ### 2. Age — `purge_after_days`
 
 Hard-delete **terminal** tasks after N days, whether they sit on **live** or
