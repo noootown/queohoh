@@ -188,9 +188,10 @@ describe("createResolverIO", () => {
 				listN += 1;
 				// after reopen succeeds, list sees the worktree
 				return {
-					stdout: listN >= 1 && calls.includes("wt switch --yes --no-cd JUS-1995")
-						? after
-						: PORCELAIN,
+					stdout:
+						listN >= 1 && calls.includes("wt switch --yes --no-cd JUS-1995")
+							? after
+							: PORCELAIN,
 					exitCode: 0,
 				};
 			}
@@ -227,6 +228,8 @@ describe("createResolverIO", () => {
 		});
 		expect(records).toEqual([
 			{ key: "git reset --hard HEAD", cwd: "/wt/TICK-77" },
+			// Preserve historical manual cleanup; don't erase ignored files
+			// before the provider has successfully removed the checkout.
 			{ key: "git clean -fd", cwd: "/wt/TICK-77" },
 			{ key: "wt remove --yes TICK-77-fix", cwd: "/repo" },
 			{ key: "git branch -D TICK-77-fix", cwd: "/repo" },
